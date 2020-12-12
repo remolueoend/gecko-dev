@@ -6,9 +6,11 @@
 
 #include "HTMLFormSubmission.h"
 
+#include "HTMLFormElement.h"
 #include "nsCOMPtr.h"
 #include "nsIForm.h"
 #include "mozilla/dom/Document.h"
+#include "nsComponentManagerUtils.h"
 #include "nsGkAtoms.h"
 #include "nsIFormControl.h"
 #include "nsError.h"
@@ -29,21 +31,21 @@
 #include "nsCExternalHandlerService.h"
 #include "nsContentUtils.h"
 
+#include "mozilla/dom/AncestorIterator.h"
 #include "mozilla/dom/Directory.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/RandomNum.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
 void SendJSWarning(Document* aDocument, const char* aWarningName,
                    const nsTArray<nsString>& aWarningArgs) {
-  nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("HTML"), aDocument,
-      nsContentUtils::eFORMS_PROPERTIES, aWarningName, aWarningArgs);
+  nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "HTML"_ns,
+                                  aDocument, nsContentUtils::eFORMS_PROPERTIES,
+                                  aWarningName, aWarningArgs);
 }
 
 void RetrieveFileName(Blob* aBlob, nsAString& aFilename) {
@@ -140,10 +142,9 @@ nsresult FSURLEncoded::AddNameValuePair(const nsAString& aName,
 
   // Append data to string
   if (mQueryString.IsEmpty()) {
-    mQueryString += convName + NS_LITERAL_CSTRING("=") + convValue;
+    mQueryString += convName + "="_ns + convValue;
   } else {
-    mQueryString += NS_LITERAL_CSTRING("&") + convName +
-                    NS_LITERAL_CSTRING("=") + convValue;
+    mQueryString += "&"_ns + convName + "="_ns + convValue;
   }
 
   return NS_OK;
@@ -253,7 +254,7 @@ nsresult FSURLEncoded::GetEncodedSubmission(nsIURI* aURI,
         return NS_ERROR_OUT_OF_MEMORY;
       }
 
-      path += NS_LITERAL_CSTRING("&force-plain-text=Y&body=") + escapedBody;
+      path += "&force-plain-text=Y&body="_ns + escapedBody;
 
       return NS_MutateURI(aURI).SetPathQueryRef(path).Finalize(aOutURI);
     } else {
@@ -286,8 +287,7 @@ nsresult FSURLEncoded::GetEncodedSubmission(nsIURI* aURI,
       // mQueryString is empty, nsIURI::SetQuery() will remove the query
       // component, which is not what we want.
       rv = NS_MutateURI(aURI)
-               .SetQuery(mQueryString.IsEmpty() ? NS_LITERAL_CSTRING("?")
-                                                : mQueryString)
+               .SetQuery(mQueryString.IsEmpty() ? "?"_ns : mQueryString)
                .Finalize(aOutURI);
     } else {
       nsAutoCString path;
@@ -372,8 +372,7 @@ FSMultipartFormData::~FSMultipartFormData() {
 nsIInputStream* FSMultipartFormData::GetSubmissionBody(
     uint64_t* aContentLength) {
   // Finish data
-  mPostDataChunk +=
-      NS_LITERAL_CSTRING("--") + mBoundary + NS_LITERAL_CSTRING("--" CRLF);
+  mPostDataChunk += "--"_ns + mBoundary + nsLiteralCString("--" CRLF);
 
   // Add final data input stream
   AddPostDataStream();
@@ -402,10 +401,10 @@ nsresult FSMultipartFormData::AddNameValuePair(const nsAString& aName,
   // XXX: name parameter should be encoded per RFC 2231
   // RFC 2388 specifies that RFC 2047 be used, but I think it's not
   // consistent with MIME standard.
-  mPostDataChunk +=
-      NS_LITERAL_CSTRING("--") + mBoundary + NS_LITERAL_CSTRING(CRLF) +
-      NS_LITERAL_CSTRING("Content-Disposition: form-data; name=\"") + nameStr +
-      NS_LITERAL_CSTRING("\"" CRLF CRLF) + valueStr + NS_LITERAL_CSTRING(CRLF);
+  mPostDataChunk += "--"_ns + mBoundary + nsLiteralCString(CRLF) +
+                    "Content-Disposition: form-data; name=\""_ns + nameStr +
+                    nsLiteralCString("\"" CRLF CRLF) + valueStr +
+                    nsLiteralCString(CRLF);
 
   return NS_OK;
 }
@@ -516,8 +515,7 @@ nsresult FSMultipartFormData::AddNameDirectoryPair(const nsAString& aName,
   rv = EncodeVal(dirname16, dirname, true);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  AddDataChunk(nameStr, dirname, NS_LITERAL_CSTRING("application/octet-stream"),
-               nullptr, 0);
+  AddDataChunk(nameStr, dirname, "application/octet-stream"_ns, nullptr, 0);
   return NS_OK;
 }
 
@@ -530,16 +528,14 @@ void FSMultipartFormData::AddDataChunk(const nsACString& aName,
   // Make MIME block for name/value pair
   //
   // more appropriate than always using binary?
-  mPostDataChunk +=
-      NS_LITERAL_CSTRING("--") + mBoundary + NS_LITERAL_CSTRING(CRLF);
+  mPostDataChunk += "--"_ns + mBoundary + nsLiteralCString(CRLF);
   // XXX: name/filename parameter should be encoded per RFC 2231
   // RFC 2388 specifies that RFC 2047 be used, but I think it's not
   // consistent with the MIME standard.
-  mPostDataChunk +=
-      NS_LITERAL_CSTRING("Content-Disposition: form-data; name=\"") + aName +
-      NS_LITERAL_CSTRING("\"; filename=\"") + aFilename +
-      NS_LITERAL_CSTRING("\"" CRLF) + NS_LITERAL_CSTRING("Content-Type: ") +
-      aContentType + NS_LITERAL_CSTRING(CRLF CRLF);
+  mPostDataChunk += "Content-Disposition: form-data; name=\""_ns + aName +
+                    "\"; filename=\""_ns + aFilename +
+                    nsLiteralCString("\"" CRLF) + "Content-Type: "_ns +
+                    aContentType + nsLiteralCString(CRLF CRLF);
 
   // We should not try to append an invalid stream. That will happen for example
   // if we try to update a file that actually do not exist.
@@ -627,8 +623,7 @@ nsresult FSTextPlain::AddNameValuePair(const nsAString& aName,
   // XXX This won't work well with a name like "a=b" or "a\nb" but I suppose
   // text/plain doesn't care about that.  Parsers aren't built for escaped
   // values so we'll have to live with it.
-  mBody.Append(aName + NS_LITERAL_STRING("=") + aValue +
-               NS_LITERAL_STRING(CRLF));
+  mBody.Append(aName + u"="_ns + aValue + NS_LITERAL_STRING_FROM_CSTRING(CRLF));
 
   return NS_OK;
 }
@@ -674,7 +669,7 @@ nsresult FSTextPlain::GetEncodedSubmission(nsIURI* aURI,
       return NS_ERROR_OUT_OF_MEMORY;
     }
 
-    path += NS_LITERAL_CSTRING("&force-plain-text=Y&body=") + escapedBody;
+    path += "&force-plain-text=Y&body="_ns + escapedBody;
 
     rv = NS_MutateURI(aURI).SetPathQueryRef(path).Finalize(aOutURI);
   } else {
@@ -712,6 +707,17 @@ nsresult FSTextPlain::GetEncodedSubmission(nsIURI* aURI,
 
 // --------------------------------------------------------------------------
 
+HTMLFormSubmission::HTMLFormSubmission(
+    nsIURI* aActionURL, const nsAString& aTarget,
+    mozilla::NotNull<const mozilla::Encoding*> aEncoding, Element* aSubmitter)
+    : mActionURL(aActionURL),
+      mTarget(aTarget),
+      mEncoding(aEncoding),
+      mSubmitter(aSubmitter),
+      mInitiatedFromUserInput(UserActivation::IsHandlingUserInput()) {
+  MOZ_COUNT_CTOR(HTMLFormSubmission);
+}
+
 EncodingFormSubmission::EncodingFormSubmission(
     nsIURI* aActionURL, const nsAString& aTarget,
     NotNull<const Encoding*> aEncoding, Element* aSubmitter)
@@ -743,7 +749,7 @@ nsresult EncodingFormSubmission::EncodeVal(const nsAString& aStr,
     aOut.Adopt(nsLinebreakConverter::ConvertLineBreaks(
         aOut.get(), nsLinebreakConverter::eLinebreakAny,
         nsLinebreakConverter::eLinebreakSpace));
-    aOut.ReplaceSubstring(NS_LITERAL_CSTRING("\""), NS_LITERAL_CSTRING("\\\""));
+    aOut.ReplaceSubstring("\""_ns, "\\\""_ns);
   }
 
   return NS_OK;
@@ -829,6 +835,26 @@ nsresult HTMLFormSubmission::GetFromForm(HTMLFormElement* aForm,
     GetEnumAttr(aForm, nsGkAtoms::method, &method);
   }
 
+  if (method == NS_FORM_METHOD_DIALOG) {
+    HTMLDialogElement* dialog = aForm->FirstAncestorOfType<HTMLDialogElement>();
+
+    // If there isn't one, or if it does not have an open attribute, do
+    // nothing.
+    if (!dialog || !dialog->Open()) {
+      return NS_ERROR_FAILURE;
+    }
+
+    nsAutoString result;
+    if (aSubmitter) {
+      aSubmitter->ResultForDialogSubmit(result);
+    }
+    *aFormSubmission = new DialogFormSubmission(result, actionURL, target,
+                                                aEncoding, aSubmitter, dialog);
+    return NS_OK;
+  }
+
+  MOZ_ASSERT(method != NS_FORM_METHOD_DIALOG);
+
   // Choose encoder
   if (method == NS_FORM_METHOD_POST && enctype == NS_FORM_ENCTYPE_MULTIPART) {
     *aFormSubmission =
@@ -860,5 +886,4 @@ nsresult HTMLFormSubmission::GetFromForm(HTMLFormElement* aForm,
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

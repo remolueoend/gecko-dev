@@ -22,6 +22,7 @@
 interface nsIBrowserDOMWindow;
 interface XULControllers;
 interface nsIDOMWindowUtils;
+interface nsIPrintSettings;
 
 typedef OfflineResourceList ApplicationCache;
 
@@ -256,6 +257,15 @@ typedef OfflineResourceList ApplicationCache;
   [Throws, Pref="dom.enable_window_print"]
   void print();
 
+  // Returns a window that you can use for a print preview.
+  //
+  // This may reuse an existing window if this window is already a print
+  // preview document, or if you pass a docshell explicitly.
+  [Throws, Func="nsContentUtils::IsCallerChromeOrFuzzingEnabled"]
+  WindowProxy? printPreview(optional nsIPrintSettings? settings = null,
+                            optional nsIWebProgressListener? listener = null,
+                            optional nsIDocShell? docShellToPreviewInto = null);
+
   [Throws, CrossOriginCallable, NeedsSubjectPrincipal,
    BinaryName="postMessageMoz"]
   void postMessage(any message, DOMString targetOrigin, optional sequence<object> transfer = []);
@@ -430,6 +440,9 @@ partial interface Window {
 
   [ChromeOnly] readonly attribute nsIDocShell? docShell;
 
+  [ChromeOnly, Constant, CrossOriginReadable, BinaryName="getBrowsingContext"]
+  readonly attribute BrowsingContext browsingContext;
+
   [Throws, NeedsCallerType]
   readonly attribute float mozInnerScreenX;
   [Throws, NeedsCallerType]
@@ -502,10 +515,7 @@ partial interface Window {
                                                optional DOMString options = "",
                                                any... extraArguments);
 
-  [
-#ifdef NIGHTLY_BUILD
-   ChromeOnly,
-#endif
+  [Func="nsGlobalWindowInner::ContentPropertyEnabled",
    NonEnumerable, Replaceable, Throws, NeedsCallerType]
   readonly attribute object? content;
 
@@ -557,8 +567,9 @@ partial interface Window {
 
 #ifdef HAVE_SIDEBAR
 // Mozilla extension
+// Sidebar is deprecated and it will be removed in the next cycles. See bug 1640138.
 partial interface Window {
-  [Replaceable, Throws, UseCounter, Pref="dom.sidebar.enabled"]
+  [Replaceable, Throws, UseCounter]
   readonly attribute (External or WindowProxy) sidebar;
 };
 #endif
@@ -692,6 +703,11 @@ partial interface Window {
 
   [ChromeOnly]
   readonly attribute boolean isChromeWindow;
+
+#ifdef MOZ_GLEAN
+  [ChromeOnly]
+  readonly attribute GleanImpl Glean;
+#endif
 };
 
 partial interface Window {

@@ -11,10 +11,10 @@ const { XPCOMUtils } = ChromeUtils.import(
 XPCOMUtils.defineLazyModuleGetters(this, {
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   EveryWindow: "resource:///modules/EveryWindow.jsm",
+  AboutReaderParent: "resource:///actors/AboutReaderParent.jsm",
 });
 
 const FEW_MINUTES = 15 * 60 * 1000; // 15 mins
-const MATCH_PATTERN_OPTIONS = { ignorePath: true };
 
 function isPrivateWindow(win) {
   return (
@@ -25,11 +25,11 @@ function isPrivateWindow(win) {
 }
 
 /**
- * Check current location against the list of whitelisted hosts
+ * Check current location against the list of allowed hosts
  * Additionally verify for redirects and check original request URL against
- * the whitelist.
+ * the list.
  *
- * @returns {object} - {host, url} pair that matched the whitelist
+ * @returns {object} - {host, url} pair that matched the list of allowed hosts
  */
 function checkURLMatch(aLocationURI, { hosts, matchPatternSet }, aRequest) {
   // If checks pass we return a match
@@ -41,7 +41,7 @@ function checkURLMatch(aLocationURI, { hosts, matchPatternSet }, aRequest) {
     return false;
   }
 
-  // Check current location against whitelisted hosts
+  // Check current location against allowed hosts
   if (hosts.has(match.host)) {
     return match;
   }
@@ -72,7 +72,7 @@ function checkURLMatch(aLocationURI, { hosts, matchPatternSet }, aRequest) {
   return false;
 }
 
-function createMatchPatternSet(patterns, flags = MATCH_PATTERN_OPTIONS) {
+function createMatchPatternSet(patterns, flags) {
   try {
     return new MatchPatternSet(new Set(patterns), flags);
   } catch (e) {
@@ -99,7 +99,7 @@ this.ASRouterTriggerListeners = new Map([
       init(triggerHandler, hosts, patterns) {
         if (!this._initialized) {
           this.receiveMessage = this.receiveMessage.bind(this);
-          Services.mm.addMessageListener(this.readerModeEvent, this);
+          AboutReaderParent.addMessageListener(this.readerModeEvent, this);
           this._triggerHandler = triggerHandler;
           this._initialized = true;
         }
@@ -128,7 +128,7 @@ this.ASRouterTriggerListeners = new Map([
 
       uninit() {
         if (this._initialized) {
-          Services.mm.removeMessageListener(this.readerModeEvent, this);
+          AboutReaderParent.removeMessageListener(this.readerModeEvent, this);
           this._initialized = false;
           this._triggerHandler = null;
           this._hosts = new Set();
@@ -323,6 +323,7 @@ this.ASRouterTriggerListeners = new Map([
       _triggerHandler: null,
       _hosts: null,
       _matchPatternSet: null,
+      _visits: null,
 
       /*
        * If the listener is already initialised, `init` will replace the trigger
@@ -347,6 +348,7 @@ this.ASRouterTriggerListeners = new Map([
             }
           );
 
+          this._visits = new Map();
           this._initialized = true;
         }
         this._triggerHandler = triggerHandler;
@@ -371,6 +373,7 @@ this.ASRouterTriggerListeners = new Map([
           this._triggerHandler = null;
           this._hosts = null;
           this._matchPatternSet = null;
+          this._visits = null;
         }
       },
 
@@ -388,7 +391,13 @@ this.ASRouterTriggerListeners = new Map([
             aRequest
           );
           if (match) {
-            this._triggerHandler(aBrowser, { id: this.id, param: match });
+            let visitsCount = (this._visits.get(match.url) || 0) + 1;
+            this._visits.set(match.url, visitsCount);
+            this._triggerHandler(aBrowser, {
+              id: this.id,
+              param: match,
+              context: { visitsCount },
+            });
           }
         }
       },

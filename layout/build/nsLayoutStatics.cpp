@@ -25,7 +25,7 @@
 #include "nsGenericHTMLFrameElement.h"
 #include "mozilla/dom/Attr.h"
 #include "mozilla/dom/PopupBlocker.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 #include "nsFrameState.h"
 #include "nsGlobalWindow.h"
 #include "nsGkAtoms.h"
@@ -48,12 +48,10 @@
 #include "nsHTMLDNSPrefetch.h"
 #include "nsHtml5Module.h"
 #include "nsHTMLTags.h"
-#include "mozilla/dom/FallbackEncoding.h"
 #include "nsFocusManager.h"
 #include "nsListControlFrame.h"
 #include "mozilla/dom/HTMLInputElement.h"
-#include "SVGElementFactory.h"
-#include "nsSVGUtils.h"
+#include "mozilla/dom/SVGElementFactory.h"
 #include "nsMathMLAtoms.h"
 #include "nsMathMLOperators.h"
 #include "Navigator.h"
@@ -110,7 +108,6 @@
 #include "mozilla/StaticPresData.h"
 #include "mozilla/dom/AbstractRange.h"
 #include "mozilla/dom/Document.h"
-#include "mozilla/dom/IPCBlobInputStreamStorage.h"
 #include "mozilla/dom/WebIDLGlobalNameHash.h"
 #include "mozilla/dom/U2FTokenManager.h"
 #ifdef OS_WIN
@@ -124,6 +121,8 @@
 #include "mozilla/dom/quota/ActorsParent.h"
 #include "mozilla/dom/localstorage/ActorsParent.h"
 #include "mozilla/net/UrlClassifierFeatureFactory.h"
+#include "mozilla/RemoteLazyInputStreamStorage.h"
+#include "nsLayoutUtils.h"
 #include "nsThreadManager.h"
 #include "mozilla/css/ImageLoader.h"
 #include "gfxUserFontSet.h"
@@ -191,7 +190,7 @@ nsresult nsLayoutStatics::Initialize() {
   nsMathMLOperators::AddRefTable();
 
 #ifdef DEBUG
-  nsFrame::DisplayReflowStartup();
+  nsIFrame::DisplayReflowStartup();
 #endif
   Attr::Initialize();
 
@@ -234,7 +233,6 @@ nsresult nsLayoutStatics::Initialize() {
   CubebUtils::InitLibrary();
 
   nsHtml5Module::InitializeStatics();
-  mozilla::dom::FallbackEncoding::Initialize();
   nsLayoutUtils::Initialize();
   PointerEventHandler::InitializeStatics();
   TouchManager::InitializeStatics();
@@ -264,7 +262,7 @@ nsresult nsLayoutStatics::Initialize() {
   }
 
   // This must be initialized on the main-thread.
-  mozilla::dom::IPCBlobInputStreamStorage::Initialize();
+  mozilla::RemoteLazyInputStreamStorage::Initialize();
 
   mozilla::dom::U2FTokenManager::Initialize();
 
@@ -276,8 +274,6 @@ nsresult nsLayoutStatics::Initialize() {
     // On content process we initialize these components when PContentChild is
     // fully initialized.
     mozilla::dom::RemoteWorkerService::Initialize();
-    // This one should be initialized on the parent only
-    mozilla::dom::BrowserParent::InitializeStatics();
   }
 
   nsThreadManager::InitializeShutdownObserver();
@@ -305,7 +301,6 @@ void nsLayoutStatics::Shutdown() {
 
   if (XRE_IsParentProcess() || XRE_IsContentProcess()) {
     ShutdownServo();
-    URLExtraData::ReleaseDummy();
   }
 
   mozilla::dom::AbstractRange::Shutdown();
@@ -328,7 +323,7 @@ void nsLayoutStatics::Shutdown() {
   nsCSSRendering::Shutdown();
   StaticPresData::Shutdown();
 #ifdef DEBUG
-  nsFrame::DisplayReflowShutdown();
+  nsIFrame::DisplayReflowShutdown();
 #endif
   nsCellMap::Shutdown();
   ActiveLayerTracker::Shutdown();
@@ -378,8 +373,6 @@ void nsLayoutStatics::Shutdown() {
   nsTreeSanitizer::ReleaseStatics();
 
   nsHtml5Module::ReleaseStatics();
-
-  mozilla::dom::FallbackEncoding::Shutdown();
 
   mozilla::EventDispatcher::Shutdown();
 

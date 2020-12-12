@@ -83,10 +83,10 @@
         ".tab-icon-pending":
           "fadein,pinned,busy,progress,selected=visuallyselected,pendingicon",
         ".tab-icon-image":
-          "src=image,triggeringprincipal=iconloadingprincipal,requestcontextid,fadein,pinned,selected=visuallyselected,busy,crashed,sharing",
+          "src=image,triggeringprincipal=iconloadingprincipal,requestcontextid,fadein,pinned,selected=visuallyselected,busy,crashed,sharing,pictureinpicture",
         ".tab-sharing-icon-overlay": "sharing,selected=visuallyselected,pinned",
         ".tab-icon-overlay":
-          "crashed,busy,soundplaying,soundplaying-scheduledremoval,pinned,muted,blocked,selected=visuallyselected,activemedia-blocked",
+          "pictureinpicture,crashed,busy,soundplaying,soundplaying-scheduledremoval,pinned,muted,blocked,selected=visuallyselected,activemedia-blocked",
         ".tab-label-container":
           "pinned,selected=visuallyselected,labeldirection",
         ".tab-label":
@@ -292,7 +292,10 @@
     on_dragstart(event) {
       if (event.eventPhase == Event.CAPTURING_PHASE) {
         this.style.MozUserFocus = "";
-      } else if (this.mOverCloseButton) {
+      } else if (
+        this.mOverCloseButton ||
+        gSharedTabWarning.willShowSharedTabWarning(this)
+      ) {
         event.stopPropagation();
       }
     }
@@ -323,7 +326,7 @@
         gBrowser.warmupTab(gBrowser._findTabToBlurTo(this));
       }
 
-      if (event.button == 0 && tabContainer._multiselectEnabled) {
+      if (event.button == 0) {
         let shiftKey = event.shiftKey;
         let accelKey = event.getModifierState("Accel");
         if (shiftKey) {
@@ -352,6 +355,10 @@
         } else if (!this.selected && this.multiselected) {
           gBrowser.lockClearMultiSelectionOnce();
         }
+      }
+
+      if (gSharedTabWarning.willShowSharedTabWarning(this)) {
+        eventMaySelectTab = false;
       }
 
       if (eventMaySelectTab) {
@@ -402,6 +409,16 @@
         if (this.multiselected) {
           gBrowser.toggleMuteAudioOnMultiSelectedTabs(this);
         } else {
+          if (
+            event.target.classList.contains("tab-icon-sound") &&
+            this.pictureinpicture
+          ) {
+            // When Picture-in-Picture is open, we repurpose '.tab-icon-sound' as
+            // an inert Picture-in-Picture indicator, and expose the '.tab-icon-overlay'
+            // as the mechanism for muting the tab, so we don't need to handle clicks on
+            // '.tab-icon-sound' in this case.
+            return;
+          }
           this.toggleMuteAudio();
         }
         return;

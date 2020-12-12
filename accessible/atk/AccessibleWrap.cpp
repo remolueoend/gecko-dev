@@ -583,10 +583,10 @@ AtkRole getRoleCB(AtkObject* aAtkObj) {
   }
 #endif
 
-#define ROLE(geckoRole, stringRole, atkRole, macRole, msaaRole, ia2Role, \
-             androidClass, nameRule)                                     \
-  case roles::geckoRole:                                                 \
-    aAtkObj->role = atkRole;                                             \
+#define ROLE(geckoRole, stringRole, atkRole, macRole, macSubrole, msaaRole, \
+             ia2Role, androidClass, nameRule)                               \
+  case roles::geckoRole:                                                    \
+    aAtkObj->role = atkRole;                                                \
     break;
 
   switch (acc.Role()) {
@@ -1370,7 +1370,8 @@ void a11y::ProxyStateChangeEvent(ProxyAccessible* aTarget, uint64_t aState,
   atkObj->FireStateChangeEvent(aState, aEnabled);
 }
 
-void a11y::ProxyCaretMoveEvent(ProxyAccessible* aTarget, int32_t aOffset) {
+void a11y::ProxyCaretMoveEvent(ProxyAccessible* aTarget, int32_t aOffset,
+                               bool aIsSelectionCollapsed) {
   AtkObject* wrapper = GetWrapperFor(aTarget);
   g_signal_emit_by_name(wrapper, "text_caret_moved", aOffset);
 }

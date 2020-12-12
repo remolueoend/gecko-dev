@@ -3,19 +3,13 @@
 
 "use strict";
 
-const { ExtensionTestUtils } = ChromeUtils.import(
-  "resource://testing-common/ExtensionXPCShellUtils.jsm"
-);
-
 const {
   createAppInfo,
   promiseShutdownManager,
   promiseStartupManager,
 } = AddonTestUtils;
 
-ExtensionTestUtils.init(this);
-AddonTestUtils.usePrivilegedSignatures = false;
-AddonTestUtils.overrideCertDB();
+SearchTestUtils.initXPCShellAddonManager(this);
 
 function extInfo(id, name, version, keyword) {
   return {
@@ -43,18 +37,18 @@ add_task(async function setup() {
 
 add_task(async function basic_install_test() {
   await Services.search.init();
-  await promiseAfterCache();
+  await promiseAfterSettings();
 
   let info = extInfo("example", "Example", "1.0", "foo");
   let extension = ExtensionTestUtils.loadExtension(info);
   await extension.startup();
   await AddonTestUtils.waitForSearchProviderStartup(extension);
 
-  let engine = Services.search.getEngineByAlias("foo");
+  let engine = await Services.search.getEngineByAlias("foo");
   Assert.ok(engine, "Can fetch engine with alias");
   engine.alias = "testing";
 
-  engine = Services.search.getEngineByAlias("testing");
+  engine = await Services.search.getEngineByAlias("testing");
   Assert.ok(engine, "Can fetch engine by alias");
   let params = engine.getSubmission("test").uri.query.split("&");
   Assert.ok(params.includes("version=1.0"), "Correct version installed");
@@ -68,12 +62,12 @@ add_task(async function basic_install_test() {
   await AddonTestUtils.waitForSearchProviderStartup(extension);
   await promiseChanged;
 
-  engine = Services.search.getEngineByAlias("testing");
+  engine = await Services.search.getEngineByAlias("testing");
   Assert.ok(engine, "Engine still has alias set");
 
   params = engine.getSubmission("test").uri.query.split("&");
   Assert.ok(params.includes("version=2.0"), "Correct version installed");
 
   await extension.unload();
-  await promiseAfterCache();
+  await promiseAfterSettings();
 });

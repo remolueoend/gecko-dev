@@ -60,8 +60,6 @@ class nsBoxFrame : public nsContainerFrame {
   }
   virtual nsBoxLayout* GetXULLayoutManager() override { return mLayoutManager; }
 
-  virtual nsresult XULRelayoutChildAtOrdinal(nsIFrame* aChild) override;
-
   virtual nsSize GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) override;
   virtual nsSize GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) override;
   virtual nsSize GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) override;
@@ -71,7 +69,7 @@ class nsBoxFrame : public nsContainerFrame {
   virtual Halignment GetXULHAlign() const override { return mHalign; }
   NS_IMETHOD DoXULLayout(nsBoxLayoutState& aBoxLayoutState) override;
 
-  virtual bool ComputesOwnOverflowArea() override { return false; }
+  virtual bool XULComputesOwnOverflowArea() override { return false; }
 
   // ----- child and sibling operations ---
 
@@ -127,7 +125,7 @@ class nsBoxFrame : public nsContainerFrame {
   virtual void DidReflow(nsPresContext* aPresContext,
                          const ReflowInput* aReflowInput) override;
 
-  virtual bool HonorPrintBackgroundSettings() override;
+  virtual bool HonorPrintBackgroundSettings() const override;
 
   // virtual so nsStackFrame, nsButtonBoxFrame, nsSliderFrame and nsMenuFrame
   // can override it
@@ -191,8 +189,6 @@ class nsBoxFrame : public nsContainerFrame {
 
  protected:
   void RegUnregAccessKey(bool aDoReg);
-
-  void CheckBoxOrder();
 
  private:
   void CacheAttributes();

@@ -15,7 +15,6 @@ const CONTENT_PROCESS_URI_MANIFEST =
 
 // test workers when target switching
 add_task(async function() {
-  await pushPref("devtools.target-switching.enabled", true);
   await enableApplicationPanel();
 
   info("Open a page that runs in the parent process");
@@ -26,7 +25,7 @@ add_task(async function() {
 
   info("Check for non-existing service worker");
   selectPage(panel, "service-workers");
-  const isWorkerListEmpty = !!doc.querySelector(".worker-list-empty");
+  const isWorkerListEmpty = !!doc.querySelector(".js-registration-list-empty");
   ok(isWorkerListEmpty, "No Service Worker displayed");
 
   info("Navigate to a page that runs in the child process");
@@ -43,7 +42,6 @@ add_task(async function() {
 
 // test manifest when target switching
 add_task(async function() {
-  await pushPref("devtools.target-switching.enabled", true);
   await enableApplicationPanel();
 
   info("Open a page that runs in the parent process");

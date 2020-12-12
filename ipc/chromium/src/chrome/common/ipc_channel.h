@@ -7,12 +7,19 @@
 #ifndef CHROME_COMMON_IPC_CHANNEL_H_
 #define CHROME_COMMON_IPC_CHANNEL_H_
 
-#include <string>
-
+#include <cstdint>
 #include <queue>
-#include "chrome/common/ipc_message.h"
+#include "base/basictypes.h"
+#include "build/build_config.h"
+#include "mozilla/UniquePtr.h"
+
+#ifdef OS_WIN
+#  include <string>
+#endif
 
 namespace IPC {
+
+class Message;
 
 //------------------------------------------------------------------------------
 
@@ -21,6 +28,16 @@ class Channel {
   friend class ChannelTest;
 
  public:
+  // Windows channels use named objects and connect to them by name,
+  // but on Unix we use unnamed socketpairs and pass capabilities
+  // directly using SCM_RIGHTS messages.  This type abstracts away
+  // that difference.
+#ifdef OS_WIN
+  typedef std::wstring ChannelId;
+#else
+  struct ChannelId {};
+#endif
+
   // Implemented by consumers of a Channel to receive messages.
   class Listener {
    public:
@@ -66,7 +83,7 @@ class Channel {
   // |listener| receives a callback on the current thread for each newly
   // received message.
   //
-  Channel(const std::wstring& channel_id, Mode mode, Listener* listener);
+  Channel(const ChannelId& channel_id, Mode mode, Listener* listener);
 
   // XXX it would nice not to have yet more platform-specific code in
   // here but it's just not worth the trouble.
@@ -76,7 +93,7 @@ class Channel {
 #elif defined(OS_WIN)
   // Connect to a pre-created channel as |mode|.  Clients connect to
   // the pre-existing server pipe, and servers take over |server_pipe|.
-  Channel(const std::wstring& channel_id, void* server_pipe, Mode mode,
+  Channel(const ChannelId& channel_id, void* server_pipe, Mode mode,
           Listener* listener);
 #endif
 
@@ -102,7 +119,7 @@ class Channel {
   //
   // If you Send() a message on a Close()'d channel, we delete the message
   // immediately.
-  bool Send(Message* message);
+  bool Send(mozilla::UniquePtr<Message> message);
 
   // Unsound_IsClosed() and Unsound_NumQueuedMessages() are safe to call from
   // any thread, but the value returned may be out of date, because we don't
@@ -135,15 +152,16 @@ class Channel {
   void* GetServerPipeHandle() const;
 #endif  // defined(OS_POSIX)
 
-  // Generates a channel ID that's non-predictable and unique.
-  static std::wstring GenerateUniqueRandomChannelID();
+  // On Windows: Generates a channel ID that, if passed to the client
+  // as a shared secret, will validate the client's authenticity.
+  // Other platforms don't use channel IDs, so this returns the dummy
+  // ChannelId value.
+  static ChannelId GenerateVerifiedChannelID();
 
-  // Generates a channel ID that, if passed to the client as a shared secret,
-  // will validate that the client's authenticity. On platforms that do not
-  // require additional validation this is simply calls
-  // GenerateUniqueRandomChannelID(). For portability the prefix should not
-  // include the \ character.
-  static std::wstring GenerateVerifiedChannelID(const std::wstring& prefix);
+  // On Windows: Retrieves the initial channel ID passed to the
+  // current process by its parent.  Other platforms don't do this;
+  // the dummy ChannelId value is returned instead.
+  static ChannelId ChannelIDForCurrentProcess();
 
 #if defined(MOZ_WIDGET_ANDROID)
   // Used to set the first IPC file descriptor in the child process on Android.

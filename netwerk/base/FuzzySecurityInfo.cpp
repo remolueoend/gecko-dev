@@ -144,6 +144,13 @@ FuzzySecurityInfo::GetIsDelegatedCredential(bool* aIsDelegCred) {
 }
 
 NS_IMETHODIMP
+FuzzySecurityInfo::GetIsAcceptedEch(bool* aIsAcceptedEch) {
+  NS_ENSURE_ARG_POINTER(aIsAcceptedEch);
+  *aIsAcceptedEch = false;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 FuzzySecurityInfo::GetInterface(const nsIID& uuid, void** result) {
   if (!NS_IsMainThread()) {
     MOZ_CRASH("FuzzySecurityInfo::GetInterface called off the main thread");
@@ -319,6 +326,18 @@ FuzzySecurityInfo::SetEsniTxt(const nsACString& aEsniTxt) {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+FuzzySecurityInfo::GetEchConfig(nsACString& aEchConfig) { return NS_OK; }
+
+NS_IMETHODIMP
+FuzzySecurityInfo::SetEchConfig(const nsACString& aEchConfig) {
+  MOZ_CRASH("Unused");
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+FuzzySecurityInfo::GetRetryEchConfig(nsACString& aEchConfig) { return NS_OK; }
+
 void FuzzySecurityInfo::SerializeToIPC(IPC::Message* aMsg) {
   MOZ_CRASH("Unused");
 }
@@ -331,7 +350,18 @@ bool FuzzySecurityInfo::DeserializeFromIPC(const IPC::Message* aMsg,
 
 NS_IMETHODIMP
 FuzzySecurityInfo::GetPeerId(nsACString& aResult) {
-  aResult.Assign(EmptyCString());
+  aResult.Assign(""_ns);
+  return NS_OK;
+}
+
+NS_IMETHODIMP FuzzySecurityInfo::SetIsBuiltCertChainRootBuiltInRoot(
+    bool aIsBuiltInRoot) {
+  return NS_OK;
+}
+
+NS_IMETHODIMP FuzzySecurityInfo::GetIsBuiltCertChainRootBuiltInRoot(
+    bool* aIsBuiltInRoot) {
+  *aIsBuiltInRoot = false;
   return NS_OK;
 }
 

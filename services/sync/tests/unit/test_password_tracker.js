@@ -15,9 +15,6 @@ add_task(async function setup() {
   engine = Service.engineManager.get("passwords");
   store = engine._store;
   tracker = engine._tracker;
-
-  // Don't do asynchronous writes.
-  tracker.persistChangedIDs = false;
 });
 
 add_task(async function test_tracking() {
@@ -105,6 +102,54 @@ add_task(async function test_onWipe() {
 
     Assert.equal(tracker.score, SCORE_INCREMENT_XLARGE);
   } finally {
+    tracker.resetScore();
+    await tracker.stop();
+  }
+});
+
+add_task(async function test_removeAllLogins() {
+  let recordNum = 0;
+  _("Verify that all tracked logins are removed.");
+
+  async function createPassword() {
+    _("RECORD NUM: " + recordNum);
+    let record = {
+      id: "GUID" + recordNum,
+      hostname: "http://foo.bar.com",
+      formSubmitURL: "http://foo.bar.com",
+      username: "john" + recordNum,
+      password: "smith",
+      usernameField: "username",
+      passwordField: "password",
+    };
+    recordNum++;
+    let login = store._nsLoginInfoFromRecord(record);
+    Services.logins.addLogin(login);
+    await tracker.asyncObserver.promiseObserversComplete();
+  }
+  try {
+    _("Tell tracker to start tracking changes");
+    tracker.start();
+    await createPassword();
+    await createPassword();
+    let changes = await tracker.getChangedIDs();
+    do_check_attribute_count(changes, 2);
+    Assert.equal(tracker.score, SCORE_INCREMENT_XLARGE * 2);
+
+    await tracker.clearChangedIDs();
+    changes = await tracker.getChangedIDs();
+    do_check_attribute_count(changes, 0);
+
+    _("Tell sync to remove all logins");
+    Services.logins.removeAllUserFacingLogins();
+    await tracker.asyncObserver.promiseObserversComplete();
+    changes = await tracker.getChangedIDs();
+    do_check_attribute_count(changes, 2);
+    Assert.equal(tracker.score, SCORE_INCREMENT_XLARGE * 5);
+  } finally {
+    _("Clean up.");
+    await store.wipe();
+    await tracker.clearChangedIDs();
     tracker.resetScore();
     await tracker.stop();
   }

@@ -8,11 +8,12 @@
 
 #include "base/basictypes.h"
 
+#include "mozilla/AbstractThread.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Poison.h"
-#include "mozilla/RemoteDecoderManagerChild.h"
 #include "mozilla/SharedThreadPool.h"
+#include "mozilla/TaskController.h"
 #include "mozilla/XPCOM.h"
 #include "mozJSComponentLoader.h"
 #include "nsXULAppAPI.h"
@@ -148,6 +149,7 @@ nsresult nsLocalFileConstructor(nsISupports* aOuter, const nsIID& aIID,
 nsComponentManagerImpl* nsComponentManagerImpl::gComponentManager = nullptr;
 bool gXPCOMShuttingDown = false;
 bool gXPCOMThreadsShutDown = false;
+bool gXPCOMMainThreadEventsAreDoomed = false;
 char16_t* gGREBinPath = nullptr;
 
 static NS_DEFINE_CID(kINIParserFactoryCID, NS_INIPARSERFACTORY_CID);
@@ -256,8 +258,6 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
   }
 
   sInitialized = true;
-
-  mozPoisonValueInit();
 
   NS_LogInit();
 
@@ -390,7 +390,7 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
       return NS_ERROR_FAILURE;
     }
 
-    rv = binaryFile->AppendNative(NS_LITERAL_CSTRING("nonexistent-executable"));
+    rv = binaryFile->AppendNative("nonexistent-executable"_ns);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -493,7 +493,6 @@ NS_InitXPCOM(nsIServiceManager** aResult, nsIFile* aBinDirectory,
 
 EXPORT_XPCOM_API(nsresult)
 NS_InitMinimalXPCOM() {
-  mozPoisonValueInit();
   NS_SetMainThread();
   mozilla::TimeStamp::Startup();
   NS_LogInit();
@@ -628,7 +627,6 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
     // are triggered by the NS_XPCOM_SHUTDOWN_OBSERVER_ID notification.
     NS_ProcessPendingEvents(thread);
     gfxPlatform::ShutdownLayersIPC();
-    mozilla::RemoteDecoderManagerChild::Shutdown();
 
     if (observerService) {
       mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownThreads);
@@ -647,27 +645,34 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
 
     NS_ProcessPendingEvents(thread);
 
+    if (observerService) {
+      mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownLoaders);
+      observerService->Shutdown();
+    }
+
+    // Free ClearOnShutdown()'ed smart pointers.  This needs to happen *after*
+    // we've finished notifying observers of XPCOM shutdown, because shutdown
+    // observers themselves might call ClearOnShutdown().
+    // Some destructors may fire extra runnables that will be processed below.
+    mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownFinal);
+
     // Shutdown all remaining threads.  This method does not return until
     // all threads created using the thread manager (with the exception of
     // the main thread) have exited.
     nsThreadManager::get().Shutdown();
 
+    // Process our last round of events, and then mark that we've finished main
+    // thread event processing.
     NS_ProcessPendingEvents(thread);
+    gXPCOMMainThreadEventsAreDoomed = true;
 
     BackgroundHangMonitor().NotifyActivity();
 
     mozilla::dom::JSExecutionManager::Shutdown();
-
-    if (observerService) {
-      mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownLoaders);
-      observerService->Shutdown();
-    }
   }
 
-  // Free ClearOnShutdown()'ed smart pointers.  This needs to happen *after*
-  // we've finished notifying observers of XPCOM shutdown, because shutdown
-  // observers themselves might call ClearOnShutdown().
-  mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownFinal);
+  AbstractThread::ShutdownMainThread();
+
   mozilla::AppShutdown::MaybeFastShutdown(
       mozilla::ShutdownPhase::ShutdownFinal);
 
@@ -718,7 +723,7 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
 
   mozilla::scache::StartupCache::DeleteSingleton();
 
-  PROFILER_ADD_MARKER("Shutdown xpcom", OTHER);
+  PROFILER_MARKER_UNTYPED("Shutdown xpcom", OTHER);
 
   // Shutdown xpcom. This will release all loaders and cause others holding
   // a refcount to the component manager to release it.
@@ -739,7 +744,7 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
   // down, any remaining objects that could be holding NSS resources (should)
   // have been released, so we can safely shut down NSS.
   if (NSS_IsInitialized()) {
-    nsNSSComponent::ClearSSLExternalAndInternalSessionCacheNative();
+    nsNSSComponent::DoClearSSLExternalAndInternalSessionCache();
     if (NSS_Shutdown() != SECSuccess) {
       // If you're seeing this crash and/or warning, some NSS resources are
       // still in use (see bugs 1417680 and 1230312). Set the environment
@@ -797,6 +802,8 @@ nsresult ShutdownXPCOM(nsIServiceManager* aServMgr) {
 
   delete sMessageLoop;
   sMessageLoop = nullptr;
+
+  mozilla::TaskController::Shutdown();
 
   if (sCommandLineWasInitialized) {
     CommandLine::Terminate();

@@ -1,7 +1,10 @@
-commit 5f681ecbc75898a6484217b322f3883b6d1b2049
+commit 40252f6fe1dabbe6b043773b639acfae2294add3
 Author: Jeff Genovy <29107334+jefgen@users.noreply.github.com>
-Date:   Mon Mar 9 17:38:44 2020 -0700
+Date:   Wed Jun 10 10:34:28 2020 -0700
 
-    ICU-20965 Remove VS2015 from CI builds, no longer supported by Azure Pipelines
+    ICU-21150 Backport fix for broken Windows build with prebuilt datafile to ICU 67
     
-    (cherry-picked from f411b4197db5c86fb52cbd788c0646e513303828)
+    This is cherry-picked from:
+    ICU-21102 Fix broken builds on Windows when using a pre-built data file (from the tgz).
+    
+    (cherry picked from commit 82a5959b863ac647fce3bcc5804ed906fb3b4bc0)

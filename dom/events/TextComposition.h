@@ -55,6 +55,8 @@ class TextComposition final {
   // The latest CompositionEvent.data value except compositionstart event.
   // This value is modified at dispatching compositionupdate.
   const nsString& LastData() const { return mLastData; }
+  // Returns commit string if it'll be commited as-is.
+  nsString CommitStringIfCommittedAsIs() const;
   // The composition string which is already handled by the focused editor.
   // I.e., this value must be same as the composition string on the focused
   // editor.  This value is modified at a call of
@@ -448,19 +450,18 @@ class TextComposition final {
    * DispatchCompositionEvent() dispatches the aCompositionEvent to the mContent
    * synchronously. The caller must ensure that it's safe to dispatch the event.
    */
-  void DispatchCompositionEvent(WidgetCompositionEvent* aCompositionEvent,
-                                nsEventStatus* aStatus,
-                                EventDispatchingCallback* aCallBack,
-                                bool aIsSynthesized);
+  MOZ_CAN_RUN_SCRIPT void DispatchCompositionEvent(
+      WidgetCompositionEvent* aCompositionEvent, nsEventStatus* aStatus,
+      EventDispatchingCallback* aCallBack, bool aIsSynthesized);
 
   /**
    * Simply calling EventDispatcher::Dispatch() with plugin event.
    * If dispatching event has no orginal clone, aOriginalEvent can be null.
    */
-  void DispatchEvent(WidgetCompositionEvent* aDispatchEvent,
-                     nsEventStatus* aStatus,
-                     EventDispatchingCallback* aCallback,
-                     const WidgetCompositionEvent* aOriginalEvent = nullptr);
+  MOZ_CAN_RUN_SCRIPT void DispatchEvent(
+      WidgetCompositionEvent* aDispatchEvent, nsEventStatus* aStatus,
+      EventDispatchingCallback* aCallback,
+      const WidgetCompositionEvent* aOriginalEvent = nullptr);
 
   /**
    * HandleSelectionEvent() sends the selection event to ContentEventHandler
@@ -483,7 +484,7 @@ class TextComposition final {
    * @return Returns false if dispatching the compositionupdate event caused
    *         destroying this composition.
    */
-  bool MaybeDispatchCompositionUpdate(
+  MOZ_CAN_RUN_SCRIPT bool MaybeDispatchCompositionUpdate(
       const WidgetCompositionEvent* aCompositionEvent);
 
   /**
@@ -492,10 +493,10 @@ class TextComposition final {
    *
    * @return Returns BaseEventFlags which is the result of dispatched event.
    */
-  BaseEventFlags CloneAndDispatchAs(
-      const WidgetCompositionEvent* aCompositionEvent, EventMessage aMessage,
-      nsEventStatus* aStatus = nullptr,
-      EventDispatchingCallback* aCallBack = nullptr);
+  MOZ_CAN_RUN_SCRIPT BaseEventFlags
+  CloneAndDispatchAs(const WidgetCompositionEvent* aCompositionEvent,
+                     EventMessage aMessage, nsEventStatus* aStatus = nullptr,
+                     EventDispatchingCallback* aCallBack = nullptr);
 
   /**
    * If IME has already dispatched compositionend event but it was discarded
@@ -516,7 +517,7 @@ class TextComposition final {
    * OnCompositionEventDispatched() is called after a composition event is
    * dispatched.
    */
-  void OnCompositionEventDispatched(
+  MOZ_CAN_RUN_SCRIPT void OnCompositionEventDispatched(
       const WidgetCompositionEvent* aDispatchEvent);
 
   /**
@@ -532,7 +533,7 @@ class TextComposition final {
    * editor which has this composition.
    * If it failed or lost focus, this would return 0.
    */
-  uint32_t GetSelectionStartOffset();
+  MOZ_CAN_RUN_SCRIPT uint32_t GetSelectionStartOffset();
 
   /**
    * OnStartOffsetUpdatedInChild() is called when composition start offset
@@ -554,7 +555,7 @@ class TextComposition final {
                                EventMessage aEventMessage,
                                const nsAString& aData,
                                bool aIsSynthesizedEvent = false);
-    NS_IMETHOD Run() override;
+    MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() override;
 
    private:
     RefPtr<TextComposition> mTextComposition;

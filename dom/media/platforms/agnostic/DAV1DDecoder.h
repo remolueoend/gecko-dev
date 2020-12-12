@@ -8,6 +8,7 @@
 
 #  include "PlatformDecoderModule.h"
 #  include "dav1d/dav1d.h"
+#  include "nsRefPtrHashtable.h"
 
 namespace mozilla {
 
@@ -27,7 +28,7 @@ class DAV1DDecoder : public MediaDataDecoder,
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("av1 libdav1d video decoder");
+    return "av1 libdav1d video decoder"_ns;
   }
 
   void ReleaseDataBuffer(const uint8_t* buf);
@@ -40,9 +41,10 @@ class DAV1DDecoder : public MediaDataDecoder,
 
   Dav1dContext* mContext = nullptr;
 
-  const VideoInfo& mInfo;
+  const VideoInfo mInfo;
   const RefPtr<TaskQueue> mTaskQueue;
   const RefPtr<layers::ImageContainer> mImageContainer;
+  const RefPtr<layers::KnowsCompositor> mImageAllocator;
 
   // Keep the buffers alive until dav1d
   // does not need them any more.

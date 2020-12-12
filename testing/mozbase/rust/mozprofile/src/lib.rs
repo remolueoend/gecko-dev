@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 extern crate tempfile;
 
@@ -14,7 +17,6 @@ mod test {
     use crate::prefreader::{parse, serialize, tokenize};
     use crate::prefreader::{Position, PrefToken};
     use std::collections::BTreeMap;
-    use std::error::Error;
     use std::io::Cursor;
     use std::str;
 
@@ -166,7 +168,7 @@ mod test {
                 assert_eq!(actual, &expected);
             }
             Err(e) => {
-                println!("{}", e.description());
+                println!("{}", e);
                 assert!(false)
             }
         }

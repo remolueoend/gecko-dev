@@ -24,6 +24,24 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   OS: "resource://gre/modules/osfile.jsm",
 });
 
+XPCOMUtils.defineLazyServiceGetter(
+  this,
+  "handlerSvc",
+  "@mozilla.org/uriloader/handler-service;1",
+  "nsIHandlerService"
+);
+
+const { Integration } = ChromeUtils.import(
+  "resource://gre/modules/Integration.jsm"
+);
+
+/* global DownloadIntegration */
+Integration.downloads.defineModuleGetter(
+  this,
+  "DownloadIntegration",
+  "resource://gre/modules/DownloadIntegration.jsm"
+);
+
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
 var gDownloadElementButtons = {
@@ -335,15 +353,7 @@ DownloadsViewUI.DownloadElementShell.prototype = {
    *        Downloads View. Type is either l10n object or string literal.
    */
   showStatusWithDetails(stateLabel, hoverStatus) {
-    let referrer =
-      this.download.source.referrerInfo &&
-      this.download.source.referrerInfo.originalReferrer
-        ? this.download.source.referrerInfo.originalReferrer.spec
-        : null;
-
-    let [displayHost] = DownloadUtils.getURIHost(
-      referrer || this.download.source.url
-    );
+    let [displayHost] = DownloadUtils.getURIHost(this.download.source.url);
     let [displayDate] = DownloadUtils.getReadableDates(
       new Date(this.download.endTime)
     );
@@ -457,9 +467,22 @@ DownloadsViewUI.DownloadElementShell.prototype = {
       // on other properties. The order in which we check the properties of the
       // Download object is the same used by stateOfDownload.
       if (this.download.succeeded) {
+        DownloadsCommon.log(
+          "_updateStateInner, target exists? ",
+          this.download.target.path,
+          this.download.target.exists
+        );
         if (this.download.target.exists) {
           // This is a completed download, and the target file still exists.
           this.element.setAttribute("exists", "true");
+
+          this.element.toggleAttribute(
+            "viewable-internally",
+            DownloadIntegration.shouldViewDownloadInternally(
+              DownloadsCommon.getMimeInfo(this.download)?.type
+            )
+          );
+
           let sizeWithUnits = DownloadsViewUI.getSizeWithUnits(this.download);
           if (this.isPanel) {
             // In the Downloads Panel, we show the file size after the state
@@ -516,6 +539,7 @@ DownloadsViewUI.DownloadElementShell.prototype = {
               case Downloads.Error.BLOCK_VERDICT_UNCOMMON:
                 this.showButton("askOpenOrRemoveFile");
                 break;
+              case Downloads.Error.BLOCK_VERDICT_INSECURE:
               case Downloads.Error.BLOCK_VERDICT_POTENTIALLY_UNWANTED:
                 this.showButton("askRemoveFileOrAllow");
                 break;
@@ -603,6 +627,11 @@ DownloadsViewUI.DownloadElementShell.prototype = {
     switch (this.download.error.reputationCheckVerdict) {
       case Downloads.Error.BLOCK_VERDICT_UNCOMMON:
         return [s.blockedUncommon2, [s.unblockTypeUncommon2, s.unblockTip2]];
+      case Downloads.Error.BLOCK_VERDICT_INSECURE:
+        return [
+          s.blockedPotentiallyInsecure,
+          [s.unblockInsecure, s.unblockTip2],
+        ];
       case Downloads.Error.BLOCK_VERDICT_POTENTIALLY_UNWANTED:
         return [
           s.blockedPotentiallyUnwanted,
@@ -707,30 +736,35 @@ DownloadsViewUI.DownloadElementShell.prototype = {
       case "downloadsCmd_cancel":
         return this.download.hasPartialData || !this.download.stopped;
       case "downloadsCmd_open":
+      case "downloadsCmd_open:current":
+      case "downloadsCmd_open:tab":
+      case "downloadsCmd_open:tabshifted":
+      case "downloadsCmd_open:window":
         // This property is false if the download did not succeed.
         return this.download.target.exists;
       case "downloadsCmd_show":
-        // TODO: Bug 827010 - Handle part-file asynchronously.
-        if (this.download.target.partFilePath) {
-          let partFile = new FileUtils.File(this.download.target.partFilePath);
-          if (partFile.exists()) {
-            return true;
-          }
-        }
+        let { target } = this.download;
+        return target.exists || target.partFileExists;
 
-        // This property is false if the download did not succeed.
-        return this.download.target.exists;
       case "downloadsCmd_delete":
       case "cmd_delete":
         // We don't want in-progress downloads to be removed accidentally.
         return this.download.stopped;
+      case "downloadsCmd_openInSystemViewer":
+      case "downloadsCmd_alwaysOpenInSystemViewer":
+        return DownloadIntegration.shouldViewDownloadInternally(
+          DownloadsCommon.getMimeInfo(this.download)?.type
+        );
     }
     return DownloadsViewUI.isCommandName(aCommand) && !!this[aCommand];
   },
 
   doCommand(aCommand) {
-    if (DownloadsViewUI.isCommandName(aCommand)) {
-      this[aCommand]();
+    // split off an optional command "modifier" into an argument,
+    // e.g. "downloadsCmd_open:window"
+    let [command, modifier] = aCommand.split(":");
+    if (DownloadsViewUI.isCommandName(command)) {
+      this[command](modifier);
     }
   },
 
@@ -748,9 +782,10 @@ DownloadsViewUI.DownloadElementShell.prototype = {
     this.download.confirmBlock().catch(Cu.reportError);
   },
 
-  downloadsCmd_open() {
-    let file = new FileUtils.File(this.download.target.path);
-    DownloadsCommon.openDownloadedFile(file, null, this.element.ownerGlobal);
+  downloadsCmd_open(openWhere = "tab") {
+    DownloadsCommon.openDownload(this.download, {
+      openWhere,
+    });
   },
 
   downloadsCmd_openReferrer() {
@@ -798,5 +833,44 @@ DownloadsViewUI.DownloadElementShell.prototype = {
 
   cmd_delete() {
     DownloadsCommon.deleteDownload(this.download).catch(Cu.reportError);
+  },
+
+  downloadsCmd_openInSystemViewer() {
+    // For this interaction only, pass a flag to override the preferredAction for this
+    // mime-type and open using the system viewer
+    DownloadsCommon.openDownload(this.download, {
+      useSystemDefault: true,
+    }).catch(Cu.reportError);
+  },
+
+  downloadsCmd_alwaysOpenInSystemViewer() {
+    // this command toggles between setting preferredAction for this mime-type to open
+    // using the system viewer, or to open the file in browser.
+    const mimeInfo = DownloadsCommon.getMimeInfo(this.download);
+    if (!mimeInfo) {
+      throw new Error(
+        "Can't open download with unknown mime-type in system viewer"
+      );
+    }
+    if (mimeInfo.preferredAction !== mimeInfo.useSystemDefault) {
+      // User has selected to open this mime-type with the system viewer from now on
+      DownloadsCommon.log(
+        "downloadsCmd_alwaysOpenInSystemViewer command for download: ",
+        this.download,
+        "switching to use system default for " + mimeInfo.type
+      );
+      mimeInfo.preferredAction = mimeInfo.useSystemDefault;
+      mimeInfo.alwaysAskBeforeHandling = false;
+    } else {
+      DownloadsCommon.log(
+        "downloadsCmd_alwaysOpenInSystemViewer command for download: ",
+        this.download,
+        "currently uses system default, switching to handleInternally"
+      );
+      // User has selected to not open this mime-type with the system viewer
+      mimeInfo.preferredAction = mimeInfo.handleInternally;
+    }
+    handlerSvc.store(mimeInfo);
+    DownloadsCommon.openDownload(this.download).catch(Cu.reportError);
   },
 };

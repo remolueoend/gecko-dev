@@ -6,6 +6,7 @@
 
 #include "ClientManagerService.h"
 
+#include "ClientHandleParent.h"
 #include "ClientManagerParent.h"
 #include "ClientNavigateOpParent.h"
 #include "ClientOpenWindowUtils.h"
@@ -19,13 +20,13 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/MozPromise.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/ScopeExit.h"
 #include "jsfriendapi.h"
 #include "nsIAsyncShutdown.h"
 #include "nsIXULRuntime.h"
 #include "nsProxyRelease.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::AssertIsOnBackgroundThread;
 using mozilla::ipc::PrincipalInfo;
@@ -48,8 +49,8 @@ class ClientShutdownBlocker final : public nsIAsyncShutdownBlocker {
 
   NS_IMETHOD
   GetName(nsAString& aNameOut) override {
-    aNameOut = NS_LITERAL_STRING(
-        "ClientManagerService: start destroying IPC actors early");
+    aNameOut = nsLiteralString(
+        u"ClientManagerService: start destroying IPC actors early");
     return NS_OK;
   }
 
@@ -75,7 +76,8 @@ RefPtr<GenericPromise> OnShutdown() {
 
   nsCOMPtr<nsIRunnable> r =
       NS_NewRunnableFunction("ClientManagerServer::OnShutdown", [ref]() {
-        nsCOMPtr<nsIAsyncShutdownService> svc = services::GetAsyncShutdown();
+        nsCOMPtr<nsIAsyncShutdownService> svc =
+            services::GetAsyncShutdownService();
         if (!svc) {
           ref->Resolve(true, __func__);
           return;
@@ -90,9 +92,9 @@ RefPtr<GenericPromise> OnShutdown() {
 
         nsCOMPtr<nsIAsyncShutdownBlocker> blocker =
             new ClientShutdownBlocker(ref);
-        nsresult rv = phase->AddBlocker(
-            blocker, NS_LITERAL_STRING(__FILE__), __LINE__,
-            NS_LITERAL_STRING("ClientManagerService shutdown"));
+        nsresult rv =
+            phase->AddBlocker(blocker, NS_LITERAL_STRING_FROM_CSTRING(__FILE__),
+                              __LINE__, u"ClientManagerService shutdown"_ns);
 
         if (NS_FAILED(rv)) {
           ref->Resolve(true, __func__);
@@ -123,7 +125,7 @@ ClientManagerService::ClientManagerService() : mShutdown(false) {
     // shutdown at the first sign it has begun.  Since we handle normal shutdown
     // gracefully we don't really need to block anything here.  We just begin
     // destroying our IPC actors immediately.
-    OnShutdown()->Then(GetCurrentThreadSerialEventTarget(), __func__, []() {
+    OnShutdown()->Then(GetCurrentSerialEventTarget(), __func__, []() {
       // Look up the latest service instance, if it exists.  This may
       // be different from the instance that registered the shutdown
       // handler.
@@ -157,8 +159,8 @@ void ClientManagerService::Shutdown() {
 
   // Begin destroying our various manager actors which will in turn destroy
   // all source, handle, and operation actors.
-  AutoTArray<ClientManagerParent*, 16> list(mManagerList);
-  for (auto actor : list) {
+  for (auto actor :
+       CopyableAutoTArray<ClientManagerParent*, 16>(mManagerList)) {
     Unused << PClientManagerParent::Send__delete__(actor);
   }
 }
@@ -355,7 +357,7 @@ class PromiseListHolder final {
   RefPtr<ClientOpPromise> GetResultPromise() {
     RefPtr<PromiseListHolder> kungFuDeathGrip = this;
     return mResultPromise->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
+        GetCurrentSerialEventTarget(), __func__,
         [kungFuDeathGrip](const ClientOpPromise::ResolveOrRejectValue& aValue) {
           return ClientOpPromise::CreateAndResolveOrReject(aValue, __func__);
         });
@@ -368,7 +370,7 @@ class PromiseListHolder final {
 
     RefPtr<PromiseListHolder> self(this);
     mPromiseList.LastElement()->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
+        GetCurrentSerialEventTarget(), __func__,
         [self](const ClientOpResult& aResult) {
           // TODO: This is pretty clunky.  Try to figure out a better
           //       wait for MatchAll() and Claim() to share this code
@@ -386,7 +388,7 @@ class PromiseListHolder final {
 
   void MaybeFinish() {
     if (!mOutstandingPromiseCount) {
-      mResultPromise->Resolve(mResultList, __func__);
+      mResultPromise->Resolve(CopyableTArray(mResultList.Clone()), __func__);
     }
   }
 
@@ -559,7 +561,7 @@ RefPtr<ClientOpPromise> ClientManagerService::GetInfoAndState(
 
     // rejection ultimately converted to `undefined` in Clients::Get
     return source->ExecutionReadyPromise()->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
+        GetCurrentSerialEventTarget(), __func__,
         [self, aArgs]() -> RefPtr<ClientOpPromise> {
           ClientSourceParent* source =
               self->FindSource(aArgs.id(), aArgs.principalInfo());
@@ -608,5 +610,4 @@ bool ClientManagerService::HasWindow(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -11,7 +11,6 @@
 
 #include <utility>
 
-#include "ReferrerInfo.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/UserAgentStyleSheetID.h"
 #include "mozilla/dom/URL.h"
@@ -53,8 +52,14 @@ struct URLExtraData {
     MOZ_ASSERT(sDummy);
     return sDummy;
   }
-  static void InitDummy();
-  static void ReleaseDummy();
+
+  static URLExtraData* DummyChrome() {
+    MOZ_ASSERT(sDummyChrome);
+    return sDummyChrome;
+  }
+
+  static void Init();
+  static void Shutdown();
 
   // URLExtraData objects that shared style sheets use a sheet ID index to
   // refer to.
@@ -72,6 +77,7 @@ struct URLExtraData {
   bool mIsChrome;
 
   static StaticRefPtr<URLExtraData> sDummy;
+  static StaticRefPtr<URLExtraData> sDummyChrome;
 };
 
 }  // namespace mozilla

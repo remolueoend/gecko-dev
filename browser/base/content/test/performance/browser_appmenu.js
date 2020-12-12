@@ -9,9 +9,9 @@ let gCUITestUtils = new CustomizableUITestUtils(window);
 
 /**
  * WHOA THERE: We should never be adding new things to
- * EXPECTED_APPMENU_OPEN_REFLOWS. This is a whitelist that should slowly go
+ * EXPECTED_APPMENU_OPEN_REFLOWS. This list should slowly go
  * away as we improve the performance of the front-end. Instead of adding more
- * reflows to the whitelist, you should be modifying your code to avoid the reflow.
+ * reflows to the list, you should be modifying your code to avoid the reflow.
  *
  * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
  * for tips on how to do that.
@@ -21,15 +21,6 @@ const EXPECTED_APPMENU_OPEN_REFLOWS = [
     stack: [
       "openPopup/this._openPopupPromise<@resource:///modules/PanelMultiView.jsm",
     ],
-  },
-
-  {
-    stack: [
-      "adjustArrowPosition@chrome://global/content/elements/panel.js",
-      "on_popuppositioned@chrome://global/content/elements/panel.js",
-    ],
-
-    maxCount: 22, // This number should only ever go down - never up.
   },
 
   {
@@ -71,7 +62,7 @@ add_task(async function() {
       ),
     exceptions: [
       {
-        name: "the urlbar placeolder moves up and down by a few pixels",
+        name: "the urlbar placeholder moves up and down by a few pixels",
         condition: r =>
           r.x1 >= textBoxRect.left &&
           r.x2 <= textBoxRect.right &&

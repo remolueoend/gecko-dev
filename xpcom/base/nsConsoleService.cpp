@@ -11,7 +11,6 @@
 
 /* Threadsafe. */
 
-#include "nsMemory.h"
 #include "nsCOMArray.h"
 #include "nsThreadUtils.h"
 
@@ -26,8 +25,8 @@
 #include "nsISupportsPrimitives.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/BrowserParent.h"
 
-#include "mozilla/Preferences.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/Services.h"
 

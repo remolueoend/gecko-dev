@@ -2,15 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
-
-use serde::Serialize;
-
 use crate::error_recording::{record_error, ErrorType};
 use crate::histogram::{Functional, Histogram};
 use crate::metrics::memory_unit::MemoryUnit;
-use crate::metrics::Metric;
-use crate::metrics::MetricType;
+use crate::metrics::{DistributionData, Metric, MetricType};
 use crate::storage::StorageManager;
 use crate::CommonMetricData;
 use crate::Glean;
@@ -34,18 +29,11 @@ pub struct MemoryDistributionMetric {
     memory_unit: MemoryUnit,
 }
 
-/// A serializable representation of a snapshotted histogram.
-#[derive(Debug, Serialize)]
-pub struct Snapshot {
-    values: HashMap<u64, u64>,
-    sum: u64,
-}
-
 /// Create a snapshot of the histogram.
 ///
 /// The snapshot can be serialized into the payload format.
-pub(crate) fn snapshot(hist: &Histogram<Functional>) -> Snapshot {
-    Snapshot {
+pub(crate) fn snapshot(hist: &Histogram<Functional>) -> DistributionData {
+    DistributionData {
         // **Caution**: This cannot use `Histogram::snapshot_values` and needs to use the more
         // specialized snapshot function.
         values: hist.snapshot(),
@@ -63,15 +51,19 @@ impl MetricType for MemoryDistributionMetric {
     }
 }
 
+// IMPORTANT:
+//
+// When changing this implementation, make sure all the operations are
+// also declared in the related trait in `../traits/`.
 impl MemoryDistributionMetric {
-    /// Create a new memory distribution metric.
+    /// Creates a new memory distribution metric.
     pub fn new(meta: CommonMetricData, memory_unit: MemoryUnit) -> Self {
         Self { meta, memory_unit }
     }
 
     /// Accumulates the provided sample in the metric.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `sample` - The sample to be recorded by the metric. The sample is assumed to be in the
     ///   configured memory unit of the metric.
@@ -79,7 +71,7 @@ impl MemoryDistributionMetric {
     /// ## Notes
     ///
     /// Values bigger than 1 Terabyte (2<sup>40</sup> bytes) are truncated
-    /// and an `ErrorType::InvalidValue` error is recorded.
+    /// and an [`ErrorType::InvalidValue`] error is recorded.
     pub fn accumulate(&self, glean: &Glean, sample: u64) {
         if !self.should_record(glean) {
             return;
@@ -115,23 +107,27 @@ impl MemoryDistributionMetric {
     /// will take care of filtering and reporting errors for any provided negative
     /// sample.
     ///
-    /// Please note that this assumes that the provided samples are already in the
-    /// "unit" declared by the instance of the implementing metric type (e.g. if the
-    /// implementing class is a [MemoryDistributionMetricType] and the instance this
-    /// method was called on is using [MemoryUnit.Kilobyte], then `samples` are assumed
-    /// to be in that unit).
+    /// Please note that this assumes that the provided samples are already in
+    /// the "unit" declared by the instance of the metric type (e.g. if the the
+    /// instance this method was called on is using [`MemoryUnit::Kilobyte`], then
+    /// `samples` are assumed to be in that unit).
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `samples` - The vector holding the samples to be recorded by the metric.
     ///
     /// ## Notes
     ///
-    /// Discards any negative value in `samples` and report an `ErrorType::InvalidValue`
+    /// Discards any negative value in `samples` and report an [`ErrorType::InvalidValue`]
     /// for each of them.
+    ///
     /// Values bigger than 1 Terabyte (2<sup>40</sup> bytes) are truncated
-    /// and an `ErrorType::InvalidValue` error is recorded.
+    /// and an [`ErrorType::InvalidValue`] error is recorded.
     pub fn accumulate_samples_signed(&self, glean: &Glean, samples: Vec<i64>) {
+        if !self.should_record(glean) {
+            return;
+        }
+
         let mut num_negative_samples = 0;
         let mut num_too_log_samples = 0;
 
@@ -171,7 +167,7 @@ impl MemoryDistributionMetric {
 
         if num_too_log_samples > 0 {
             let msg = format!(
-                "Accumulated {} samples longer than 10 minutes",
+                "Accumulated {} samples larger than 1TB",
                 num_too_log_samples
             );
             record_error(
@@ -186,27 +182,23 @@ impl MemoryDistributionMetric {
 
     /// **Test-only API (exported for FFI purposes).**
     ///
-    /// Get the currently stored value as an integer.
+    /// Gets the currently stored value as an integer.
     ///
     /// This doesn't clear the stored value.
-    pub fn test_get_value(
-        &self,
-        glean: &Glean,
-        storage_name: &str,
-    ) -> Option<Histogram<Functional>> {
+    pub fn test_get_value(&self, glean: &Glean, storage_name: &str) -> Option<DistributionData> {
         match StorageManager.snapshot_metric(
             glean.storage(),
             storage_name,
             &self.meta.identifier(glean),
         ) {
-            Some(Metric::MemoryDistribution(hist)) => Some(hist),
+            Some(Metric::MemoryDistribution(hist)) => Some(snapshot(&hist)),
             _ => None,
         }
     }
 
     /// **Test-only API (exported for FFI purposes).**
     ///
-    /// Get the currently-stored histogram as a JSON String of the serialized value.
+    /// Gets the currently-stored histogram as a JSON String of the serialized value.
     ///
     /// This doesn't clear the stored value.
     pub fn test_get_value_as_json_string(
@@ -215,6 +207,6 @@ impl MemoryDistributionMetric {
         storage_name: &str,
     ) -> Option<String> {
         self.test_get_value(glean, storage_name)
-            .map(|hist| serde_json::to_string(&snapshot(&hist)).unwrap())
+            .map(|snapshot| serde_json::to_string(&snapshot).unwrap())
     }
 }

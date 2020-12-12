@@ -26,6 +26,8 @@ const char* FeatureStatusToString(FeatureStatus aStatus) {
       return "unavailable-not-built";
     case FeatureStatus::UnavailableNoAngle:
       return "unavailable-no-angle";
+    case FeatureStatus::UnavailableNoWebRender:
+      return "unavailable-no-webrender";
     case FeatureStatus::CrashedInHandler:
       return "crashed";
     case FeatureStatus::Blocked:
@@ -58,8 +60,8 @@ const char* FeatureStatusToString(FeatureStatus aStatus) {
       return "blocked-release-channel-android";
     case FeatureStatus::Denied:
       return "denied";
-    case FeatureStatus::Blacklisted:
-      return "blacklisted";
+    case FeatureStatus::Blocklisted:
+      return "blocklisted";
     case FeatureStatus::OptIn:
       return "opt-in";
     case FeatureStatus::Failed:

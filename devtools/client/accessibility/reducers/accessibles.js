@@ -122,8 +122,8 @@ function onReceiveChildren(cache, action) {
     return updateChildrenCache(new Map(cache), accessible, children);
   }
 
-  if (accessible.actorID) {
-    console.warn(`Error fetching children: `, accessible, error);
+  if (!accessible.isDestroyed()) {
+    console.warn(`Error fetching children: `, error);
     return cache;
   }
 

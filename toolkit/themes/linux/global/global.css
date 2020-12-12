@@ -16,16 +16,18 @@
 
 :root {
   /* ::::: Variables ::::: */
-  --default-arrowpanel-background: -moz-field;
-  --default-arrowpanel-color: -moz-fieldText;
+  --default-arrowpanel-background: Field;
+  --default-arrowpanel-color: FieldText;
   --default-arrowpanel-border-color: ThreeDShadow;
   --arrowpanel-background: var(--default-arrowpanel-background);
   --arrowpanel-color: var(--default-arrowpanel-color);
   --arrowpanel-border-color: var(--default-arrowpanel-border-color);
   --arrowpanel-padding: 10px;
   --panel-disabled-color: GrayText;
+  --panel-description-color: GrayText;
   /* ::::: Styles ::::: */
-  -moz-appearance: dialog;
+  appearance: auto;
+  -moz-default-appearance: dialog;
   background-color: -moz-Dialog;
   color: -moz-DialogText;
   font: message-box;
@@ -109,7 +111,7 @@ html|*#print-preview-pageNumber {
 /* ::::: Miscellaneous formatting ::::: */
 
 :root:-moz-lwtheme {
-  -moz-appearance: none;
+  appearance: none;
 }
 
 :root[lwtheme-image]:-moz-lwtheme-darktext {

@@ -17,6 +17,9 @@
 #include "js/Proxy.h"
 #include "js/CharacterEncoding.h"
 #include "js/Class.h"
+#include "js/experimental/JitInfo.h"
+#include "js/experimental/TypedData.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage
 #include "js/MemoryMetrics.h"
 #include "js/Principals.h"
 #include "js/StructuredClone.h"
@@ -513,7 +516,7 @@ void RUST_SET_JITINFO(JSFunction* func, const JSJitInfo* info) {
 }
 
 jsid RUST_INTERNED_STRING_TO_JSID(JSContext* cx, JSString* str) {
-  return INTERNED_STRING_TO_JSID(cx, str);
+  return JS::PropertyKey::fromPinnedString(str);
 }
 
 const JSErrorFormatString* RUST_js_GetErrorMessage(void* userRef,

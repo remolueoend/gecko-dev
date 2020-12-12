@@ -4,13 +4,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "nsMemoryReporterManager.h"
+
 #include "nsAtomTable.h"
 #include "nsCOMPtr.h"
 #include "nsCOMArray.h"
 #include "nsPrintfCString.h"
 #include "nsProxyRelease.h"
 #include "nsServiceManagerUtils.h"
-#include "nsMemoryReporterManager.h"
 #include "nsITimer.h"
 #include "nsThreadUtils.h"
 #include "nsPIDOMWindow.h"
@@ -86,7 +87,7 @@ using namespace dom;
   return NS_ERROR_FAILURE;
 }
 
-[[nodiscard]] static nsresult GetProcSelfSmapsPrivate(int64_t* aN) {
+[[nodiscard]] static nsresult GetProcSelfSmapsPrivate(int64_t* aN, pid_t aPid) {
   // You might be tempted to calculate USS by subtracting the "shared" value
   // from the "resident" value in /proc/<pid>/statm. But at least on Linux,
   // statm's "shared" value actually counts pages backed by files, which has
@@ -94,7 +95,7 @@ using namespace dom;
   // on the other hand appears to give us the correct information.
 
   nsTArray<MemoryMapping> mappings(1024);
-  MOZ_TRY(GetMemoryMappings(mappings));
+  MOZ_TRY(GetMemoryMappings(mappings, aPid));
 
   int64_t amount = 0;
   for (auto& mapping : mappings) {
@@ -119,8 +120,9 @@ using namespace dom;
 }
 
 #  define HAVE_RESIDENT_UNIQUE_REPORTER 1
-[[nodiscard]] static nsresult ResidentUniqueDistinguishedAmount(int64_t* aN) {
-  return GetProcSelfSmapsPrivate(aN);
+[[nodiscard]] static nsresult ResidentUniqueDistinguishedAmount(
+    int64_t* aN, pid_t aPid = 0) {
+  return GetProcSelfSmapsPrivate(aN, aPid);
 }
 
 #  ifdef HAVE_MALLINFO
@@ -454,7 +456,8 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
   return base <= aAddr && aAddr < (base + size);
 }
 
-[[nodiscard]] static nsresult ResidentUniqueDistinguishedAmount(int64_t* aN) {
+[[nodiscard]] static nsresult ResidentUniqueDistinguishedAmount(
+    int64_t* aN, mach_port_t aPort = 0) {
   if (!aN) {
     return NS_ERROR_FAILURE;
   }
@@ -475,7 +478,7 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
     mach_port_t objectName;
 
     kern_return_t kr = mach_vm_region(
-        mach_task_self(), &addr, &size, VM_REGION_TOP_INFO,
+        aPort ? aPort : mach_task_self(), &addr, &size, VM_REGION_TOP_INFO,
         reinterpret_cast<vm_region_info_t>(&info), &infoCount, &objectName);
     if (kr == KERN_INVALID_ADDRESS) {
       // Done iterating VM regions.
@@ -510,7 +513,8 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
   }
 
   vm_size_t pageSize;
-  if (host_page_size(mach_host_self(), &pageSize) != KERN_SUCCESS) {
+  if (host_page_size(aPort ? aPort : mach_task_self(), &pageSize) !=
+      KERN_SUCCESS) {
     pageSize = PAGE_SIZE;
   }
 
@@ -555,13 +559,14 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
 
 #  define HAVE_RESIDENT_UNIQUE_REPORTER 1
 
-[[nodiscard]] static nsresult ResidentUniqueDistinguishedAmount(int64_t* aN) {
+[[nodiscard]] static nsresult ResidentUniqueDistinguishedAmount(
+    int64_t* aN, HANDLE aProcess = nullptr) {
   // Determine how many entries we need.
   PSAPI_WORKING_SET_INFORMATION tmp;
   DWORD tmpSize = sizeof(tmp);
   memset(&tmp, 0, tmpSize);
 
-  HANDLE proc = GetCurrentProcess();
+  HANDLE proc = aProcess ? aProcess : GetCurrentProcess();
   QueryWorkingSet(proc, &tmp, tmpSize);
 
   // Fudge the size in case new entries are added between calls.
@@ -643,59 +648,35 @@ static bool InSharedRegion(mach_vm_address_t aAddr, cpu_type_t aType) {
 }
 
 #  define HAVE_SYSTEM_HEAP_REPORTER 1
-// Windows can have multiple separate heaps. During testing there were multiple
-// heaps present but the non-default ones had sizes no more than a few 10s of
-// KiBs. So we combine their sizes into a single measurement.
+// Windows can have multiple separate heaps, but we should not touch non-default
+// heaps because they may be destroyed at anytime while we hold a handle.  So we
+// count only the default heap.
 [[nodiscard]] static nsresult SystemHeapSize(int64_t* aSizeOut) {
-  // Get the number of heaps.
-  DWORD nHeaps = GetProcessHeaps(0, nullptr);
-  NS_ENSURE_TRUE(nHeaps != 0, NS_ERROR_FAILURE);
+  HANDLE heap = GetProcessHeap();
 
-  // Get handles to all heaps, checking that the number of heaps hasn't
-  // changed in the meantime.
-  UniquePtr<HANDLE[]> heaps(new HANDLE[nHeaps]);
-  DWORD nHeaps2 = GetProcessHeaps(nHeaps, heaps.get());
-  NS_ENSURE_TRUE(nHeaps2 != 0 && nHeaps2 == nHeaps, NS_ERROR_FAILURE);
+  NS_ENSURE_TRUE(HeapLock(heap), NS_ERROR_FAILURE);
 
-  // Lock and iterate over each heap to get its size.
-  int64_t heapsSize = 0;
-  for (DWORD i = 0; i < nHeaps; i++) {
-    HANDLE heap = heaps[i];
-
-    // Bug 1235982: When Control Flow Guard is enabled for the process,
-    // GetProcessHeap may return some protected heaps that are in read-only
-    // memory and thus crash in HeapLock. Ignore such heaps.
-    MEMORY_BASIC_INFORMATION mbi = {0};
-    if (VirtualQuery(heap, &mbi, sizeof(mbi)) && mbi.Protect == PAGE_READONLY) {
-      continue;
+  int64_t heapSize = 0;
+  PROCESS_HEAP_ENTRY entry;
+  entry.lpData = nullptr;
+  while (HeapWalk(heap, &entry)) {
+    // We don't count entry.cbOverhead, because we just want to measure the
+    // space available to the program.
+    if (entry.wFlags & PROCESS_HEAP_ENTRY_BUSY) {
+      heapSize += entry.cbData;
     }
-
-    NS_ENSURE_TRUE(HeapLock(heap), NS_ERROR_FAILURE);
-
-    int64_t heapSize = 0;
-    PROCESS_HEAP_ENTRY entry;
-    entry.lpData = nullptr;
-    while (HeapWalk(heap, &entry)) {
-      // We don't count entry.cbOverhead, because we just want to measure the
-      // space available to the program.
-      if (entry.wFlags & PROCESS_HEAP_ENTRY_BUSY) {
-        heapSize += entry.cbData;
-      }
-    }
-
-    // Check this result only after unlocking the heap, so that we don't leave
-    // the heap locked if there was an error.
-    DWORD lastError = GetLastError();
-
-    // I have no idea how things would proceed if unlocking this heap failed...
-    NS_ENSURE_TRUE(HeapUnlock(heap), NS_ERROR_FAILURE);
-
-    NS_ENSURE_TRUE(lastError == ERROR_NO_MORE_ITEMS, NS_ERROR_FAILURE);
-
-    heapsSize += heapSize;
   }
 
-  *aSizeOut = heapsSize;
+  // Check this result only after unlocking the heap, so that we don't leave
+  // the heap locked if there was an error.
+  DWORD lastError = GetLastError();
+
+  // I have no idea how things would proceed if unlocking this heap failed...
+  NS_ENSURE_TRUE(HeapUnlock(heap), NS_ERROR_FAILURE);
+
+  NS_ENSURE_TRUE(lastError == ERROR_NO_MORE_ITEMS, NS_ERROR_FAILURE);
+
+  *aSizeOut = heapSize;
   return NS_OK;
 }
 
@@ -904,9 +885,9 @@ class WindowsAddressSpaceReporter final : public nsIMemoryReporter {
       // Append the segment count.
       path.AppendPrintf("(segments=%u)", entry->mCount);
 
-      aHandleReport->Callback(
-          EmptyCString(), path, KIND_OTHER, UNITS_BYTES, entry->mSize,
-          NS_LITERAL_CSTRING("From MEMORY_BASIC_INFORMATION."), aData);
+      aHandleReport->Callback(""_ns, path, KIND_OTHER, UNITS_BYTES,
+                              entry->mSize, "From MEMORY_BASIC_INFORMATION."_ns,
+                              aData);
     }
 
     return NS_OK;
@@ -1152,8 +1133,8 @@ class PageFaultsSoftReporter final : public nsIMemoryReporter {
 };
 NS_IMPL_ISUPPORTS(PageFaultsSoftReporter, nsIMemoryReporter)
 
-[[nodiscard]] static nsresult
-    PageFaultsHardDistinguishedAmount(int64_t* aAmount) {
+[[nodiscard]] static nsresult PageFaultsHardDistinguishedAmount(
+    int64_t* aAmount) {
   struct rusage usage;
   int err = getrusage(RUSAGE_SELF, &usage);
   if (err != 0) {
@@ -1225,7 +1206,8 @@ class JemallocHeapReporter final : public nsIMemoryReporter {
   NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
                             nsISupports* aData, bool aAnonymize) override {
     jemalloc_stats_t stats;
-    jemalloc_stats(&stats);
+    jemalloc_bin_stats_t bin_stats[JEMALLOC_MAX_STATS_BINS];
+    jemalloc_stats(&stats, bin_stats);
 
     // clang-format off
     MOZ_COLLECT_REPORT(
@@ -1242,11 +1224,18 @@ class JemallocHeapReporter final : public nsIMemoryReporter {
     // We mark this and the other heap-overhead reporters as KIND_NONHEAP
     // because KIND_HEAP memory means "counted in heap-allocated", which
     // this is not.
-    MOZ_COLLECT_REPORT(
-      "explicit/heap-overhead/bin-unused", KIND_NONHEAP, UNITS_BYTES,
-      stats.bin_unused,
-"Unused bytes due to fragmentation in the bins used for 'small' (<= 2 KiB) "
-"allocations. These bytes will be used if additional allocations occur.");
+    for (auto& bin : bin_stats) {
+      if (!bin.size) {
+        continue;
+      }
+      nsPrintfCString path("explicit/heap-overhead/bin-unused/bin-%zu",
+          bin.size);
+      aHandleReport->Callback(EmptyCString(), path, KIND_NONHEAP, UNITS_BYTES,
+        bin.bytes_unused,
+        nsLiteralCString(
+          "Unused bytes in all runs of all bins for this size class"),
+        aData);
+    }
 
     if (stats.waste > 0) {
       MOZ_COLLECT_REPORT(
@@ -1283,7 +1272,6 @@ class JemallocHeapReporter final : public nsIMemoryReporter {
     MOZ_COLLECT_REPORT(
       "heap-chunksize", KIND_OTHER, UNITS_BYTES, stats.chunksize,
       "Size of chunks.");
-
     // clang-format on
 
     return NS_OK;
@@ -1432,9 +1420,9 @@ class ThreadsReporter final : public nsIMemoryReporter {
                            thread.mName.get(), thread.mThreadId);
 
       aHandleReport->Callback(
-          EmptyCString(), path, KIND_NONHEAP, UNITS_BYTES, thread.mPrivateSize,
-          NS_LITERAL_CSTRING("The sizes of thread stacks which have been "
-                             "committed to memory."),
+          ""_ns, path, KIND_NONHEAP, UNITS_BYTES, thread.mPrivateSize,
+          nsLiteralCString("The sizes of thread stacks which have been "
+                           "committed to memory."),
           aData);
     }
 
@@ -1593,12 +1581,6 @@ nsMemoryReporterManager::Init() {
   }
   isInited = true;
 
-#if defined(HAVE_JEMALLOC_STATS) && defined(MOZ_GLUE_IN_PROGRAM)
-  if (!jemalloc_stats) {
-    return NS_ERROR_FAILURE;
-  }
-#endif
-
 #ifdef HAVE_JEMALLOC_STATS
   RegisterStrongReporter(new JemallocHeapReporter());
 #endif
@@ -1717,7 +1699,7 @@ nsMemoryReporterManager::GetReports(
   return GetReportsExtended(aHandleReport, aHandleReportData, aFinishReporting,
                             aFinishReportingData, aAnonymize,
                             /* minimize = */ false,
-                            /* DMDident = */ EmptyString());
+                            /* DMDident = */ u""_ns);
 }
 
 NS_IMETHODIMP
@@ -2046,9 +2028,8 @@ void nsMemoryReporterManager::EndProcessReport(uint32_t aGeneration,
   while (s->mNumProcessesRunning < s->mConcurrencyLimit &&
          !s->mChildrenPending.IsEmpty()) {
     // Pop last element from s->mChildrenPending
-    RefPtr<MemoryReportingProcess> nextChild;
-    nextChild.swap(s->mChildrenPending.LastElement());
-    s->mChildrenPending.TruncateLength(s->mChildrenPending.Length() - 1);
+    const RefPtr<MemoryReportingProcess> nextChild =
+        s->mChildrenPending.PopLastElement();
     // Start report (if the child is still alive).
     if (StartChildReport(nextChild, s)) {
       ++s->mNumProcessesRunning;
@@ -2396,17 +2377,43 @@ nsMemoryReporterManager::GetResidentUnique(int64_t* aAmount) {
 #endif
 }
 
+typedef
+#ifdef XP_WIN
+    HANDLE
+#elif XP_MACOSX
+    mach_port_t
+#elif XP_LINUX
+    pid_t
+#else
+    int /*dummy type */
+#endif
+        ResidentUniqueArg;
+
+#if defined(XP_WIN) || defined(XP_MACOSX) || defined(XP_LINUX)
+
 /*static*/
-int64_t nsMemoryReporterManager::ResidentUnique() {
-#ifdef HAVE_RESIDENT_UNIQUE_REPORTER
+int64_t nsMemoryReporterManager::ResidentUnique(ResidentUniqueArg aProcess) {
+  int64_t amount = 0;
+  nsresult rv = ResidentUniqueDistinguishedAmount(&amount, aProcess);
+  NS_ENSURE_SUCCESS(rv, 0);
+  return amount;
+}
+
+#else
+
+/*static*/
+int64_t nsMemoryReporterManager::ResidentUnique(ResidentUniqueArg) {
+#  ifdef HAVE_RESIDENT_UNIQUE_REPORTER
   int64_t amount = 0;
   nsresult rv = ResidentUniqueDistinguishedAmount(&amount);
   NS_ENSURE_SUCCESS(rv, 0);
   return amount;
-#else
+#  else
   return 0;
-#endif
+#  endif
 }
+
+#endif  // XP_{WIN, MACOSX, LINUX, *}
 
 NS_IMETHODIMP
 nsMemoryReporterManager::GetHeapAllocated(int64_t* aAmount) {

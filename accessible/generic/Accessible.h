@@ -14,18 +14,18 @@
 #include "mozilla/UniquePtr.h"
 
 #include "nsIContent.h"
-#include "nsIContentInlines.h"
-#include "nsString.h"
 #include "nsTArray.h"
 #include "nsRefPtrHashtable.h"
 #include "nsRect.h"
 
 struct nsRoleMapEntry;
 
-struct nsRect;
 class nsIFrame;
-class nsAtom;
 class nsIPersistentProperties;
+
+namespace mozilla::dom {
+class Element;
+}
 
 namespace mozilla {
 namespace a11y {
@@ -39,6 +39,7 @@ class EmbeddedObjCollector;
 class EventTree;
 class HTMLImageMapAccessible;
 class HTMLLIAccessible;
+class HTMLLinkAccessible;
 class HyperTextAccessible;
 class ImageAccessible;
 class KeyBinding;
@@ -162,7 +163,7 @@ class Accessible : public nsISupports {
   virtual nsINode* GetNode() const;
 
   nsIContent* GetContent() const { return mContent; }
-  dom::Element* Elm() const { return dom::Element::FromNodeOrNull(mContent); }
+  dom::Element* Elm() const;
 
   /**
    * Return node type information of DOM node associated with the accessible.
@@ -520,7 +521,7 @@ class Accessible : public nsISupports {
   /**
    * Focus the accessible.
    */
-  virtual void TakeFocus() const;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual void TakeFocus() const;
 
   /**
    * Scroll the accessible into view.
@@ -575,6 +576,9 @@ class Accessible : public nsISupports {
 
   bool IsHTMLListItem() const { return mType == eHTMLLiType; }
   HTMLLIAccessible* AsHTMLListItem();
+
+  bool IsHTMLLink() const { return mType == eHTMLLinkType; }
+  HTMLLinkAccessible* AsHTMLLink();
 
   bool IsHTMLOptGroup() const { return mType == eHTMLOptGroupType; }
 

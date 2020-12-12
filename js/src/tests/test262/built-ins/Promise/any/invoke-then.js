@@ -1,4 +1,4 @@
-// |reftest| skip-if(release_or_beta) async -- Promise.any is not released yet
+// |reftest| async
 // Copyright (C) 2019 Sergey Rubanov. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -22,6 +22,7 @@ features: [Promise.any, arrow-function]
 
 let promise = Promise.resolve();
 let boundThen = promise.then.bind(promise);
+let callCount = 0;
 
 promise.then = function(resolver, rejectElement) {
   assert.sameValue(this, promise);
@@ -29,7 +30,11 @@ promise.then = function(resolver, rejectElement) {
   assert.sameValue(resolver.length, 1, 'resolver.length is 1');
   assert.sameValue(typeof rejectElement, 'function');
   assert.sameValue(rejectElement.length, 1, 'rejectElement.length is 0');
+  callCount++;
   return boundThen(resolver, rejectElement);
 };
 
-Promise.any([promise]).then(() => $DONE(), $DONE);
+Promise.any([promise]).then(() => {
+  assert.sameValue(callCount, 1);
+  $DONE();
+}, $DONE);

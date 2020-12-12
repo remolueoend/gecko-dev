@@ -31,13 +31,19 @@ linux1804-64/opt:
         - awsy
         - desktop-screenshot-capture
         - linux1804-tests
+        - marionette-framescript
+        - marionette-headless
         - mochitest-headless
+        - mochitest-webgpu
         - web-platform-tests
+        - web-platform-tests-backlog
+        - web-platform-tests-wdspec-headless
 
 linux1804-64/debug:
     build-platform: linux64/debug
     test-sets:
         - linux1804-tests
+        - mochitest-webgpu
         - web-platform-tests
 
 linux1804-64-shippable/opt:
@@ -46,9 +52,12 @@ linux1804-64-shippable/opt:
         - awsy
         - desktop-screenshot-capture
         - linux1804-tests
+        - marionette-framescript
         - marionette-headless
         - mochitest-headless
+        - mochitest-webgpu
         - web-platform-tests
+        - web-platform-tests-backlog
         - web-platform-tests-wdspec-headless
 
 linux1804-64-devedition/opt:
@@ -62,6 +71,7 @@ linux1804-64-asan/opt:
     build-platform: linux64-asan/opt
     test-sets:
         - linux1804-tests
+        - mochitest-webgpu
         - web-platform-tests
 
 linux1804-64-tsan/opt:
@@ -74,6 +84,7 @@ linux1804-64-qr/opt:
     test-sets:
         - awsy
         - linux1804-qr-tests
+        - mochitest-webgpu
         - web-platform-tests
 
 linux1804-64-shippable-qr/opt:
@@ -81,12 +92,14 @@ linux1804-64-shippable-qr/opt:
     test-sets:
         - awsy
         - linux1804-qr-tests
+        - mochitest-webgpu
         - web-platform-tests
 
 linux1804-64-qr/debug:
     build-platform: linux64/debug
     test-sets:
         - linux1804-qr-tests
+        - mochitest-webgpu
         - web-platform-tests
 
 linux1804-64-asan-qr/opt:
@@ -99,8 +112,10 @@ linux1804-64-ccov/opt:
     test-sets:
         - awsy
         - linux1804-tests
+        - linux1804-ccov-tests
         - web-platform-tests
         - ccov-code-coverage-tests
+        - mochitest-webgpu
 
 # Linux64 uses Ubuntu 16.04 and is run on hardware
 
@@ -141,6 +156,7 @@ linux64-shippable-qr/opt:
     build-platform: linux64-shippable/opt
     test-sets:
         - talos
+        - talos-profiling
         - raptor-firefox
         - browsertime
         - raptor-fetch-firefox
@@ -160,24 +176,29 @@ windows7-32/debug:
         - windows-reftest-gpu
         - windows-tests
         - web-platform-tests
+        - mochitest-webgpu
 
 windows7-32/opt:
     build-platform: win32/opt
     test-sets:
         - awsy
         - desktop-screenshot-capture
+        - marionette-framescript
         - windows-reftest-gpu
         - windows-talos
         - windows-tests
         - web-platform-tests
         - raptor-firefox
         - browsertime
+        - mochitest-webgpu
+        - web-platform-tests-wdspec-headless
 
 windows7-32-shippable/opt:
     build-platform: win32-shippable/opt
     test-sets:
         - awsy
         - desktop-screenshot-capture
+        - marionette-framescript
         - windows-reftest-gpu
         - windows-talos
         - windows-tests
@@ -187,33 +208,45 @@ windows7-32-shippable/opt:
         - raptor-chromium
         - raptor-firefox
         - browsertime
+        - mochitest-webgpu
 
-windows7-32-devedition/opt:
-    build-platform: win32-devedition/opt
+# win7 qr builds for try purposes
+windows7-32-qr/debug:
+    build-platform: win32/debug
     test-sets:
-        - desktop-screenshot-capture
-        - windows-reftest-gpu
-        - windows-tests
+        - mochitest-webgpu
+        - windows-qr-tests
+        - web-platform-tests
+
+windows7-32-qr/opt:
+    build-platform: win32/opt
+    test-sets:
+        - awsy
+        - windows-qr-tests
+        - windows-talos
         - web-platform-tests
 
 # win64
-windows10-64-ccov/opt:
+windows10-64-ccov-qr/opt:
     build-platform: win64-ccov/opt
     test-sets:
         - awsy
         - desktop-screenshot-capture
         - windows-reftest-gpu
         - windows-talos
-        - marionette-gpu-tests
         - windows-tests
+        - windows-ccov-tests
+        - windows10-tests
         - web-platform-tests
         - ccov-code-coverage-tests
+        - mochitest-webgpu
 
 windows10-64/debug:
     build-platform: win64/debug
     test-sets:
-        - marionette-gpu-tests
+        - mochitest-webgpu
         - windows-tests
+        - windows10-tests
         - web-platform-tests
 
 windows10-64/opt:
@@ -222,11 +255,15 @@ windows10-64/opt:
         - awsy
         - desktop-screenshot-capture
         - windows-talos
-        - marionette-gpu-tests
+        - marionette-framescript
         - windows-tests
+        - windows10-tests
         - web-platform-tests
+        - web-platform-tests-backlog
         - raptor-firefox
         - browsertime
+        - mochitest-webgpu
+        - web-platform-tests-wdspec-headless
 
 windows10-aarch64/opt:
     build-platform: win64-aarch64-shippable/opt
@@ -246,9 +283,11 @@ windows10-64-shippable/opt:
         - awsy
         - desktop-screenshot-capture
         - windows-talos
-        - marionette-gpu-tests
+        - marionette-framescript
         - windows-tests
+        - windows10-tests
         - web-platform-tests
+        - web-platform-tests-backlog
         - web-platform-tests-wdspec-headless
         - raptor-chrome
         - raptor-chromium
@@ -256,24 +295,29 @@ windows10-64-shippable/opt:
         - browsertime
         - raptor-profiling
         - talos-profiling
+        - mochitest-webgpu
 
 windows10-64-devedition/opt:
     build-platform: win64-devedition/opt
     test-sets:
         - desktop-screenshot-capture
-        - marionette-gpu-tests
         - windows-tests
+        - windows10-tests
         - web-platform-tests
+        - mochitest-webgpu
 
 windows10-64-asan/opt:
     build-platform: win64-asan/opt
     test-sets:
         - windows-tests
+        - windows10-tests
+        - mochitest-webgpu
 
 # QR builds just run a subset right now.
 windows10-64-qr/debug:
     build-platform: win64/debug
     test-sets:
+        - mochitest-webgpu
         - windows-qr-tests
         - web-platform-tests
 
@@ -293,9 +337,11 @@ windows10-64-shippable-qr/opt:
         - awsy
         - windows-qr-tests
         - windows-talos
+        - talos-profiling
         - raptor-firefox
         - browsertime
         - web-platform-tests
+        - mochitest-webgpu
 
 windows10-64-mingwclang/debug:
     build-platform: win64-mingwclang/debug
@@ -310,7 +356,7 @@ windows10-64-mingwclang/opt:
 windows7-32-mingwclang/debug:
     build-platform: win32-mingwclang/debug
     test-sets:
-        - mingwclang-tests-debug
+        - mingwclang-win7-tests-debug
 
 windows7-32-mingwclang/opt:
     build-platform: win32-mingwclang/opt
@@ -319,22 +365,6 @@ windows7-32-mingwclang/opt:
 
 ##
 # MacOS X platforms (matching /macosx.*/)
-
-macosx1014-64-shippable/opt:
-    build-platform: macosx64-shippable/opt
-    test-sets:
-        - macosx1014-64-tests
-        - macosx64-talos
-        - desktop-screenshot-capture
-        - awsy
-        - raptor-chrome
-        - raptor-chromium
-        - raptor-firefox
-        - browsertime
-        - raptor-firefox-power
-        - raptor-profiling
-        - web-platform-tests-wdspec-headless
-        - talos-profiling
 
 macosx1014-64/debug:
     build-platform: macosx64/debug
@@ -346,20 +376,51 @@ macosx1014-64-devedition/opt:
     test-sets:
         - macosx1014-64-tests
 
+macosx1014-64-qr/opt:
+    build-platform: macosx64/opt
+    test-sets:
+        - macosx1014-64-qr-tests
+        - desktop-screenshot-capture
+        - marionette-framescript
+        - web-platform-tests
+        - web-platform-tests-backlog
+        - web-platform-tests-wdspec-headless
+
 macosx1014-64-shippable-qr/opt:
     build-platform: macosx64-shippable/opt
     test-sets:
         - macosx1014-64-qr-tests
+        - macosx64-talos
+        - awsy
+        - browsertime
+        - desktop-screenshot-capture
+        - marionette-framescript
+        - raptor-chrome
+        - raptor-chromium
+        - raptor-firefox
+        - raptor-firefox-power
+        - raptor-profiling
+        - talos-profiling
+        - web-platform-tests
+        - web-platform-tests-backlog
+        - web-platform-tests-wdspec-headless
+
+macosx1014-64-devedition-qr/opt:
+    build-platform: macosx64-devedition/opt
+    test-sets:
+        - macosx1014-64-qr-tests
+        - web-platform-tests
 
 macosx1014-64-qr/debug:
     build-platform: macosx64/debug
     test-sets:
         - macosx1014-64-qr-tests
+        - web-platform-tests
 
-macosx1014-64-ccov/opt:
+macosx1014-64-ccov-qr/opt:
     build-platform: macosx64-ccov/opt
     test-sets:
-        - macosx1014-64-tests
+        - macosx1014-64-qr-tests
 
 ##
 # Android platforms (matching /android-em.*/)
@@ -370,6 +431,13 @@ android-em-7.0-x86_64/opt:
     build-platform: android-x86_64/opt
     test-sets:
         - android-x86_64-tests
+        - web-platform-tests-backlog
+
+android-em-7.0-x86_64-shippable/opt:
+    build-platform: android-x86_64-shippable/opt
+    test-sets:
+        - android-x86_64-tests
+        - web-platform-tests-backlog
 
 android-em-7.0-x86_64/debug:
     build-platform: android-x86_64/debug
@@ -378,6 +446,11 @@ android-em-7.0-x86_64/debug:
 
 android-em-7.0-x86_64-qr/opt:
     build-platform: android-x86_64/opt
+    test-sets:
+        - android-x86_64-qr-tests
+
+android-em-7.0-x86_64-shippable-qr/opt:
+    build-platform: android-x86_64-shippable/opt
     test-sets:
         - android-x86_64-qr-tests
 
@@ -394,38 +467,33 @@ android-hw-g5-7-0-arm7-api-16/opt:
     build-platform: android-api-16/opt
     test-sets:
         - android-hw-arm7-browsertime
-        - android-hw-arm7-raptor
-        - android-hw-arm7-raptor-power
         - android-hw-arm7-raptor-cpu-memory
         - android-hw-arm7-raptor-cpu-memory-power
-        - raptor-fetch-geckoview
 
-android-hw-g5-7-0-arm7-api-16/pgo:
-    build-platform: android-api-16-pgo/opt
+android-hw-g5-7-0-arm7-api-16-shippable/opt:
+    build-platform: android-api-16-shippable/opt
     test-sets:
         - android-hw-arm7-browsertime
-        - android-hw-arm7-raptor
-        - android-hw-arm7-raptor-power
         - android-hw-arm7-raptor-cpu-memory
         - android-hw-arm7-raptor-cpu-memory-power
-        - raptor-fetch-geckoview
 
 # android-hw-p2-8-0 Google Pixel 2 Android 8.0
-
-android-hw-p2-8-0-arm7-api-16/pgo:
-    build-platform: android-api-16-pgo/opt
-    test-sets:
-        - android-hw-arm7-pgo-unittests
 
 android-hw-p2-8-0-arm7-api-16/opt:
     build-platform: android-api-16/opt
     test-sets:
         - android-hw-arm7-browsertime
-        - android-hw-arm7-raptor
-        - android-hw-arm7-raptor-power
+        - android-hw-arm7-pgo-unittests
         - android-hw-arm7-raptor-cpu-memory
         - android-hw-arm7-raptor-cpu-memory-power
-        - raptor-fetch-geckoview
+
+android-hw-p2-8-0-arm7-api-16-shippable/opt:
+    build-platform: android-api-16-shippable/opt
+    test-sets:
+        - android-hw-arm7-browsertime
+        - android-hw-arm7-pgo-unittests
+        - android-hw-arm7-raptor-cpu-memory
+        - android-hw-arm7-raptor-cpu-memory-power
 
 android-hw-p2-8-0-arm7-api-16/debug:
     build-platform: android-api-16/debug
@@ -433,7 +501,12 @@ android-hw-p2-8-0-arm7-api-16/debug:
         - android-hw-arm7-debug-unittests
 
 android-hw-p2-8-0-android-aarch64-qr/opt:
-    build-platform: android-api-16/opt
+    build-platform: android-aarch64/opt
+    test-sets:
+        - android-hw-aarch64-qr
+
+android-hw-p2-8-0-android-aarch64-shippable-qr/opt:
+    build-platform: android-aarch64-shippable/opt
     test-sets:
         - android-hw-aarch64-qr
 
@@ -447,18 +520,14 @@ android-hw-p2-8-0-android-aarch64/opt:
     test-sets:
         - android-hw-aarch64-browsertime
         - android-hw-aarch64-opt-unittests
-        - android-hw-aarch64-raptor
-        - android-hw-aarch64-raptor-power
         - android-hw-aarch64-raptor-cpu-memory
         - android-hw-aarch64-raptor-cpu-memory-power
 
-android-hw-p2-8-0-android-aarch64/pgo:
-    build-platform: android-aarch64-pgo/opt
+android-hw-p2-8-0-android-aarch64-shippable/opt:
+    build-platform: android-aarch64-shippable/opt
     test-sets:
         - android-hw-aarch64-browsertime
         - android-hw-aarch64-pgo-unittests
-        - android-hw-aarch64-raptor
-        - android-hw-aarch64-raptor-power
         - android-hw-aarch64-raptor-cpu-memory
         - android-hw-aarch64-raptor-cpu-memory-power
 

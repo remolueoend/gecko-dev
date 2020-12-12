@@ -38,6 +38,13 @@ async function initBrowserToolboxTask({
   enableBrowserToolboxFission,
   enableContentMessages,
 } = {}) {
+  if (AppConstants.ASAN) {
+    ok(
+      false,
+      "ToolboxTask cannot be used on ASAN builds. This test should be skipped (Bug 1591064)."
+    );
+  }
+
   await pushPref("devtools.chrome.enabled", true);
   await pushPref("devtools.debugger.remote-enabled", true);
   await pushPref("devtools.browsertoolbox.enable-test-server", true);
@@ -50,7 +57,7 @@ async function initBrowserToolboxTask({
   // This rejection seems to affect all tests using the browser toolbox.
   ChromeUtils.import(
     "resource://testing-common/PromiseTestUtils.jsm"
-  ).PromiseTestUtils.whitelistRejectionsGlobally(/File closed/);
+  ).PromiseTestUtils.allowMatchingRejectionsGlobally(/File closed/);
 
   const process = await new Promise(onRun => {
     BrowserToolboxLauncher.init(null, onRun, /* overwritePreferences */ true);
@@ -96,7 +103,7 @@ async function initBrowserToolboxTask({
     );
   }
 
-  importFunctions({
+  await importFunctions({
     info: msg => dump(msg + "\n"),
     is: (a, b, description) => {
       let msg =

@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "FileBlobImpl.h"
+#include "BaseBlobImpl.h"
 #include "mozilla/SlicedInputStream.h"
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerRunnable.h"
@@ -15,8 +16,7 @@
 #include "nsNetUtil.h"
 #include "nsStreamUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 FileBlobImpl::FileBlobImpl(nsIFile* aFile)
     : mMutex("FileBlobImpl::mMutex"),
@@ -162,8 +162,7 @@ class FileBlobImpl::GetTypeRunnable final : public WorkerMainThreadRunnable {
  public:
   GetTypeRunnable(WorkerPrivate* aWorkerPrivate, FileBlobImpl* aBlobImpl,
                   const MutexAutoLock& aProofOfLock)
-      : WorkerMainThreadRunnable(aWorkerPrivate,
-                                 NS_LITERAL_CSTRING("FileBlobImpl :: GetType")),
+      : WorkerMainThreadRunnable(aWorkerPrivate, "FileBlobImpl :: GetType"_ns),
         mBlobImpl(aBlobImpl),
         mProofOfLock(aProofOfLock) {
     MOZ_ASSERT(aBlobImpl);
@@ -238,7 +237,7 @@ void FileBlobImpl::GetTypeInternal(nsAString& aType,
 }
 
 void FileBlobImpl::GetBlobImplType(nsAString& aBlobImplType) const {
-  aBlobImplType = NS_LITERAL_STRING("FileBlobImpl");
+  aBlobImplType = u"FileBlobImpl"_ns;
 }
 
 int64_t FileBlobImpl::GetLastModified(ErrorResult& aRv) {
@@ -292,5 +291,4 @@ bool FileBlobImpl::IsDirectory() const {
   return isDirectory;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

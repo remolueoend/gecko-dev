@@ -2,19 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "GeneratedJNIWrappers.h"
+#include <jni.h>
+
 #include "MediaInfo.h"
 #include "OpusDecoder.h"
 #include "RemoteDataDecoder.h"
+#include "TheoraDecoder.h"
 #include "VPXDecoder.h"
 #include "VorbisDecoder.h"
-
+#include "mozilla/StaticPrefs_media.h"
+#include "mozilla/java/HardwareCodecCapabilityUtilsWrappers.h"
 #include "nsIGfxInfo.h"
 #include "nsPromiseFlatString.h"
-
 #include "prlog.h"
-
-#include <jni.h>
 
 #undef LOG
 #define LOG(arg, ...)                                     \
@@ -34,10 +34,10 @@ mozilla::LazyLogModule sAndroidDecoderModuleLog("AndroidDecoderModule");
 
 const nsCString TranslateMimeType(const nsACString& aMimeType) {
   if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP8)) {
-    static NS_NAMED_LITERAL_CSTRING(vp8, "video/x-vnd.on2.vp8");
+    static constexpr auto vp8 = "video/x-vnd.on2.vp8"_ns;
     return vp8;
   } else if (VPXDecoder::IsVPX(aMimeType, VPXDecoder::VP9)) {
-    static NS_NAMED_LITERAL_CSTRING(vp9, "video/x-vnd.on2.vp9");
+    static constexpr auto vp9 = "video/x-vnd.on2.vp9"_ns;
     return vp9;
   }
   return nsCString(aMimeType);
@@ -157,6 +157,12 @@ already_AddRefed<MediaDataDecoder> AndroidDecoderModule::CreateAudioDecoder(
   RefPtr<MediaDataDecoder> decoder =
       RemoteDataDecoder::CreateAudioDecoder(aParams, drmStubId, mProxy);
   return decoder.forget();
+}
+
+/* static */
+already_AddRefed<PlatformDecoderModule> AndroidDecoderModule::Create(
+    CDMProxy* aProxy) {
+  return MakeAndAddRef<AndroidDecoderModule>(aProxy);
 }
 
 }  // namespace mozilla

@@ -36,8 +36,7 @@
 
 #include "mozilla/ipc/BackgroundUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::dom::ipc::StructuredCloneData;
 using mozilla::ipc::CSPInfo;
@@ -138,14 +137,23 @@ nsIGlobalObject* ClientSource::GetGlobal() const {
   return nullptr;
 }
 
-void ClientSource::MaybeCreateInitialDocument() {
+// We want to be explicit about possible invalid states and
+// return them as errors.
+Result<bool, ErrorResult> ClientSource::MaybeCreateInitialDocument() {
+  // If there is not even a docshell, we do not expect to have a document
   nsIDocShell* docshell = GetDocShell();
-  if (docshell) {
-    // Force the create of the initial document if it does not exist yet.
-    Unused << docshell->GetDocument();
-
-    MOZ_DIAGNOSTIC_ASSERT(GetInnerWindow());
+  if (!docshell) {
+    return false;
   }
+
+  // Force the creation of the initial document if it does not yet exist.
+  if (!docshell->GetDocument()) {
+    ErrorResult rv;
+    rv.ThrowInvalidStateError("No document available.");
+    return Err(std::move(rv));
+  }
+
+  return true;
 }
 
 ClientSource::ClientSource(ClientManager* aManager,
@@ -212,10 +220,12 @@ void ClientSource::WorkerExecutionReady(WorkerPrivate* aWorkerPrivate) {
   // execution ready.  We can't reliably determine what our storage policy
   // is before execution ready, unfortunately.
   if (mController.isSome()) {
-    MOZ_DIAGNOSTIC_ASSERT(aWorkerPrivate->StorageAccess() >
-                              StorageAccess::ePrivateBrowsing ||
-                          StringBeginsWith(aWorkerPrivate->ScriptURL(),
-                                           NS_LITERAL_STRING("blob:")));
+    MOZ_DIAGNOSTIC_ASSERT(
+        aWorkerPrivate->StorageAccess() > StorageAccess::ePrivateBrowsing ||
+        (ShouldPartitionStorage(aWorkerPrivate->StorageAccess()) &&
+         StoragePartitioningEnabled(aWorkerPrivate->StorageAccess(),
+                                    aWorkerPrivate->CookieJarSettings())) ||
+        StringBeginsWith(aWorkerPrivate->ScriptURL(), u"blob:"_ns));
   }
 
   // Its safe to store the WorkerPrivate* here because the ClientSource
@@ -262,17 +272,16 @@ nsresult ClientSource::WindowExecutionReady(nsPIDOMWindowInner* aInnerWindow) {
   // continue to inherit the SW as well.  We need to avoid triggering the
   // assertion in this corner case.
   if (mController.isSome()) {
-    MOZ_DIAGNOSTIC_ASSERT(spec.LowerCaseEqualsLiteral("about:blank") ||
-                          StringBeginsWith(spec, NS_LITERAL_CSTRING("blob:")) ||
-                          StorageAllowedForWindow(aInnerWindow) ==
-                              StorageAccess::eAllow);
+    MOZ_ASSERT(spec.LowerCaseEqualsLiteral("about:blank") ||
+               StringBeginsWith(spec, "blob:"_ns) ||
+               StorageAllowedForWindow(aInnerWindow) == StorageAccess::eAllow);
   }
 
   nsPIDOMWindowOuter* outer = aInnerWindow->GetOuterWindow();
   NS_ENSURE_TRUE(outer, NS_ERROR_UNEXPECTED);
 
   FrameType frameType = FrameType::Top_level;
-  if (!outer->IsTopLevelWindow()) {
+  if (!outer->GetBrowsingContext()->IsTop()) {
     frameType = FrameType::Nested;
   } else if (outer->HadOriginalOpener()) {
     frameType = FrameType::Auxiliary;
@@ -314,7 +323,7 @@ nsresult ClientSource::DocShellExecutionReady(nsIDocShell* aDocShell) {
 
   // TODO: dedupe this with WindowExecutionReady
   FrameType frameType = FrameType::Top_level;
-  if (!outer->IsTopLevelWindow()) {
+  if (!outer->GetBrowsingContext()->IsTop()) {
     frameType = FrameType::Nested;
   } else if (outer->HadOriginalOpener()) {
     frameType = FrameType::Auxiliary;
@@ -326,8 +335,7 @@ nsresult ClientSource::DocShellExecutionReady(nsIDocShell* aDocShell) {
   // nsDocShell::Destroy() deletes the ClientSource.
   mOwner = AsVariant(nsCOMPtr<nsIDocShell>(aDocShell));
 
-  ClientSourceExecutionReadyArgs args(NS_LITERAL_CSTRING("about:blank"),
-                                      frameType);
+  ClientSourceExecutionReadyArgs args("about:blank"_ns, frameType);
   ExecutionReady(args);
 
   return NS_OK;
@@ -383,15 +391,14 @@ void ClientSource::SetController(
   // service workers from their parent.  This basically means blob: URLs
   // and about:blank windows.
   if (GetInnerWindow()) {
-    MOZ_DIAGNOSTIC_ASSERT(
-        Info().URL().LowerCaseEqualsLiteral("about:blank") ||
-        StringBeginsWith(Info().URL(), NS_LITERAL_CSTRING("blob:")) ||
-        StorageAllowedForWindow(GetInnerWindow()) == StorageAccess::eAllow);
+    MOZ_DIAGNOSTIC_ASSERT(Info().URL().LowerCaseEqualsLiteral("about:blank") ||
+                          StringBeginsWith(Info().URL(), "blob:"_ns) ||
+                          StorageAllowedForWindow(GetInnerWindow()) ==
+                              StorageAccess::eAllow);
   } else if (GetWorkerPrivate()) {
-    MOZ_DIAGNOSTIC_ASSERT(GetWorkerPrivate()->StorageAccess() >
-                              StorageAccess::ePrivateBrowsing ||
-                          StringBeginsWith(GetWorkerPrivate()->ScriptURL(),
-                                           NS_LITERAL_STRING("blob:")));
+    MOZ_DIAGNOSTIC_ASSERT(
+        GetWorkerPrivate()->StorageAccess() > StorageAccess::ePrivateBrowsing ||
+        StringBeginsWith(GetWorkerPrivate()->ScriptURL(), u"blob:"_ns));
   }
 
   if (mController.isSome() && mController.ref() == aServiceWorker) {
@@ -439,14 +446,13 @@ RefPtr<ClientOpPromise> ClientSource::Control(
     // Local URL windows and windows with access to storage can be controlled.
     controlAllowed =
         Info().URL().LowerCaseEqualsLiteral("about:blank") ||
-        StringBeginsWith(Info().URL(), NS_LITERAL_CSTRING("blob:")) ||
+        StringBeginsWith(Info().URL(), "blob:"_ns) ||
         StorageAllowedForWindow(GetInnerWindow()) == StorageAccess::eAllow;
   } else if (GetWorkerPrivate()) {
     // Local URL workers and workers with access to storage cna be controlled.
     controlAllowed =
         GetWorkerPrivate()->StorageAccess() > StorageAccess::ePrivateBrowsing ||
-        StringBeginsWith(GetWorkerPrivate()->ScriptURL(),
-                         NS_LITERAL_STRING("blob:"));
+        StringBeginsWith(GetWorkerPrivate()->ScriptURL(), u"blob:"_ns);
   }
 
   if (NS_WARN_IF(!controlAllowed)) {
@@ -676,7 +682,9 @@ Result<ClientState, ErrorResult> ClientSource::SnapshotState() {
   NS_ASSERT_OWNINGTHREAD(ClientSource);
 
   if (mClientInfo.Type() == ClientType::Window) {
-    MaybeCreateInitialDocument();
+    // If there is a docshell, try to create a document, too.
+    MOZ_TRY(MaybeCreateInitialDocument());
+    // SnapshotWindowState can deal with a missing inner window
     return SnapshotWindowState();
   }
 
@@ -754,5 +762,4 @@ bool ClientSource::CalledRegisterForServiceWorkerScope(
   return mRegisteringScopeList.Contains(aScope);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

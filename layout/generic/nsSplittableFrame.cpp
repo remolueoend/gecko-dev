@@ -23,7 +23,7 @@ void nsSplittableFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
     SetPrevInFlow(aPrevInFlow);
     aPrevInFlow->SetNextInFlow(this);
   }
-  nsFrame::Init(aContent, aParent, aPrevInFlow);
+  nsIFrame::Init(aContent, aParent, aPrevInFlow);
 }
 
 void nsSplittableFrame::DestroyFrom(nsIFrame* aDestructRoot,
@@ -34,7 +34,7 @@ void nsSplittableFrame::DestroyFrom(nsIFrame* aDestructRoot,
   }
 
   // Let the base class destroy the frame
-  nsFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+  nsIFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
 }
 
 nsIFrame* nsSplittableFrame::GetPrevContinuation() const {
@@ -110,8 +110,8 @@ bool nsSplittableFrame::IsInNextContinuationChain(nsIFrame* aFrame1,
 #endif
 
 nsIFrame* nsSplittableFrame::GetPrevInFlow() const {
-  return (GetStateBits() & NS_FRAME_IS_FLUID_CONTINUATION) ? mPrevContinuation
-                                                           : nullptr;
+  return HasAnyStateBits(NS_FRAME_IS_FLUID_CONTINUATION) ? mPrevContinuation
+                                                         : nullptr;
 }
 
 void nsSplittableFrame::SetPrevInFlow(nsIFrame* aFrame) {
@@ -124,8 +124,8 @@ void nsSplittableFrame::SetPrevInFlow(nsIFrame* aFrame) {
 }
 
 nsIFrame* nsSplittableFrame::GetNextInFlow() const {
-  return mNextContinuation && (mNextContinuation->GetStateBits() &
-                               NS_FRAME_IS_FLUID_CONTINUATION)
+  return mNextContinuation && mNextContinuation->HasAnyStateBits(
+                                  NS_FRAME_IS_FLUID_CONTINUATION)
              ? mNextContinuation
              : nullptr;
 }
@@ -184,13 +184,28 @@ void nsSplittableFrame::RemoveFromFlow(nsIFrame* aFrame) {
   aFrame->SetNextInFlow(nullptr);
 }
 
-nscoord nsSplittableFrame::ConsumedBSize(WritingMode aWM) const {
-  nscoord bSize = 0;
+NS_DECLARE_FRAME_PROPERTY_SMALL_VALUE(ConsumedBSizeProperty, nscoord);
 
-  for (nsIFrame* prev = GetPrevContinuation(); prev;
-       prev = prev->GetPrevContinuation()) {
-    bSize += prev->ContentSize(aWM).BSize(aWM);
+nscoord nsSplittableFrame::CalcAndCacheConsumedBSize() {
+  nsIFrame* prev = GetPrevContinuation();
+  if (!prev) {
+    return 0;
   }
+  const auto wm = GetWritingMode();
+  nscoord bSize = 0;
+  for (; prev; prev = prev->GetPrevContinuation()) {
+    bSize += prev->ContentSize(wm).BSize(wm);
+    bool found = false;
+    nscoord consumed = prev->GetProperty(ConsumedBSizeProperty(), &found);
+    if (found) {
+      bSize += consumed;
+      break;
+    }
+    MOZ_ASSERT(!prev->GetPrevContinuation(),
+               "Property should always be set on prev continuation if not "
+               "the first continuation");
+  }
+  SetProperty(ConsumedBSizeProperty(), bSize);
   return bSize;
 }
 
@@ -201,17 +216,13 @@ nscoord nsSplittableFrame::GetEffectiveComputedBSize(
     return NS_UNCONSTRAINEDSIZE;
   }
 
-  if (aConsumedBSize == NS_UNCONSTRAINEDSIZE) {
-    aConsumedBSize = ConsumedBSize(aReflowInput.GetWritingMode());
-  }
-
   bSize -= aConsumedBSize;
 
   // nsFieldSetFrame's inner frames are special since some of their content-box
   // BSize may be consumed by positioning it below the legend.  So we always
   // report zero for true overflow containers here.
   // XXXmats: hmm, can we fix this so that the sizes actually adds up instead?
-  if (IS_TRUE_OVERFLOW_CONTAINER(this) &&
+  if (IsTrueOverflowContainer() &&
       Style()->GetPseudoType() == PseudoStyleType::fieldsetContent) {
     for (nsFieldSetFrame* fieldset = do_QueryFrame(GetParent()); fieldset;
          fieldset = static_cast<nsFieldSetFrame*>(fieldset->GetPrevInFlow())) {
@@ -223,41 +234,21 @@ nscoord nsSplittableFrame::GetEffectiveComputedBSize(
   return std::max(0, bSize);
 }
 
-nsIFrame::LogicalSides nsSplittableFrame::GetLogicalSkipSides(
-    const ReflowInput* aReflowInput) const {
-  if (IS_TRUE_OVERFLOW_CONTAINER(this)) {
-    return LogicalSides(eLogicalSideBitsBBoth);
+LogicalSides nsSplittableFrame::GetBlockLevelLogicalSkipSides(
+    bool aAfterReflow) const {
+  LogicalSides skip(mWritingMode);
+  if (MOZ_UNLIKELY(IsTrueOverflowContainer())) {
+    skip |= eLogicalSideBitsBBoth;
+    return skip;
   }
 
   if (MOZ_UNLIKELY(StyleBorder()->mBoxDecorationBreak ==
                    StyleBoxDecorationBreak::Clone)) {
-    return LogicalSides();
+    return skip;
   }
 
-  LogicalSides skip;
   if (GetPrevContinuation()) {
     skip |= eLogicalSideBitsBStart;
-  }
-
-  if (aReflowInput) {
-    // We're in the midst of reflow right now, so it's possible that we haven't
-    // created a next-in-flow yet. If our content block-size is going to exceed
-    // our available block-size, though, then we're going to need a
-    // next-in-flow, it just hasn't been created yet.
-    if (NS_UNCONSTRAINEDSIZE != aReflowInput->AvailableBSize()) {
-      nscoord effectiveBSize = GetEffectiveComputedBSize(*aReflowInput);
-      if (effectiveBSize != NS_UNCONSTRAINEDSIZE &&
-          effectiveBSize > aReflowInput->AvailableBSize()) {
-        // Our computed block-size is going to exceed our available block-size,
-        // so we're going to need a next-in-flow.
-        skip |= eLogicalSideBitsBEnd;
-      }
-    }
-  } else {
-    nsIFrame* nif = GetNextContinuation();
-    if (nif && !IS_TRUE_OVERFLOW_CONTAINER(nif)) {
-      skip |= eLogicalSideBitsBEnd;
-    }
   }
 
   // Always skip block-end side if we have a *later* sibling across column-span
@@ -266,17 +257,12 @@ nsIFrame::LogicalSides nsSplittableFrame::GetLogicalSkipSides(
     skip |= eLogicalSideBitsBEnd;
   }
 
-  return skip;
-}
+  if (aAfterReflow) {
+    nsIFrame* nif = GetNextContinuation();
+    if (nif && !nif->IsTrueOverflowContainer()) {
+      skip |= eLogicalSideBitsBEnd;
+    }
+  }
 
-LogicalSides nsSplittableFrame::PreReflowBlockLevelLogicalSkipSides() const {
-  if (MOZ_UNLIKELY(IS_TRUE_OVERFLOW_CONTAINER(this))) {
-    return LogicalSides(mozilla::eLogicalSideBitsBBoth);
-  }
-  if (MOZ_LIKELY(StyleBorder()->mBoxDecorationBreak !=
-                 StyleBoxDecorationBreak::Clone) &&
-      GetPrevInFlow()) {
-    return LogicalSides(mozilla::eLogicalSideBitsBStart);
-  }
-  return LogicalSides();
+  return skip;
 }

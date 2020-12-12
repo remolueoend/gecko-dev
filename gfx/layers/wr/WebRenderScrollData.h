@@ -8,6 +8,7 @@
 #define GFX_WEBRENDERSCROLLDATA_H
 
 #include <map>
+#include <iosfwd>
 
 #include "chrome/common/ipc_message_utils.h"
 #include "FrameMetrics.h"
@@ -16,7 +17,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/GfxMessageUtils.h"
 #include "mozilla/layers/LayerAttributes.h"
-#include "mozilla/layers/LayersMessageUtils.h"
 #include "mozilla/layers/FocusTarget.h"
 #include "mozilla/layers/WebRenderMessageUtils.h"
 #include "mozilla/webrender/WebRenderTypes.h"
@@ -24,6 +24,7 @@
 #include "mozilla/Maybe.h"
 #include "nsTArrayForwardDeclare.h"
 
+class nsDisplayListBuilder;
 class nsDisplayItem;
 
 namespace mozilla {
@@ -162,7 +163,7 @@ class WebRenderLayerScrollData final {
   }
   bool IsAsyncZoomContainer() const { return mAsyncZoomContainerId.isSome(); }
 
-  void Dump(const WebRenderScrollData& aOwner) const;
+  void Dump(std::ostream& aOut, const WebRenderScrollData& aOwner) const;
 
   friend struct IPC::ParamTraits<WebRenderLayerScrollData>;
 
@@ -177,7 +178,7 @@ class WebRenderLayerScrollData final {
   // mScrollMetadatas array. This indirection is used to deduplicate the
   // ScrollMetadata objects, since there is usually heavy duplication of them
   // within a layer tree.
-  nsTArray<size_t> mScrollIds;
+  CopyableTArray<size_t> mScrollIds;
 
   // Various data that we collect from the Layer in Initialize(), serialize
   // over IPC, and use on the parent side in APZ.
@@ -211,9 +212,12 @@ class WebRenderLayerScrollData final {
 class WebRenderScrollData final {
  public:
   WebRenderScrollData();
-  explicit WebRenderScrollData(WebRenderLayerManager* aManager);
+  explicit WebRenderScrollData(WebRenderLayerManager* aManager,
+                               nsDisplayListBuilder* aBuilder);
 
   WebRenderLayerManager* GetManager() const;
+
+  nsDisplayListBuilder* GetBuilder() const;
 
   // Add the given ScrollMetadata if it doesn't already exist. Return an index
   // that can be used to look up the metadata later.
@@ -237,22 +241,32 @@ class WebRenderScrollData final {
   void SetPaintSequenceNumber(uint32_t aPaintSequenceNumber);
   uint32_t GetPaintSequenceNumber() const;
 
-  void ApplyUpdates(ScrollUpdatesMap& aUpdates, uint32_t aPaintSequenceNumber);
+  void ApplyUpdates(ScrollUpdatesMap&& aUpdates, uint32_t aPaintSequenceNumber);
 
   friend struct IPC::ParamTraits<WebRenderScrollData>;
 
-  void Dump() const;
+  friend std::ostream& operator<<(std::ostream& aOut,
+                                  const WebRenderScrollData& aData);
 
  private:
   // This is called by the ParamTraits implementation to rebuild mScrollIdMap
   // based on mScrollMetadatas
   bool RepopulateMap();
 
+  // This is a helper for the dumping code
+  void DumpSubtree(std::ostream& aOut, size_t aIndex,
+                   const std::string& aIndent) const;
+
  private:
   // Pointer back to the layer manager; if this is non-null, it will always be
   // valid, because the WebRenderLayerManager that created |this| will
   // outlive |this|.
   WebRenderLayerManager* MOZ_NON_OWNING_REF mManager;
+
+  // Pointer to the display list builder; if this is non-null, it will always be
+  // valid, because the nsDisplayListBuilder that created the layer manager will
+  // outlive |this|.
+  nsDisplayListBuilder* MOZ_NON_OWNING_REF mBuilder;
 
   // Internal data structure used to maintain uniqueness of mScrollMetadatas.
   // This is not serialized/deserialized over IPC, but it is rebuilt on the
@@ -287,73 +301,20 @@ template <>
 struct ParamTraits<mozilla::layers::WebRenderLayerScrollData> {
   typedef mozilla::layers::WebRenderLayerScrollData paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mDescendantCount);
-    WriteParam(aMsg, aParam.mScrollIds);
-    WriteParam(aMsg, aParam.mAncestorTransform);
-    WriteParam(aMsg, aParam.mTransform);
-    WriteParam(aMsg, aParam.mTransformIsPerspective);
-    WriteParam(aMsg, aParam.mVisibleRegion);
-    WriteParam(aMsg, aParam.mRemoteDocumentSize);
-    WriteParam(aMsg, aParam.mReferentId);
-    WriteParam(aMsg, aParam.mEventRegionsOverride);
-    WriteParam(aMsg, aParam.mScrollbarData);
-    WriteParam(aMsg, aParam.mScrollbarAnimationId);
-    WriteParam(aMsg, aParam.mFixedPositionAnimationId);
-    WriteParam(aMsg, aParam.mFixedPositionSides);
-    WriteParam(aMsg, aParam.mFixedPosScrollContainerId);
-    WriteParam(aMsg, aParam.mStickyPosScrollContainerId);
-    WriteParam(aMsg, aParam.mStickyScrollRangeOuter);
-    WriteParam(aMsg, aParam.mStickyScrollRangeInner);
-    WriteParam(aMsg, aParam.mStickyPositionAnimationId);
-    WriteParam(aMsg, aParam.mZoomAnimationId);
-    WriteParam(aMsg, aParam.mAsyncZoomContainerId);
-  }
+  static void Write(Message* aMsg, const paramType& aParam);
 
   static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return ReadParam(aMsg, aIter, &aResult->mDescendantCount) &&
-           ReadParam(aMsg, aIter, &aResult->mScrollIds) &&
-           ReadParam(aMsg, aIter, &aResult->mAncestorTransform) &&
-           ReadParam(aMsg, aIter, &aResult->mTransform) &&
-           ReadParam(aMsg, aIter, &aResult->mTransformIsPerspective) &&
-           ReadParam(aMsg, aIter, &aResult->mVisibleRegion) &&
-           ReadParam(aMsg, aIter, &aResult->mRemoteDocumentSize) &&
-           ReadParam(aMsg, aIter, &aResult->mReferentId) &&
-           ReadParam(aMsg, aIter, &aResult->mEventRegionsOverride) &&
-           ReadParam(aMsg, aIter, &aResult->mScrollbarData) &&
-           ReadParam(aMsg, aIter, &aResult->mScrollbarAnimationId) &&
-           ReadParam(aMsg, aIter, &aResult->mFixedPositionAnimationId) &&
-           ReadParam(aMsg, aIter, &aResult->mFixedPositionSides) &&
-           ReadParam(aMsg, aIter, &aResult->mFixedPosScrollContainerId) &&
-           ReadParam(aMsg, aIter, &aResult->mStickyPosScrollContainerId) &&
-           ReadParam(aMsg, aIter, &aResult->mStickyScrollRangeOuter) &&
-           ReadParam(aMsg, aIter, &aResult->mStickyScrollRangeInner) &&
-           ReadParam(aMsg, aIter, &aResult->mStickyPositionAnimationId) &&
-           ReadParam(aMsg, aIter, &aResult->mZoomAnimationId) &&
-           ReadParam(aMsg, aIter, &aResult->mAsyncZoomContainerId);
-  }
+                   paramType* aResult);
 };
 
 template <>
 struct ParamTraits<mozilla::layers::WebRenderScrollData> {
   typedef mozilla::layers::WebRenderScrollData paramType;
 
-  static void Write(Message* aMsg, const paramType& aParam) {
-    WriteParam(aMsg, aParam.mScrollMetadatas);
-    WriteParam(aMsg, aParam.mLayerScrollData);
-    WriteParam(aMsg, aParam.mIsFirstPaint);
-    WriteParam(aMsg, aParam.mPaintSequenceNumber);
-  }
+  static void Write(Message* aMsg, const paramType& aParam);
 
   static bool Read(const Message* aMsg, PickleIterator* aIter,
-                   paramType* aResult) {
-    return ReadParam(aMsg, aIter, &aResult->mScrollMetadatas) &&
-           ReadParam(aMsg, aIter, &aResult->mLayerScrollData) &&
-           ReadParam(aMsg, aIter, &aResult->mIsFirstPaint) &&
-           ReadParam(aMsg, aIter, &aResult->mPaintSequenceNumber) &&
-           aResult->RepopulateMap();
-  }
+                   paramType* aResult);
 };
 
 }  // namespace IPC

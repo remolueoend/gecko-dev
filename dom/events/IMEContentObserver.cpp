@@ -21,6 +21,7 @@
 #include "nsContentUtils.h"
 #include "nsGkAtoms.h"
 #include "nsAtom.h"
+#include "nsDocShell.h"
 #include "nsIContent.h"
 #include "mozilla/dom/Document.h"
 #include "nsIFrame.h"
@@ -242,7 +243,7 @@ bool IMEContentObserver::InitWithEditor(nsPresContext* aPresContext,
     return false;
   }
 
-  PresShell* presShell = aPresContext->GetPresShell();
+  RefPtr<PresShell> presShell = aPresContext->GetPresShell();
 
   // get selection and root content
   nsCOMPtr<nsISelectionController> selCon;
@@ -267,15 +268,16 @@ bool IMEContentObserver::InitWithEditor(nsPresContext* aPresContext,
     return false;
   }
 
-  if (nsRange* selRange = mSelection->GetRangeAt(0)) {
+  if (const nsRange* selRange = mSelection->GetRangeAt(0)) {
     if (NS_WARN_IF(!selRange->GetStartContainer())) {
       return false;
     }
 
-    mRootContent =
-        selRange->GetStartContainer()->GetSelectionRootContent(presShell);
+    nsCOMPtr<nsINode> startContainer = selRange->GetStartContainer();
+    mRootContent = startContainer->GetSelectionRootContent(presShell);
   } else {
-    mRootContent = mEditableNode->GetSelectionRootContent(presShell);
+    nsCOMPtr<nsINode> editableNode = mEditableNode;
+    mRootContent = editableNode->GetSelectionRootContent(presShell);
   }
   if (!mRootContent && mEditableNode->IsDocument()) {
     // The document node is editable, but there are no contents, this document
@@ -385,7 +387,7 @@ void IMEContentObserver::ObserveEditableNode() {
     mRootContent->AddMutationObserver(this);
     // If it's in a document (should be so), we can use document observer to
     // reduce redundant computation of text change offsets.
-    Document* doc = mRootContent->GetComposedDoc();
+    dom::Document* doc = mRootContent->GetComposedDoc();
     if (doc) {
       RefPtr<DocumentObserver> documentObserver = mDocumentObserver;
       documentObserver->Observe(doc);
@@ -475,6 +477,9 @@ nsPresContext* IMEContentObserver::GetPresContext() const {
 void IMEContentObserver::Destroy() {
   // WARNING: When you change this method, you have to check Unlink() too.
 
+  // Note that don't send any notifications later from here.  I.e., notify
+  // IMEStateManager of the blur synchronously because IMEStateManager needs to
+  // stop notifying the main process if this is requested by the main process.
   NotifyIMEOfBlur();
   UnregisterObservers();
   Clear();
@@ -583,7 +588,7 @@ nsresult IMEContentObserver::GetSelectionAndRoot(
   return NS_OK;
 }
 
-void IMEContentObserver::OnSelectionChange(Selection& aSelection) {
+void IMEContentObserver::OnSelectionChange(dom::Selection& aSelection) {
   if (!mIsObserving) {
     return;
   }
@@ -642,17 +647,18 @@ nsresult IMEContentObserver::HandleQueryContentEvent(
                                    !mNeedsToNotifyIMEOfSelectionChange;
   if (isSelectionCacheAvailable && aEvent->mMessage == eQuerySelectedText &&
       aEvent->mInput.mSelectionType == SelectionType::eNormal) {
-    aEvent->mReply.mContentsRoot = mRootContent;
-    aEvent->mReply.mHasSelection = !mSelectionData.IsCollapsed();
-    aEvent->mReply.mOffset = mSelectionData.mOffset;
-    aEvent->mReply.mString = mSelectionData.String();
-    aEvent->mReply.mWritingMode = mSelectionData.GetWritingMode();
-    aEvent->mReply.mReversed = mSelectionData.mReversed;
-    aEvent->mSucceeded = true;
+    aEvent->EmplaceReply();
+    aEvent->mReply->mOffsetAndData.emplace(mSelectionData.mOffset,
+                                           mSelectionData.String(),
+                                           OffsetAndDataFor::SelectedString);
+    aEvent->mReply->mContentsRoot = mRootContent;
+    aEvent->mReply->mHasSelection = !mSelectionData.IsCollapsed();
+    aEvent->mReply->mWritingMode = mSelectionData.GetWritingMode();
+    aEvent->mReply->mReversed = mSelectionData.mReversed;
     MOZ_LOG(sIMECOLog, LogLevel::Debug,
             ("0x%p IMEContentObserver::HandleQueryContentEvent(aEvent={ "
-             "mMessage=%s })",
-             this, ToChar(aEvent->mMessage)));
+             "mMessage=%s, mReply=%s })",
+             this, ToChar(aEvent->mMessage), ToString(aEvent->mReply).c_str()));
     return NS_OK;
   }
 
@@ -694,7 +700,7 @@ nsresult IMEContentObserver::HandleQueryContentEvent(
   if (NS_WARN_IF(Destroyed())) {
     // If this has already destroyed during querying the content, the query
     // is outdated even if it's succeeded.  So, make the query fail.
-    aEvent->mSucceeded = false;
+    aEvent->mReply.reset();
     MOZ_LOG(sIMECOLog, LogLevel::Warning,
             ("0x%p IMEContentObserver::HandleQueryContentEvent(), WARNING, "
              "IMEContentObserver has been destroyed during the query, "
@@ -703,10 +709,10 @@ nsresult IMEContentObserver::HandleQueryContentEvent(
     return rv;
   }
 
-  if (!IsInitializedWithPlugin() &&
-      NS_WARN_IF(aEvent->mReply.mContentsRoot != mRootContent)) {
+  if (aEvent->Succeeded() && !IsInitializedWithPlugin() &&
+      NS_WARN_IF(aEvent->mReply->mContentsRoot != mRootContent)) {
     // Focus has changed unexpectedly, so make the query fail.
-    aEvent->mSucceeded = false;
+    aEvent->mReply.reset();
   }
   return rv;
 }
@@ -735,13 +741,13 @@ bool IMEContentObserver::OnMouseButtonEvent(nsPresContext* aPresContext,
 
   RefPtr<IMEContentObserver> kungFuDeathGrip(this);
 
-  WidgetQueryContentEvent charAtPt(true, eQueryCharacterAtPoint,
-                                   aMouseEvent->mWidget);
-  charAtPt.mRefPoint = aMouseEvent->mRefPoint;
+  WidgetQueryContentEvent queryCharAtPointEvent(true, eQueryCharacterAtPoint,
+                                                aMouseEvent->mWidget);
+  queryCharAtPointEvent.mRefPoint = aMouseEvent->mRefPoint;
   ContentEventHandler handler(aPresContext);
-  handler.OnQueryCharacterAtPoint(&charAtPt);
-  if (NS_WARN_IF(!charAtPt.mSucceeded) ||
-      charAtPt.mReply.mOffset == WidgetQueryContentEvent::NOT_FOUND) {
+  handler.OnQueryCharacterAtPoint(&queryCharAtPointEvent);
+  if (NS_WARN_IF(queryCharAtPointEvent.Failed()) ||
+      queryCharAtPointEvent.DidNotFindChar()) {
     return false;
   }
 
@@ -755,23 +761,26 @@ bool IMEContentObserver::OnMouseButtonEvent(nsPresContext* aPresContext,
   // We should notify it with offset in the widget.
   nsIWidget* topLevelWidget = mWidget->GetTopLevelWidget();
   if (topLevelWidget && topLevelWidget != mWidget) {
-    charAtPt.mReply.mRect.MoveBy(topLevelWidget->WidgetToScreenOffset() -
-                                 mWidget->WidgetToScreenOffset());
+    queryCharAtPointEvent.mReply->mRect.MoveBy(
+        topLevelWidget->WidgetToScreenOffset() -
+        mWidget->WidgetToScreenOffset());
   }
   // The refPt is relative to its widget.
   // We should notify it with offset in the widget.
   if (aMouseEvent->mWidget != mWidget) {
-    charAtPt.mRefPoint += aMouseEvent->mWidget->WidgetToScreenOffset() -
-                          mWidget->WidgetToScreenOffset();
+    queryCharAtPointEvent.mRefPoint +=
+        aMouseEvent->mWidget->WidgetToScreenOffset() -
+        mWidget->WidgetToScreenOffset();
   }
 
   IMENotification notification(NOTIFY_IME_OF_MOUSE_BUTTON_EVENT);
   notification.mMouseButtonEventData.mEventMessage = aMouseEvent->mMessage;
-  notification.mMouseButtonEventData.mOffset = charAtPt.mReply.mOffset;
+  notification.mMouseButtonEventData.mOffset =
+      queryCharAtPointEvent.mReply->StartOffset();
   notification.mMouseButtonEventData.mCursorPos.Set(
-      charAtPt.mRefPoint.ToUnknownPoint());
+      queryCharAtPointEvent.mRefPoint.ToUnknownPoint());
   notification.mMouseButtonEventData.mCharRect.Set(
-      charAtPt.mReply.mRect.ToUnknownRect());
+      queryCharAtPointEvent.mReply->mRect.ToUnknownRect());
   notification.mMouseButtonEventData.mButton = aMouseEvent->mButton;
   notification.mMouseButtonEventData.mButtons = aMouseEvent->mButtons;
   notification.mMouseButtonEventData.mModifiers = aMouseEvent->mModifiers;
@@ -1306,20 +1315,24 @@ bool IMEContentObserver::UpdateSelectionCache(bool aRequireFlush /* = true */) {
 
   // XXX Cannot we cache some information for reducing the cost to compute
   //     selection offset and writing mode?
-  WidgetQueryContentEvent selection(true, eQuerySelectedText, mWidget);
-  selection.mNeedsToFlushLayout = aRequireFlush;
+  WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                 mWidget);
+  querySelectedTextEvent.mNeedsToFlushLayout = aRequireFlush;
   ContentEventHandler handler(GetPresContext());
-  handler.OnQuerySelectedText(&selection);
-  if (NS_WARN_IF(!selection.mSucceeded) ||
-      NS_WARN_IF(selection.mReply.mContentsRoot != mRootContent)) {
+  handler.OnQuerySelectedText(&querySelectedTextEvent);
+  if (NS_WARN_IF(querySelectedTextEvent.DidNotFindSelection()) ||
+      NS_WARN_IF(querySelectedTextEvent.mReply->mContentsRoot !=
+                 mRootContent)) {
     return false;
   }
+  MOZ_ASSERT(querySelectedTextEvent.mReply->mOffsetAndData.isSome());
 
-  mFocusedWidget = selection.mReply.mFocusedWidget;
-  mSelectionData.mOffset = selection.mReply.mOffset;
-  *mSelectionData.mString = selection.mReply.mString;
-  mSelectionData.SetWritingMode(selection.GetWritingMode());
-  mSelectionData.mReversed = selection.mReply.mReversed;
+  mFocusedWidget = querySelectedTextEvent.mReply->mFocusedWidget;
+  mSelectionData.mOffset = querySelectedTextEvent.mReply->StartOffset();
+  *mSelectionData.mString = querySelectedTextEvent.mReply->DataRef();
+  mSelectionData.SetWritingMode(
+      querySelectedTextEvent.mReply->WritingModeRef());
+  mSelectionData.mReversed = querySelectedTextEvent.mReply->mReversed;
 
   // WARNING: Don't modify the reason of selection change here.
 
@@ -2008,12 +2021,12 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(IMEContentObserver::DocumentObserver)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(IMEContentObserver::DocumentObserver)
 
-void IMEContentObserver::DocumentObserver::Observe(Document* aDocument) {
+void IMEContentObserver::DocumentObserver::Observe(dom::Document* aDocument) {
   MOZ_ASSERT(aDocument);
 
   // Guarantee that aDocument won't be destroyed during a call of
   // StopObserving().
-  RefPtr<Document> newDocument = aDocument;
+  RefPtr<dom::Document> newDocument = aDocument;
 
   StopObserving();
 
@@ -2030,7 +2043,7 @@ void IMEContentObserver::DocumentObserver::StopObserving() {
   RefPtr<IMEContentObserver> observer = std::move(mIMEContentObserver);
 
   // Stop observing the document first.
-  RefPtr<Document> document = std::move(mDocument);
+  RefPtr<dom::Document> document = std::move(mDocument);
   document->RemoveObserver(this);
 
   // Notify IMEContentObserver of ending of document updates if this already
@@ -2049,7 +2062,8 @@ void IMEContentObserver::DocumentObserver::Destroy() {
   mIMEContentObserver = nullptr;
 }
 
-void IMEContentObserver::DocumentObserver::BeginUpdate(Document* aDocument) {
+void IMEContentObserver::DocumentObserver::BeginUpdate(
+    dom::Document* aDocument) {
   if (NS_WARN_IF(Destroyed()) || NS_WARN_IF(!IsObserving())) {
     return;
   }
@@ -2057,7 +2071,7 @@ void IMEContentObserver::DocumentObserver::BeginUpdate(Document* aDocument) {
   mIMEContentObserver->BeginDocumentUpdate();
 }
 
-void IMEContentObserver::DocumentObserver::EndUpdate(Document* aDocument) {
+void IMEContentObserver::DocumentObserver::EndUpdate(dom::Document* aDocument) {
   if (NS_WARN_IF(Destroyed()) || NS_WARN_IF(!IsObserving()) ||
       NS_WARN_IF(!IsUpdating())) {
     return;

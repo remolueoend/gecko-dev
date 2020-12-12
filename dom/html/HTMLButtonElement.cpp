@@ -37,8 +37,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Button)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static const nsAttrValue::EnumTable kButtonTypeTable[] = {
     {"button", NS_FORM_BUTTON_BUTTON},
@@ -139,6 +138,10 @@ bool HTMLButtonElement::ParseAttribute(int32_t aNamespaceID, nsAtom* aAttribute,
     }
 
     if (aAttribute == nsGkAtoms::formmethod) {
+      if (StaticPrefs::dom_dialog_element_enabled() || IsInChromeDocument()) {
+        return aResult.ParseEnumValue(aValue, kFormMethodTableDialogEnabled,
+                                      false);
+      }
       return aResult.ParseEnumValue(aValue, kFormMethodTable, false);
     }
     if (aAttribute == nsGkAtoms::formenctype) {
@@ -434,5 +437,4 @@ JSObject* HTMLButtonElement::WrapNode(JSContext* aCx,
   return HTMLButtonElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -64,14 +64,15 @@ use crate::properties::{ComputedValues, LonghandId};
 use crate::properties::{Importance, PropertyDeclaration, PropertyDeclarationBlock};
 use crate::rule_tree::CascadeLevel as ServoCascadeLevel;
 use crate::selector_parser::{AttrValue, HorizontalDirection, Lang};
-use crate::shared_lock::Locked;
+use crate::shared_lock::{Locked, SharedRwLock};
 use crate::string_cache::{Atom, Namespace, WeakAtom, WeakNamespace};
 use crate::stylist::CascadeData;
 use crate::values::computed::font::GenericFontFamily;
 use crate::values::computed::Length;
 use crate::values::specified::length::FontBaseSize;
+use crate::values::{AtomIdent, AtomString};
 use crate::CaseSensitivityExt;
-use app_units::Au;
+use crate::LocalName;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator};
 use selectors::attr::{CaseSensitivity, NamespaceConstraint};
@@ -131,13 +132,17 @@ impl<'ld> TDocument for GeckoDocument<'ld> {
     }
 
     #[inline]
-    fn elements_with_id<'a>(&self, id: &Atom) -> Result<&'a [GeckoElement<'ld>], ()>
+    fn elements_with_id<'a>(&self, id: &AtomIdent) -> Result<&'a [GeckoElement<'ld>], ()>
     where
         Self: 'a,
     {
         Ok(elements_with_id(unsafe {
             bindings::Gecko_Document_GetElementsWithId(self.0, id.as_ptr())
         }))
+    }
+
+    fn shared_lock(&self) -> &SharedRwLock {
+        &GLOBAL_STYLE_DATA.shared_lock
     }
 }
 
@@ -183,7 +188,7 @@ impl<'lr> TShadowRoot for GeckoShadowRoot<'lr> {
     }
 
     #[inline]
-    fn elements_with_id<'a>(&self, id: &Atom) -> Result<&'a [GeckoElement<'lr>], ()>
+    fn elements_with_id<'a>(&self, id: &AtomIdent) -> Result<&'a [GeckoElement<'lr>], ()>
     where
         Self: 'a,
     {
@@ -563,6 +568,12 @@ impl<'le> GeckoElement<'le> {
         unsafe { self.0.mServoData.get().as_ref() }
     }
 
+    /// Returns whether any animation applies to this element.
+    #[inline]
+    pub fn has_any_animation(&self) -> bool {
+        self.may_have_animations() && unsafe { Gecko_ElementHasAnimations(self.0) }
+    }
+
     #[inline(always)]
     fn attrs(&self) -> &[structs::AttrArray_InternalAttr] {
         unsafe {
@@ -792,7 +803,7 @@ impl<'le> GeckoElement<'le> {
             return false;
         }
         let host = self.containing_shadow_host().unwrap();
-        host.is_svg_element() && host.local_name() == &*local_name!("use")
+        host.is_svg_element() && host.local_name() == &**local_name!("use")
     }
 
     fn css_transitions_info(&self) -> FxHashMap<LonghandId, Arc<AnimationValue>> {
@@ -912,14 +923,12 @@ fn get_animation_rule(
 #[derive(Debug)]
 /// Gecko font metrics provider
 pub struct GeckoFontMetricsProvider {
-    /// Cache of base font sizes for each language
+    /// Cache of base font sizes for each language. Usually will have 1 element.
     ///
-    /// Usually will have 1 element.
-    ///
-    // This may be slow on pages using more languages, might be worth optimizing
-    // by caching lang->group mapping separately and/or using a hashmap on larger
-    // loads.
-    pub font_size_cache: RefCell<Vec<(Atom, crate::gecko_bindings::structs::FontSizePrefs)>>,
+    /// This may be slow on pages using more languages, might be worth
+    /// optimizing by caching lang->group mapping separately and/or using a
+    /// hashmap on larger loads.
+    pub font_size_cache: RefCell<Vec<(Atom, DefaultFontSizes)>>,
 }
 
 impl GeckoFontMetricsProvider {
@@ -942,8 +951,9 @@ impl FontMetricsProvider for GeckoFontMetricsProvider {
             return sizes.1.size_for_generic(font_family);
         }
         let sizes = unsafe { bindings::Gecko_GetBaseSize(font_name.as_ptr()) };
+        let size = sizes.size_for_generic(font_family);
         cache.push((font_name.clone(), sizes));
-        sizes.size_for_generic(font_family)
+        size
     }
 
     fn query(
@@ -957,7 +967,7 @@ impl FontMetricsProvider for GeckoFontMetricsProvider {
             None => return Default::default(),
         };
 
-        let size = Au::from(base_size.resolve(context));
+        let size = base_size.resolve(context);
         let style = context.style();
 
         let (wm, font) = match base_size {
@@ -977,15 +987,15 @@ impl FontMetricsProvider for GeckoFontMetricsProvider {
                 pc,
                 vertical_metrics,
                 font.gecko(),
-                size.0,
+                size,
                 // we don't use the user font set in a media query
                 !context.in_media_query,
             )
         };
         FontMetrics {
-            x_height: Some(Au(gecko_metrics.mXSize).into()),
-            zero_advance_measure: if gecko_metrics.mChSize >= 0 {
-                Some(Au(gecko_metrics.mChSize).into())
+            x_height: Some(gecko_metrics.mXSize),
+            zero_advance_measure: if gecko_metrics.mChSize.px() >= 0. {
+                Some(gecko_metrics.mChSize)
             } else {
                 None
             },
@@ -993,20 +1003,31 @@ impl FontMetricsProvider for GeckoFontMetricsProvider {
     }
 }
 
-impl structs::FontSizePrefs {
+/// The default font sizes for generic families for a given language group.
+#[derive(Debug)]
+#[repr(C)]
+pub struct DefaultFontSizes {
+    variable: Length,
+    serif: Length,
+    sans_serif: Length,
+    monospace: Length,
+    cursive: Length,
+    fantasy: Length,
+}
+
+impl DefaultFontSizes {
     fn size_for_generic(&self, font_family: GenericFontFamily) -> Length {
-        Au(match font_family {
-            GenericFontFamily::None => self.mDefaultVariableSize,
-            GenericFontFamily::Serif => self.mDefaultSerifSize,
-            GenericFontFamily::SansSerif => self.mDefaultSansSerifSize,
-            GenericFontFamily::Monospace => self.mDefaultMonospaceSize,
-            GenericFontFamily::Cursive => self.mDefaultCursiveSize,
-            GenericFontFamily::Fantasy => self.mDefaultFantasySize,
+        match font_family {
+            GenericFontFamily::None => self.variable,
+            GenericFontFamily::Serif => self.serif,
+            GenericFontFamily::SansSerif => self.sans_serif,
+            GenericFontFamily::Monospace => self.monospace,
+            GenericFontFamily::Cursive => self.cursive,
+            GenericFontFamily::Fantasy => self.fantasy,
             GenericFontFamily::MozEmoji => unreachable!(
                 "Should never get here, since this doesn't (yet) appear on font family"
             ),
-        })
-        .into()
+        }
     }
 }
 
@@ -1231,11 +1252,17 @@ impl<'le> TElement for GeckoElement<'le> {
         }
     }
 
-    fn animation_rule(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+    fn animation_rule(
+        &self,
+        _: &SharedStyleContext,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
         get_animation_rule(self, CascadeLevel::Animations)
     }
 
-    fn transition_rule(&self) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
+    fn transition_rule(
+        &self,
+        _: &SharedStyleContext,
+    ) -> Option<Arc<Locked<PropertyDeclarationBlock>>> {
         get_animation_rule(self, CascadeLevel::Transitions)
     }
 
@@ -1245,7 +1272,7 @@ impl<'le> TElement for GeckoElement<'le> {
     }
 
     #[inline]
-    fn has_attr(&self, namespace: &Namespace, attr: &Atom) -> bool {
+    fn has_attr(&self, namespace: &Namespace, attr: &AtomIdent) -> bool {
         unsafe { bindings::Gecko_HasAttr(self.0, namespace.0.as_ptr(), attr.as_ptr()) }
     }
 
@@ -1272,7 +1299,7 @@ impl<'le> TElement for GeckoElement<'le> {
 
     fn each_class<F>(&self, callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         let attr = match self.get_class_attr() {
             Some(c) => c,
@@ -1283,16 +1310,16 @@ impl<'le> TElement for GeckoElement<'le> {
     }
 
     #[inline]
-    fn each_exported_part<F>(&self, name: &Atom, callback: F)
+    fn each_exported_part<F>(&self, name: &AtomIdent, callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         snapshot_helpers::each_exported_part(self.attrs(), name, callback)
     }
 
     fn each_part<F>(&self, callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         let attr = match self.get_part_attr() {
             Some(c) => c,
@@ -1446,7 +1473,7 @@ impl<'le> TElement for GeckoElement<'le> {
     #[inline]
     fn may_have_animations(&self) -> bool {
         if let Some(pseudo) = self.implemented_pseudo_element() {
-            if !pseudo.is_before_or_after() {
+            if !pseudo.is_animatable() {
                 return false;
             }
             // FIXME(emilio): When would the parent of a ::before / ::after
@@ -1512,42 +1539,22 @@ impl<'le> TElement for GeckoElement<'le> {
         }
     }
 
-    fn has_animations(&self) -> bool {
-        self.may_have_animations() && unsafe { Gecko_ElementHasAnimations(self.0) }
+    #[inline]
+    fn has_animations(&self, _: &SharedStyleContext) -> bool {
+        self.has_any_animation()
     }
 
-    fn has_css_animations(&self) -> bool {
+    fn has_css_animations(&self, _: &SharedStyleContext, _: Option<PseudoElement>) -> bool {
         self.may_have_animations() && unsafe { Gecko_ElementHasCSSAnimations(self.0) }
     }
 
-    fn has_css_transitions(&self) -> bool {
+    fn has_css_transitions(&self, _: &SharedStyleContext, _: Option<PseudoElement>) -> bool {
         self.may_have_animations() && unsafe { Gecko_ElementHasCSSTransitions(self.0) }
     }
 
-    fn might_need_transitions_update(
-        &self,
-        old_style: Option<&ComputedValues>,
-        new_style: &ComputedValues,
-    ) -> bool {
-        let old_style = match old_style {
-            Some(v) => v,
-            None => return false,
-        };
-
-        let new_box_style = new_style.get_box();
-        if !self.has_css_transitions() && !new_box_style.specifies_transitions() {
-            return false;
-        }
-
-        if new_box_style.clone_display().is_none() || old_style.clone_display().is_none() {
-            return false;
-        }
-
-        return true;
-    }
-
     // Detect if there are any changes that require us to update transitions.
-    // This is used as a more thoroughgoing check than the, cheaper
+    //
+    // This is used as a more thoroughgoing check than the cheaper
     // might_need_transitions_update check.
     //
     // The following logic shadows the logic used on the Gecko side
@@ -1561,12 +1568,6 @@ impl<'le> TElement for GeckoElement<'le> {
         after_change_style: &ComputedValues,
     ) -> bool {
         use crate::properties::LonghandIdSet;
-
-        debug_assert!(
-            self.might_need_transitions_update(Some(before_change_style), after_change_style),
-            "We should only call needs_transitions_update if \
-             might_need_transitions_update returns true"
-        );
 
         let after_change_box_style = after_change_style.get_box();
         let existing_transitions = self.css_transitions_info();
@@ -1616,7 +1617,7 @@ impl<'le> TElement for GeckoElement<'le> {
         if ptr.is_null() {
             None
         } else {
-            Some(unsafe { Atom::from_addrefed(ptr) })
+            Some(AtomString(unsafe { Atom::from_addrefed(ptr) }))
         }
     }
 
@@ -1624,8 +1625,8 @@ impl<'le> TElement for GeckoElement<'le> {
         // Gecko supports :lang() from CSS Selectors 3, which only accepts a
         // single language tag, and which performs simple dash-prefix matching
         // on it.
-        let override_lang_ptr = match &override_lang {
-            &Some(Some(ref atom)) => atom.as_ptr(),
+        let override_lang_ptr = match override_lang {
+            Some(Some(ref atom)) => atom.as_ptr(),
             _ => ptr::null_mut(),
         };
         unsafe {
@@ -1639,7 +1640,7 @@ impl<'le> TElement for GeckoElement<'le> {
     }
 
     fn is_html_document_body_element(&self) -> bool {
-        if self.local_name() != &*local_name!("body") {
+        if self.local_name() != &**local_name!("body") {
             return false;
         }
 
@@ -1896,8 +1897,8 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
     fn attr_matches(
         &self,
         ns: &NamespaceConstraint<&Namespace>,
-        local_name: &Atom,
-        operation: &AttrSelectorOperation<&Atom>,
+        local_name: &LocalName,
+        operation: &AttrSelectorOperation<&AttrValue>,
     ) -> bool {
         unsafe {
             match *operation {
@@ -2023,22 +2024,21 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
             NonTSPseudoClass::Checked |
             NonTSPseudoClass::Fullscreen |
             NonTSPseudoClass::Indeterminate |
+            NonTSPseudoClass::MozInert |
             NonTSPseudoClass::PlaceholderShown |
             NonTSPseudoClass::Target |
             NonTSPseudoClass::Valid |
             NonTSPseudoClass::Invalid |
             NonTSPseudoClass::MozUIValid |
             NonTSPseudoClass::MozBroken |
-            NonTSPseudoClass::MozUserDisabled |
-            NonTSPseudoClass::MozSuppressed |
             NonTSPseudoClass::MozLoading |
             NonTSPseudoClass::MozHandlerBlocked |
             NonTSPseudoClass::MozHandlerDisabled |
             NonTSPseudoClass::MozHandlerCrashed |
             NonTSPseudoClass::Required |
             NonTSPseudoClass::Optional |
-            NonTSPseudoClass::MozReadOnly |
-            NonTSPseudoClass::MozReadWrite |
+            NonTSPseudoClass::ReadOnly |
+            NonTSPseudoClass::ReadWrite |
             NonTSPseudoClass::FocusWithin |
             NonTSPseudoClass::FocusVisible |
             NonTSPseudoClass::MozDragOver |
@@ -2048,6 +2048,7 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
             NonTSPseudoClass::MozHandlerClickToPlay |
             NonTSPseudoClass::MozHandlerVulnerableUpdatable |
             NonTSPseudoClass::MozHandlerVulnerableNoUpdate |
+            NonTSPseudoClass::MozHandlerNoPlugins |
             NonTSPseudoClass::MozMathIncrementScriptLevel |
             NonTSPseudoClass::InRange |
             NonTSPseudoClass::OutOfRange |
@@ -2062,6 +2063,8 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
             NonTSPseudoClass::MozDirAttrRTL |
             NonTSPseudoClass::MozDirAttrLikeAuto |
             NonTSPseudoClass::MozAutofill |
+            NonTSPseudoClass::MozModalDialog |
+            NonTSPseudoClass::MozTopmostModalDialog |
             NonTSPseudoClass::Active |
             NonTSPseudoClass::Hover |
             NonTSPseudoClass::MozAutofillPreview => {
@@ -2107,15 +2110,15 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
                 }
                 true
             },
-            NonTSPseudoClass::MozNativeAnonymous |
-            NonTSPseudoClass::MozNativeAnonymousNoSpecificity => {
-                self.is_in_native_anonymous_subtree()
-            },
+            NonTSPseudoClass::MozNativeAnonymous => self.is_in_native_anonymous_subtree(),
             NonTSPseudoClass::MozUseShadowTreeRoot => self.is_root_of_use_element_shadow_tree(),
             NonTSPseudoClass::MozTableBorderNonzero => unsafe {
                 bindings::Gecko_IsTableBorderNonzero(self.0)
             },
             NonTSPseudoClass::MozBrowserFrame => unsafe { bindings::Gecko_IsBrowserFrame(self.0) },
+            NonTSPseudoClass::MozSelectListBox => unsafe {
+                bindings::Gecko_IsSelectListBox(self.0)
+            },
             NonTSPseudoClass::MozIsHTML => self.is_html_element_in_html_document(),
             NonTSPseudoClass::MozLWTheme => self.document_theme() != DocumentTheme::Doc_Theme_None,
             NonTSPseudoClass::MozLWThemeBrightText => {
@@ -2179,7 +2182,7 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
     }
 
     #[inline]
-    fn has_id(&self, id: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_id(&self, id: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         if !self.has_id() {
             return false;
         }
@@ -2193,7 +2196,7 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
     }
 
     #[inline]
-    fn is_part(&self, name: &Atom) -> bool {
+    fn is_part(&self, name: &AtomIdent) -> bool {
         let attr = match self.get_part_attr() {
             Some(c) => c,
             None => return false,
@@ -2203,12 +2206,12 @@ impl<'le> ::selectors::Element for GeckoElement<'le> {
     }
 
     #[inline]
-    fn imported_part(&self, name: &Atom) -> Option<Atom> {
+    fn imported_part(&self, name: &AtomIdent) -> Option<AtomIdent> {
         snapshot_helpers::imported_part(self.attrs(), name)
     }
 
     #[inline(always)]
-    fn has_class(&self, name: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         let attr = match self.get_class_attr() {
             Some(c) => c,
             None => return false,

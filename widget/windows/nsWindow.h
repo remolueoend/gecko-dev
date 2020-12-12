@@ -15,7 +15,7 @@
 #include "CompositorWidget.h"
 #include "nsWindowBase.h"
 #include "nsdefs.h"
-#include "nsIdleService.h"
+#include "nsUserIdleService.h"
 #include "nsToolkit.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -30,6 +30,7 @@
 #include "mozilla/TimeStamp.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "mozilla/dom/MouseEventBinding.h"
+#include "mozilla/UniquePtr.h"
 #include "nsMargin.h"
 #include "nsRegionFwd.h"
 
@@ -45,7 +46,7 @@
 #endif
 
 #include "nsUXThemeData.h"
-#include "nsIIdleServiceInternal.h"
+#include "nsIUserIdleServiceInternal.h"
 
 #include "IMMHandler.h"
 
@@ -62,6 +63,7 @@ namespace widget {
 class NativeKey;
 class InProcessWinCompositorWidget;
 struct MSGResult;
+class DirectManipulationOwner;
 }  // namespace widget
 }  // namespace mozilla
 
@@ -108,6 +110,8 @@ class nsWindow final : public nsWindowBase {
   NS_INLINE_DECL_REFCOUNTING_INHERITED(nsWindow, nsWindowBase)
 
   friend class nsWindowGfx;
+
+  void SendAnAPZEvent(mozilla::InputData& aEvent);
 
   // nsWindowBase
   virtual void InitEvent(mozilla::WidgetGUIEvent& aEvent,
@@ -262,7 +266,7 @@ class nsWindow final : public nsWindowBase {
   virtual bool DispatchMouseEvent(
       mozilla::EventMessage aEventMessage, WPARAM wParam, LPARAM lParam,
       bool aIsContextMenuKey = false,
-      int16_t aButton = mozilla::MouseButton::eLeft,
+      int16_t aButton = mozilla::MouseButton::ePrimary,
       uint16_t aInputSource =
           mozilla::dom::MouseEvent_Binding::MOZ_SOURCE_MOUSE,
       WinPointerInfo* aPointerInfo = nullptr);
@@ -271,6 +275,7 @@ class nsWindow final : public nsWindowBase {
   void DispatchPendingEvents();
   bool DispatchPluginEvent(UINT aMessage, WPARAM aWParam, LPARAM aLParam,
                            bool aDispatchPendingEvents);
+  void DispatchCustomEvent(const nsString& eventName);
 
 #ifdef ACCESSIBILITY
   /**
@@ -301,6 +306,10 @@ class nsWindow final : public nsWindowBase {
 
   void SetSmallIcon(HICON aIcon);
   void SetBigIcon(HICON aIcon);
+
+  static void SetIsRestoringSession(const bool aIsRestoringSession) {
+    sIsRestoringSession = aIsRestoringSession;
+  }
 
   /**
    * AssociateDefaultIMC() associates or disassociates the default IMC for
@@ -361,6 +370,7 @@ class nsWindow final : public nsWindowBase {
       mozilla::widget::CompositorWidgetInitData* aInitData) override;
   bool IsTouchWindow() const { return mTouchWindow; }
   bool SynchronouslyRepaintOnResize() override;
+  virtual void MaybeDispatchInitialFocusEvent() override;
 
  protected:
   virtual ~nsWindow();
@@ -442,7 +452,9 @@ class nsWindow final : public nsWindowBase {
   LRESULT ProcessCharMessage(const MSG& aMsg, bool* aEventDispatched);
   LRESULT ProcessKeyUpMessage(const MSG& aMsg, bool* aEventDispatched);
   LRESULT ProcessKeyDownMessage(const MSG& aMsg, bool* aEventDispatched);
-  static bool EventIsInsideWindow(nsWindow* aWindow);
+  static bool EventIsInsideWindow(
+      nsWindow* aWindow,
+      mozilla::Maybe<POINT> aEventPoint = mozilla::Nothing());
   // Convert nsEventStatus value to a windows boolean
   static bool ConvertStatus(nsEventStatus aStatus);
   static void PostSleepWakeNotification(const bool aIsSleepMode);
@@ -451,7 +463,7 @@ class nsWindow final : public nsWindowBase {
   static void UpdateFirstEventTime(DWORD aEventTime);
   void FinishLiveResizing(ResizeState aNewState);
   nsIntPoint GetTouchCoordinates(WPARAM wParam, LPARAM lParam);
-  Maybe<mozilla::PanGestureInput> ConvertTouchToPanGesture(
+  mozilla::Maybe<mozilla::PanGestureInput> ConvertTouchToPanGesture(
       const mozilla::MultiTouchInput& aTouchInput, PTOUCHINPUT aOriginalEvent);
   void DispatchTouchOrPanGestureInput(mozilla::MultiTouchInput& aTouchInput,
                                       PTOUCHINPUT aOSEvent);
@@ -500,8 +512,9 @@ class nsWindow final : public nsWindowBase {
   static void ScheduleHookTimer(HWND aWnd, UINT aMsgId);
   static void RegisterSpecialDropdownHooks();
   static void UnregisterSpecialDropdownHooks();
-  static bool GetPopupsToRollup(nsIRollupListener* aRollupListener,
-                                uint32_t* aPopupsToRollup);
+  static bool GetPopupsToRollup(
+      nsIRollupListener* aRollupListener, uint32_t* aPopupsToRollup,
+      mozilla::Maybe<POINT> aEventPoint = mozilla::Nothing());
   static bool NeedsToHandleNCActivateDelayed(HWND aWnd);
   static bool DealWithPopups(HWND inWnd, UINT inMsg, WPARAM inWParam,
                              LPARAM inLParam, LRESULT* outResult);
@@ -564,6 +577,10 @@ class nsWindow final : public nsWindowBase {
   void CreateCompositor() override;
   void RequestFxrOutput();
 
+  void RecreateDirectManipulationIfNeeded();
+  void ResizeDirectManipulationViewport();
+  void DestroyDirectManipulation();
+
  protected:
   nsCOMPtr<nsIWidget> mParent;
   nsIntSize mLastSize;
@@ -590,6 +607,8 @@ class nsWindow final : public nsWindowBase {
   bool mOpeningAnimationSuppressed;
   bool mAlwaysOnTop;
   bool mIsEarlyBlankWindow;
+  bool mIsShowingPreXULSkeletonUI;
+  bool mResizable;
   DWORD_PTR mOldStyle;
   DWORD_PTR mOldExStyle;
   nsNativeDragTarget* mNativeDragTarget;
@@ -613,6 +632,7 @@ class nsWindow final : public nsWindowBase {
   static bool sJustGotActivate;
   static bool sIsInMouseCapture;
   static bool sHaveInitializedPrefs;
+  static bool sIsRestoringSession;
 
   PlatformCompositorWidgetDelegate* mCompositorWidgetDelegate;
 
@@ -642,7 +662,7 @@ class nsWindow final : public nsWindowBase {
 
   float mAspectRatio;
 
-  nsCOMPtr<nsIIdleServiceInternal> mIdleService;
+  nsCOMPtr<nsIUserIdleServiceInternal> mIdleService;
 
   // Draggable titlebar region maintained by UpdateWindowDraggingRegion
   LayoutDeviceIntRegion mDraggableRegion;
@@ -728,6 +748,8 @@ class nsWindow final : public nsWindowBase {
   // When true, used to indicate an async call to RequestFxrOutput to the GPU
   // process after the Compositor is created
   bool mRequestFxrOutputPending;
+
+  mozilla::UniquePtr<mozilla::widget::DirectManipulationOwner> mDmOwner;
 };
 
 #endif  // Window_h__

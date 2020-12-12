@@ -5,11 +5,11 @@
 "use strict";
 
 const {
-  getUrlDetails,
   processNetworkUpdates,
 } = require("devtools/client/netmonitor/src/utils/request-utils");
 const {
   ADD_REQUEST,
+  SET_EVENT_STREAM_FLAG,
   CLEAR_REQUESTS,
   CLONE_REQUEST,
   CLONE_SELECTED_REQUEST,
@@ -56,6 +56,11 @@ function requestsReducer(state = Requests(), action) {
     // Update an existing request (with received data).
     case UPDATE_REQUEST: {
       return updateRequest(state, action);
+    }
+
+    // Add isEventStream flag to a request.
+    case SET_EVENT_STREAM_FLAG: {
+      return setEventStreamFlag(state, action);
     }
 
     // Remove all requests in the list. Create fresh new state
@@ -146,11 +151,12 @@ function requestsReducer(state = Requests(), action) {
 
 function addRequest(state, action) {
   const nextState = { ...state };
-
+  // The target front is not used and cannot be serialized by redux
+  // eslint-disable-next-line no-unused-vars
+  const { targetFront, ...requestData } = action.data;
   const newRequest = {
     id: action.id,
-    ...action.data,
-    urlDetails: getUrlDetails(action.data.url),
+    ...requestData,
   };
 
   nextState.requests = [...state.requests, newRequest];
@@ -176,7 +182,7 @@ function addRequest(state, action) {
 function updateRequest(state, action) {
   const { requests, lastEndedMs } = state;
 
-  const id = action.id;
+  const { id } = action;
   const index = requests.findIndex(needle => needle.id === id);
   if (index === -1) {
     return state;
@@ -185,7 +191,7 @@ function updateRequest(state, action) {
 
   const nextRequest = {
     ...request,
-    ...processNetworkUpdates(action.data, request),
+    ...processNetworkUpdates(action.data),
   };
   const requestEndTime =
     nextRequest.startedMs +
@@ -197,6 +203,29 @@ function updateRequest(state, action) {
     ...state,
     requests: nextRequests,
     lastEndedMs: requestEndTime > lastEndedMs ? requestEndTime : lastEndedMs,
+  };
+}
+
+function setEventStreamFlag(state, action) {
+  const { requests } = state;
+  const { id } = action;
+  const index = requests.findIndex(needle => needle.id === id);
+  if (index === -1) {
+    return state;
+  }
+
+  const request = requests[index];
+
+  const nextRequest = {
+    ...request,
+    isEventStream: true,
+  };
+
+  const nextRequests = [...requests];
+  nextRequests[index] = nextRequest;
+  return {
+    ...state,
+    requests: nextRequests,
   };
 }
 

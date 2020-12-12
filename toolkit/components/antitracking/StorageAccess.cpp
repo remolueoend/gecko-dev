@@ -4,6 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "StorageAccess.h"
+
 #include "mozilla/dom/Document.h"
 #include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/ContentBlocking.h"
@@ -131,7 +133,7 @@ static StorageAccess InternalStorageAllowedCheck(
   // BEFORE:
   // localStorage, caches: allowed in 3rd-party iframes always
   // IndexedDB: allowed in 3rd-party iframes only if 3rd party URI is an about:
-  //   URI within a specific whitelist
+  //   URI within a specific allowlist
   //
   // AFTER:
   // localStorage, caches: allowed in 3rd-party iframes by default. Preference
@@ -139,7 +141,7 @@ static StorageAccess InternalStorageAllowedCheck(
   //   URIs.
   // IndexedDB: allowed in 3rd-party iframes by default. Preference can be set
   //   to disable in 3rd-party, which will disallow in about: URIs, unless they
-  //   are within a specific whitelist.
+  //   are within a specific allowlist.
   //
   // This means that behavior for storage with internal about: URIs should not
   // be affected, which is desireable due to the lack of automated testing for
@@ -314,6 +316,7 @@ bool StorageDisabledByAntiTracking(nsPIDOMWindowInner* aWindow,
   }
   bool disabled = StorageDisabledByAntiTrackingInternal(
       aWindow, aChannel, aPrincipal, aURI, cookieJarSettings, aRejectedReason);
+
   if (aWindow) {
     ContentBlockingNotifier::OnDecision(
         aWindow,
@@ -328,6 +331,16 @@ bool StorageDisabledByAntiTracking(nsPIDOMWindowInner* aWindow,
         aRejectedReason);
   }
   return disabled;
+}
+
+bool StorageDisabledByAntiTracking(dom::Document* aDocument, nsIURI* aURI) {
+  uint32_t rejectedReason = 0;
+  // Note that GetChannel() below may return null, but that's OK, since the
+  // callee is able to deal with a null channel argument, and if passed null,
+  // will only fail to notify the UI in case storage gets blocked.
+  return StorageDisabledByAntiTracking(
+      aDocument->GetInnerWindow(), aDocument->GetChannel(),
+      aDocument->NodePrincipal(), aURI, rejectedReason);
 }
 
 bool ShouldPartitionStorage(StorageAccess aAccess) {

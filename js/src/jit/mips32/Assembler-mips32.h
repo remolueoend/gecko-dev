@@ -43,6 +43,8 @@ class ABIArgGenerator {
 
     return usedArgSlots_ * sizeof(intptr_t);
   }
+
+  void increaseStackOffset(uint32_t bytes) { MOZ_CRASH("NYI"); }
 };
 
 // These registers may be volatile or nonvolatile.
@@ -154,14 +156,10 @@ static constexpr uint32_t SimdMemoryAlignment = 8;
 static constexpr uint32_t WasmStackAlignment = SimdMemoryAlignment;
 static const uint32_t WasmTrapInstructionLength = 4;
 
-// Does this architecture support SIMD conversions between Uint32x4 and
-// Float32x4?
-static constexpr bool SupportsUint32x4FloatConversions = false;
-
-// Does this architecture support comparisons of unsigned integer vectors?
-static constexpr bool SupportsUint8x16Compares = false;
-static constexpr bool SupportsUint16x8Compares = false;
-static constexpr bool SupportsUint32x4Compares = false;
+// The offsets are dynamically asserted during
+// code generation in the prologue/epilogue.
+static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
+static constexpr uint32_t WasmCheckedTailEntryOffset = 16u;
 
 static constexpr Scale ScalePointer = TimesFour;
 
@@ -254,12 +252,6 @@ static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
   }
   *out = CallTempNonArgRegs[usedIntArgs];
   return true;
-}
-
-static inline uint32_t GetArgStackDisp(uint32_t usedArgSlots) {
-  MOZ_ASSERT(usedArgSlots >= NumIntArgRegs);
-  // Even register arguments have place reserved on stack.
-  return usedArgSlots * sizeof(intptr_t);
 }
 
 }  // namespace jit

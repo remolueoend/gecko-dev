@@ -8,6 +8,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/dom/HTMLTrackElement.h"
@@ -30,8 +31,7 @@ mozilla::LazyLogModule gTextTrackLog("WebVTT");
   MOZ_LOG(gTextTrackLog, LogLevel::Verbose, \
           ("TextTrackManager=%p, " msg, this, ##__VA_ARGS__))
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS(TextTrackManager::ShutdownObserverProxy, nsIObserver);
 
@@ -310,14 +310,11 @@ void TextTrackManager::PopulatePendingList() {
 
 void TextTrackManager::AddListeners() {
   if (mMediaElement) {
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("resizecaption"), this,
-                                    false, false);
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("resizevideocontrols"),
-                                    this, false, false);
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("seeked"), this, false,
+    mMediaElement->AddEventListener(u"resizecaption"_ns, this, false, false);
+    mMediaElement->AddEventListener(u"resizevideocontrols"_ns, this, false,
                                     false);
-    mMediaElement->AddEventListener(NS_LITERAL_STRING("controlbarchange"), this,
-                                    false, true);
+    mMediaElement->AddEventListener(u"seeked"_ns, this, false, false);
+    mMediaElement->AddEventListener(u"controlbarchange"_ns, this, false, true);
   }
 }
 
@@ -762,7 +759,7 @@ void TextTrackManager::TimeMarchesOn() {
       WEBVTT_LOG("Prepare 'enter' event for cue %p [%f, %f] in missing cues",
                  cue, cue->StartTime(), cue->EndTime());
       SimpleTextTrackEvent* event = new SimpleTextTrackEvent(
-          NS_LITERAL_STRING("enter"), cue->StartTime(), cue->GetTrack(), cue);
+          u"enter"_ns, cue->StartTime(), cue->GetTrack(), cue);
       eventList.InsertElementSorted(
           event, CompareSimpleTextTrackEvents(mMediaElement));
       affectedTracks.AddTextTrack(cue->GetTrack(),
@@ -778,8 +775,8 @@ void TextTrackManager::TimeMarchesOn() {
           cue->StartTime() > cue->EndTime() ? cue->StartTime() : cue->EndTime();
       WEBVTT_LOG("Prepare 'exit' event for cue %p [%f, %f] in other cues", cue,
                  cue->StartTime(), cue->EndTime());
-      SimpleTextTrackEvent* event = new SimpleTextTrackEvent(
-          NS_LITERAL_STRING("exit"), time, cue->GetTrack(), cue);
+      SimpleTextTrackEvent* event =
+          new SimpleTextTrackEvent(u"exit"_ns, time, cue->GetTrack(), cue);
       eventList.InsertElementSorted(
           event, CompareSimpleTextTrackEvents(mMediaElement));
       affectedTracks.AddTextTrack(cue->GetTrack(),
@@ -795,7 +792,7 @@ void TextTrackManager::TimeMarchesOn() {
       WEBVTT_LOG("Prepare 'enter' event for cue %p [%f, %f] in current cues",
                  cue, cue->StartTime(), cue->EndTime());
       SimpleTextTrackEvent* event = new SimpleTextTrackEvent(
-          NS_LITERAL_STRING("enter"), cue->StartTime(), cue->GetTrack(), cue);
+          u"enter"_ns, cue->StartTime(), cue->GetTrack(), cue);
       eventList.InsertElementSorted(
           event, CompareSimpleTextTrackEvents(mMediaElement));
       affectedTracks.AddTextTrack(cue->GetTrack(),
@@ -813,10 +810,10 @@ void TextTrackManager::TimeMarchesOn() {
   for (uint32_t i = 0; i < affectedTracks.Length(); ++i) {
     TextTrack* ttrack = affectedTracks[i];
     if (ttrack) {
-      ttrack->DispatchAsyncTrustedEvent(NS_LITERAL_STRING("cuechange"));
+      ttrack->DispatchAsyncTrustedEvent(u"cuechange"_ns);
       HTMLTrackElement* trackElement = ttrack->GetTrackElement();
       if (trackElement) {
-        trackElement->DispatchTrackRunnable(NS_LITERAL_STRING("cuechange"));
+        trackElement->DispatchTrackRunnable(u"cuechange"_ns);
       }
     }
   }
@@ -878,5 +875,4 @@ void TextTrackManager::MaybeRunTimeMarchesOn() {
   TimeMarchesOn();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -14,13 +14,15 @@
     "resource://gre/modules/AppConstants.jsm"
   );
 
-  let LazyModules = {};
-
-  ChromeUtils.defineModuleGetter(
-    LazyModules,
-    "PermitUnloader",
-    "resource://gre/actors/BrowserElementParent.jsm"
+  const { BrowserUtils } = ChromeUtils.import(
+    "resource://gre/modules/BrowserUtils.jsm"
   );
+
+  const { XPCOMUtils } = ChromeUtils.import(
+    "resource://gre/modules/XPCOMUtils.jsm"
+  );
+
+  let LazyModules = {};
 
   ChromeUtils.defineModuleGetter(
     LazyModules,
@@ -40,10 +42,11 @@
     "resource://gre/actors/PopupBlockingParent.jsm"
   );
 
-  ChromeUtils.defineModuleGetter(
-    LazyModules,
-    "XPCOMUtils",
-    "resource://gre/modules/XPCOMUtils.jsm"
+  let lazyPrefs = {};
+  XPCOMUtils.defineLazyPreferenceGetter(
+    lazyPrefs,
+    "unloadTimeoutMs",
+    "dom.beforeunload_timeout_ms"
   );
 
   const elementsToDestroyOnUnload = new Set();
@@ -64,27 +67,6 @@
       return ["remote"];
     }
 
-    attributeChangedCallback(name, oldValue, newValue) {
-      // When we have already been set up via connectedCallback and the
-      // and the [remote] value changes, we need to start over. This used
-      // to happen due to a XBL binding change.
-      //
-      // Only do this when the rebuild frameloaders pref is off. This update isn't
-      // required when we rebuild the frameloaders in the backend.
-      let rebuildFrameLoaders =
-        LazyModules.E10SUtils.rebuildFrameloadersOnRemotenessChange ||
-        this.ownerGlobal.docShell.nsILoadContext.useRemoteSubframes;
-      if (
-        !rebuildFrameLoaders &&
-        name === "remote" &&
-        oldValue != newValue &&
-        this.isConnectedAndReady
-      ) {
-        this.destroy();
-        this.construct();
-      }
-    }
-
     constructor() {
       super();
 
@@ -96,6 +78,8 @@
       this._characterSet = null;
       this._documentContentType = null;
 
+      this._inPermitUnload = new WeakSet();
+
       /**
        * These are managed by the tabbrowser:
        */
@@ -103,87 +87,9 @@
       this.mIconURL = null;
       this.lastURI = null;
 
-      // Track progress listeners added to this <browser>. These need to persist
-      // between calls to destroy().
-      this.progressListeners = [];
-
-      LazyModules.XPCOMUtils.defineLazyGetter(this, "popupBlocker", () => {
+      XPCOMUtils.defineLazyGetter(this, "popupBlocker", () => {
         return new LazyModules.PopupBlocker(this);
       });
-
-      this.addEventListener(
-        "keypress",
-        event => {
-          if (event.keyCode != KeyEvent.DOM_VK_F7) {
-            return;
-          }
-
-          // shift + F7 is the default DevTools shortcut for the Style Editor.
-          if (event.shiftKey) {
-            return;
-          }
-
-          if (event.defaultPrevented || !event.isTrusted) {
-            return;
-          }
-
-          const kPrefShortcutEnabled =
-            "accessibility.browsewithcaret_shortcut.enabled";
-          const kPrefWarnOnEnable = "accessibility.warn_on_browsewithcaret";
-          const kPrefCaretBrowsingOn = "accessibility.browsewithcaret";
-
-          var isEnabled = this.mPrefs.getBoolPref(kPrefShortcutEnabled);
-          if (!isEnabled) {
-            return;
-          }
-
-          // Toggle browse with caret mode
-          var browseWithCaretOn = this.mPrefs.getBoolPref(
-            kPrefCaretBrowsingOn,
-            false
-          );
-          var warn = this.mPrefs.getBoolPref(kPrefWarnOnEnable, true);
-          if (warn && !browseWithCaretOn) {
-            var checkValue = { value: false };
-            var promptService = Services.prompt;
-
-            var buttonPressed = promptService.confirmEx(
-              window,
-              this.mStrBundle.GetStringFromName(
-                "browsewithcaret.checkWindowTitle"
-              ),
-              this.mStrBundle.GetStringFromName("browsewithcaret.checkLabel"),
-              // Make "No" the default:
-              promptService.STD_YES_NO_BUTTONS |
-                promptService.BUTTON_POS_1_DEFAULT,
-              null,
-              null,
-              null,
-              this.mStrBundle.GetStringFromName("browsewithcaret.checkMsg"),
-              checkValue
-            );
-            if (buttonPressed != 0) {
-              if (checkValue.value) {
-                try {
-                  this.mPrefs.setBoolPref(kPrefShortcutEnabled, false);
-                } catch (ex) {}
-              }
-              return;
-            }
-            if (checkValue.value) {
-              try {
-                this.mPrefs.setBoolPref(kPrefWarnOnEnable, false);
-              } catch (ex) {}
-            }
-          }
-
-          // Toggle the pref
-          try {
-            this.mPrefs.setBoolPref(kPrefCaretBrowsingOn, !browseWithCaretOn);
-          } catch (ex) {}
-        },
-        { mozSystemGroup: true }
-      );
 
       this.addEventListener(
         "dragover",
@@ -289,21 +195,14 @@
           }
         },
         QueryInterface: ChromeUtils.generateQI([
-          Ci.nsIObserver,
-          Ci.nsISupportsWeakReference,
+          "nsIObserver",
+          "nsISupportsWeakReference",
         ]),
       };
 
       this._documentURI = null;
 
       this._documentContentType = null;
-
-      /**
-       * Weak reference to an optional frame loader that can be used to influence
-       * process selection for this browser.
-       * See nsIBrowser.sameProcessAsFrameLoader.
-       */
-      this._sameProcessAsFrameLoader = null;
 
       this._loadContext = null;
 
@@ -315,17 +214,7 @@
 
       this._fastFind = null;
 
-      this._outerWindowID = null;
-
-      this._innerWindowID = null;
-
       this._lastSearchString = null;
-
-      this._remoteWebNavigation = null;
-
-      this._remoteWebProgress = null;
-
-      this._contentTitle = "";
 
       this._characterSet = "";
 
@@ -335,7 +224,7 @@
 
       this._contentPrincipal = null;
 
-      this._contentStoragePrincipal = null;
+      this._contentPartitionedPrincipal = null;
 
       this._csp = null;
 
@@ -343,9 +232,7 @@
 
       this._contentRequestContextID = null;
 
-      this._fullZoom = 1;
-
-      this._textZoom = 1;
+      this._rdmFullZoom = 1.0;
 
       this._isSyntheticDocument = false;
 
@@ -358,8 +245,6 @@
       this._hasAnyPlayingMediaBeenBlocked = false;
 
       this._unselectedTabHoverMessageListenerCount = 0;
-
-      this._securityUI = null;
 
       this.urlbarChangeTracker = {
         _startedLoadSinceLastUserTyping: false,
@@ -386,8 +271,6 @@
       this._startY = null;
 
       this._autoScrollPopup = null;
-
-      this._autoScrollNeedsCleanup = false;
 
       /**
        * These IDs identify the scroll frame being autoscrolled.
@@ -458,16 +341,6 @@
       }
     }
 
-    set sameProcessAsFrameLoader(val) {
-      this._sameProcessAsFrameLoader = Cu.getWeakReference(val);
-    }
-
-    get sameProcessAsFrameLoader() {
-      return (
-        this._sameProcessAsFrameLoader && this._sameProcessAsFrameLoader.get()
-      );
-    }
-
     get loadContext() {
       if (this._loadContext) {
         return this._loadContext;
@@ -513,33 +386,33 @@
       return popupAnchor;
     }
 
+    set suspendMediaWhenInactive(val) {
+      this.browsingContext.suspendMediaWhenInactive = val;
+    }
+
+    get suspendMediaWhenInactive() {
+      return !!this.browsingContext?.suspendMediaWhenInactive;
+    }
+
     set docShellIsActive(val) {
+      this.browsingContext.isActive = val;
       if (this.isRemoteBrowser) {
-        let { frameLoader } = this;
-        if (frameLoader && frameLoader.remoteTab) {
-          frameLoader.remoteTab.docShellIsActive = val;
+        let remoteTab = this.frameLoader?.remoteTab;
+        if (remoteTab) {
+          remoteTab.renderLayers = val;
         }
-      } else if (this.docShell) {
-        this.docShell.isActive = val;
       }
     }
 
     get docShellIsActive() {
-      if (this.isRemoteBrowser) {
-        let { frameLoader } = this;
-        if (frameLoader && frameLoader.remoteTab) {
-          return frameLoader.remoteTab.docShellIsActive;
-        }
-        return false;
-      }
-      return this.docShell && this.docShell.isActive;
+      return !!this.browsingContext?.isActive;
     }
 
     set renderLayers(val) {
       if (this.isRemoteBrowser) {
-        let { frameLoader } = this;
-        if (frameLoader && frameLoader.remoteTab) {
-          frameLoader.remoteTab.renderLayers = val;
+        let remoteTab = this.frameLoader?.remoteTab;
+        if (remoteTab) {
+          remoteTab.renderLayers = val;
         }
       } else {
         this.docShellIsActive = val;
@@ -548,24 +421,15 @@
 
     get renderLayers() {
       if (this.isRemoteBrowser) {
-        let { frameLoader } = this;
-        if (frameLoader && frameLoader.remoteTab) {
-          return frameLoader.remoteTab.renderLayers;
-        }
-        return false;
+        return !!this.frameLoader?.remoteTab?.renderLayers;
       }
       return this.docShellIsActive;
     }
 
     get hasLayers() {
       if (this.isRemoteBrowser) {
-        let { frameLoader } = this;
-        if (frameLoader && frameLoader.remoteTab) {
-          return frameLoader.remoteTab.hasLayers;
-        }
-        return false;
+        return !!this.frameLoader?.remoteTab?.hasLayers;
       }
-
       return this.docShellIsActive;
     }
 
@@ -574,11 +438,7 @@
     }
 
     get remoteType() {
-      if (!this.isRemoteBrowser || !this.messageManager) {
-        return null;
-      }
-
-      return this.messageManager.remoteType;
+      return this.browsingContext?.currentRemoteType;
     }
 
     get isCrashed() {
@@ -654,24 +514,11 @@
     }
 
     get outerWindowID() {
-      if (this.isRemoteBrowser) {
-        return this._outerWindowID;
-      }
-      return this.docShell.outerWindowID;
+      return this.browsingContext?.currentWindowGlobal?.outerWindowId;
     }
 
     get innerWindowID() {
-      if (this.isRemoteBrowser) {
-        return this._innerWindowID;
-      }
-      try {
-        return this.contentWindow.windowUtils.currentInnerWindowID;
-      } catch (e) {
-        if (e.result != Cr.NS_ERROR_NOT_AVAILABLE) {
-          throw e;
-        }
-        return null;
-      }
+      return this.browsingContext?.currentWindowGlobal?.innerWindowId || null;
     }
 
     get browsingContext() {
@@ -690,25 +537,16 @@
     }
 
     get webProgress() {
-      return this.isRemoteBrowser
-        ? this._remoteWebProgress
-        : this.docShell &&
-            this.docShell
-              .QueryInterface(Ci.nsIInterfaceRequestor)
-              .getInterface(Ci.nsIWebProgress);
+      return this.browsingContext?.webProgress;
     }
 
     get sessionHistory() {
       return this.webNavigation.sessionHistory;
     }
 
-    get markupDocumentViewer() {
-      return this.docShell.contentViewer;
-    }
-
     get contentTitle() {
       return this.isRemoteBrowser
-        ? this._contentTitle
+        ? this.browsingContext?.currentWindowGlobal?.documentTitle
         : this.contentDocument.title;
     }
 
@@ -760,10 +598,10 @@
         : this.contentDocument.nodePrincipal;
     }
 
-    get contentStoragePrincipal() {
+    get contentPartitionedPrincipal() {
       return this.isRemoteBrowser
-        ? this._contentStoragePrincipal
-        : this.contentDocument.effectiveStoragePrincipal;
+        ? this._contentPartitionedPrincipal
+        : this.contentDocument.partitionedPrincipal;
     }
 
     get contentBlockingAllowListPrincipal() {
@@ -773,6 +611,12 @@
 
       return this.browsingContext.currentWindowGlobal
         .contentBlockingAllowListPrincipal;
+    }
+
+    get cookieJarSettings() {
+      return this.isRemoteBrowser
+        ? this.browsingContext?.currentWindowGlobal?.cookieJarSettings
+        : this.contentDocument.cookieJarSettings;
     }
 
     get csp() {
@@ -790,56 +634,59 @@
       }
     }
 
-    set fullZoom(val) {
-      if (this.isRemoteBrowser) {
-        let changed = val.toFixed(2) != this._fullZoom.toFixed(2);
-
-        if (changed) {
-          this._fullZoom = val;
-          this.sendMessageToActor("FullZoom", { value: val }, "Zoom", "roots");
-
-          let event = new Event("FullZoomChange", { bubbles: true });
-          this.dispatchEvent(event);
-        }
-      } else {
-        this.markupDocumentViewer.fullZoom = val;
-      }
-    }
-
     get referrerInfo() {
       return this.isRemoteBrowser
         ? this._referrerInfo
         : this.contentDocument.referrerInfo;
     }
 
-    get fullZoom() {
-      if (this.isRemoteBrowser) {
-        return this._fullZoom;
+    set fullZoom(val) {
+      if (val.toFixed(2) == this.fullZoom.toFixed(2)) {
+        return;
       }
-      return this.markupDocumentViewer.fullZoom;
+      if (this.browsingContext.inRDMPane) {
+        this._rdmFullZoom = val;
+        let event = document.createEvent("Events");
+        event.initEvent("FullZoomChange", true, false);
+        this.dispatchEvent(event);
+      } else {
+        this.browsingContext.fullZoom = val;
+      }
+    }
+
+    get fullZoom() {
+      if (this.browsingContext.inRDMPane) {
+        return this._rdmFullZoom;
+      }
+      return this.browsingContext.fullZoom;
     }
 
     set textZoom(val) {
-      if (this.isRemoteBrowser) {
-        let changed = val.toFixed(2) != this._textZoom.toFixed(2);
-
-        if (changed) {
-          this._textZoom = val;
-          this.sendMessageToActor("TextZoom", { value: val }, "Zoom", "roots");
-
-          let event = new Event("TextZoomChange", { bubbles: true });
-          this.dispatchEvent(event);
-        }
-      } else {
-        this.markupDocumentViewer.textZoom = val;
+      if (val.toFixed(2) == this.textZoom.toFixed(2)) {
+        return;
       }
+      this.browsingContext.textZoom = val;
     }
 
     get textZoom() {
-      if (this.isRemoteBrowser) {
-        return this._textZoom;
+      return this.browsingContext.textZoom;
+    }
+
+    enterResponsiveMode() {
+      if (this.browsingContext.inRDMPane) {
+        return;
       }
-      return this.markupDocumentViewer.textZoom;
+      this.browsingContext.inRDMPane = true;
+      this._rdmFullZoom = this.browsingContext.fullZoom;
+      this.browsingContext.fullZoom = 1.0;
+    }
+
+    leaveResponsiveMode() {
+      if (!this.browsingContext.inRDMPane) {
+        return;
+      }
+      this.browsingContext.inRDMPane = false;
+      this.browsingContext.fullZoom = this._rdmFullZoom;
     }
 
     get isSyntheticDocument() {
@@ -877,36 +724,7 @@
     }
 
     get securityUI() {
-      if (this.isRemoteBrowser) {
-        if (!this._securityUI) {
-          // Don't attempt to create the remote web progress if the
-          // messageManager has already gone away
-          if (!this.messageManager) {
-            return null;
-          }
-
-          let jsm = "resource://gre/modules/RemoteSecurityUI.jsm";
-          let RemoteSecurityUI = ChromeUtils.import(jsm, {}).RemoteSecurityUI;
-          this._securityUI = new RemoteSecurityUI();
-        }
-
-        // We want to double-wrap the JS implemented interface, so that QI and instanceof works.
-        var ptr = Cc[
-          "@mozilla.org/supports-interface-pointer;1"
-        ].createInstance(Ci.nsISupportsInterfacePointer);
-        ptr.data = this._securityUI;
-        return ptr.data.QueryInterface(Ci.nsISecureBrowserUI);
-      }
-
-      if (!this.docShell.securityUI) {
-        const SECUREBROWSERUI_CONTRACTID = "@mozilla.org/secure_browser_ui;1";
-        var securityUI = Cc[SECUREBROWSERUI_CONTRACTID].createInstance(
-          Ci.nsISecureBrowserUI
-        );
-        securityUI.init(this.docShell);
-      }
-
-      return this.docShell.securityUI;
+      return this.browsingContext.secureBrowserUI;
     }
 
     set userTypedValue(val) {
@@ -939,17 +757,25 @@
       }
     }
 
-    goBack() {
+    goBack(
+      requireUserInteraction = BrowserUtils.navigationRequireUserInteraction
+    ) {
       var webNavigation = this.webNavigation;
       if (webNavigation.canGoBack) {
-        this._wrapURIChangeCall(() => webNavigation.goBack());
+        this._wrapURIChangeCall(() =>
+          webNavigation.goBack(requireUserInteraction)
+        );
       }
     }
 
-    goForward() {
+    goForward(
+      requireUserInteraction = BrowserUtils.navigationRequireUserInteraction
+    ) {
       var webNavigation = this.webNavigation;
       if (webNavigation.canGoForward) {
-        this._wrapURIChangeCall(() => webNavigation.goForward());
+        this._wrapURIChangeCall(() =>
+          webNavigation.goForward(requireUserInteraction)
+        );
       }
     }
 
@@ -1040,39 +866,11 @@
         aNotifyMask = Ci.nsIWebProgress.NOTIFY_ALL;
       }
 
-      this.progressListeners.push({
-        weakListener: Cu.getWeakReference(aListener),
-        mask: aNotifyMask,
-      });
-
       this.webProgress.addProgressListener(aListener, aNotifyMask);
     }
 
     removeProgressListener(aListener) {
       this.webProgress.removeProgressListener(aListener);
-
-      // Remove aListener from our progress listener list, and clear out dead
-      // weak references while we're at it.
-      this.progressListeners = this.progressListeners.filter(
-        ({ weakListener }) =>
-          weakListener.get() && weakListener.get() !== aListener
-      );
-    }
-
-    /**
-     * Move the previously-tracked web progress listeners to this <browser>'s
-     * current WebProgress.
-     */
-    restoreProgressListeners() {
-      let listeners = this.progressListeners;
-      this.progressListeners = [];
-
-      for (let { weakListener, mask } of listeners) {
-        let listener = weakListener.get();
-        if (listener) {
-          this.addProgressListener(listener, mask);
-        }
-      }
     }
 
     onPageHide(aEvent) {
@@ -1200,30 +998,6 @@
         // we should re-evaluate the CSP here.
         this._csp = null;
 
-        this.messageManager.addMessageListener("Browser:Init", this);
-        this.messageManager.addMessageListener("DOMTitleChanged", this);
-
-        let jsm = "resource://gre/modules/RemoteWebProgress.jsm";
-        let { RemoteWebProgressManager } = ChromeUtils.import(jsm, {});
-
-        let oldManager = this._remoteWebProgressManager;
-        this._remoteWebProgressManager = new RemoteWebProgressManager(this);
-        if (oldManager) {
-          // We're transitioning from one remote type to another. This means that
-          // the RemoteWebProgress listener is listening to the old message manager,
-          // and needs to be pointed at the new one.
-          this._remoteWebProgressManager.swapListeners(oldManager);
-        }
-
-        this._remoteWebProgress = this._remoteWebProgressManager.topLevelWebProgress;
-
-        if (!oldManager) {
-          // If we didn't have a manager, then we're transitioning from local to
-          // remote. Add all listeners from the previous <browser> to the new
-          // RemoteWebProgress.
-          this.restoreProgressListeners();
-        }
-
         this.messageManager.loadFrameScript(
           "chrome://global/content/browser-child.js",
           true
@@ -1255,7 +1029,7 @@
             !this.isRemoteBrowser
           ) {
             try {
-              this.docShell.useGlobalHistory = true;
+              this.docShell.browsingContext.useGlobalHistory = true;
             } catch (ex) {
               // This can occur if the Places database is locked
               Cu.reportError("Error enabling browser global history: " + ex);
@@ -1270,24 +1044,8 @@
         var securityUI = this.securityUI; // eslint-disable-line no-unused-vars
       } catch (e) {}
 
-      // tabbrowser.xml sets "sameProcessAsFrameLoader" as a direct property
-      // on some browsers before they are put into a DOM (and get a
-      // binding).  This hack makes sure that we hold a weak reference to
-      // the other browser (and go through the proper getter and setter).
-      if (this.hasOwnProperty("sameProcessAsFrameLoader")) {
-        var sameProcessAsFrameLoader = this.sameProcessAsFrameLoader;
-        delete this.sameProcessAsFrameLoader;
-        this.sameProcessAsFrameLoader = sameProcessAsFrameLoader;
-      }
-
       if (!this.isRemoteBrowser) {
-        // If we've transitioned from remote to non-remote, we no longer need
-        // our RemoteWebProgress or its associated manager, but we'll need to
-        // add the progress listeners to the new non-remote WebProgress.
-        this._remoteWebProgressManager = null;
-        this._remoteWebProgress = null;
-        this.restoreProgressListeners();
-
+        this._remoteWebNavigation = null;
         this.addEventListener("pagehide", this.onPageHide, true);
       }
     }
@@ -1323,41 +1081,6 @@
       if (!this.isRemoteBrowser) {
         this.removeEventListener("pagehide", this.onPageHide, true);
       }
-
-      if (this._autoScrollNeedsCleanup) {
-        // we polluted the global scope, so clean it up
-        this._autoScrollPopup.remove();
-      }
-    }
-
-    receiveMessage(aMessage) {
-      if (this.isRemoteBrowser) {
-        const data = aMessage.data;
-        switch (aMessage.name) {
-          case "Browser:Init":
-            this._outerWindowID = data.outerWindowID;
-            break;
-          case "DOMTitleChanged":
-            this._contentTitle = data.title;
-            break;
-          default:
-            break;
-        }
-      }
-    }
-
-    updateSecurityUIForSecurityChange(aSecurityInfo, aState, aIsSecureContext) {
-      if (this.isRemoteBrowser && this.messageManager) {
-        // Invoking this getter triggers the generation of the underlying object,
-        // which we need to access with ._securityUI, because .securityUI returns
-        // a wrapper that makes _update inaccessible.
-        void this.securityUI;
-        this._securityUI._update(aSecurityInfo, aState, aIsSecureContext);
-      }
-    }
-
-    get remoteWebProgressManager() {
-      return this._remoteWebProgressManager;
     }
 
     updateForStateChange(aCharset, aDocumentURI, aContentType) {
@@ -1377,9 +1100,13 @@
     }
 
     updateWebNavigationForLocationChange(aCanGoBack, aCanGoForward) {
-      if (this.isRemoteBrowser && this.messageManager) {
-        this._remoteWebNavigation.canGoBack = aCanGoBack;
-        this._remoteWebNavigation.canGoForward = aCanGoForward;
+      if (
+        this.isRemoteBrowser &&
+        this.messageManager &&
+        !Services.appinfo.sessionHistoryInParent
+      ) {
+        this._remoteWebNavigation._canGoBack = aCanGoBack;
+        this._remoteWebNavigation._canGoForward = aCanGoForward;
       }
     }
 
@@ -1391,11 +1118,10 @@
       aDocumentURI,
       aTitle,
       aContentPrincipal,
-      aContentStoragePrincipal,
+      aContentPartitionedPrincipal,
       aCSP,
       aReferrerInfo,
       aIsSynthetic,
-      aInnerWindowID,
       aHaveRequestContextID,
       aRequestContextID,
       aContentType
@@ -1413,13 +1139,11 @@
 
         this._remoteWebNavigation._currentURI = aLocation;
         this._documentURI = aDocumentURI;
-        this._contentTitle = aTitle;
         this._contentPrincipal = aContentPrincipal;
-        this._contentStoragePrincipal = aContentStoragePrincipal;
+        this._contentPartitionedPrincipal = aContentPartitionedPrincipal;
         this._csp = aCSP;
         this._referrerInfo = aReferrerInfo;
         this._isSyntheticDocument = aIsSynthetic;
-        this._innerWindowID = aInnerWindowID;
         this._contentRequestContextID = aHaveRequestContextID
           ? aRequestContextID
           : null;
@@ -1427,11 +1151,41 @@
     }
 
     purgeSessionHistory() {
-      if (this.isRemoteBrowser) {
-        this._remoteWebNavigation.canGoBack = false;
-        this._remoteWebNavigation.canGoForward = false;
+      if (this.isRemoteBrowser && !Services.appinfo.sessionHistoryInParent) {
+        this._remoteWebNavigation._canGoBack = false;
+        this._remoteWebNavigation._canGoForward = false;
       }
+
       try {
+        if (Services.appinfo.sessionHistoryInParent) {
+          let sessionHistory = this.browsingContext?.sessionHistory;
+          if (!sessionHistory) {
+            return;
+          }
+
+          // place the entry at current index at the end of the history list, so it won't get removed
+          if (sessionHistory.index < sessionHistory.count - 1) {
+            let indexEntry = sessionHistory.getEntryAtIndex(
+              sessionHistory.index
+            );
+            sessionHistory.addEntry(indexEntry, true);
+          }
+
+          let purge = sessionHistory.count;
+          if (
+            this.browsingContext.currentWindowGlobal.documentURI !=
+            "about:blank"
+          ) {
+            --purge; // Don't remove the page the user's staring at from shistory
+          }
+
+          if (purge > 0) {
+            sessionHistory.purgeHistory(purge);
+          }
+
+          return;
+        }
+
         this.sendMessageToActor(
           "Browser:PurgeSessionHistory",
           {},
@@ -1446,7 +1200,7 @@
       }
     }
 
-    createAboutBlankContentViewer(aPrincipal, aStoragePrincipal) {
+    createAboutBlankContentViewer(aPrincipal, aPartitionedPrincipal) {
       if (this.isRemoteBrowser) {
         // Ensure that the content process has the permissions which are
         // needed to create a document with the given principal.
@@ -1472,7 +1226,7 @@
         // solution.
         this.messageManager.sendAsyncMessage(
           "BrowserElement:CreateAboutBlank",
-          { principal: aPrincipal, storagePrincipal: aStoragePrincipal }
+          { principal: aPrincipal, partitionedPrincipal: aPartitionedPrincipal }
         );
         return;
       }
@@ -1480,11 +1234,14 @@
         aPrincipal,
         this.contentPrincipal
       );
-      let storagePrincipal = BrowserUtils.principalWithMatchingOA(
-        aStoragePrincipal,
-        this.contentStoragePrincipal
+      let partitionedPrincipal = BrowserUtils.principalWithMatchingOA(
+        aPartitionedPrincipal,
+        this.contentPartitionedPrincipal
       );
-      this.docShell.createAboutBlankContentViewer(principal, storagePrincipal);
+      this.docShell.createAboutBlankContentViewer(
+        principal,
+        partitionedPrincipal
+      );
     }
 
     stopScroll() {
@@ -1526,13 +1283,17 @@
       }
     }
 
-    _createAutoScrollPopup() {
-      var popup = document.createXULElement("panel");
-      popup.className = "autoscroller";
-      popup.setAttribute("consumeoutsideclicks", "true");
-      popup.setAttribute("rolluponmousewheel", "true");
-      popup.setAttribute("hidden", "true");
-      return popup;
+    _getAndMaybeCreateAutoScrollPopup() {
+      let autoscrollPopup = document.getElementById("autoscroller");
+      if (!autoscrollPopup) {
+        autoscrollPopup = document.createXULElement("panel");
+        autoscrollPopup.className = "autoscroller";
+        autoscrollPopup.setAttribute("consumeoutsideclicks", "true");
+        autoscrollPopup.setAttribute("rolluponmousewheel", "true");
+        autoscrollPopup.id = "autoscroller";
+      }
+
+      return autoscrollPopup;
     }
 
     startScroll({
@@ -1549,17 +1310,8 @@
 
       const POPUP_SIZE = 32;
       if (!this._autoScrollPopup) {
-        if (this.hasAttribute("autoscrollpopup")) {
-          // our creator provided a popup to share
-          this._autoScrollPopup = document.getElementById(
-            this.getAttribute("autoscrollpopup")
-          );
-        } else {
-          // we weren't provided a popup; we have to use the global scope
-          this._autoScrollPopup = this._createAutoScrollPopup();
-          document.documentElement.appendChild(this._autoScrollPopup);
-          this._autoScrollNeedsCleanup = true;
-        }
+        this._autoScrollPopup = this._getAndMaybeCreateAutoScrollPopup();
+        document.documentElement.appendChild(this._autoScrollPopup);
         this._autoScrollPopup.removeAttribute("hidden");
         this._autoScrollPopup.setAttribute("noautofocus", "true");
         this._autoScrollPopup.style.height = POPUP_SIZE + "px";
@@ -1782,7 +1534,7 @@
       //            to the JS global of the current browser, which would rather
       //            easily create leaks while swapping.
       // IMPORTANT2: When the current browser element is removed from DOM,
-      //             which is quite common after a swpDocShells call, its
+      //             which is quite common after a swapDocShells call, its
       //             frame loader is destroyed, and that destroys the relevant
       //             message manager, which will remove the listeners.
       let event = new CustomEvent("SwapDocShells", { detail: aOtherBrowser });
@@ -1796,28 +1548,21 @@
       // DOMLinkAdded/Removed, onStateChange) should not be swapped here,
       // because these notifications are dispatched again once the docshells
       // are swapped.
-      var fieldsToSwap = ["_webBrowserFind"];
+      var fieldsToSwap = ["_webBrowserFind", "_rdmFullZoom"];
 
       if (this.isRemoteBrowser) {
         fieldsToSwap.push(
           ...[
             "_remoteWebNavigation",
-            "_remoteWebProgressManager",
-            "_remoteWebProgress",
             "_remoteFinder",
-            "_securityUI",
             "_documentURI",
             "_documentContentType",
-            "_contentTitle",
             "_characterSet",
             "_mayEnableCharacterEncodingMenu",
             "_charsetAutodetected",
             "_contentPrincipal",
-            "_contentStoragePrincipal",
-            "_fullZoom",
-            "_textZoom",
+            "_contentPartitionedPrincipal",
             "_isSyntheticDocument",
-            "_innerWindowID",
           ]
         );
       }
@@ -1855,14 +1600,6 @@
         this._remoteWebNavigation.swapBrowser(this);
         aOtherBrowser._remoteWebNavigation.swapBrowser(aOtherBrowser);
 
-        if (
-          this._remoteWebProgressManager &&
-          aOtherBrowser._remoteWebProgressManager
-        ) {
-          this._remoteWebProgressManager.swapBrowser(this);
-          aOtherBrowser._remoteWebProgressManager.swapBrowser(aOtherBrowser);
-        }
-
         if (this._remoteFinder) {
           this._remoteFinder.swapBrowser(this);
         }
@@ -1885,7 +1622,10 @@
           aCallback(false);
           return;
         }
-        aCallback(LazyModules.PermitUnloader.inPermitUnload(this.frameLoader));
+
+        aCallback(
+          this._inPermitUnload.has(this.browsingContext.currentWindowGlobal)
+        );
         return;
       }
 
@@ -1896,39 +1636,80 @@
       aCallback(this.docShell.contentViewer.inPermitUnload);
     }
 
-    permitUnload(aPermitUnloadFlags) {
+    async asyncPermitUnload(action) {
+      let wgp = this.browsingContext.currentWindowGlobal;
+      if (this._inPermitUnload.has(wgp)) {
+        throw new Error("permitUnload is already running for this tab.");
+      }
+
+      this._inPermitUnload.add(wgp);
+      try {
+        let permitUnload = await wgp.permitUnload(
+          action,
+          lazyPrefs.unloadTimeoutMs
+        );
+        return { permitUnload };
+      } finally {
+        this._inPermitUnload.delete(wgp);
+      }
+    }
+
+    get hasBeforeUnload() {
+      function hasBeforeUnload(bc) {
+        if (bc.currentWindowContext?.hasBeforeUnload) {
+          return true;
+        }
+        return bc.children.some(hasBeforeUnload);
+      }
+      return hasBeforeUnload(this.browsingContext);
+    }
+
+    permitUnload(action) {
       if (this.isRemoteBrowser) {
-        if (!LazyModules.PermitUnloader.hasBeforeUnload(this.frameLoader)) {
-          return { permitUnload: true, timedOut: false };
+        if (!this.hasBeforeUnload) {
+          return { permitUnload: true };
         }
 
-        return LazyModules.PermitUnloader.permitUnload(
-          this.frameLoader,
-          aPermitUnloadFlags
+        let result;
+        let success;
+
+        this.asyncPermitUnload(action).then(
+          val => {
+            result = val;
+            success = true;
+          },
+          err => {
+            result = err;
+            success = false;
+          }
         );
+
+        // The permitUnload() promise will, alas, not call its resolution
+        // callbacks after the browser window the promise lives in has closed,
+        // so we have to check for that case explicitly.
+        Services.tm.spinEventLoopUntilOrShutdown(
+          () => window.closed || success !== undefined
+        );
+        if (success) {
+          return result;
+        }
+        throw result;
       }
 
       if (!this.docShell || !this.docShell.contentViewer) {
-        return { permitUnload: true, timedOut: false };
+        return { permitUnload: true };
       }
       return {
-        permitUnload: this.docShell.contentViewer.permitUnload(
-          aPermitUnloadFlags
-        ),
-        timedOut: false,
+        permitUnload: this.docShell.contentViewer.permitUnload(),
       };
     }
 
-    print(aOuterWindowID, aPrintSettings, aPrintProgressListener) {
+    print(aOuterWindowID, aPrintSettings) {
       if (!this.frameLoader) {
         throw Components.Exception("No frame loader.", Cr.NS_ERROR_FAILURE);
       }
 
-      this.frameLoader.print(
-        aOuterWindowID,
-        aPrintSettings,
-        aPrintProgressListener
-      );
+      return this.frameLoader.print(aOuterWindowID, aPrintSettings);
     }
 
     async drawSnapshot(x, y, w, h, scale, backgroundColor) {
@@ -2051,6 +1832,73 @@
         this._devicePermissionOrigins.set(key, origins);
       }
       return origins;
+    }
+
+    get processSwitchBehavior() {
+      // If a `remotenessChangeHandler` is attached to this browser, it supports
+      // having its toplevel process switched dynamically in response to
+      // navigations.
+      if (this.hasAttribute("maychangeremoteness")) {
+        return Ci.nsIBrowser.PROCESS_BEHAVIOR_STANDARD;
+      }
+
+      // For backwards compatibility, we need to mark remote, but
+      // non-`allowremote`, frames as `PROCESS_BEHAVIOR_SUBFRAME_ONLY`, as some
+      // tests rely on it.
+      // FIXME: Remove this?
+      if (this.isRemoteBrowser) {
+        return Ci.nsIBrowser.PROCESS_BEHAVIOR_SUBFRAME_ONLY;
+      }
+      // Otherwise, don't allow gecko-initiated toplevel process switches.
+      return Ci.nsIBrowser.PROCESS_BEHAVIOR_DISABLED;
+    }
+
+    // This method is replaced by frontend code in order to delay performing the
+    // process switch until some async operatin is completed.
+    //
+    // This is used by tabbrowser to flush SessionStore before a process switch.
+    async prepareToChangeRemoteness() {
+      /* no-op unless replaced */
+    }
+
+    // This method is replaced by frontend code in order to handle restoring
+    // remote session history
+    //
+    // Called immediately after changing remoteness.  If this method returns
+    // `true`, Gecko will assume frontend handled resuming the load, and will
+    // not attempt to resume the load itself.
+    afterChangeRemoteness(browser, redirectLoadSwitchId) {
+      /* no-op unless replaced */
+      return false;
+    }
+
+    // Called by Gecko before the remoteness change happens, allowing for
+    // listeners, etc. to be stashed before the process switch.
+    beforeChangeRemoteness() {
+      // Fire the `WillChangeBrowserRemoteness` event, which may be hooked by
+      // frontend code for custom behaviour.
+      let event = document.createEvent("Events");
+      event.initEvent("WillChangeBrowserRemoteness", true, false);
+      this.dispatchEvent(event);
+
+      // Destroy ourselves to unregister from observer notifications
+      // FIXME: Can we get away with something less destructive here?
+      this.destroy();
+    }
+
+    finishChangeRemoteness(redirectLoadSwitchId) {
+      // Re-construct ourselves after the destroy in `beforeChangeRemoteness`.
+      this.construct();
+
+      // Fire the `DidChangeBrowserRemoteness` event, which may be hooked by
+      // frontend code for custom behaviour.
+      let event = document.createEvent("Events");
+      event.initEvent("DidChangeBrowserRemoteness", true, false);
+      this.dispatchEvent(event);
+
+      // Call into frontend code which may want to handle the load (e.g. to
+      // while restoring session state).
+      return this.afterChangeRemoteness(redirectLoadSwitchId);
     }
   }
 

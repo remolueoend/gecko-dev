@@ -21,6 +21,8 @@ class GfxInfo final : public GfxInfoBase {
   NS_IMETHOD GetD2DEnabled(bool* aD2DEnabled) override;
   NS_IMETHOD GetDWriteEnabled(bool* aDWriteEnabled) override;
   NS_IMETHOD GetDWriteVersion(nsAString& aDwriteVersion) override;
+  NS_IMETHOD GetEmbeddedInFirefoxReality(
+      bool* aEmbeddedInFirefoxReality) override;
   NS_IMETHOD GetHasBattery(bool* aHasBattery) override;
   NS_IMETHOD GetCleartypeParameters(nsAString& aCleartypeParams) override;
   NS_IMETHOD GetWindowProtocol(nsAString& aWindowProtocol) override;
@@ -87,6 +89,9 @@ class GfxInfo final : public GfxInfoBase {
   nsCString mOSRelease;
   nsAutoCStringN<16> mDesktopEnvironment;
 
+  nsCString mSecondaryVendorId;
+  nsCString mSecondaryDeviceId;
+
   struct ScreenInfo {
     uint32_t mWidth;
     uint32_t mHeight;
@@ -100,6 +105,9 @@ class GfxInfo final : public GfxInfoBase {
   bool mIsAccelerated;
   bool mIsWayland;
   bool mIsWaylandDRM;
+  bool mIsXWayland;
+  bool mHasMultipleGPUs;
+  bool mGlxTestError;
 
   void AddCrashReportAnnotations();
 };

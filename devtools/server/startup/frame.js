@@ -40,9 +40,7 @@ try {
     const { require } = loader;
 
     const DevToolsUtils = require("devtools/shared/DevToolsUtils");
-    const { dumpn } = DevToolsUtils;
     const { DevToolsServer } = require("devtools/server/devtools-server");
-    const { ActorPool } = require("devtools/server/actors/common");
 
     DevToolsServer.init();
     // We want a special server without any root actor and only target-scoped actors.
@@ -84,49 +82,12 @@ try {
         // message manager.
         actor = new FrameTargetActor(conn, docShell);
       }
-
-      const actorPool = new ActorPool(conn, "frame-script");
-      actorPool.addActor(actor);
-      conn.addActorPool(actorPool);
+      actor.manage(actor);
 
       sendAsyncMessage("debug:actor", { actor: actor.form(), prefix: prefix });
     });
 
     addMessageListener("debug:connect", onConnect);
-
-    // Allows executing module setup helper from the parent process.
-    // See also: DevToolsServer.setupInChild()
-    const onSetupInChild = DevToolsUtils.makeInfallible(msg => {
-      const { module, setupChild, args } = msg.data;
-      let m;
-
-      try {
-        m = require(module);
-
-        if (!(setupChild in m)) {
-          dumpn(`ERROR: module '${module}' does not export '${setupChild}'`);
-          return false;
-        }
-
-        m[setupChild].apply(m, args);
-      } catch (e) {
-        const errorMessage =
-          "Exception during actor module setup running in the child process: ";
-        DevToolsUtils.reportException(errorMessage + e);
-        dumpn(
-          `ERROR: ${errorMessage}\n\t module: '${module}'\n\t ` +
-            `setupChild: '${setupChild}'\n${DevToolsUtils.safeErrorString(e)}`
-        );
-        return false;
-      }
-      if (msg.data.id) {
-        // Send a message back to know when it is processed
-        sendAsyncMessage("debug:setup-in-child-response", { id: msg.data.id });
-      }
-      return true;
-    });
-
-    addMessageListener("debug:setup-in-child", onSetupInChild);
 
     const onDisconnect = DevToolsUtils.makeInfallible(function(msg) {
       const prefix = msg.data.prefix;

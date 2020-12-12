@@ -34,7 +34,7 @@ native OriginAttributes(mozilla::OriginAttributes);
  * NOTE: This is a free-threaded interface, meaning that the methods on
  * this interface may be called from any thread.
  */
-[scriptable, uuid(79221831-85e2-43a8-8152-05d77d6fde31)]
+[scriptable, builtinclass, uuid(79221831-85e2-43a8-8152-05d77d6fde31)]
 interface nsISocketTransport : nsITransport
 {
     /**
@@ -255,9 +255,9 @@ interface nsISocketTransport : nsITransport
 
     /**
      * If we know that a server speaks only tls <1.3 there is no need to try
-     * to use esni and query dns for esni keys.
+     * to use ech.
      */
-    const unsigned long DONT_TRY_ESNI = (1 << 10);
+    const unsigned long DONT_TRY_ECH = (1 << 10);
 
     /**
      * These two bits encode the TRR mode of the request.
@@ -275,6 +275,11 @@ interface nsISocketTransport : nsITransport
         return static_cast<nsIRequest::TRRMode>((aFlags & TRR_MODE_FLAGS) >> 11);
     }
 %}
+
+    /**
+     * If set, we will use IP hint addresses to connect to the host.
+     */
+    const unsigned long USE_IP_HINT_ADDRESS = (1 << 13);
 
     /**
      * An opaque flags for non-standard behavior of the TLS system.
@@ -321,13 +326,24 @@ interface nsISocketTransport : nsITransport
     readonly attribute boolean resetIPFamilyPreference;
 
     /**
-     * This attribute holds information whether esni has been used.
+     * This attribute holds information whether echConfig has been used.
      * The value is set after PR_Connect is called.
      */
-   readonly attribute boolean esniUsed;
+   readonly attribute boolean echConfigUsed;
+
+    /**
+     * Called to set the echConfig to the securityInfo object.
+     */
+    void setEchConfig(in ACString echConfig);
 
     /**
      * IP address resolved using TRR.
      */
     bool resolvedByTRR();
+
+    /**
+     * Indicate whether this socket is created from a private window. If yes,
+     * this socket will be closed when the last private window is closed.
+     */
+    [noscript] void setIsPrivate(in boolean isPrivate);
 };

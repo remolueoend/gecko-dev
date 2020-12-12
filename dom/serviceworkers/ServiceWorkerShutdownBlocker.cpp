@@ -10,10 +10,12 @@
 #include <utility>
 
 #include "MainThreadUtils.h"
+#include "nsComponentManagerUtils.h"
 #include "nsDebug.h"
 #include "nsError.h"
 #include "nsIWritablePropertyBag2.h"
 #include "nsThreadUtils.h"
+#include "ServiceWorkerManager.h"
 
 #include "mozilla/Assertions.h"
 #include "mozilla/RefPtr.h"
@@ -24,8 +26,8 @@ namespace dom {
 NS_IMPL_ISUPPORTS(ServiceWorkerShutdownBlocker, nsIAsyncShutdownBlocker)
 
 NS_IMETHODIMP ServiceWorkerShutdownBlocker::GetName(nsAString& aNameOut) {
-  aNameOut = NS_LITERAL_STRING(
-      "ServiceWorkerShutdownBlocker: shutting down Service Workers");
+  aNameOut = nsLiteralString(
+      u"ServiceWorkerShutdownBlocker: shutting down Service Workers");
   return NS_OK;
 }
 
@@ -33,8 +35,12 @@ NS_IMETHODIMP
 ServiceWorkerShutdownBlocker::BlockShutdown(nsIAsyncShutdownClient* aClient) {
   AssertIsOnMainThread();
   MOZ_ASSERT(!mShutdownClient);
+  MOZ_ASSERT(mServiceWorkerManager);
 
   mShutdownClient = aClient;
+
+  (*mServiceWorkerManager)->MaybeStartShutdown();
+  mServiceWorkerManager.destroy();
 
   MaybeUnblockShutdown();
   MaybeInitUnblockShutdownTimer();
@@ -53,14 +59,14 @@ NS_IMETHODIMP ServiceWorkerShutdownBlocker::GetState(nsIPropertyBag** aBagOut) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  nsresult rv = propertyBag->SetPropertyAsBool(
-      NS_LITERAL_STRING("acceptingPromises"), IsAcceptingPromises());
+  nsresult rv = propertyBag->SetPropertyAsBool(u"acceptingPromises"_ns,
+                                               IsAcceptingPromises());
 
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
-  rv = propertyBag->SetPropertyAsUint32(NS_LITERAL_STRING("pendingPromises"),
+  rv = propertyBag->SetPropertyAsUint32(u"pendingPromises"_ns,
                                         GetPendingPromises());
 
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -74,8 +80,7 @@ NS_IMETHODIMP ServiceWorkerShutdownBlocker::GetState(nsIPropertyBag** aBagOut) {
     shutdownStates.Append(", ");
   }
 
-  rv = propertyBag->SetPropertyAsACString(NS_LITERAL_STRING("shutdownStates"),
-                                          shutdownStates);
+  rv = propertyBag->SetPropertyAsACString(u"shutdownStates"_ns, shutdownStates);
 
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -88,16 +93,16 @@ NS_IMETHODIMP ServiceWorkerShutdownBlocker::GetState(nsIPropertyBag** aBagOut) {
 
 /* static */ already_AddRefed<ServiceWorkerShutdownBlocker>
 ServiceWorkerShutdownBlocker::CreateAndRegisterOn(
-    nsIAsyncShutdownClient* aShutdownBarrier) {
+    nsIAsyncShutdownClient& aShutdownBarrier,
+    ServiceWorkerManager& aServiceWorkerManager) {
   AssertIsOnMainThread();
-  MOZ_ASSERT(aShutdownBarrier);
 
   RefPtr<ServiceWorkerShutdownBlocker> blocker =
-      new ServiceWorkerShutdownBlocker();
+      new ServiceWorkerShutdownBlocker(aServiceWorkerManager);
 
-  nsresult rv = aShutdownBarrier->AddBlocker(
-      blocker.get(), NS_LITERAL_STRING(__FILE__), __LINE__,
-      NS_LITERAL_STRING("Service Workers shutdown"));
+  nsresult rv = aShutdownBarrier.AddBlocker(
+      blocker.get(), NS_LITERAL_STRING_FROM_CSTRING(__FILE__), __LINE__,
+      u"Service Workers shutdown"_ns);
 
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return nullptr;
@@ -117,7 +122,7 @@ void ServiceWorkerShutdownBlocker::WaitOnPromise(
 
   RefPtr<ServiceWorkerShutdownBlocker> self = this;
 
-  aPromise->Then(GetCurrentThreadSerialEventTarget(), __func__,
+  aPromise->Then(GetCurrentSerialEventTarget(), __func__,
                  [self = std::move(self), shutdownStateId = aShutdownStateId](
                      const GenericNonExclusivePromise::ResolveOrRejectValue&) {
                    // Progress reporting might race with aPromise settling.
@@ -171,8 +176,10 @@ void ServiceWorkerShutdownBlocker::ReportShutdownProgress(
   }
 }
 
-ServiceWorkerShutdownBlocker::ServiceWorkerShutdownBlocker()
-    : mState(VariantType<AcceptingPromises>()) {
+ServiceWorkerShutdownBlocker::ServiceWorkerShutdownBlocker(
+    ServiceWorkerManager& aServiceWorkerManager)
+    : mState(VariantType<AcceptingPromises>()),
+      mServiceWorkerManager(WrapNotNull(&aServiceWorkerManager)) {
   AssertIsOnMainThread();
 }
 
@@ -180,6 +187,7 @@ ServiceWorkerShutdownBlocker::~ServiceWorkerShutdownBlocker() {
   MOZ_ASSERT(!IsAcceptingPromises());
   MOZ_ASSERT(!GetPendingPromises());
   MOZ_ASSERT(!mShutdownClient);
+  MOZ_ASSERT(!mServiceWorkerManager);
 }
 
 void ServiceWorkerShutdownBlocker::MaybeUnblockShutdown() {
@@ -245,12 +253,18 @@ NS_IMETHODIMP ServiceWorkerShutdownBlocker::Notify(nsITimer*) {
   return NS_OK;
 }
 
-void ServiceWorkerShutdownBlocker::MaybeInitUnblockShutdownTimer() {
 #ifdef RELEASE_OR_BETA
-  AssertIsOnMainThread();
-  MOZ_ASSERT(!mTimer);
+#  define SW_UNBLOCK_SHUTDOWN_TIMER_DURATION 10s
+#else
+// In Nightly, we do want a shutdown hang to be reported so we pick a value
+// notably longer than the 60s of the RunWatchDog timeout.
+#  define SW_UNBLOCK_SHUTDOWN_TIMER_DURATION 200s
+#endif
 
-  if (!mShutdownClient || IsAcceptingPromises()) {
+void ServiceWorkerShutdownBlocker::MaybeInitUnblockShutdownTimer() {
+  AssertIsOnMainThread();
+
+  if (mTimer || !mShutdownClient || IsAcceptingPromises()) {
     return;
   }
 
@@ -260,12 +274,12 @@ void ServiceWorkerShutdownBlocker::MaybeInitUnblockShutdownTimer() {
   using namespace std::chrono_literals;
 
   static constexpr auto delay =
-      std::chrono::duration_cast<std::chrono::milliseconds>(10s);
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          SW_UNBLOCK_SHUTDOWN_TIMER_DURATION);
 
   mTimer = NS_NewTimer();
 
   mTimer->InitWithCallback(this, delay.count(), nsITimer::TYPE_ONE_SHOT);
-#endif
 }
 
 }  // namespace dom

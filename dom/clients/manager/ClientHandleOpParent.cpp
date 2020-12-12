@@ -8,10 +8,10 @@
 
 #include "ClientHandleParent.h"
 #include "ClientSourceParent.h"
+#include "mozilla/dom/ipc/StructuredCloneData.h"
 #include "mozilla/dom/PClientManagerParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 ClientSourceParent* ClientHandleOpParent::GetSource() const {
   auto handle = static_cast<ClientHandleParent*>(Manager());
@@ -27,7 +27,7 @@ void ClientHandleOpParent::Init(ClientOpConstructorArgs&& aArgs) {
   auto handle = static_cast<ClientHandleParent*>(Manager());
   handle->EnsureSource()
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [this, args = std::move(aArgs)](ClientSourceParent* source) mutable {
             mSourcePromiseRequestHolder.Complete();
             RefPtr<ClientOpPromise> p;
@@ -44,7 +44,7 @@ void ClientHandleOpParent::Init(ClientOpConstructorArgs&& aArgs) {
               ClientPostMessageArgs rebuild;
               rebuild.serviceWorker() = orig.serviceWorker();
 
-              StructuredCloneData data;
+              ipc::StructuredCloneData data;
               data.BorrowFromClonedMessageDataForBackgroundParent(
                   orig.clonedData());
               if (!data.BuildClonedMessageDataForBackgroundParent(
@@ -67,7 +67,7 @@ void ClientHandleOpParent::Init(ClientOpConstructorArgs&& aArgs) {
             // in ActorDestroy() which ensures neither lambda is called if the
             // actor is destroyed before the source operation completes.
             p->Then(
-                 GetCurrentThreadSerialEventTarget(), __func__,
+                 GetCurrentSerialEventTarget(), __func__,
                  [this](const ClientOpResult& aResult) {
                    mPromiseRequestHolder.Complete();
                    Unused << PClientHandleOpParent::Send__delete__(this,
@@ -87,5 +87,4 @@ void ClientHandleOpParent::Init(ClientOpConstructorArgs&& aArgs) {
       ->Track(mSourcePromiseRequestHolder);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

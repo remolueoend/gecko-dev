@@ -19,8 +19,7 @@
 #include "nsIStorageStream.h"
 #include "nsStringStream.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 static nsresult GetBufferDataAsStream(
     const uint8_t* aData, uint32_t aDataLength, nsIInputStream** aResult,
@@ -33,7 +32,7 @@ static nsresult GetBufferDataAsStream(
 
   nsCOMPtr<nsIInputStream> stream;
   nsresult rv = NS_NewByteInputStream(
-      getter_AddRefs(stream), MakeSpan(data, aDataLength), NS_ASSIGNMENT_COPY);
+      getter_AddRefs(stream), Span(data, aDataLength), NS_ASSIGNMENT_COPY);
   NS_ENSURE_SUCCESS(rv, rv);
 
   stream.forget(aResult);
@@ -102,8 +101,7 @@ nsresult BodyExtractor<Document>::GetAsStream(
 
     // Make sure to use the encoding we'll send
     ErrorResult res;
-    serializer->SerializeToStream(*mBody, output, NS_LITERAL_STRING("UTF-8"),
-                                  res);
+    serializer->SerializeToStream(*mBody, output, u"UTF-8"_ns, res);
     if (NS_WARN_IF(res.Failed())) {
       return res.StealNSResult();
     }
@@ -181,5 +179,4 @@ nsresult BodyExtractor<const URLSearchParams>::GetAsStream(
                             aCharset);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

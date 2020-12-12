@@ -13,19 +13,23 @@
 
 #include "mozilla/Maybe.h"
 #include "mozilla/Variant.h"
-#include "mozilla/dom/WindowProxyHolder.h"
 #include "mozilla/extensions/MatchGlob.h"
 #include "mozilla/extensions/MatchPattern.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupports.h"
 #include "nsIDocShell.h"
+#include "nsPIDOMWindow.h"
 #include "nsWrapperCache.h"
 
 class nsILoadInfo;
 class nsPIDOMWindowOuter;
 
 namespace mozilla {
+namespace dom {
+class WindowGlobalChild;
+}
+
 namespace extensions {
 
 using dom::Nullable;
@@ -114,9 +118,8 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
   bool MatchesLoadInfo(const URLInfo& aURL, nsILoadInfo* aLoadInfo) const {
     return Matches({aURL, aLoadInfo});
   }
-  bool MatchesWindow(const dom::WindowProxyHolder& aWindow) const {
-    return Matches(aWindow.get()->GetDOMWindow());
-  }
+
+  bool MatchesWindowGlobal(dom::WindowGlobalChild& aWindow) const;
 
   WebExtensionPolicy* GetExtension() { return mExtension; }
 
@@ -176,6 +179,15 @@ class MozDocumentMatcher : public nsISupports, public nsWrapperCache {
       aOutput.SetNull();
     } else {
       aOutput.SetValue(aInput.Value());
+    }
+  }
+
+  template <typename T, typename U>
+  void ToNullable(const Nullable<T>& aInput, Nullable<nsTArray<U>>& aOutput) {
+    if (aInput.IsNull()) {
+      aOutput.SetNull();
+    } else {
+      aOutput.SetValue(aInput.Value().Clone());
     }
   }
 };

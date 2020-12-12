@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# This allows ubuntu-desktop to be installed without human interaction
+# This allows packages to be installed without human interaction
 export DEBIAN_FRONTEND=noninteractive
 
 set -ve
@@ -14,6 +14,7 @@ apt_packages+=('curl')
 apt_packages+=('iproute2')
 apt_packages+=('locales')
 apt_packages+=('git')
+apt_packages+=('graphviz')
 apt_packages+=('python')
 apt_packages+=('python-pip')
 apt_packages+=('python3')
@@ -43,6 +44,12 @@ tooltool_fetch() {
 cd /build
 # shellcheck disable=SC1091
 . install-mercurial.sh
+
+###
+# zstandard
+###
+pip install zstandard==0.13.0
+pip3 install zstandard==0.13.0
 
 ###
 # ESLint Setup
@@ -78,14 +85,6 @@ EOF
 mv fzf /usr/local/bin
 
 ###
-# Flake8 Setup
-###
-
-cd /setup
-
-pip3 install --require-hashes -r /tmp/flake8_requirements.txt
-
-###
 # codespell Setup
 ###
 
@@ -112,6 +111,7 @@ mkdir -p "$CARGO_HOME"
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 "$RUSTUP_HOME"/bin/rustup component add rustfmt
 "$RUSTUP_HOME"/bin/rustup component add clippy
+"$RUSTUP_HOME"/bin/rustc --version
 "$RUSTUP_HOME"/bin/rustfmt --version
 "$CARGO_HOME"/bin/cargo clippy --version
 

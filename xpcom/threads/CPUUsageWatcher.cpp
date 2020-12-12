@@ -14,6 +14,10 @@
 #  include <mach/mach_host.h>
 #endif
 
+#ifdef CPU_USAGE_WATCHER_ACTIVE
+#  include "mozilla/BackgroundHangMonitor.h"
+#endif
+
 namespace mozilla {
 
 #ifdef CPU_USAGE_WATCHER_ACTIVE
@@ -231,7 +235,7 @@ void CPUUsageWatcher::AnnotateHang(BackgroundHangAnnotations& aAnnotations) {
   }
 
   if (mExternalUsageRatio > mExternalUsageThreshold) {
-    aAnnotations.AddAnnotation(NS_LITERAL_STRING("ExternalCPUHigh"), true);
+    aAnnotations.AddAnnotation(u"ExternalCPUHigh"_ns, true);
   }
 }
 

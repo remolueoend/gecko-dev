@@ -136,7 +136,7 @@ var connectHandler = {
     ) {
       return this;
     }
-    throw Cr.NS_ERROR_NO_INTERFACE;
+    throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
   },
 };
 
@@ -216,7 +216,7 @@ function makeChan(url) {
   }
 
   var flags =
-    Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL |
+    Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL |
     Ci.nsILoadInfo.SEC_DONT_FOLLOW_REDIRECTS |
     Ci.nsILoadInfo.SEC_COOKIES_OMIT;
 
@@ -265,7 +265,7 @@ function socketAccepted(socket, transport) {
 }
 
 function stopListening(socket, status) {
-  if (do_throw) {
+  if (tests && tests.length !== 0 && do_throw) {
     do_throw("should never stop");
   }
 }

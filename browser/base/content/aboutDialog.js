@@ -19,22 +19,27 @@ async function init(aEvent) {
 
   var distroId = Services.prefs.getCharPref("distribution.id", "");
   if (distroId) {
-    var distroString = distroId;
-
-    var distroVersion = Services.prefs.getCharPref("distribution.version", "");
-    if (distroVersion) {
-      distroString += " - " + distroVersion;
-    }
-
-    var distroIdField = document.getElementById("distributionId");
-    distroIdField.value = distroString;
-    distroIdField.style.display = "block";
-
     var distroAbout = Services.prefs.getStringPref("distribution.about", "");
+    // If there is about text, we always show it.
     if (distroAbout) {
       var distroField = document.getElementById("distribution");
       distroField.value = distroAbout;
       distroField.style.display = "block";
+    }
+    // If it's not a mozilla distribution, show the rest,
+    // unless about text exists, then we always show.
+    if (!distroId.startsWith("mozilla-") || distroAbout) {
+      var distroVersion = Services.prefs.getCharPref(
+        "distribution.version",
+        ""
+      );
+      if (distroVersion) {
+        distroId += " - " + distroVersion;
+      }
+
+      var distroIdField = document.getElementById("distributionId");
+      distroIdField.value = distroId;
+      distroIdField.style.display = "block";
     }
   }
 
@@ -67,10 +72,12 @@ async function init(aEvent) {
 
   // Show a release notes link if we have a URL.
   let relNotesLink = document.getElementById("releasenotes");
-  let relNotesPrefType = Services.prefs.getPrefType("app.releaseNotesURL");
+  let relNotesPrefType = Services.prefs.getPrefType(
+    "app.releaseNotesURL.aboutDialog"
+  );
   if (relNotesPrefType != Services.prefs.PREF_INVALID) {
     let relNotesURL = Services.urlFormatter.formatURLPref(
-      "app.releaseNotesURL"
+      "app.releaseNotesURL.aboutDialog"
     );
     if (relNotesURL != "about:blank") {
       relNotesLink.href = relNotesURL;

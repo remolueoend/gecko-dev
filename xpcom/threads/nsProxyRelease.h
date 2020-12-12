@@ -14,6 +14,7 @@
 #include "mozilla/Unused.h"
 #include "nsCOMPtr.h"
 #include "nsIEventTarget.h"
+#include "nsISerialEventTarget.h"
 #include "nsIThread.h"
 #include "nsPrintfCString.h"
 #include "nsThreadUtils.h"
@@ -21,6 +22,8 @@
 #ifdef XPCOM_GLUE_AVOID_NSPR
 #  error NS_ProxyRelease implementation depends on NSPR.
 #endif
+
+class nsIRunnable;
 
 namespace detail {
 
@@ -149,6 +152,11 @@ template <class T>
 inline NS_HIDDEN_(void)
     NS_ReleaseOnMainThread(const char* aName, already_AddRefed<T> aDoomed,
                            bool aAlwaysProxy = false) {
+  RefPtr<T> doomed = aDoomed;
+  if (!doomed) {
+    return;  // Nothing to do.
+  }
+
   // NS_ProxyRelease treats a null event target as "the current thread".  So a
   // handle on the main thread is only necessary when we're not already on the
   // main thread or the release must happen asynchronously.
@@ -158,12 +166,12 @@ inline NS_HIDDEN_(void)
 
     if (!target) {
       MOZ_ASSERT_UNREACHABLE("Could not get main thread; leaking an object!");
-      mozilla::Unused << aDoomed.take();
+      mozilla::Unused << doomed.forget().take();
       return;
     }
   }
 
-  NS_ProxyRelease(aName, target, std::move(aDoomed), aAlwaysProxy);
+  NS_ProxyRelease(aName, target, doomed.forget(), aAlwaysProxy);
 }
 
 template <class T>

@@ -8,6 +8,7 @@
 
 #include "BufferMediaResource.h"
 #include "MediaData.h"
+#include "MediaDataDecoderProxy.h"
 #include "PDMFactory.h"
 #include "VideoUtils.h"
 #include "WebMDemuxer.h"
@@ -17,8 +18,10 @@
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/TaskQueue.h"
+#include "mozilla/Telemetry.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/gfx/gfxVars.h"
+#include "nsGkAtoms.h"
 #include "nsIGfxInfo.h"
 
 #ifndef MOZ_WIDGET_ANDROID
@@ -102,8 +105,7 @@ bool VP9Benchmark::IsVP9DecodeFast(bool aDefault) {
           if (XRE_IsContentProcess()) {
             dom::ContentChild* contentChild = dom::ContentChild::GetSingleton();
             if (contentChild) {
-              contentChild->SendNotifyBenchmarkResult(NS_LITERAL_STRING("VP9"),
-                                                      aDecodeFps);
+              contentChild->SendNotifyBenchmarkResult(u"VP9"_ns, aDecodeFps);
             }
           } else {
             Preferences::SetUint(sBenchmarkFpsPref, aDecodeFps);
@@ -125,7 +127,7 @@ bool VP9Benchmark::IsVP9DecodeFast(bool aDefault) {
 }
 
 Benchmark::Benchmark(MediaDataDemuxer* aDemuxer, const Parameters& aParameters)
-    : QueueObject(new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK),
+    : QueueObject(new TaskQueue(GetMediaThreadPool(MediaThreadType::SUPERVISOR),
                                 "Benchmark::QueueObject")),
       mParameters(aParameters),
       mKeepAliveUntilComplete(this),
@@ -170,7 +172,7 @@ void Benchmark::Init() {
 
 BenchmarkPlayback::BenchmarkPlayback(Benchmark* aGlobalState,
                                      MediaDataDemuxer* aDemuxer)
-    : QueueObject(new TaskQueue(GetMediaThreadPool(MediaThreadType::PLAYBACK),
+    : QueueObject(new TaskQueue(GetMediaThreadPool(MediaThreadType::SUPERVISOR),
                                 "BenchmarkPlayback::QueueObject")),
       mGlobalState(aGlobalState),
       mDecoderTaskQueue(
@@ -245,16 +247,21 @@ void BenchmarkPlayback::InitDecoder(UniquePtr<TrackInfo>&& aInfo) {
 
   RefPtr<PDMFactory> platform = new PDMFactory();
   mInfo = std::move(aInfo);
-  mDecoder = platform->CreateDecoder({*mInfo, mDecoderTaskQueue});
-  if (!mDecoder) {
-    Error(MediaResult(NS_ERROR_FAILURE, "Failed to create decoder"));
-    return;
-  }
   RefPtr<Benchmark> ref(mGlobalState);
-  mDecoder->Init()->Then(
-      Thread(), __func__,
-      [this, ref](TrackInfo::TrackType aTrackType) { InputExhausted(); },
-      [this, ref](const MediaResult& aError) { Error(aError); });
+  platform->CreateDecoder(CreateDecoderParams{*mInfo})
+      ->Then(
+          Thread(), __func__,
+          [this, ref](RefPtr<MediaDataDecoder>&& aDecoder) {
+            mDecoder = new MediaDataDecoderProxy(
+                aDecoder.forget(), do_AddRef(mDecoderTaskQueue.get()));
+            mDecoder->Init()->Then(
+                Thread(), __func__,
+                [this, ref](TrackInfo::TrackType aTrackType) {
+                  InputExhausted();
+                },
+                [this, ref](const MediaResult& aError) { Error(aError); });
+          },
+          [this, ref](const MediaResult& aError) { Error(aError); });
 }
 
 void BenchmarkPlayback::FinalizeShutdown() {

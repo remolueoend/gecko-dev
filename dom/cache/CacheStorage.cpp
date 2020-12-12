@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/cache/CacheStorage.h"
 
+#include "mozilla/Preferences.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/CacheBinding.h"
 #include "mozilla/dom/CacheStorageBinding.h"
@@ -27,15 +28,15 @@
 #include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/StaticPrefs_extensions.h"
 #include "nsContentUtils.h"
 #include "mozilla/dom/Document.h"
 #include "nsIGlobalObject.h"
 #include "nsMixedContentBlocker.h"
 #include "nsURLParsers.h"
+#include "js/Object.h"  // JS::GetClass
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 using mozilla::ErrorResult;
 using mozilla::Unused;
@@ -63,7 +64,7 @@ struct CacheStorage::Entry final {
   CacheOpArgs mArgs;
   // We cannot add the requests until after the actor is present.  So store
   // the request data separately for now.
-  RefPtr<InternalRequest> mRequest;
+  SafeRefPtr<InternalRequest> mRequest;
 };
 
 namespace {
@@ -115,6 +116,11 @@ bool IsTrusted(const PrincipalInfo& aPrincipalInfo, bool aTestingPrefEnabled) {
   nsAutoCString scheme(Substring(flatURL, schemePos, schemeLen));
   if (scheme.LowerCaseEqualsLiteral("https") ||
       scheme.LowerCaseEqualsLiteral("file")) {
+    return true;
+  }
+
+  if (StaticPrefs::extensions_backgroundServiceWorker_enabled_AtStartup() &&
+      scheme.LowerCaseEqualsLiteral("moz-extension")) {
     return true;
   }
 
@@ -188,7 +194,7 @@ already_AddRefed<CacheStorage> CacheStorage::CreateOnWorker(
     return ref.forget();
   }
 
-  RefPtr<CacheWorkerRef> workerRef =
+  SafeRefPtr<CacheWorkerRef> workerRef =
       CacheWorkerRef::Create(aWorkerPrivate, CacheWorkerRef::eIPCWorkerRef);
   if (!workerRef) {
     NS_WARNING("Worker thread is shutting down.");
@@ -228,15 +234,15 @@ already_AddRefed<CacheStorage> CacheStorage::CreateOnWorker(
     return ref.forget();
   }
 
-  RefPtr<CacheStorage> ref =
-      new CacheStorage(aNamespace, aGlobal, principalInfo, workerRef);
+  RefPtr<CacheStorage> ref = new CacheStorage(
+      aNamespace, aGlobal, principalInfo, std::move(workerRef));
   return ref.forget();
 }
 
 // static
 bool CacheStorage::DefineCaches(JSContext* aCx, JS::Handle<JSObject*> aGlobal) {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_DIAGNOSTIC_ASSERT(js::GetObjectClass(aGlobal)->flags & JSCLASS_DOM_GLOBAL,
+  MOZ_DIAGNOSTIC_ASSERT(JS::GetClass(aGlobal)->flags & JSCLASS_DOM_GLOBAL,
                         "Passed object is not a global object!");
   js::AssertSameCompartment(aCx, aGlobal);
 
@@ -267,7 +273,7 @@ bool CacheStorage::DefineCaches(JSContext* aCx, JS::Handle<JSObject*> aGlobal) {
 
 CacheStorage::CacheStorage(Namespace aNamespace, nsIGlobalObject* aGlobal,
                            const PrincipalInfo& aPrincipalInfo,
-                           CacheWorkerRef* aWorkerRef)
+                           SafeRefPtr<CacheWorkerRef> aWorkerRef)
     : mNamespace(aNamespace),
       mGlobal(aGlobal),
       mPrincipalInfo(MakeUnique<PrincipalInfo>(aPrincipalInfo)),
@@ -286,7 +292,8 @@ CacheStorage::CacheStorage(Namespace aNamespace, nsIGlobalObject* aGlobal,
   // WorkerRef ownership is passed to the CacheStorageChild actor and any
   // actors it may create.  The WorkerRef will keep the worker thread alive
   // until the actors can gracefully shutdown.
-  CacheStorageChild* newActor = new CacheStorageChild(this, aWorkerRef);
+  CacheStorageChild* newActor =
+      new CacheStorageChild(this, std::move(aWorkerRef));
   PCacheStorageChild* constructedActor = actor->SendPCacheStorageConstructor(
       newActor, mNamespace, *mPrincipalInfo);
 
@@ -306,7 +313,7 @@ CacheStorage::CacheStorage(nsresult aFailureResult)
 
 already_AddRefed<Promise> CacheStorage::Match(
     JSContext* aCx, const RequestOrUSVString& aRequest,
-    const CacheQueryOptions& aOptions, ErrorResult& aRv) {
+    const MultiCacheQueryOptions& aOptions, ErrorResult& aRv) {
   NS_ASSERT_OWNINGTHREAD(CacheStorage);
 
   if (!HasStorageAccess()) {
@@ -319,7 +326,7 @@ already_AddRefed<Promise> CacheStorage::Match(
     return nullptr;
   }
 
-  RefPtr<InternalRequest> request =
+  SafeRefPtr<InternalRequest> request =
       ToInternalRequest(aCx, aRequest, IgnoreBody, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
@@ -336,7 +343,7 @@ already_AddRefed<Promise> CacheStorage::Match(
   auto entry = MakeUnique<Entry>();
   entry->mPromise = promise;
   entry->mArgs = StorageMatchArgs(CacheRequest(), params, GetOpenMode());
-  entry->mRequest = request;
+  entry->mRequest = std::move(request);
 
   RunRequest(std::move(entry));
 
@@ -547,7 +554,7 @@ void CacheStorage::RunRequest(UniquePtr<Entry> aEntry) {
 
   if (aEntry->mRequest) {
     ErrorResult rv;
-    args.Add(aEntry->mRequest, IgnoreBody, IgnoreInvalidScheme, rv);
+    args.Add(*aEntry->mRequest, IgnoreBody, IgnoreInvalidScheme, rv);
     if (NS_WARN_IF(rv.Failed())) {
       aEntry->mPromise->MaybeReject(std::move(rv));
       return;
@@ -583,6 +590,4 @@ bool CacheStorage::HasStorageAccess() const {
   return access > StorageAccess::ePrivateBrowsing;
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

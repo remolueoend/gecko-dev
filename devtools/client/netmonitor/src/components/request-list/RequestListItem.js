@@ -15,6 +15,7 @@ const {
   propertiesEqual,
 } = require("devtools/client/netmonitor/src/utils/request-utils");
 const {
+  PANELS,
   RESPONSE_HEADERS,
 } = require("devtools/client/netmonitor/src/constants");
 
@@ -151,6 +152,8 @@ const UPDATED_REQ_ITEM_PROPS = [
   "requestHeaders",
   "responseCookies",
   "responseHeaders",
+  "waitingTime",
+  "isEventStream",
 ];
 
 const UPDATED_REQ_PROPS = [
@@ -176,7 +179,11 @@ const COLUMN_COMPONENTS = [
     ColumnComponent: RequestListColumnDomain,
     props: ["onSecurityIconMouseDown"],
   },
-  { column: "file", ColumnComponent: RequestListColumnFile },
+  {
+    column: "file",
+    ColumnComponent: RequestListColumnFile,
+    props: ["onWaterfallMouseDown"],
+  },
   {
     column: "url",
     ColumnComponent: RequestListColumnUrl,
@@ -245,15 +252,18 @@ class RequestListItem extends Component {
       isVisible: PropTypes.bool.isRequired,
       firstRequestStartedMs: PropTypes.number.isRequired,
       fromCache: PropTypes.bool,
+      networkActionOpen: PropTypes.bool,
       networkDetailsOpen: PropTypes.bool,
       onInitiatorBadgeMouseDown: PropTypes.func.isRequired,
       onDoubleClick: PropTypes.func.isRequired,
+      onDragStart: PropTypes.func.isRequired,
       onContextMenu: PropTypes.func.isRequired,
       onFocusedNodeChange: PropTypes.func,
       onMouseDown: PropTypes.func.isRequired,
       onSecurityIconMouseDown: PropTypes.func.isRequired,
       onWaterfallMouseDown: PropTypes.func.isRequired,
       requestFilterTypes: PropTypes.object.isRequired,
+      selectedActionBarTabId: PropTypes.string,
       intersectionObserver: PropTypes.object,
     };
   }
@@ -325,10 +335,13 @@ class RequestListItem extends Component {
       isVisible,
       firstRequestStartedMs,
       fromCache,
+      networkActionOpen,
       onDoubleClick,
+      onDragStart,
       onContextMenu,
       onMouseDown,
       onWaterfallMouseDown,
+      selectedActionBarTabId,
     } = this.props;
 
     const classList = ["request-list-item", index % 2 ? "odd" : "even"];
@@ -341,10 +354,15 @@ class RequestListItem extends Component {
         ref: "listItem",
         className: classList.join(" "),
         "data-id": item.id,
+        draggable:
+          !blocked &&
+          networkActionOpen &&
+          selectedActionBarTabId === PANELS.BLOCKING,
         tabIndex: 0,
         onContextMenu,
         onMouseDown,
         onDoubleClick,
+        onDragStart,
       },
       ...COLUMN_COMPONENTS.filter(({ column }) => columns[column]).map(
         ({ column, ColumnComponent, props: columnProps }) => {

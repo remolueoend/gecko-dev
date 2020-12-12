@@ -13,11 +13,12 @@ crashes-id = Report ID
 crashes-send-date = Submitted
 crashes-all-reports = All Crash Reports
 crashes-no-config = This application has not been configured to display crash reports.
-extensions-title = Extensions
-extensions-name = Name
-extensions-enabled = Enabled
-extensions-version = Version
-extensions-id = ID
+support-addons-title = Add-ons
+support-addons-name = Name
+support-addons-type = Type
+support-addons-enabled = Enabled
+support-addons-version = Version
+support-addons-id = ID
 security-software-title = Security Software
 security-software-type = Type
 security-software-name = Name
@@ -35,6 +36,7 @@ app-basics-title = Application Basics
 app-basics-name = Name
 app-basics-version = Version
 app-basics-build-id = Build ID
+app-basics-distribution-id = Distribution ID
 app-basics-update-channel = Update Channel
 # This message refers to the folder used to store updates on the device,
 # as in "Folder for updates". "Update" is a noun, not a verb.
@@ -56,12 +58,16 @@ app-basics-enabled-plugins = Enabled Plugins
 app-basics-build-config = Build Configuration
 app-basics-user-agent = User Agent
 app-basics-os = OS
+# Rosetta is Apple's translation process to run apps containing x86_64
+# instructions on Apple Silicon. This should remain in English.
+app-basics-rosetta = Rosetta Translated
 app-basics-memory-use = Memory Use
 app-basics-performance = Performance
 app-basics-service-workers = Registered Service Workers
 app-basics-profiles = Profiles
 app-basics-launcher-process-status = Launcher Process
 app-basics-multi-process-support = Multiprocess Windows
+app-basics-fission-support = Fission Windows
 app-basics-remote-processes-count = Remote Processes
 app-basics-enterprise-policies = Enterprise Policies
 app-basics-location-service-key-google = Google Location Service Key
@@ -74,6 +80,12 @@ show-dir-label =
         [windows] Open Folder
        *[other] Open Directory
     }
+environment-variables-title = Environment Variables
+environment-variables-name = Name
+environment-variables-value = Value
+experimental-features-title = Experimental Features
+experimental-features-name = Name
+experimental-features-value = Value
 modified-key-prefs-title = Important Modified Preferences
 modified-prefs-name = Name
 modified-prefs-value = Value
@@ -98,8 +110,6 @@ graphics-desktop-environment = Desktop Environment
 place-database-title = Places Database
 place-database-integrity = Integrity
 place-database-verify-integrity = Verify Integrity
-js-title = JavaScript
-js-incremental-gc = Incremental GC
 a11y-title = Accessibility
 a11y-activated = Activated
 a11y-force-disabled = Prevent Accessibility
@@ -119,12 +129,18 @@ sandbox-sys-call-number = Syscall
 sandbox-sys-call-args = Arguments
 safe-mode-title = Try Safe Mode
 restart-in-safe-mode-label = Restart with Add-ons Disabled…
+clear-startup-cache-title = Try clearing the startup cache
+clear-startup-cache-label = Clear startup cache…
+startup-cache-dialog-title = Clear startup cache
+startup-cache-dialog-body = Restart { -brand-short-name } to clear startup cache. This will not change your settings or remove extensions you’ve added to { -brand-short-name }.
+restart-button-label = Restart
 
 ## Media titles
 
 audio-backend = Audio Backend
 max-audio-channels = Max Channels
 sample-rate = Preferred Sample Rate
+roundtrip-latency = Roundtrip latency (standard deviation)
 media-title = Media
 media-output-devices-title = Output Devices
 media-input-devices-title = Input Devices
@@ -165,6 +181,33 @@ remote-debugging-title = Remote Debugging (Chromium Protocol)
 remote-debugging-accepting-connections = Accepting Connections
 remote-debugging-url = URL
 ##
+
+support-third-party-modules-title = Third-Party Modules
+support-third-party-modules-module = Module File
+support-third-party-modules-version = File Version
+support-third-party-modules-vendor = Vendor Info
+support-third-party-modules-occurrence = Occurrence
+support-third-party-modules-process = Process Type & ID
+support-third-party-modules-thread = Thread
+support-third-party-modules-base = Imagebase Address
+support-third-party-modules-uptime = Process Uptime (ms)
+support-third-party-modules-duration = Loading Duration (ms)
+support-third-party-modules-empty = No third-party modules were loaded.
+support-third-party-modules-no-value = (No value)
+support-third-party-modules-button-open =
+    .title = Open file location…
+support-third-party-modules-expand =
+    .title = Show detailed information
+support-third-party-modules-collapse =
+    .title = Collapse detailed information
+support-third-party-modules-unsigned-icon =
+    .title = This module is not signed
+support-third-party-modules-folder-icon =
+    .title = Open file location…
+support-third-party-modules-down-icon =
+    .title = Show detailed information
+support-third-party-modules-up-icon =
+    .title = Collapse detailed information
 
 # Variables
 # $days (Integer) - Number of days of crashes to log
@@ -258,11 +301,10 @@ webgl2-renderer = WebGL 2 Driver Renderer
 webgl2-version = WebGL 2 Driver Version
 webgl2-driver-extensions = WebGL 2 Driver Extensions
 webgl2-extensions = WebGL 2 Extensions
-blocklisted-bug = Blocklisted due to known issues
 
 # Variables
-# $bugNumber (string) - String of bug number from Bugzilla
-bug-link = bug { $bugNumber }
+#   $bugNumber (string) - Bug number on Bugzilla
+support-blocklisted-bug = Blocklisted due to known issues: <a data-l10n-name="bug-link">bug { $bugNumber }</a>
 
 # Variables
 # $failureCode (string) - String that can be searched in the source tree.
@@ -315,14 +357,20 @@ launcher-process-status-unknown = Unknown status
 # $remoteWindows (integer) - Number of remote windows
 # $totalWindows (integer) - Number of total windows
 multi-process-windows = { $remoteWindows }/{ $totalWindows }
-multi-process-status-0 = Enabled by user
-multi-process-status-1 = Enabled by default
-multi-process-status-2 = Disabled
-multi-process-status-4 = Disabled by accessibility tools
-multi-process-status-6 = Disabled by unsupported text input
-multi-process-status-7 = Disabled by add-ons
-multi-process-status-8 = Disabled forcibly
-multi-process-status-unknown = Unknown status
+# Variables
+# $fissionWindows (integer) - Number of remote windows
+# $totalWindows (integer) - Number of total windows
+fission-windows = { $fissionWindows }/{ $totalWindows }
+fission-status-experiment-control = Disabled by experiment
+fission-status-experiment-treatment = Enabled by experiment
+fission-status-disabled-by-e10s-env = Disabled by environment
+fission-status-enabled-by-env = Enabled by environment
+fission-status-disabled-by-safe-mode = Disabled by safe mode
+fission-status-enabled-by-default = Enabled by default
+fission-status-disabled-by-default = Disabled by default
+fission-status-enabled-by-user-pref = Enabled by user
+fission-status-disabled-by-user-pref = Disabled by user
+fission-status-disabled-by-e10s-other = E10s disabled
 
 async-pan-zoom = Asynchronous Pan/Zoom
 apz-none = none
@@ -342,3 +390,12 @@ touch-warning = async touch input disabled due to unsupported pref: { $preferenc
 policies-inactive = Inactive
 policies-active = Active
 policies-error = Error
+
+## Printing section
+
+support-printing-title = Printing
+support-printing-troubleshoot = Troubleshooting
+support-printing-clear-settings-button = Clear saved print settings
+support-printing-modified-settings = Modified print settings
+support-printing-prefs-name = Name
+support-printing-prefs-value = Value

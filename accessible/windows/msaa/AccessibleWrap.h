@@ -18,6 +18,9 @@
 #include "mozilla/a11y/ProxyAccessible.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/mscom/Utils.h"
+#include "mozilla/StaticPtr.h"
+#include "nsXULAppAPI.h"
+#include "Units.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 // Inheriting from both XPCOM and MSCOM interfaces causes a lot of warnings
@@ -173,6 +176,20 @@ class AccessibleWrap : public Accessible,
   static void UpdateSystemCaretFor(ProxyAccessible* aProxy,
                                    const LayoutDeviceIntRect& aCaretRect);
 
+  /**
+   * Associate a COM object with this Accessible so it will be disconnected
+   * from remote clients when this Accessible shuts down.
+   * This should only be called with separate COM objects with a different
+   * IUnknown to this AccessibleWrap; e.g. IAccessibleRelation.
+   */
+  void AssociateCOMObjectForDisconnection(IUnknown* aObject) {
+    // We only need to track these for content processes because COM garbage
+    // collection is disabled there.
+    if (XRE_IsContentProcess()) {
+      mAssociatedCOMObjectsForDisconnection.AppendElement(aObject);
+    }
+  }
+
  private:
   static void UpdateSystemCaretFor(HWND aCaretWnd,
                                    const LayoutDeviceIntRect& aCaretRect);
@@ -289,6 +306,8 @@ class AccessibleWrap : public Accessible,
   };
 
   static StaticAutoPtr<nsTArray<HandlerControllerData>> sHandlerControllers;
+
+  nsTArray<RefPtr<IUnknown>> mAssociatedCOMObjectsForDisconnection;
 };
 
 static inline AccessibleWrap* WrapperFor(const ProxyAccessible* aProxy) {

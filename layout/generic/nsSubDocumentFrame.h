@@ -7,10 +7,8 @@
 #ifndef NSSUBDOCUMENTFRAME_H_
 #define NSSUBDOCUMENTFRAME_H_
 
-#include "Layers.h"
 #include "LayerState.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/layers/WebRenderScrollData.h"
 #include "nsDisplayList.h"
 #include "nsAtomicContainerFrame.h"
 #include "nsIReflowCallback.h"
@@ -20,6 +18,14 @@
 namespace mozilla {
 class PresShell;
 }  // namespace mozilla
+
+namespace mozilla::layers {
+class Layer;
+class RefLayer;
+class RenderRootStateManager;
+class WebRenderLayerScrollData;
+class WebRenderScrollData;
+}  // namespace mozilla::layers
 
 /******************************************************************************
  * nsSubDocumentFrame
@@ -56,19 +62,22 @@ class nsSubDocumentFrame final : public nsAtomicContainerFrame,
   nscoord GetPrefISize(gfxContext* aRenderingContext) override;
 
   mozilla::IntrinsicSize GetIntrinsicSize() override;
-  mozilla::AspectRatio GetIntrinsicRatio() override;
+  mozilla::AspectRatio GetIntrinsicRatio() const override;
 
   mozilla::LogicalSize ComputeAutoSize(
       gfxContext* aRenderingContext, mozilla::WritingMode aWritingMode,
       const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-      const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-      const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) override;
+      const mozilla::LogicalSize& aMargin,
+      const mozilla::LogicalSize& aBorderPadding,
+      mozilla::ComputeSizeFlags aFlags) override;
 
-  mozilla::LogicalSize ComputeSize(
-      gfxContext* aRenderingContext, mozilla::WritingMode aWritingMode,
-      const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-      const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-      const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) override;
+  SizeComputationResult ComputeSize(gfxContext* aRenderingContext,
+                                    mozilla::WritingMode aWM,
+                                    const mozilla::LogicalSize& aCBSize,
+                                    nscoord aAvailableISize,
+                                    const mozilla::LogicalSize& aMargin,
+                                    const mozilla::LogicalSize& aBorderPadding,
+                                    mozilla::ComputeSizeFlags aFlags) override;
 
   void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
               const ReflowInput& aReflowInput,
@@ -92,7 +101,7 @@ class nsSubDocumentFrame final : public nsAtomicContainerFrame,
   mozilla::a11y::AccType AccessibleType() override;
 #endif
 
-  nsIDocShell* GetDocShell();
+  nsIDocShell* GetDocShell() const;
   nsresult BeginSwapDocShells(nsIFrame* aOther);
   void EndSwapDocShells(nsIFrame* aOther);
   nsView* EnsureInnerView();
@@ -126,28 +135,31 @@ class nsSubDocumentFrame final : public nsAtomicContainerFrame,
 
   void ClearDisplayItems();
 
+  void SubdocumentIntrinsicSizeOrRatioChanged();
+
  protected:
   friend class AsyncFrameInit;
 
   bool IsInline() { return mIsInline; }
 
-  nscoord GetIntrinsicISize();
-  nscoord GetIntrinsicBSize();
+  nscoord GetIntrinsicBSize() {
+    auto size = GetIntrinsicSize();
+    Maybe<nscoord> bSize =
+        GetWritingMode().IsVertical() ? size.width : size.height;
+    return bSize.valueOr(0);
+  }
+
+  nscoord GetIntrinsicISize() {
+    auto size = GetIntrinsicSize();
+    Maybe<nscoord> iSize =
+        GetWritingMode().IsVertical() ? size.height : size.width;
+    return iSize.valueOr(0);
+  }
 
   // Show our document viewer. The document viewer is hidden via a script
   // runner, so that we can save and restore the presentation if we're
   // being reframed.
   void ShowViewer();
-
-  /* Obtains the frame we should use for intrinsic size information if we are
-   * an HTML <object> or <embed>  (a replaced element - not <iframe>)
-   * and our sub-document has an intrinsic size. The frame returned is the
-   * frame for the document element of the document we're embedding.
-   *
-   * Called "Obtain*" and not "Get*" because of comment on GetDocShell that
-   * says it should be called ObtainDocShell because of its side effects.
-   */
-  nsIFrame* ObtainIntrinsicSizeFrame();
 
   nsView* GetViewInternal() const override { return mOuterView; }
   void SetViewInternal(nsView* aView) override { mOuterView = aView; }
@@ -156,6 +168,7 @@ class nsSubDocumentFrame final : public nsAtomicContainerFrame,
 
   nsView* mOuterView;
   nsView* mInnerView;
+
   bool mIsInline;
   bool mPostedReflowCallback;
   bool mDidCreateDoc;
@@ -177,7 +190,7 @@ class nsDisplayRemote final : public nsPaintedDisplayItem {
   typedef mozilla::layers::StackingContextHelper StackingContextHelper;
   typedef mozilla::LayerState LayerState;
   typedef mozilla::LayoutDeviceRect LayoutDeviceRect;
-  typedef mozilla::LayoutDeviceIntPoint LayoutDeviceIntPoint;
+  typedef mozilla::LayoutDevicePoint LayoutDevicePoint;
 
  public:
   nsDisplayRemote(nsDisplayListBuilder* aBuilder, nsSubDocumentFrame* aFrame);
@@ -210,7 +223,7 @@ class nsDisplayRemote final : public nsPaintedDisplayItem {
 
   TabId mTabId;
   LayersId mLayersId;
-  LayoutDeviceIntPoint mOffset;
+  LayoutDevicePoint mOffset;
   EventRegionsOverride mEventRegionsOverride;
 };
 

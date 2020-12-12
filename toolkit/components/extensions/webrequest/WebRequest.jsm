@@ -18,9 +18,19 @@ const { XPCOMUtils } = ChromeUtils.import(
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
+  ExtensionParent: "resource://gre/modules/ExtensionParent.jsm",
   ExtensionUtils: "resource://gre/modules/ExtensionUtils.jsm",
   WebRequestUpload: "resource://gre/modules/WebRequestUpload.jsm",
   SecurityInfo: "resource://gre/modules/SecurityInfo.jsm",
+});
+
+// WebRequest.jsm's only consumer is ext-webRequest.js, so we can depend on
+// the apiManager.global being initialized.
+XPCOMUtils.defineLazyGetter(this, "tabTracker", () => {
+  return ExtensionParent.apiManager.global.tabTracker;
+});
+XPCOMUtils.defineLazyGetter(this, "getCookieStoreIdForOriginAttributes", () => {
+  return ExtensionParent.apiManager.global.getCookieStoreIdForOriginAttributes;
 });
 
 function runLater(job) {
@@ -32,11 +42,12 @@ function parseFilter(filter) {
     filter = {};
   }
 
-  // FIXME: Support windowId filtering.
   return {
     urls: filter.urls || null,
     types: filter.types || null,
-    incognito: filter.incognito !== undefined ? filter.incognito : null,
+    tabId: filter.tabId ?? null,
+    windowId: filter.windowId ?? null,
+    incognito: filter.incognito ?? null,
   };
 }
 
@@ -118,7 +129,7 @@ class HeaderChanger {
     let origHeaders = this.getMap();
     for (let name of origHeaders.keys()) {
       if (!newHeaders.has(name)) {
-        this.setHeader(name, "");
+        this.setHeader(name, "", false, opts, name);
       }
     }
 
@@ -134,7 +145,7 @@ class HeaderChanger {
     //
     // Multiple addons will be able to provide modifications to any headers
     // listed in the default set.
-    let headersAlreadySet = new Set(["content-security-policy"]);
+    let headersAlreadySet = new Set();
     for (let { name, value, binaryValue } of headers) {
       if (binaryValue) {
         value = String.fromCharCode(...binaryValue);
@@ -184,7 +195,19 @@ class RequestHeaderChanger extends HeaderChanger {
 }
 
 class ResponseHeaderChanger extends HeaderChanger {
+  didModifyCSP = false;
+
   setHeader(name, value, merge, opts, lowerCaseName) {
+    if (lowerCaseName === "content-security-policy") {
+      // When multiple add-ons change the CSP, enforce the combined (strictest)
+      // policy - see bug 1462989 for motivation.
+      // When value is unset, don't force the header to be merged, to allow
+      // add-ons to clear the header if wanted.
+      if (value) {
+        merge = merge || this.didModifyCSP;
+      }
+      this.didModifyCSP = true;
+    }
     try {
       this.channel.setResponseHeader(name, value, merge);
     } catch (e) {
@@ -234,9 +257,12 @@ function serializeRequestData(eventName) {
     method: this.method,
     type: this.type,
     timeStamp: Date.now(),
-    frameId: this.windowId,
-    parentFrameId: this.parentWindowId,
+    tabId: this.tabId,
+    frameId: this.frameId,
+    parentFrameId: this.parentFrameId,
+    incognito: this.incognito,
     thirdParty: this.thirdParty,
+    cookieStoreId: this.cookieStoreId,
   };
 
   if (MAYBE_CACHED_EVENTS.has(eventName)) {
@@ -265,105 +291,12 @@ function serializeRequestData(eventName) {
 
 var HttpObserverManager;
 
-var nextFakeRequestId = 1;
-
-var ContentPolicyManager = {
-  policyData: new Map(),
-  idMap: new Map(),
-  nextId: 0,
-
-  init() {
-    Services.ppmm.initialProcessData.webRequestContentPolicies = this.policyData;
-
-    Services.ppmm.addMessageListener("WebRequest:ShouldLoad", this);
-    Services.mm.addMessageListener("WebRequest:ShouldLoad", this);
-  },
-
-  receiveMessage(msg) {
-    let browser =
-      ChromeUtils.getClassName(msg.target) == "XULFrameElement"
-        ? msg.target
-        : null;
-
-    let requestId = `fakeRequest-${++nextFakeRequestId}`;
-    let data = Object.assign(
-      { requestId, browser, serialize: serializeRequestData },
-      msg.data
-    );
-
-    this.runChannelListener("onBeforeRequest", data);
-    runLater(() => this.runChannelListener("onCompleted", data));
-  },
-
-  shouldRunListener(policyType, url, opts) {
-    let { filter } = opts;
-
-    if (filter.types && !filter.types.includes(policyType)) {
-      return false;
-    }
-
-    if (filter.urls && !filter.urls.matches(url)) {
-      return false;
-    }
-
-    let { policy } = opts;
-    if (policy && !policy.allowedOrigins.matches(url)) {
-      return false;
-    }
-
-    return true;
-  },
-
-  runChannelListener(kind, data) {
-    let listeners = HttpObserverManager.listeners[kind];
-    for (let [callback, opts] of listeners.entries()) {
-      if (this.shouldRunListener(data.type, data.url, opts)) {
-        try {
-          callback(data);
-        } catch (e) {
-          Cu.reportError(e);
-        }
-      }
-    }
-  },
-
-  addListener(callback, opts) {
-    // Clone opts, since we're going to modify them for IPC.
-    opts = Object.assign({}, opts);
-    let id = this.nextId++;
-    opts.id = id;
-    if (opts.filter.urls) {
-      opts.filter = Object.assign({}, opts.filter);
-      opts.filter.urls = opts.filter.urls.patterns.map(url => url.pattern);
-    }
-    Services.ppmm.broadcastAsyncMessage("WebRequest:AddContentPolicy", opts);
-
-    this.policyData.set(id, opts);
-
-    this.idMap.set(callback, id);
-  },
-
-  removeListener(callback) {
-    let id = this.idMap.get(callback);
-    Services.ppmm.broadcastAsyncMessage("WebRequest:RemoveContentPolicy", {
-      id,
-    });
-
-    this.policyData.delete(id);
-    this.idMap.delete(callback);
-  },
-};
-ContentPolicyManager.init();
-
 var ChannelEventSink = {
   _classDescription: "WebRequest channel event sink",
   _classID: Components.ID("115062f8-92f1-11e5-8b7f-080027b0f7ec"),
   _contractID: "@mozilla.org/webrequest/channel-event-sink;1",
 
-  QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIChannelEventSink,
-    Ci.nsIFactory,
-  ]),
+  QueryInterface: ChromeUtils.generateQI(["nsIChannelEventSink", "nsIFactory"]),
 
   init() {
     Components.manager
@@ -407,7 +340,7 @@ var ChannelEventSink = {
   // nsIFactory implementation
   createInstance(outer, iid) {
     if (outer) {
-      throw Cr.NS_ERROR_NO_AGGREGATION;
+      throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
     }
     return this.QueryInterface(iid);
   },
@@ -431,7 +364,7 @@ class AuthRequestor {
     try {
       return this.notificationCallbacks.getInterface(iid);
     } catch (e) {}
-    throw Cr.NS_ERROR_NO_INTERFACE;
+    throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
   }
 
   _getForwardedInterface(iid) {
@@ -480,7 +413,7 @@ class AuthRequestor {
         return callbacks.getInterface(Ci.nsIAuthPrompt2);
       } catch (e) {}
     }
-    throw Cr.NS_ERROR_NO_INTERFACE;
+    throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
   }
 
   // nsIAuthPrompt2 asyncPromptAuth
@@ -542,7 +475,7 @@ class AuthRequestor {
     this.httpObserver.runChannelListener(wrapper, "onAuthRequired", data);
 
     return {
-      QueryInterface: ChromeUtils.generateQI([Ci.nsICancelable]),
+      QueryInterface: ChromeUtils.generateQI(["nsICancelable"]),
       cancel() {
         try {
           callback.onAuthCancelled(context, false);
@@ -572,8 +505,7 @@ AuthRequestor.prototype.QueryInterface = ChromeUtils.generateQI([
 //     handler can serve multiple webRequest listeners.
 HttpObserverManager = {
   listeners: {
-    // onBeforeRequest uses http-on-modify observer for HTTP(S),
-    // and content policy for the other protocols (notably, data:)
+    // onBeforeRequest uses http-on-modify observer for HTTP(S).
     onBeforeRequest: new Map(),
 
     // onBeforeSendHeaders and onSendHeaders correspond to the
@@ -794,23 +726,22 @@ HttpObserverManager = {
   },
 
   getRequestData(channel, extraData) {
-    let originAttributes =
-      channel.loadInfo && channel.loadInfo.originAttributes;
+    let originAttributes = channel.loadInfo?.originAttributes;
     let data = {
       requestId: String(channel.id),
       url: channel.finalURL,
       method: channel.method,
-      browser: channel.browserElement,
       type: channel.type,
       fromCache: channel.fromCache,
-      originAttributes,
+      incognito: originAttributes?.privateBrowsingId > 0,
       thirdParty: channel.thirdParty,
 
       originUrl: channel.originURL || undefined,
       documentUrl: channel.documentURL || undefined,
 
-      windowId: channel.windowId,
-      parentWindowId: channel.parentWindowId,
+      tabId: this.getBrowserData(channel).tabId,
+      frameId: channel.frameId,
+      parentFrameId: channel.parentFrameId,
 
       frameAncestors: channel.frameAncestors || undefined,
 
@@ -823,6 +754,12 @@ HttpObserverManager = {
       responseSize: channel.responseSize,
       urlClassification: channel.urlClassification,
     };
+
+    if (originAttributes) {
+      data.cookieStoreId = getCookieStoreIdForOriginAttributes(
+        originAttributes
+      );
+    }
 
     return Object.assign(data, extraData);
   },
@@ -860,6 +797,19 @@ HttpObserverManager = {
     "onBeforeRedirect",
   ]),
 
+  getBrowserData(wrapper) {
+    let browserData = wrapper._browserData;
+    if (!browserData) {
+      if (wrapper.browserElement) {
+        browserData = tabTracker.getBrowserData(wrapper.browserElement);
+      } else {
+        browserData = { tabId: -1, windowId: -1 };
+      }
+      wrapper._browserData = browserData;
+    }
+    return browserData;
+  },
+
   runChannelListener(channel, kind, extraData = null) {
     let handlerResults = [];
     let requestHeaders;
@@ -874,6 +824,15 @@ HttpObserverManager = {
       let commonData = null;
       let requestBody;
       this.listeners[kind].forEach((opts, callback) => {
+        if (opts.filter.tabId !== null || opts.filter.windowId !== null) {
+          const { tabId, windowId } = this.getBrowserData(channel);
+          if (
+            (opts.filter.tabId !== null && tabId != opts.filter.tabId) ||
+            (opts.filter.windowId !== null && windowId != opts.filter.windowId)
+          ) {
+            return;
+          }
+        }
         if (!channel.matches(opts.filter, opts.policy, extraData)) {
           return;
         }
@@ -1032,24 +991,45 @@ HttpObserverManager = {
             }
             channel.resume(text);
             channel.redirectTo(Services.io.newURI(result.redirectUrl));
+
             // Web Extensions using the WebRequest API are allowed
             // to redirect a channel to a data: URI, hence we mark
-            // the channel to let the redirect blocker know.
+            // the channel to let the redirect blocker know. Please
+            // note that this marking needs to happen after the
+            // channel.redirectTo is called because the channel's
+            // RedirectTo() implementation explicitly drops the flag
+            // to avoid additional redirects not caused by the
+            // Web Extension.
             channel.loadInfo.allowInsecureRedirectToDataURI = true;
 
-            // Web Extentions using the WebRequest API are also allowed
-            // to redirect a channel before any data has been send.
-            // This means we dont have  "Access-Control-Allow-Origin"
-            // information at that point so CORS checks would fail.
-            // Since we trust the WebExtention, we mark the Channel
-            // to skip the CORS check.
-            channel.loadInfo.bypassCORSChecks = true;
+            // To pass CORS checks, we pretend the current request's
+            // response allows the triggering origin to access.
+            let origin = channel.getRequestHeader("Origin");
+            if (origin) {
+              channel.setResponseHeader("Access-Control-Allow-Origin", origin);
+              channel.setResponseHeader(
+                "Access-Control-Allow-Credentials",
+                "true"
+              );
 
-            // Please note that this marking needs to happen after the
-            // channel.redirectTo is called because the channel's
-            // RedirectTo() implementation explicitly drops the flags
-            // to avoid redirects not caused by the
-            // Web Extension.
+              // Compute an arbitrary 'Access-Control-Allow-Headers'
+              // for the  internal Redirect
+
+              let allowHeaders = channel
+                .getRequestHeaders()
+                .map(header => header.name)
+                .join();
+              channel.setResponseHeader(
+                "Access-Control-Allow-Headers",
+                allowHeaders
+              );
+
+              channel.setResponseHeader(
+                "Access-Control-Allow-Methods",
+                channel.method
+              );
+            }
+
             return;
           } catch (e) {
             Cu.reportError(e);
@@ -1144,24 +1124,6 @@ HttpObserverManager = {
   },
 };
 
-var onBeforeRequest = {
-  allowedOptions: ["blocking", "requestBody"],
-
-  addListener(callback, filter = null, options = null, optionsObject = null) {
-    let opts = parseExtra(options, this.allowedOptions);
-    opts.filter = parseFilter(filter);
-    ContentPolicyManager.addListener(callback, opts);
-
-    opts = Object.assign({}, opts, optionsObject);
-    HttpObserverManager.addListener("onBeforeRequest", callback, opts);
-  },
-
-  removeListener(callback) {
-    HttpObserverManager.removeListener("onBeforeRequest", callback);
-    ContentPolicyManager.removeListener(callback);
-  },
-};
-
 function HttpEvent(internalEvent, options) {
   this.internalEvent = internalEvent;
   this.options = options;
@@ -1179,6 +1141,10 @@ HttpEvent.prototype = {
   },
 };
 
+var onBeforeRequest = new HttpEvent("onBeforeRequest", [
+  "blocking",
+  "requestBody",
+]);
 var onBeforeSendHeaders = new HttpEvent("onBeforeSendHeaders", [
   "requestHeaders",
   "blocking",
@@ -1219,8 +1185,3 @@ var WebRequest = {
     }
   },
 };
-
-Services.ppmm.loadProcessScript(
-  "resource://gre/modules/WebRequestContent.js",
-  true
-);

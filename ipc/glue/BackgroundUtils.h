@@ -9,7 +9,7 @@
 
 #include "ipc/IPCMessageUtils.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/BasePrincipal.h"
+#include "mozilla/OriginAttributes.h"
 #include "nsCOMPtr.h"
 #include "nscore.h"
 
@@ -48,6 +48,11 @@ struct ParamTraits<mozilla::OriginAttributes>
 }  // namespace IPC
 
 namespace mozilla {
+
+namespace dom {
+class Document;
+}
+
 namespace net {
 class ChildLoadInfoForwarderArgs;
 class LoadInfoArgs;
@@ -65,10 +70,10 @@ class PrincipalInfo;
 /**
  * Convert a PrincipalInfo to an nsIPrincipal.
  *
- * MUST be called on the main thread only.
+ * MUST be called on the main thread.
  */
-already_AddRefed<nsIPrincipal> PrincipalInfoToPrincipal(
-    const PrincipalInfo& aPrincipalInfo, nsresult* aOptionalResult = nullptr);
+Result<nsCOMPtr<nsIPrincipal>, nsresult> PrincipalInfoToPrincipal(
+    const PrincipalInfo& aPrincipalInfo);
 
 /**
  * Convert an nsIPrincipal to a PrincipalInfo.

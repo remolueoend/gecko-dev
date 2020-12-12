@@ -44,16 +44,15 @@ export type SourceActor = {|
 
   +isBlackBoxed: boolean,
 
+  // The URL that the sourcemap should be loaded relative to.
+  +sourceMapBaseURL: URL | null,
+
   // The URL of the sourcemap for this source if there is one.
   +sourceMapURL: URL | null,
 
   // The URL of the actor itself. If the source was from an "eval" or other
   // string-based source, this will not be known.
   +url: URL | null,
-
-  // If this script was introduced by an eval, this will be the URL of the
-  // script that triggered the evaluation.
-  +introductionUrl: URL | null,
 
   // The debugger's Debugger.Source API provides type information for the
   // cause of this source's creation.
@@ -72,7 +71,7 @@ type SourceActorResource = Resource<{
 export type SourceActorsState = ResourceState<SourceActorResource>;
 export type SourceActorOuterState = { sourceActors: SourceActorsState };
 
-const initial: SourceActorsState = createInitial();
+export const initial: SourceActorsState = createInitial();
 
 export default function update(
   state: SourceActorsState = initial,

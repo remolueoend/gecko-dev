@@ -143,6 +143,7 @@ enum class OperatingSystem : uint8_t {
   OSX10_13,
   OSX10_14,
   OSX10_15,
+  OSX11_0,
   Android,
   Ios
 };
@@ -170,6 +171,7 @@ enum class DeviceFamily : uint8_t {
   MicrosoftAll,
   ParallelsAll,
   QualcommAll,
+  AppleAll,
   IntelGMA500,
   IntelGMA900,
   IntelGMA950,
@@ -178,8 +180,8 @@ enum class DeviceFamily : uint8_t {
   IntelGMAX4500HD,
   IntelHDGraphicsToIvyBridge,
   IntelHDGraphicsToSandyBridge,
-  IntelHDGraphicsToHaswell,
-  IntelHD3000,
+  IntelHaswell,
+  IntelSandyBridge,
   IntelHD520,
   IntelMobileHDGraphics,
   NvidiaBlockD3D9Layers,
@@ -193,6 +195,7 @@ enum class DeviceFamily : uint8_t {
   Bug1155608,
   Bug1207665,
   Bug1447141,
+  AmdR600,
   NvidiaBlockWebRender,
   NvidiaRolloutWebRender,
   IntelRolloutWebRender,
@@ -209,7 +212,12 @@ enum class DeviceVendor : uint8_t {
   ATI,
   Microsoft,
   Parallels,
+  VMWare,
+  VirtualBox,
   Qualcomm,
+  MicrosoftBasic,
+  MicrosoftHyperV,
+  Apple,
 
   Max
 };
@@ -224,10 +232,16 @@ enum DriverVendor : uint8_t {
   MesaLLVMPipe,
   MesaSoftPipe,
   MesaSWRast,
+  // Nouveau: Open-source nvidia
+  MesaNouveau,
   // A generic ID to be provided when we can't determine the DRI driver on Mesa.
   MesaUnknown,
   // Wildcard for all non-Mesa drivers.
   NonMesaAll,
+  // Wildcard for all hardware Mesa drivers.
+  HardwareMesaAll,
+  // Wildcard for all software Mesa drivers.
+  SoftwareMesaAll,
 
   Max
 };
@@ -247,6 +261,8 @@ enum class DesktopEnvironment : uint8_t {
   Pantheon,
   LXQT,
   Deepin,
+  Dwm,
+  Budgie,
   Unknown,
   Max
 };
@@ -254,10 +270,13 @@ enum class DesktopEnvironment : uint8_t {
 enum class WindowProtocol : uint8_t {
   All,  // There is an assumption that this is the first enum
   X11,
+  XWayland,
   Wayland,
   WaylandDRM,
-  // Wildcard for all Wayland variants.
+  // Wildcard for all Wayland variants, excluding XWayland.
   WaylandAll,
+  // Wildcard for all X11 variants, including XWayland.
+  X11All,
   Max
 };
 
@@ -290,8 +309,8 @@ class GfxDeviceFamily final {
     int32_t mEnd;
   };
 
-  nsTArray<nsString> mIds;
-  nsTArray<DeviceRange> mRanges;
+  CopyableTArray<nsString> mIds;
+  CopyableTArray<DeviceRange> mRanges;
 };
 
 struct GfxDriverInfo {

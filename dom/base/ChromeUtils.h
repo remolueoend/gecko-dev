@@ -10,11 +10,14 @@
 #include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/ChromeUtilsBinding.h"
-#include "mozilla/ErrorResult.h"
+#include "mozilla/dom/Exceptions.h"
 #include "nsDOMNavigationTiming.h"  // for DOMHighResTimeStamp
-#include "nsIContentChild.h"
+#include "nsIDOMProcessChild.h"
+#include "nsIDOMProcessParent.h"
 
 namespace mozilla {
+
+class ErrorResult;
 
 namespace devtools {
 class HeapSnapshot;
@@ -30,6 +33,7 @@ struct MediaMetadataInit;
 class MozQueryInterface;
 class PrecompiledScript;
 class Promise;
+struct ProcessActorOptions;
 struct WindowActorOptions;
 
 class ChromeUtils {
@@ -80,7 +84,7 @@ class ChromeUtils {
                             const nsAString& aMessage);
 
   static void AddProfilerMarker(GlobalObject& aGlobal, const nsACString& aName,
-                                const Optional<DOMHighResTimeStamp>& aStartTime,
+                                const ProfilerMarkerOptionsOrDouble& aOptions,
                                 const Optional<nsACString>& text);
 
   static void OriginAttributesToSuffix(
@@ -147,6 +151,8 @@ class ChromeUtils {
 
   static void ClearRecentJSDevError(GlobalObject& aGlobal);
 
+  static void ClearStyleSheetCache(GlobalObject&, nsIPrincipal* aForPrincipal);
+
   static already_AddRefed<Promise> RequestPerformanceMetrics(
       GlobalObject& aGlobal, ErrorResult& aRv);
 
@@ -186,8 +192,6 @@ class ChromeUtils {
 
   static PopupBlockerState GetPopupControlState(GlobalObject& aGlobal);
 
-  static bool IsPopupTokenUnused(GlobalObject& aGlobal);
-
   static double LastExternalProtocolIframeAllowed(GlobalObject& aGlobal);
 
   static void ResetLastExternalProtocolIframeAllowed(GlobalObject& aGlobal);
@@ -200,24 +204,25 @@ class ChromeUtils {
   static void UnregisterWindowActor(const GlobalObject& aGlobal,
                                     const nsACString& aName);
 
+  static void RegisterProcessActor(const GlobalObject& aGlobal,
+                                   const nsACString& aName,
+                                   const ProcessActorOptions& aOptions,
+                                   ErrorResult& aRv);
+
+  static void UnregisterProcessActor(const GlobalObject& aGlobal,
+                                     const nsACString& aName);
+
   static bool IsClassifierBlockingErrorCode(GlobalObject& aGlobal,
                                             uint32_t aError);
 
   static void PrivateNoteIntentionalCrash(const GlobalObject& aGlobal,
                                           ErrorResult& aError);
 
-  static void GenerateMediaControlKeysTestEvent(
-      const GlobalObject& aGlobal, MediaControlKeysTestEvent aEvent);
+  static nsIDOMProcessChild* GetDomProcessChild(const GlobalObject&);
 
-  static nsIContentChild* GetContentChild(const GlobalObject&);
-
-  // This function would only be used for testing.
-  static void GetCurrentActiveMediaMetadata(const GlobalObject& aGlobal,
-                                            MediaMetadataInit& aMetadata);
-
-  // This function would only be used for testing.
-  static MediaSessionPlaybackTestState GetCurrentMediaSessionPlaybackState(
-      GlobalObject& aGlobal);
+  static void GetAllDOMProcesses(
+      GlobalObject& aGlobal, nsTArray<RefPtr<nsIDOMProcessParent>>& aParents,
+      ErrorResult& aRv);
 };
 
 }  // namespace dom

@@ -8,6 +8,8 @@
 #define mozilla_dom_indexeddb_filemanager_h__
 
 #include "mozilla/dom/quota/PersistenceType.h"
+#include "mozilla/dom/quota/QuotaInfo.h"
+#include "mozilla/dom/quota/UsageInfo.h"
 #include "mozilla/InitializedOnce.h"
 #include "FileManagerBase.h"
 
@@ -19,13 +21,13 @@ namespace dom {
 namespace indexedDB {
 
 // Implemented in ActorsParent.cpp.
-class FileManager final : public FileManagerBase<FileManager> {
+class FileManager final : public FileManagerBase<FileManager>,
+                          public AtomicSafeRefCounted<FileManager> {
   using PersistenceType = mozilla::dom::quota::PersistenceType;
   using FileManagerBase<FileManager>::MutexType;
 
   const PersistenceType mPersistenceType;
-  const nsCString mGroup;
-  const nsCString mOrigin;
+  const quota::GroupAndOrigin mGroupAndOrigin;
   const nsString mDatabaseName;
 
   LazyInitializedOnce<const nsString> mDirectoryPath;
@@ -39,57 +41,56 @@ class FileManager final : public FileManagerBase<FileManager> {
   static MutexType sMutex;
 
  public:
-  static MOZ_MUST_USE nsCOMPtr<nsIFile> GetFileForId(nsIFile* aDirectory,
-                                                     int64_t aId);
+  [[nodiscard]] static nsCOMPtr<nsIFile> GetFileForId(nsIFile* aDirectory,
+                                                      int64_t aId);
 
-  static MOZ_MUST_USE nsCOMPtr<nsIFile> GetCheckedFileForId(nsIFile* aDirectory,
-                                                            int64_t aId);
+  [[nodiscard]] static nsCOMPtr<nsIFile> GetCheckedFileForId(
+      nsIFile* aDirectory, int64_t aId);
 
-  static nsresult InitDirectory(nsIFile* aDirectory, nsIFile* aDatabaseFile,
+  static nsresult InitDirectory(nsIFile& aDirectory, nsIFile& aDatabaseFile,
                                 const nsACString& aOrigin,
                                 uint32_t aTelemetryId);
 
-  static nsresult GetUsage(nsIFile* aDirectory, Maybe<uint64_t>& aUsage);
+  static Result<quota::FileUsageType, nsresult> GetUsage(nsIFile* aDirectory);
 
-  static nsresult GetUsage(nsIFile* aDirectory, uint64_t& aUsage);
-
-  FileManager(PersistenceType aPersistenceType, const nsACString& aGroup,
-              const nsACString& aOrigin, const nsAString& aDatabaseName,
-              bool aEnforcingQuota);
+  FileManager(PersistenceType aPersistenceType,
+              const quota::GroupAndOrigin& aGroupAndOrigin,
+              const nsAString& aDatabaseName, bool aEnforcingQuota);
 
   PersistenceType Type() const { return mPersistenceType; }
 
-  const nsACString& Group() const { return mGroup; }
+  const quota::GroupAndOrigin& GroupAndOrigin() const {
+    return mGroupAndOrigin;
+  }
 
-  const nsACString& Origin() const { return mOrigin; }
+  const nsACString& Origin() const { return mGroupAndOrigin.mOrigin; }
 
   const nsAString& DatabaseName() const { return mDatabaseName; }
 
   bool EnforcingQuota() const { return mEnforcingQuota; }
 
-  nsresult Init(nsIFile* aDirectory, mozIStorageConnection* aConnection);
+  nsresult Init(nsIFile* aDirectory, mozIStorageConnection& aConnection);
 
-  MOZ_MUST_USE nsCOMPtr<nsIFile> GetDirectory();
+  [[nodiscard]] nsCOMPtr<nsIFile> GetDirectory();
 
-  MOZ_MUST_USE nsCOMPtr<nsIFile> GetCheckedDirectory();
+  [[nodiscard]] nsCOMPtr<nsIFile> GetCheckedDirectory();
 
-  MOZ_MUST_USE nsCOMPtr<nsIFile> GetJournalDirectory();
+  [[nodiscard]] nsCOMPtr<nsIFile> GetJournalDirectory();
 
-  MOZ_MUST_USE nsCOMPtr<nsIFile> EnsureJournalDirectory();
+  [[nodiscard]] nsCOMPtr<nsIFile> EnsureJournalDirectory();
 
-  MOZ_MUST_USE nsresult SyncDeleteFile(int64_t aId);
+  [[nodiscard]] nsresult SyncDeleteFile(int64_t aId);
 
   // XXX When getting rid of FileHelper, this method should be removed/made
   // private.
-  MOZ_MUST_USE nsresult SyncDeleteFile(nsIFile& aFile, nsIFile& aJournalFile);
+  [[nodiscard]] nsresult SyncDeleteFile(nsIFile& aFile, nsIFile& aJournalFile);
 
-  MOZ_MUST_USE nsresult AsyncDeleteFile(int64_t aFileId);
+  [[nodiscard]] nsresult AsyncDeleteFile(int64_t aFileId);
 
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(FileManager)
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(FileManager)
 
   static StaticMutex& Mutex() { return sMutex; }
 
- private:
   ~FileManager() = default;
 };
 

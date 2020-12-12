@@ -2,54 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-async function checkInlinePreview(dbg, fnName, inlinePreviews) {
-  invokeInTab(fnName);
-
-  await waitForAllElements(dbg, "inlinePreviewLabels", inlinePreviews.length);
-
-  const labels = findAllElements(dbg, "inlinePreviewLabels");
-  const values = findAllElements(dbg, "inlinePreviewValues");
-
-  inlinePreviews.forEach((inlinePreview, index) => {
-    const { identifier, value, expandedValue } = inlinePreview;
-    is(
-      labels[index].innerText,
-      identifier,
-      `${identifier} in ${fnName} has correct inline preview label`
-    );
-    is(
-      values[index].innerText,
-      value,
-      `${identifier} in ${fnName} has correct inline preview value`
-    );
-  });
-
-  await resume(dbg);
-}
-
-async function checkInspectorIcon(dbg) {
-  await waitForElement(dbg, "inlinePreviewOpenInspector");
-
-  const { toolbox } = dbg;
-  const node = findElement(dbg, "inlinePreviewOpenInspector");
-
-  // Ensure hovering over button highlights the node in content pane
-  const view = node.ownerDocument.defaultView;
-  const inspectorFront = await toolbox.target.getFront("inspector");
-  const onNodeHighlight = inspectorFront.highlighter.once("node-highlight");
-
-  EventUtils.synthesizeMouseAtCenter(node, { type: "mousemove" }, view);
-
-  const nodeFront = await onNodeHighlight;
-  is(nodeFront.displayName, "button", "The correct node was highlighted");
-
-  // Ensure panel changes when button is clicked
-  node.click();
-  await waitForInspectorPanelChange(dbg);
-
-  await resume(dbg);
-}
-
 // Test checking inline preview feature
 add_task(async function() {
   await pushPref("devtools.debugger.features.inline-preview", true);
@@ -93,3 +45,51 @@ add_task(async function() {
   // onBtnClick function in inline-preview.js
   await checkInspectorIcon(dbg);
 });
+
+async function checkInlinePreview(dbg, fnName, inlinePreviews) {
+  invokeInTab(fnName);
+
+  await waitForAllElements(dbg, "inlinePreviewLabels", inlinePreviews.length);
+
+  const labels = findAllElements(dbg, "inlinePreviewLabels");
+  const values = findAllElements(dbg, "inlinePreviewValues");
+
+  inlinePreviews.forEach((inlinePreview, index) => {
+    const { identifier, value, expandedValue } = inlinePreview;
+    is(
+      labels[index].innerText,
+      identifier,
+      `${identifier} in ${fnName} has correct inline preview label`
+    );
+    is(
+      values[index].innerText,
+      value,
+      `${identifier} in ${fnName} has correct inline preview value`
+    );
+  });
+
+  await resume(dbg);
+}
+
+async function checkInspectorIcon(dbg) {
+  await waitForElement(dbg, "inlinePreviewOpenInspector");
+
+  const { toolbox } = dbg;
+  const node = findElement(dbg, "inlinePreviewOpenInspector");
+
+  // Ensure hovering over button highlights the node in content pane
+  const view = node.ownerDocument.defaultView;
+  const onNodeHighlight = toolbox.getHighlighter().waitForHighlighterShown();
+
+  EventUtils.synthesizeMouseAtCenter(node, { type: "mousemove" }, view);
+
+  const { nodeFront } = await onNodeHighlight;
+  is(nodeFront.displayName, "button", "The correct node was highlighted");
+
+  // Ensure panel changes when button is clicked
+  const onInspectorPanelLoad = waitForInspectorPanelChange(dbg);
+  node.click();
+  await onInspectorPanelLoad;
+
+  await resume(dbg);
+}

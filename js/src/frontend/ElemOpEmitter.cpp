@@ -14,8 +14,13 @@
 using namespace js;
 using namespace js::frontend;
 
-ElemOpEmitter::ElemOpEmitter(BytecodeEmitter* bce, Kind kind, ObjKind objKind)
-    : bce_(bce), kind_(kind), objKind_(objKind) {}
+ElemOpEmitter::ElemOpEmitter(BytecodeEmitter* bce, Kind kind, ObjKind objKind,
+                             NameVisibility visibility)
+    : bce_(bce), kind_(kind), objKind_(objKind), visibility_(visibility) {
+  // Can't access private names of super!
+  MOZ_ASSERT_IF(visibility == NameVisibility::Private,
+                objKind != ObjKind::Super);
+}
 
 bool ElemOpEmitter::prepareForObj() {
   MOZ_ASSERT(state_ == State::Start);
@@ -51,11 +56,40 @@ bool ElemOpEmitter::prepareForKey() {
   return true;
 }
 
+bool ElemOpEmitter::emitPrivateGuard() {
+  MOZ_ASSERT(state_ == State::Key);
+
+  if (!isPrivate()) {
+    return true;
+  }
+
+  if (isPropInit()) {
+    //            [stack] OBJ KEY
+    if (!bce_->emitCheckPrivateField(ThrowCondition::ThrowHas,
+                                     ThrowMsgKind::PrivateDoubleInit)) {
+      //            [stack] OBJ KEY BOOL
+      return false;
+    }
+  } else {
+    if (!bce_->emitCheckPrivateField(ThrowCondition::ThrowHasNot,
+                                     isPrivateGet()
+                                         ? ThrowMsgKind::MissingPrivateOnGet
+                                         : ThrowMsgKind::MissingPrivateOnSet)) {
+      //            [stack] OBJ KEY BOOL
+      return false;
+    }
+  }
+
+  // CheckPrivate leaves the result of the HasOwnCheck on the stack. Pop it off.
+  return bce_->emit1(JSOp::Pop);
+  //            [stack] OBJ KEY
+}
+
 bool ElemOpEmitter::emitGet() {
   MOZ_ASSERT(state_ == State::Key);
 
   if (isIncDec() || isCompoundAssignment()) {
-    if (!bce_->emit1(JSOp::ToId)) {
+    if (!bce_->emit1(JSOp::ToPropertyKey)) {
       //            [stack] # if Super
       //            [stack] THIS KEY
       //            [stack] # otherwise
@@ -63,6 +97,11 @@ bool ElemOpEmitter::emitGet() {
       return false;
     }
   }
+
+  if (!emitPrivateGuard()) {
+    return false;
+  }
+
   if (isSuper()) {
     if (!bce_->emitSuperBase()) {
       //            [stack] THIS? THIS KEY SUPERBASE
@@ -86,8 +125,6 @@ bool ElemOpEmitter::emitGet() {
   JSOp op;
   if (isSuper()) {
     op = JSOp::GetElemSuper;
-  } else if (isCall()) {
-    op = JSOp::CallElem;
   } else {
     op = JSOp::GetElem;
   }
@@ -121,6 +158,9 @@ bool ElemOpEmitter::prepareForRhs() {
   MOZ_ASSERT_IF(isCompoundAssignment(), state_ == State::Get);
 
   if (isSimpleAssignment() || isPropInit()) {
+    if (!emitPrivateGuard()) {
+      return false;
+    }
     // For CompoundAssignment, SuperBase is already emitted by emitGet.
     if (isSuper()) {
       if (!bce_->emitSuperBase()) {
@@ -149,9 +189,10 @@ bool ElemOpEmitter::skipObjAndKeyAndRhs() {
 bool ElemOpEmitter::emitDelete() {
   MOZ_ASSERT(state_ == State::Key);
   MOZ_ASSERT(isDelete());
+  MOZ_ASSERT(!isPrivate());
 
   if (isSuper()) {
-    if (!bce_->emit1(JSOp::ToId)) {
+    if (!bce_->emit1(JSOp::ToPropertyKey)) {
       //            [stack] THIS KEY
       return false;
     }
@@ -173,6 +214,7 @@ bool ElemOpEmitter::emitDelete() {
       return false;
     }
   } else {
+    MOZ_ASSERT(!isPrivate());
     JSOp op = bce_->sc->strict() ? JSOp::StrictDelElem : JSOp::DelElem;
     if (!bce_->emitElemOpBase(op)) {
       // SUCCEEDED
@@ -192,12 +234,11 @@ bool ElemOpEmitter::emitAssignment() {
 
   MOZ_ASSERT_IF(isPropInit(), !isSuper());
 
-  JSOp setOp = isPropInit()
-                   ? JSOp::InitElem
-                   : isSuper() ? bce_->sc->strict() ? JSOp::StrictSetElemSuper
-                                                    : JSOp::SetElemSuper
-                               : bce_->sc->strict() ? JSOp::StrictSetElem
-                                                    : JSOp::SetElem;
+  JSOp setOp = isPropInit() ? JSOp::InitElem
+               : isSuper()  ? bce_->sc->strict() ? JSOp::StrictSetElemSuper
+                                                 : JSOp::SetElemSuper
+               : bce_->sc->strict() ? JSOp::StrictSetElem
+                                    : JSOp::SetElem;
   if (!bce_->emitElemOpBase(setOp, ShouldInstrument::Yes)) {
     //              [stack] ELEM
     return false;

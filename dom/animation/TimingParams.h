@@ -7,7 +7,10 @@
 #ifndef mozilla_TimingParams_h
 #define mozilla_TimingParams_h
 
+#include "X11UndefineNone.h"
+#include "nsPrintfCString.h"
 #include "nsStringFwd.h"
+#include "nsPrintfCString.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/UnionTypes.h"  // For OwningUnrestrictedDoubleOrString
 #include "mozilla/ComputedTimingFunction.h"
@@ -21,7 +24,6 @@
 namespace mozilla {
 
 namespace dom {
-class Document;
 class UnrestrictedDoubleOrKeyframeEffectOptions;
 class UnrestrictedDoubleOrKeyframeAnimationOptions;
 }  // namespace dom
@@ -55,16 +57,14 @@ struct TimingParams {
 
   template <class OptionsType>
   static TimingParams FromOptionsType(const OptionsType& aOptions,
-                                      dom::Document* aDocument,
                                       ErrorResult& aRv);
   static TimingParams FromOptionsUnion(
       const dom::UnrestrictedDoubleOrKeyframeEffectOptions& aOptions,
-      dom::Document* aDocument, ErrorResult& aRv);
+      ErrorResult& aRv);
   static TimingParams FromOptionsUnion(
       const dom::UnrestrictedDoubleOrKeyframeAnimationOptions& aOptions,
-      dom::Document* aDocument, ErrorResult& aRv);
+      ErrorResult& aRv);
   static TimingParams FromEffectTiming(const dom::EffectTiming& aEffectTiming,
-                                       dom::Document* aDocument,
                                        ErrorResult& aRv);
   // Returns a copy of |aSource| where each timing property in |aSource| that
   // is also specified in |aEffectTiming| is replaced with the value from
@@ -74,8 +74,7 @@ struct TimingParams {
   // true and an unmodified copy of |aSource| will be returned.
   static TimingParams MergeOptionalEffectTiming(
       const TimingParams& aSource,
-      const dom::OptionalEffectTiming& aEffectTiming, dom::Document* aDocument,
-      ErrorResult& aRv);
+      const dom::OptionalEffectTiming& aEffectTiming, ErrorResult& aRv);
 
   // Range-checks and validates an UnrestrictedDoubleOrString or
   // OwningUnrestrictedDoubleOrString object and converts to a
@@ -121,7 +120,6 @@ struct TimingParams {
   }
 
   static Maybe<ComputedTimingFunction> ParseEasing(const nsAString& aEasing,
-                                                   dom::Document* aDocument,
                                                    ErrorResult& aRv);
 
   static StickyTimeDuration CalcActiveDuration(

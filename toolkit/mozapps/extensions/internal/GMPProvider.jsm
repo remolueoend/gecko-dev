@@ -13,7 +13,6 @@ const { AddonManager, AddonManagerPrivate } = ChromeUtils.import(
   "resource://gre/modules/AddonManager.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 const { Log } = ChromeUtils.import("resource://gre/modules/Log.jsm");
 // These symbols are, unfortunately, accessed via the module global from
 // tests, and therefore cannot be lexical definitions.
@@ -131,14 +130,14 @@ function GMPWrapper(aPluginInfo, aRawPluginInfo) {
   );
   if (this._plugin.isEME) {
     Services.prefs.addObserver(GMPPrefs.KEY_EME_ENABLED, this, true);
-    Services.mm.addMessageListener("EMEVideo:ContentMediaKeysRequest", this);
+    Services.obs.addObserver(this, "EMEVideo:CDMMissing");
   }
 }
 
 GMPWrapper.prototype = {
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsISupportsWeakReference,
+    "nsIObserver",
+    "nsISupportsWeakReference",
   ]),
 
   // An active task that checks for plugin updates and installs them.
@@ -151,8 +150,8 @@ GMPWrapper.prototype = {
   },
   get gmpPath() {
     if (!this._gmpPath && this.isInstalled) {
-      this._gmpPath = OS.Path.join(
-        OS.Constants.Path.profileDir,
+      this._gmpPath = PathUtils.join(
+        Services.dirsvc.get("ProfD", Ci.nsIFile).path,
         this._plugin.id,
         GMPPrefs.getString(GMPPrefs.KEY_PLUGIN_VERSION, null, this._plugin.id)
       );
@@ -410,7 +409,7 @@ GMPWrapper.prototype = {
       try {
         let installManager = new GMPInstallManager();
         let res = await installManager.checkForAddons();
-        let update = res.gmpAddons.find(addon => addon.id === this._plugin.id);
+        let update = res.addons.find(addon => addon.id === this._plugin.id);
         if (update && update.isValid && !update.isInstalled) {
           this._log.trace(
             "findUpdates() - found update for " +
@@ -451,8 +450,8 @@ GMPWrapper.prototype = {
   },
   get pluginFullpath() {
     if (this.isInstalled) {
-      let path = OS.Path.join(
-        OS.Constants.Path.profileDir,
+      let path = PathUtils.join(
+        Services.dirsvc.get("ProfD", Ci.nsIFile).path,
         this._plugin.id,
         this.version
       );
@@ -558,21 +557,6 @@ GMPWrapper.prototype = {
     }, delay);
   },
 
-  receiveMessage({ target: browser, data: data }) {
-    this._log.trace("receiveMessage() data=" + data);
-    let parsedData;
-    try {
-      parsedData = JSON.parse(data);
-    } catch (ex) {
-      this._log.error("Malformed EME video message with data: " + data);
-      return;
-    }
-    let { status } = parsedData;
-    if (status == "cdm-not-installed") {
-      this.checkForUpdates(0);
-    }
-  },
-
   onPrefEnabledChanged() {
     if (!this._plugin.isEME || !this.appDisabled) {
       this._handleEnabledChanged();
@@ -602,8 +586,8 @@ GMPWrapper.prototype = {
     AddonManagerPrivate.callAddonListeners("onInstalling", this, false);
     this._gmpPath = null;
     if (this.isInstalled) {
-      this._gmpPath = OS.Path.join(
-        OS.Constants.Path.profileDir,
+      this._gmpPath = PathUtils.join(
+        Services.dirsvc.get("ProfD", Ci.nsIFile).path,
         this._plugin.id,
         GMPPrefs.getString(GMPPrefs.KEY_PLUGIN_VERSION, null, this._plugin.id)
       );
@@ -617,8 +601,9 @@ GMPWrapper.prototype = {
     AddonManagerPrivate.callAddonListeners("onInstalled", this);
   },
 
-  observe(subject, topic, pref) {
+  observe(subject, topic, data) {
     if (topic == "nsPref:changed") {
+      let pref = data;
       if (
         pref ==
         GMPPrefs.getPrefKey(GMPPrefs.KEY_PLUGIN_ENABLED, this._plugin.id)
@@ -632,6 +617,8 @@ GMPWrapper.prototype = {
       } else if (pref == GMPPrefs.KEY_EME_ENABLED) {
         this.onPrefEMEGlobalEnabledChanged();
       }
+    } else if (topic == "EMEVideo:CDMMissing") {
+      this.checkForUpdates(0);
     }
   },
 
@@ -660,10 +647,7 @@ GMPWrapper.prototype = {
     );
     if (this._plugin.isEME) {
       Services.prefs.removeObserver(GMPPrefs.KEY_EME_ENABLED, this);
-      Services.mm.removeMessageListener(
-        "EMEVideo:ContentMediaKeysRequest",
-        this
-      );
+      Services.obs.removeObserver(this, "EMEVideo:CDMMissing");
     }
     return this._updateTask;
   },
@@ -671,7 +655,7 @@ GMPWrapper.prototype = {
   _arePluginFilesOnDisk() {
     let fileExists = function(aGmpPath, aFileName) {
       let f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
-      let path = OS.Path.join(aGmpPath, aFileName);
+      let path = PathUtils.join(aGmpPath, aFileName);
       f.initWithPath(path);
       return f.exists();
     };
@@ -787,9 +771,9 @@ var GMPProvider = {
       let greDir = Services.dirsvc.get(NS_GRE_DIR, Ci.nsIFile);
       let path = greDir.path;
       if (GMPUtils._isWindowsOnARM64()) {
-        path = OS.Path.join(path, "i686");
+        path = PathUtils.join(path, "i686");
       }
-      let clearkeyPath = OS.Path.join(
+      let clearkeyPath = PathUtils.join(
         path,
         CLEARKEY_PLUGIN_ID,
         CLEARKEY_VERSION

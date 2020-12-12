@@ -10,9 +10,9 @@ use tokio_io::{AsyncRead, AsyncWrite};
 
 use super::{GzBuilder, GzHeader};
 use super::{FCOMMENT, FEXTRA, FHCRC, FNAME};
-use crc::CrcReader;
-use deflate;
-use Compression;
+use crate::crc::CrcReader;
+use crate::deflate;
+use crate::Compression;
 
 fn copy(into: &mut [u8], from: &[u8], pos: &mut usize) -> usize {
     let min = cmp::min(into.len(), from.len() - *pos);
@@ -265,10 +265,10 @@ impl<R: BufRead + Write> Write for GzEncoder<R> {
 
 /// A gzip streaming decoder
 ///
-/// This structure exposes a [`ReadBuf`] interface that will consume compressed
-/// data from the underlying reader and emit uncompressed data.
+/// This structure consumes a [`BufRead`] interface, reading compressed data
+/// from the underlying reader, and emitting uncompressed data.
 ///
-/// [`ReadBuf`]: https://doc.rust-lang.org/std/io/trait.BufRead.html
+/// [`BufRead`]: https://doc.rust-lang.org/std/io/trait.BufRead.html
 ///
 /// # Examples
 ///

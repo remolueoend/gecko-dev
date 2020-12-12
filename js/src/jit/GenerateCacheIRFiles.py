@@ -27,19 +27,22 @@ HEADER_TEMPLATE = """\
 
 
 def generate_header(c_out, includeguard, contents):
-    c_out.write(HEADER_TEMPLATE % {
-        'includeguard': includeguard,
-        'contents': contents,
-    })
+    c_out.write(
+        HEADER_TEMPLATE
+        % {
+            "includeguard": includeguard,
+            "contents": contents,
+        }
+    )
 
 
 def load_yaml(yaml_path):
     # First invoke preprocessor.py so that we can use #ifdef JS_SIMULATOR in
     # the YAML file.
     pp = Preprocessor()
-    pp.context.update(buildconfig.defines['ALLDEFINES'])
+    pp.context.update(buildconfig.defines["ALLDEFINES"])
     pp.out = six.StringIO()
-    pp.do_filter('substitution')
+    pp.do_filter("substitution")
     pp.do_include(yaml_path)
     contents = pp.out.getvalue()
 
@@ -52,207 +55,374 @@ def load_yaml(yaml_path):
     def construct_mapping(loader, node):
         loader.flatten_mapping(node)
         return OrderedDict(loader.construct_pairs(node))
+
     tag = yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG
     OrderedLoader.add_constructor(tag, construct_mapping)
     return yaml.load(contents, OrderedLoader)
 
 
-# Information for generating CacheIRWriter code for a single operand. Tuple
+# Information for generating CacheIRWriter code for a single argument. Tuple
 # stores the C++ argument type and the CacheIRWriter method to call.
-operand_writer_info = {
-    'ValId': ('ValOperandId', 'writeOperandId'),
-    'ObjId': ('ObjOperandId', 'writeOperandId'),
-    'StrId': ('StringOperandId', 'writeOperandId'),
-    'SymId': ('SymbolOperandId', 'writeOperandId'),
-    'Int32Id': ('Int32OperandId', 'writeOperandId'),
-
-    'ShapeField': ('Shape*', 'writeShapeField'),
-    'GroupField': ('ObjectGroup*', 'writeGroupField'),
-    'ObjectField': ('JSObject*', 'writeObjectField'),
-    'StringField': ('JSString*', 'writeStringField'),
-    'PropertyNameField': ('PropertyName*', 'writeStringField'),
-    'SymbolField': ('JS::Symbol*', 'writeSymbolField'),
-    'RawWordField': ('const void*', 'writeRawWordField'),
-
-    'JSOpImm': ('JSOp', 'writeJSOpImm'),
-    'BoolImm': ('bool', 'writeBoolImm'),
-    'GuardClassKindImm': ('GuardClassKind', 'writeGuardClassKindImm'),
-    'JSWhyMagicImm': ('JSWhyMagic', 'writeJSWhyMagicImm'),
-    'CallFlagsImm': ('CallFlags', 'writeCallFlagsImm'),
-    'Int32Imm': ('int32_t', 'writeInt32Imm'),
-    'JSNativeImm': ('JSNative', 'writeJSNativeImm'),
+arg_writer_info = {
+    "ValId": ("ValOperandId", "writeOperandId"),
+    "ObjId": ("ObjOperandId", "writeOperandId"),
+    "StringId": ("StringOperandId", "writeOperandId"),
+    "SymbolId": ("SymbolOperandId", "writeOperandId"),
+    "BooleanId": ("BooleanOperandId", "writeOperandId"),
+    "Int32Id": ("Int32OperandId", "writeOperandId"),
+    "NumberId": ("NumberOperandId", "writeOperandId"),
+    "BigIntId": ("BigIntOperandId", "writeOperandId"),
+    "ValueTagId": ("ValueTagOperandId", "writeOperandId"),
+    "RawId": ("OperandId", "writeOperandId"),
+    "ShapeField": ("Shape*", "writeShapeField"),
+    "GroupField": ("ObjectGroup*", "writeGroupField"),
+    "ObjectField": ("JSObject*", "writeObjectField"),
+    "StringField": ("JSString*", "writeStringField"),
+    "AtomField": ("JSAtom*", "writeStringField"),
+    "PropertyNameField": ("PropertyName*", "writeStringField"),
+    "SymbolField": ("JS::Symbol*", "writeSymbolField"),
+    "BaseScriptField": ("BaseScript*", "writeBaseScriptField"),
+    "RawInt32Field": ("uint32_t", "writeRawInt32Field"),
+    "RawPointerField": ("const void*", "writeRawPointerField"),
+    "IdField": ("jsid", "writeIdField"),
+    "ValueField": ("const Value&", "writeValueField"),
+    "RawInt64Field": ("uint64_t", "writeRawInt64Field"),
+    "JSOpImm": ("JSOp", "writeJSOpImm"),
+    "BoolImm": ("bool", "writeBoolImm"),
+    "ByteImm": ("uint32_t", "writeByteImm"),  # uint32_t to enable fits-in-byte asserts.
+    "GuardClassKindImm": ("GuardClassKind", "writeGuardClassKindImm"),
+    "ValueTypeImm": ("ValueType", "writeValueTypeImm"),
+    "JSWhyMagicImm": ("JSWhyMagic", "writeJSWhyMagicImm"),
+    "CallFlagsImm": ("CallFlags", "writeCallFlagsImm"),
+    "ScalarTypeImm": ("Scalar::Type", "writeScalarTypeImm"),
+    "MetaTwoByteKindImm": ("MetaTwoByteKind", "writeMetaTwoByteKindImm"),
+    "UnaryMathFunctionImm": ("UnaryMathFunction", "writeUnaryMathFunctionImm"),
+    "WasmValTypeImm": ("wasm::ValType::Kind", "writeWasmValTypeImm"),
+    "Int32Imm": ("int32_t", "writeInt32Imm"),
+    "UInt32Imm": ("uint32_t", "writeUInt32Imm"),
+    "JSNativeImm": ("JSNative", "writeJSNativeImm"),
+    "StaticStringImm": ("const char*", "writeStaticStringImm"),
 }
 
 
-def gen_writer_method(name, operands):
+def gen_writer_method(name, args, custom_writer):
     """Generates a CacheIRWRiter method for a single opcode."""
 
-    # Generate a single method that writes the opcode and each operand.
+    # Generate a single method that writes the opcode and each argument.
     # For example:
     #
     #   void guardShape(ObjOperandId obj, Shape* shape) {
     #     writeOp(CacheOp::GuardShape);
     #     writeOperandId(obj);
     #     writeShapeField(shape);
+    #     assertLengthMatches();
     #  }
+    #
+    # The assertLengthMatches() call is to assert the information in the
+    # arg_length dictionary below matches what's written.
 
     # Method names start with a lowercase letter.
     method_name = name[0].lower() + name[1:]
+    if custom_writer:
+        method_name += "_"
 
-    args_sig = []
-    operands_code = ''
-    if operands:
-        for opnd_name, opnd_type in six.iteritems(operands):
-            argtype, write_method = operand_writer_info[opnd_type]
-            args_sig.append('{} {}'.format(argtype, opnd_name))
-            operands_code += '  {}({});\\\n'.format(write_method, opnd_name)
+    method_args = []
+    ret_type = "void"
+    args_code = ""
+    if args:
+        for arg_name, arg_type in six.iteritems(args):
+            cpp_type, write_method = arg_writer_info[arg_type]
+            if arg_name == "result":
+                ret_type = cpp_type
+                args_code += "  {} result(newOperandId());\\\n".format(cpp_type)
+                args_code += "  writeOperandId(result);\\\n"
+            else:
+                method_args.append("{} {}".format(cpp_type, arg_name))
+                args_code += "  {}({});\\\n".format(write_method, arg_name)
 
-    code = 'void {}({}) {{\\\n'.format(method_name, ', '.join(args_sig))
-    code += '  writeOp(CacheOp::{});\\\n'.format(name)
-    code += operands_code
-    code += '}'
+    code = ""
+    if custom_writer:
+        code += "private:\\\n"
+    code += "{} {}({}) {{\\\n".format(ret_type, method_name, ", ".join(method_args))
+    code += "  writeOp(CacheOp::{});\\\n".format(name)
+    code += args_code
+    code += "  assertLengthMatches();\\\n"
+    if ret_type != "void":
+        code += "  return result;\\\n"
+    code += "}"
+    if custom_writer:
+        code += "\\\npublic:"
     return code
 
 
-# Information for generating CacheIRCompiler code for a single operand. Tuple
-# stores the C++ type, the suffix used for arguments/variables of this type, and
-# the expression to read this type from CacheIRReader.
-operand_compiler_info = {
-    'ValId': ('ValOperandId', 'Id', 'reader.valOperandId()'),
-    'ObjId': ('ObjOperandId', 'Id', 'reader.objOperandId()'),
-    'StrId': ('StringOperandId', 'Id', 'reader.stringOperandId()'),
-    'SymId': ('SymbolOperandId', 'Id', 'reader.symbolOperandId()'),
-    'Int32Id': ('Int32OperandId', 'Id', 'reader.int32OperandId()'),
-
-    'ShapeField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-    'GroupField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-    'ObjectField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-    'StringField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-    'PropertyNameField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-    'SymbolField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-    'RawWordField': ('uint32_t', 'Offset', 'reader.stubOffset()'),
-
-    'JSOpImm': ('JSOp', '', 'reader.jsop()'),
-    'BoolImm': ('bool', '', 'reader.readBool()'),
-    'GuardClassKindImm': ('GuardClassKind', '', 'reader.guardClassKind()'),
-    'JSWhyMagicImm': ('JSWhyMagic', '', 'reader.whyMagic()'),
-    'CallFlagsImm': ('CallFlags', '', 'reader.callFlags()'),
-    'Int32Imm': ('int32_t', '', 'reader.int32Immediate()'),
-    'JSNativeImm': ('JSNative', '', 'reinterpret_cast<JSNative>(reader.pointer())'),
+# Information for generating code using CacheIRReader for a single argument.
+# Tuple stores the C++ type, the suffix used for arguments/variables of this
+# type, and the expression to read this type from CacheIRReader.
+arg_reader_info = {
+    "ValId": ("ValOperandId", "Id", "reader.valOperandId()"),
+    "ObjId": ("ObjOperandId", "Id", "reader.objOperandId()"),
+    "StringId": ("StringOperandId", "Id", "reader.stringOperandId()"),
+    "SymbolId": ("SymbolOperandId", "Id", "reader.symbolOperandId()"),
+    "BooleanId": ("BooleanOperandId", "Id", "reader.booleanOperandId()"),
+    "Int32Id": ("Int32OperandId", "Id", "reader.int32OperandId()"),
+    "NumberId": ("NumberOperandId", "Id", "reader.numberOperandId()"),
+    "BigIntId": ("BigIntOperandId", "Id", "reader.bigIntOperandId()"),
+    "ValueTagId": ("ValueTagOperandId", "Id", "reader.valueTagOperandId()"),
+    "RawId": ("uint32_t", "Id", "reader.rawOperandId()"),
+    "ShapeField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "GroupField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "ObjectField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "StringField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "AtomField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "PropertyNameField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "SymbolField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "BaseScriptField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "RawInt32Field": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "RawPointerField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "IdField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "ValueField": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "RawInt64Field": ("uint32_t", "Offset", "reader.stubOffset()"),
+    "JSOpImm": ("JSOp", "", "reader.jsop()"),
+    "BoolImm": ("bool", "", "reader.readBool()"),
+    "ByteImm": ("uint8_t", "", "reader.readByte()"),
+    "GuardClassKindImm": ("GuardClassKind", "", "reader.guardClassKind()"),
+    "ValueTypeImm": ("ValueType", "", "reader.valueType()"),
+    "JSWhyMagicImm": ("JSWhyMagic", "", "reader.whyMagic()"),
+    "CallFlagsImm": ("CallFlags", "", "reader.callFlags()"),
+    "ScalarTypeImm": ("Scalar::Type", "", "reader.scalarType()"),
+    "MetaTwoByteKindImm": ("MetaTwoByteKind", "", "reader.metaKind<MetaTwoByteKind>()"),
+    "UnaryMathFunctionImm": ("UnaryMathFunction", "", "reader.unaryMathFunction()"),
+    "WasmValTypeImm": ("wasm::ValType::Kind", "", "reader.wasmValType()"),
+    "Int32Imm": ("int32_t", "", "reader.int32Immediate()"),
+    "UInt32Imm": ("uint32_t", "", "reader.uint32Immediate()"),
+    "JSNativeImm": ("JSNative", "", "reinterpret_cast<JSNative>(reader.pointer())"),
+    "StaticStringImm": ("const char*", "", "reinterpret_cast<char*>(reader.pointer())"),
 }
 
 
-def gen_compiler_method(name, operands):
-    """Generates CacheIRCompiler header code for a single opcode."""
+def gen_compiler_method(name, args):
+    """Generates CacheIRCompiler or WarpCacheIRTranspiler header code for a
+    single opcode."""
 
-    method_name = 'emit' + name
+    method_name = "emit" + name
 
-    # If there are no operands, just generate a `bool emitFoo();` signature.`
-    if not operands:
-        return 'MOZ_MUST_USE bool {}();\\\n'.format(method_name)
-
-    # If there are operands we generate the signature of the method that needs
-    # to be implemented and a separate function forwarding to it. For example:
+    # We generate the signature of the method that needs to be implemented and a
+    # separate function forwarding to it. For example:
     #
     #   MOZ_MUST_USE bool emitGuardShape(ObjOperandId objId, uint32_t shapeOffset);
-    #   MOZ_MUST_USE bool emitGuardShape() {
+    #   MOZ_MUST_USE bool emitGuardShape(CacheIRReader& reader) {
     #     ObjOperandId objId = reader.objOperandId();
     #     uint32_t shapeOffset = reader.stubOffset();
     #     return emitGuardShape(objId, shapeOffset);
     #   }
-    args_names = []
-    args_sig = []
-    operands_code = ''
-    for opnd_name, opnd_type in six.iteritems(operands):
-        vartype, suffix, readexpr = operand_compiler_info[opnd_type]
-        varname = opnd_name + suffix
-        args_names.append(varname)
-        args_sig.append('{} {}'.format(vartype, varname))
-        operands_code += '  {} {} = {};\\\n'.format(vartype, varname, readexpr)
+    cpp_args = []
+    method_args = []
+    args_code = ""
+    if args:
+        for arg_name, arg_type in six.iteritems(args):
+            cpp_type, suffix, readexpr = arg_reader_info[arg_type]
+            cpp_name = arg_name + suffix
+            cpp_args.append(cpp_name)
+            method_args.append("{} {}".format(cpp_type, cpp_name))
+            args_code += "  {} {} = {};\\\n".format(cpp_type, cpp_name, readexpr)
 
     # Generate signature.
-    code = 'MOZ_MUST_USE bool {}({});\\\n'.format(method_name, ', '.join(args_sig))
+    code = "MOZ_MUST_USE bool {}({});\\\n".format(method_name, ", ".join(method_args))
 
     # Generate the method forwarding to it.
-    code += 'MOZ_MUST_USE bool {}() {{\\\n'.format(method_name)
-    code += operands_code
-    code += '  return {}({});\\\n'.format(method_name, ', '.join(args_names))
-    code += '}\\\n'
+    code += "MOZ_MUST_USE bool {}(CacheIRReader& reader) {{\\\n".format(method_name)
+    code += args_code
+    code += "  return {}({});\\\n".format(method_name, ", ".join(cpp_args))
+    code += "}\\\n"
 
     return code
 
 
+# For each argument type, the method name for printing it.
+arg_spewer_method = {
+    "ValId": "spewOperandId",
+    "ObjId": "spewOperandId",
+    "StringId": "spewOperandId",
+    "SymbolId": "spewOperandId",
+    "BooleanId": "spewOperandId",
+    "Int32Id": "spewOperandId",
+    "NumberId": "spewOperandId",
+    "BigIntId": "spewOperandId",
+    "ValueTagId": "spewOperandId",
+    "RawId": "spewRawOperandId",
+    "ShapeField": "spewField",
+    "GroupField": "spewField",
+    "ObjectField": "spewField",
+    "StringField": "spewField",
+    "AtomField": "spewField",
+    "PropertyNameField": "spewField",
+    "SymbolField": "spewField",
+    "BaseScriptField": "spewField",
+    "RawInt32Field": "spewField",
+    "RawPointerField": "spewField",
+    "IdField": "spewField",
+    "ValueField": "spewField",
+    "RawInt64Field": "spewField",
+    "JSOpImm": "spewJSOpImm",
+    "BoolImm": "spewBoolImm",
+    "ByteImm": "spewByteImm",
+    "GuardClassKindImm": "spewGuardClassKindImm",
+    "ValueTypeImm": "spewValueTypeImm",
+    "JSWhyMagicImm": "spewJSWhyMagicImm",
+    "CallFlagsImm": "spewCallFlagsImm",
+    "ScalarTypeImm": "spewScalarTypeImm",
+    "MetaTwoByteKindImm": "spewMetaTwoByteKindImm",
+    "UnaryMathFunctionImm": "spewUnaryMathFunctionImm",
+    "WasmValTypeImm": "spewWasmValTypeImm",
+    "Int32Imm": "spewInt32Imm",
+    "UInt32Imm": "spewUInt32Imm",
+    "JSNativeImm": "spewJSNativeImm",
+    "StaticStringImm": "spewStaticStringImm",
+}
+
+
+def gen_spewer_method(name, args):
+    """Generates spewer code for a single opcode."""
+
+    method_name = "spew" + name
+
+    # Generate code like this:
+    #
+    #  void spewGuardShape(CacheIRReader& reader) {
+    #     spewOp(CacheOp::GuardShape);
+    #     spewOperandId("objId", reader.objOperandId());
+    #     spewOperandSeparator();
+    #     spewField("shapeOffset", reader.stubOffset());
+    #     spewOpEnd();
+    #  }
+    args_code = ""
+    if args:
+        is_first = True
+        for arg_name, arg_type in six.iteritems(args):
+            _, suffix, readexpr = arg_reader_info[arg_type]
+            arg_name += suffix
+            spew_method = arg_spewer_method[arg_type]
+            if not is_first:
+                args_code += "  spewArgSeparator();\\\n"
+            args_code += '  {}("{}", {});\\\n'.format(spew_method, arg_name, readexpr)
+            is_first = False
+
+    code = "void {}(CacheIRReader& reader) {{\\\n".format(method_name)
+    code += "  spewOp(CacheOp::{});\\\n".format(name)
+    code += args_code
+    code += "  spewOpEnd();\\\n"
+    code += "}\\\n"
+
+    return code
+
+
+def gen_clone_method(name, args):
+    """Generates code for cloning a single opcode."""
+
+    method_name = "clone" + name
+
+    # Generate code like this:
+    #
+    #  void cloneGuardShape(CacheIRReader& reader, CacheIRWriter& writer) {
+    #    writer.writeOp(CacheOp::GuardShape);
+    #    ObjOperandId objId = reader.objOperandId();
+    #    writer.writeOperandId(objId);
+    #    uint32_t shapeOffset = reader.stubOffset();
+    #    Shape* shape = getShapeField(shapeOffset);
+    #    writer.writeShapeField(shape);
+    #    writer.assertLengthMatches();
+    #  }
+
+    args_code = ""
+    if args:
+        for arg_name, arg_type in six.iteritems(args):
+            if arg_type == "RawId":
+                arg_type = "ValId"
+
+            read_type, suffix, readexpr = arg_reader_info[arg_type]
+            read_name = arg_name + suffix
+            value_name = read_name
+            args_code += "  {} {} = {};\\\n".format(read_type, read_name, readexpr)
+
+            write_type, write_method = arg_writer_info[arg_type]
+            if arg_name == "result":
+                args_code += "  writer.newOperandId();\\\n"
+            if suffix == "Offset":
+                # If the write function takes T&, the intermediate variable
+                # should be of type T.
+                if write_type.endswith("&"):
+                    write_type = write_type[:-1]
+                value_name = arg_name
+                args_code += "  {} {} = get{}({});\\\n".format(
+                    write_type, value_name, arg_type, read_name
+                )
+            args_code += "  writer.{}({});\\\n".format(write_method, value_name)
+
+    code = "void {}".format(method_name)
+    code += "(CacheIRReader& reader, CacheIRWriter& writer) {{\\\n"
+    code += "  writer.writeOp(CacheOp::{});\\\n".format(name)
+    code += args_code
+    code += "  writer.assertLengthMatches();\\\n"
+    code += "}}\\\n"
+
+    return code
+
+
+# Length in bytes for each argument type, either an integer or a C++ expression.
+# This is used to generate the CacheIROpArgLengths array. CacheIRWriter asserts
+# the number of bytes written matches the value in that array.
+arg_length = {
+    "ValId": 1,
+    "ObjId": 1,
+    "StringId": 1,
+    "SymbolId": 1,
+    "BooleanId": 1,
+    "Int32Id": 1,
+    "NumberId": 1,
+    "BigIntId": 1,
+    "ValueTagId": 1,
+    "RawId": 1,
+    "ShapeField": 1,
+    "GroupField": 1,
+    "ObjectField": 1,
+    "StringField": 1,
+    "AtomField": 1,
+    "PropertyNameField": 1,
+    "SymbolField": 1,
+    "BaseScriptField": 1,
+    "RawInt32Field": 1,
+    "RawPointerField": 1,
+    "RawInt64Field": 1,
+    "IdField": 1,
+    "ValueField": 1,
+    "ByteImm": 1,
+    "BoolImm": 1,
+    "CallFlagsImm": 1,
+    "ScalarTypeImm": 1,
+    "MetaTwoByteKindImm": 1,
+    "UnaryMathFunctionImm": 1,
+    "JSOpImm": 1,
+    "ValueTypeImm": 1,
+    "GuardClassKindImm": 1,
+    "JSWhyMagicImm": 1,
+    "WasmValTypeImm": 1,
+    "Int32Imm": 4,
+    "UInt32Imm": 4,
+    "JSNativeImm": "sizeof(uintptr_t)",
+    "StaticStringImm": "sizeof(uintptr_t)",
+}
+
+
 def generate_cacheirops_header(c_out, yaml_path):
     """Generate CacheIROpsGenerated.h from CacheIROps.yaml. The generated file
-    contains:
-
-    * A list of all CacheIR ops:
-
-        #define CACHE_IR_OPS(_)\
-        _(GuardToObject, Id)\
-        _(CompareObjectUndefinedNullResult, Id, Byte)\
-        ...
-
-    * Lists of shared and unshared ops for the CacheIRCompiler classes. See the
-    'shared' attribute in the YAML file.
-
-    * Generated source code for CacheIRWriter and CacheIRCompiler.
-    """
+    contains a list of all CacheIR ops and generated source code for
+    CacheIRWriter and CacheIRCompiler."""
 
     data = load_yaml(yaml_path)
 
-    # Mapping from operand types to the less precise types expected by current
-    # C++ code.
-    mapping = {
-        'ValId': 'Id',
-        'ObjId': 'Id',
-        'StrId': 'Id',
-        'SymId': 'Id',
-        'Int32Id': 'Id',
-        'NumId': 'Id',
-        'BigIntId': 'Id',
-        'ValTagId': 'Id',
-        'AnyId': 'Id',
-
-        'ShapeField': 'Field',
-        'GroupField': 'Field',
-        'ObjectField': 'Field',
-        'StringField': 'Field',
-        'PropertyNameField': 'Field',
-        'SymbolField': 'Field',
-        'RawWordField': 'Field',
-        'DOMExpandoGenerationField': 'Field',
-        'IdField': 'Field',
-        'ValueField': 'Field',
-        'FieldOffset': 'Field',
-
-        'ByteImm': 'Byte',
-        'BoolImm': 'Byte',
-        'CallFlagsImm': 'Byte',
-        'TypedThingLayoutImm': 'Byte',
-        'ReferenceTypeImm': 'Byte',
-        'ScalarTypeImm': 'Byte',
-        'MetaTwoByteKindImm': 'Byte',
-        'JSOpImm': 'Byte',
-        'ValueTypeImm': 'Byte',
-        'GuardClassKindImm': 'Byte',
-        'JSWhyMagicImm': 'Byte',
-
-        'Int32Imm': 'Int32',
-
-        'UInt32Imm': 'UInt32',
-
-        'JSNativeImm': 'Word',
-        'StaticStringImm': 'Word',
-    }
-
-    # CACHE_IR_OPS items.
+    # CACHE_IR_OPS items. Each item stores an opcode name and arguments length
+    # expression. For example: _(GuardShape, 1 + 1)
     ops_items = []
-
-    # CACHE_IR_SHARED_OPS and CACHE_IR_UNSHARED_OPS items. These will go away
-    # when all ops have generated boilerplate.
-    ops_shared = []
-    ops_unshared = []
 
     # Generated CacheIRWriter methods.
     writer_methods = []
@@ -261,57 +431,92 @@ def generate_cacheirops_header(c_out, yaml_path):
     compiler_shared_methods = []
     compiler_unshared_methods = []
 
+    # Generated WarpCacheIRTranspiler methods.
+    transpiler_methods = []
+
+    # List of ops supported by WarpCacheIRTranspiler.
+    transpiler_ops = []
+
+    # Generated methods for spewers.
+    spewer_methods = []
+
+    # Generated methods for cloning IC stubs
+    clone_methods = []
+
     for op in data:
-        name = op['name']
+        name = op["name"]
 
-        operands = op['operands']
-        assert operands is None or isinstance(operands, OrderedDict)
+        args = op["args"]
+        assert args is None or isinstance(args, OrderedDict)
 
-        shared = op['shared']
+        shared = op["shared"]
         assert isinstance(shared, bool)
 
-        gen_boilerplate = op.get('gen_boilerplate', False)
+        transpile = op["transpile"]
+        assert isinstance(transpile, bool)
 
-        if operands:
-            operands_str = ', '.join([mapping[v] for v in operands.values()])
+        # Unscored Ops default to UINT32_MAX
+        cost_estimate = op.get("cost_estimate", int(0xFFFFFFFF))
+        assert isinstance(cost_estimate, int)
+
+        custom_writer = op.get("custom_writer", False)
+        assert isinstance(custom_writer, bool)
+
+        if args:
+            args_length = " + ".join([str(arg_length[v]) for v in args.values()])
         else:
-            operands_str = 'None'
-        ops_items.append('_({}, {})'.format(name, operands_str))
+            args_length = "0"
 
-        if gen_boilerplate:
-            writer_methods.append(gen_writer_method(name, operands))
-            if shared:
-                compiler_shared_methods.append(gen_compiler_method(name, operands))
-            else:
-                compiler_unshared_methods.append(gen_compiler_method(name, operands))
+        transpile_str = "true" if transpile else "false"
+        ops_items.append(
+            "_({}, {}, {}, {})".format(name, args_length, transpile_str, cost_estimate)
+        )
+
+        writer_methods.append(gen_writer_method(name, args, custom_writer))
+
+        if shared:
+            compiler_shared_methods.append(gen_compiler_method(name, args))
         else:
-            if shared:
-                ops_shared.append('_({})'.format(name))
-            else:
-                ops_unshared.append('_({})'.format(name))
+            compiler_unshared_methods.append(gen_compiler_method(name, args))
 
-    contents = '#define CACHE_IR_OPS(_)\\\n'
-    contents += '\\\n'.join(ops_items)
-    contents += '\n\n'
+        if transpile:
+            transpiler_methods.append(gen_compiler_method(name, args))
+            transpiler_ops.append("_({})".format(name))
 
-    contents += '#define CACHE_IR_SHARED_OPS(_)\\\n'
-    contents += '\\\n'.join(ops_shared)
-    contents += '\n\n'
+        spewer_methods.append(gen_spewer_method(name, args))
 
-    contents += '#define CACHE_IR_UNSHARED_OPS(_)\\\n'
-    contents += '\\\n'.join(ops_unshared)
-    contents += '\n\n'
+        clone_methods.append(gen_clone_method(name, args))
 
-    contents += '#define CACHE_IR_WRITER_GENERATED \\\n'
-    contents += '\\\n'.join(writer_methods)
-    contents += '\n\n'
+    contents = "#define CACHE_IR_OPS(_)\\\n"
+    contents += "\\\n".join(ops_items)
+    contents += "\n\n"
 
-    contents += '#define CACHE_IR_COMPILER_SHARED_GENERATED \\\n'
-    contents += '\\\n'.join(compiler_shared_methods)
-    contents += '\n\n'
+    contents += "#define CACHE_IR_WRITER_GENERATED \\\n"
+    contents += "\\\n".join(writer_methods)
+    contents += "\n\n"
 
-    contents += '#define CACHE_IR_COMPILER_UNSHARED_GENERATED \\\n'
-    contents += '\\\n'.join(compiler_unshared_methods)
-    contents += '\n\n'
+    contents += "#define CACHE_IR_COMPILER_SHARED_GENERATED \\\n"
+    contents += "\\\n".join(compiler_shared_methods)
+    contents += "\n\n"
 
-    generate_header(c_out, 'jit_CacheIROpsGenerated_h', contents)
+    contents += "#define CACHE_IR_COMPILER_UNSHARED_GENERATED \\\n"
+    contents += "\\\n".join(compiler_unshared_methods)
+    contents += "\n\n"
+
+    contents += "#define CACHE_IR_TRANSPILER_GENERATED \\\n"
+    contents += "\\\n".join(transpiler_methods)
+    contents += "\n\n"
+
+    contents += "#define CACHE_IR_TRANSPILER_OPS(_)\\\n"
+    contents += "\\\n".join(transpiler_ops)
+    contents += "\n\n"
+
+    contents += "#define CACHE_IR_SPEWER_GENERATED \\\n"
+    contents += "\\\n".join(spewer_methods)
+    contents += "\n\n"
+
+    contents += "#define CACHE_IR_CLONE_GENERATED \\\n"
+    contents += "\\\n".join(clone_methods)
+    contents += "\n\n"
+
+    generate_header(c_out, "jit_CacheIROpsGenerated_h", contents)

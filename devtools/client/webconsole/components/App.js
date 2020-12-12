@@ -61,13 +61,7 @@ loader.lazyGetter(this, "NotificationBox", () =>
 );
 loader.lazyRequireGetter(
   this,
-  "getNotificationWithValue",
-  "devtools/client/shared/components/NotificationBox",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "PriorityLevels",
+  ["getNotificationWithValue", "PriorityLevels"],
   "devtools/client/shared/components/NotificationBox",
   true
 );
@@ -319,12 +313,13 @@ class App extends Component {
   }
 
   renderConsoleOutput() {
-    const { onFirstMeaningfulPaint, serviceContainer } = this.props;
+    const { onFirstMeaningfulPaint, serviceContainer, editorMode } = this.props;
 
     return ConsoleOutput({
       key: "console-output",
       serviceContainer,
       onFirstMeaningfulPaint,
+      editorMode,
     });
   }
 

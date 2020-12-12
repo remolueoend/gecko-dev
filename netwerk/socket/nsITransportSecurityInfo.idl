@@ -67,6 +67,8 @@ interface nsITransportSecurityInfo : nsISupports {
     readonly attribute unsigned short certificateTransparencyStatus;
 
     [must_use]
+    readonly attribute boolean isAcceptedEch;
+    [must_use]
     readonly attribute boolean isDelegatedCredential;
     [must_use]
     readonly attribute boolean isDomainMismatch;
@@ -104,4 +106,9 @@ interface nsITransportSecurityInfo : nsISupports {
      * True iff the connection was resumed using the resumption token.
      */
     readonly attribute boolean resumed;
+
+    /**
+     * True iff the succeededCertChain is built in root.
+     */
+    attribute boolean isBuiltCertChainRootBuiltInRoot;
 };

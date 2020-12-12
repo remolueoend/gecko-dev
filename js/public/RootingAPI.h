@@ -9,8 +9,9 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
-#include "mozilla/GuardObjects.h"
+#include "mozilla/EnumeratedArray.h"
 #include "mozilla/LinkedList.h"
+#include "mozilla/Maybe.h"
 
 #include <type_traits>
 #include <utility>
@@ -21,6 +22,7 @@
 #include "js/GCAnnotations.h"
 #include "js/GCPolicyAPI.h"
 #include "js/GCTypeMacros.h"  // JS_FOR_EACH_PUBLIC_{,TAGGED_}GC_POINTER_TYPE
+#include "js/HashTable.h"
 #include "js/HeapAPI.h"
 #include "js/ProfilingStack.h"
 #include "js/Realm.h"
@@ -829,7 +831,8 @@ struct JS_PUBLIC_API MovableCellHasher {
   static bool ensureHash(const Lookup& l);
   static HashNumber hash(const Lookup& l);
   static bool match(const Key& k, const Lookup& l);
-  static void rekey(Key& k, const Key& newKey) { k = newKey; }
+  // The rekey hash policy method is not provided since you dont't need to
+  // rekey any more when using this policy.
 };
 
 template <typename T>
@@ -849,7 +852,6 @@ struct JS_PUBLIC_API MovableCellHasher<JS::Heap<T>> {
   static bool match(const Key& k, const Lookup& l) {
     return MovableCellHasher<T>::match(k.unbarrieredGet(), l);
   }
-  static void rekey(Key& k, const Key& newKey) { k.unsafeSet(newKey); }
 };
 
 }  // namespace js
@@ -872,41 +874,41 @@ struct FallibleHashMethods<js::MovableCellHasher<T>> {
 
 namespace js {
 
-// The alignment must be set because the Rooted and PersistentRooted ptr fields
-// may be accessed through reinterpret_cast<Rooted<ConcreteTraceable>*>, and
-// the compiler may choose a different alignment for the ptr field when it
-// knows the actual type stored in DispatchWrapper<T>.
-//
-// It would make more sense to align only those specific fields of type
-// DispatchWrapper, rather than DispatchWrapper itself, but that causes MSVC to
-// fail when Rooted is used in an IsConvertible test.
+struct VirtualTraceable {
+  virtual ~VirtualTraceable() = default;
+  virtual void trace(JSTracer* trc, const char* name) = 0;
+};
+
 template <typename T>
-class alignas(8) DispatchWrapper {
+struct RootedTraceable final : public VirtualTraceable {
   static_assert(JS::MapTypeToRootKind<T>::kind == JS::RootKind::Traceable,
-                "DispatchWrapper is intended only for usage with a Traceable");
+                "RootedTraceable is intended only for usage with a Traceable");
 
-  using TraceFn = void (*)(JSTracer*, T*, const char*);
-  TraceFn tracer;
-  alignas(gc::CellAlignBytes) T storage;
+  T ptr;
 
- public:
   template <typename U>
-  MOZ_IMPLICIT DispatchWrapper(U&& initial)
-      : tracer(&JS::GCPolicy<T>::trace), storage(std::forward<U>(initial)) {}
+  MOZ_IMPLICIT RootedTraceable(U&& initial) : ptr(std::forward<U>(initial)) {}
 
-  // Mimic a pointer type, so that we can drop into Rooted.
-  T* operator&() { return &storage; }
-  const T* operator&() const { return &storage; }
-  operator T&() { return storage; }
-  operator const T&() const { return storage; }
+  operator T&() { return ptr; }
+  operator const T&() const { return ptr; }
 
-  // Trace the contained storage (of unknown type) using the trace function
-  // we set aside when we did know the type.
-  static void TraceWrapped(JSTracer* trc, T* thingp, const char* name) {
-    auto wrapper = reinterpret_cast<DispatchWrapper*>(
-        uintptr_t(thingp) - offsetof(DispatchWrapper, storage));
-    wrapper->tracer(trc, &wrapper->storage, name);
+  void trace(JSTracer* trc, const char* name) override {
+    JS::GCPolicy<T>::trace(trc, &ptr, name);
   }
+};
+
+template <typename T>
+struct RootedTraceableTraits {
+  static T* address(RootedTraceable<T>& self) { return &self.ptr; }
+  static const T* address(const RootedTraceable<T>& self) { return &self.ptr; }
+  static void trace(JSTracer* trc, VirtualTraceable* thingp, const char* name);
+};
+
+template <typename T>
+struct RootedGCThingTraits {
+  static T* address(T& self) { return &self; }
+  static const T* address(const T& self) { return &self; }
+  static void trace(JSTracer* trc, T* thingp, const char* name);
 };
 
 } /* namespace js */
@@ -915,15 +917,34 @@ namespace JS {
 
 class JS_PUBLIC_API AutoGCRooter;
 
-// Our instantiations of Rooted<void*> and PersistentRooted<void*> require an
-// instantiation of MapTypeToRootKind.
+enum class AutoGCRooterKind : uint8_t {
+  WrapperVector, /* js::AutoWrapperVector */
+  Wrapper,       /* js::AutoWrapperRooter */
+  Custom,        /* js::CustomAutoRooter */
+
+  Limit
+};
+
+namespace detail {
+// Dummy type to store root list entry pointers as. This code does not just use
+// the actual type, because then eg JSObject* and JSFunction* would be assumed
+// to never alias but they do (they are stored in the same list). Also, do not
+// use `void*` so that `Rooted<void*>` is a compile error.
+struct RootListEntry;
+}  // namespace detail
+
 template <>
-struct MapTypeToRootKind<void*> {
+struct MapTypeToRootKind<detail::RootListEntry*> {
   static const RootKind kind = RootKind::Traceable;
 };
 
 using RootedListHeads =
-    mozilla::EnumeratedArray<RootKind, RootKind::Limit, Rooted<void*>*>;
+    mozilla::EnumeratedArray<RootKind, RootKind::Limit,
+                             Rooted<detail::RootListEntry*>*>;
+
+using AutoRooterListHeads =
+    mozilla::EnumeratedArray<AutoGCRooterKind, AutoGCRooterKind::Limit,
+                             AutoGCRooter*>;
 
 // Superclass of JSContext which can be used for rooting data in use by the
 // current thread but that does not provide all the functions of a JSContext.
@@ -931,11 +952,11 @@ class RootingContext {
   // Stack GC roots for Rooted GC heap pointers.
   RootedListHeads stackRoots_;
   template <typename T>
-  friend class JS::Rooted;
+  friend class Rooted;
 
   // Stack GC roots for AutoFooRooter classes.
-  JS::AutoGCRooter* autoGCRooters_;
-  friend class JS::AutoGCRooter;
+  AutoRooterListHeads autoGCRooters_;
+  friend class AutoGCRooter;
 
   // Gecko profiling metadata.
   // This isn't really rooting related. It's only here because we want
@@ -947,6 +968,12 @@ class RootingContext {
   RootingContext();
 
   void traceStackRoots(JSTracer* trc);
+
+  /* Implemented in gc/RootMarking.cpp. */
+  void traceAllGCRooters(JSTracer* trc);
+  void traceWrapperGCRooters(JSTracer* trc);
+  static void traceGCRooterList(JSTracer* trc, AutoGCRooter* head);
+
   void checkNoGCRooters();
 
   js::GeckoProfilerThread& geckoProfiler() { return geckoProfiler_; }
@@ -957,10 +984,10 @@ class RootingContext {
   // that inlined API functions can directly access the data.
 
   /* The current realm. */
-  JS::Realm* realm_;
+  Realm* realm_;
 
   /* The current zone. */
-  JS::Zone* zone_;
+  Zone* zone_;
 
  public:
   /* Limit pointer for checking native stack consumption. */
@@ -979,23 +1006,15 @@ class RootingContext {
 };
 
 class JS_PUBLIC_API AutoGCRooter {
- protected:
-  enum class Tag : uint8_t {
-    Array,         /* js::AutoArrayRooter */
-    ValueArray,    /* js::AutoValueArray */
-    Parser,        /* js::frontend::Parser */
-    BinASTParser,  /* js::frontend::BinASTParser; only used if built with
-                    * JS_BUILD_BINAST support */
-    WrapperVector, /* js::AutoWrapperVector */
-    Wrapper,       /* js::AutoWrapperRooter */
-    Custom         /* js::CustomAutoRooter */
-  };
-
  public:
-  AutoGCRooter(JSContext* cx, Tag tag)
-      : AutoGCRooter(JS::RootingContext::get(cx), tag) {}
-  AutoGCRooter(JS::RootingContext* cx, Tag tag)
-      : down(cx->autoGCRooters_), stackTop(&cx->autoGCRooters_), tag_(tag) {
+  using Kind = AutoGCRooterKind;
+
+  AutoGCRooter(JSContext* cx, Kind kind)
+      : AutoGCRooter(JS::RootingContext::get(cx), kind) {}
+  AutoGCRooter(RootingContext* cx, Kind kind)
+      : down(cx->autoGCRooters_[kind]),
+        stackTop(&cx->autoGCRooters_[kind]),
+        kind_(kind) {
     MOZ_ASSERT(this != *stackTop);
     *stackTop = this;
   }
@@ -1005,20 +1024,19 @@ class JS_PUBLIC_API AutoGCRooter {
     *stackTop = down;
   }
 
-  /* Implemented in gc/RootMarking.cpp. */
-  inline void trace(JSTracer* trc);
-  static void traceAll(JSContext* cx, JSTracer* trc);
-  static void traceAllWrappers(JSContext* cx, JSTracer* trc);
+  void trace(JSTracer* trc);
 
  private:
+  friend class RootingContext;
+
   AutoGCRooter* const down;
   AutoGCRooter** const stackTop;
 
   /*
    * Discriminates actual subclass of this being used. The meaning is
-   * indicated by the corresponding value in the Tag enum.
+   * indicated by the corresponding value in the Kind enum.
    */
-  Tag tag_;
+  Kind kind_;
 
   /* No copy or assignment semantics. */
   AutoGCRooter(AutoGCRooter& ida) = delete;
@@ -1027,18 +1045,16 @@ class JS_PUBLIC_API AutoGCRooter {
 
 namespace detail {
 
-/*
- * For pointer types, the TraceKind for tracing is based on the list it is
- * in (selected via MapTypeToRootKind), so no additional storage is
- * required here. Non-pointer types, however, share the same list, so the
- * function to call for tracing is stored adjacent to the struct. Since C++
- * cannot templatize on storage class, this is implemented via the wrapper
- * class DispatchWrapper.
- */
 template <typename T>
-using MaybeWrapped =
+using RootedPtr =
     std::conditional_t<MapTypeToRootKind<T>::kind == JS::RootKind::Traceable,
-                       js::DispatchWrapper<T>, T>;
+                       js::RootedTraceable<T>, T>;
+
+template <typename T>
+using RootedPtrTraits =
+    std::conditional_t<MapTypeToRootKind<T>::kind == JS::RootKind::Traceable,
+                       js::RootedTraceableTraits<T>,
+                       js::RootedGCThingTraits<T>>;
 
 // Dummy types to make it easier to understand template overload preference
 // ordering.
@@ -1058,10 +1074,13 @@ using OverloadSelector = PreferredOverload;
  */
 template <typename T>
 class MOZ_RAII Rooted : public js::RootedBase<T, Rooted<T>> {
+  using Ptr = detail::RootedPtr<T>;
+  using PtrTraits = detail::RootedPtrTraits<T>;
+
   inline void registerWithRootLists(RootedListHeads& roots) {
     this->stack = &roots[JS::MapTypeToRootKind<T>::kind];
     this->prev = *stack;
-    *stack = reinterpret_cast<Rooted<void*>*>(this);
+    *stack = reinterpret_cast<Rooted<detail::RootListEntry*>*>(this);
   }
 
   inline RootedListHeads& rootLists(RootingContext* cx) {
@@ -1111,7 +1130,8 @@ class MOZ_RAII Rooted : public js::RootedBase<T, Rooted<T>> {
   }
 
   ~Rooted() {
-    MOZ_ASSERT(*stack == reinterpret_cast<Rooted<void*>*>(this));
+    MOZ_ASSERT(*stack ==
+               reinterpret_cast<Rooted<detail::RootListEntry*>*>(this));
     *stack = prev;
   }
 
@@ -1132,19 +1152,25 @@ class MOZ_RAII Rooted : public js::RootedBase<T, Rooted<T>> {
 
   DECLARE_POINTER_CONSTREF_OPS(T);
   DECLARE_POINTER_ASSIGN_OPS(Rooted, T);
-  DECLARE_NONPOINTER_ACCESSOR_METHODS(ptr);
-  DECLARE_NONPOINTER_MUTABLE_ACCESSOR_METHODS(ptr);
+
+  T& get() { return ptr; }
+  const T& get() const { return ptr; }
+
+  T* address() { return PtrTraits::address(ptr); }
+  const T* address() const { return PtrTraits::address(ptr); }
+
+  void trace(JSTracer* trc, const char* name);
 
  private:
   /*
-   * These need to be templated on void* to avoid aliasing issues between, for
-   * example, Rooted<JSObject> and Rooted<JSFunction>, which use the same
-   * stack head pointer for different classes.
+   * These need to be templated on RootListEntry* to avoid aliasing issues
+   * between, for example, Rooted<JSObject*> and Rooted<JSFunction*>, which use
+   * the same stack head pointer for different classes.
    */
-  Rooted<void*>** stack;
-  Rooted<void*>* prev;
+  Rooted<detail::RootListEntry*>** stack;
+  Rooted<detail::RootListEntry*>* prev;
 
-  detail::MaybeWrapped<T> ptr;
+  Ptr ptr;
 
   Rooted(const Rooted&) = delete;
 } JS_HAZ_ROOTED;
@@ -1271,11 +1297,13 @@ inline MutableHandle<T>::MutableHandle(PersistentRooted<T>* root) {
   ptr = root->address();
 }
 
-JS_PUBLIC_API void AddPersistentRoot(RootingContext* cx, RootKind kind,
-                                     PersistentRooted<void*>* root);
+JS_PUBLIC_API void AddPersistentRoot(
+    RootingContext* cx, RootKind kind,
+    PersistentRooted<detail::RootListEntry*>* root);
 
-JS_PUBLIC_API void AddPersistentRoot(JSRuntime* rt, RootKind kind,
-                                     PersistentRooted<void*>* root);
+JS_PUBLIC_API void AddPersistentRoot(
+    JSRuntime* rt, RootKind kind,
+    PersistentRooted<detail::RootListEntry*>* root);
 
 /**
  * A copyable, assignable global GC root type with arbitrary lifetime, an
@@ -1315,6 +1343,8 @@ class PersistentRooted
     : public js::RootedBase<T, PersistentRooted<T>>,
       private mozilla::LinkedListElement<PersistentRooted<T>> {
   using ListBase = mozilla::LinkedListElement<PersistentRooted<T>>;
+  using Ptr = detail::RootedPtr<T>;
+  using PtrTraits = detail::RootedPtrTraits<T>;
 
   friend class mozilla::LinkedList<PersistentRooted>;
   friend class mozilla::LinkedListElement<PersistentRooted>;
@@ -1322,15 +1352,17 @@ class PersistentRooted
   void registerWithRootLists(RootingContext* cx) {
     MOZ_ASSERT(!initialized());
     JS::RootKind kind = JS::MapTypeToRootKind<T>::kind;
-    AddPersistentRoot(cx, kind,
-                      reinterpret_cast<JS::PersistentRooted<void*>*>(this));
+    AddPersistentRoot(
+        cx, kind,
+        reinterpret_cast<JS::PersistentRooted<detail::RootListEntry*>*>(this));
   }
 
   void registerWithRootLists(JSRuntime* rt) {
     MOZ_ASSERT(!initialized());
     JS::RootKind kind = JS::MapTypeToRootKind<T>::kind;
-    AddPersistentRoot(rt, kind,
-                      reinterpret_cast<JS::PersistentRooted<void*>*>(this));
+    AddPersistentRoot(
+        rt, kind,
+        reinterpret_cast<JS::PersistentRooted<detail::RootListEntry*>*>(this));
   }
 
  public:
@@ -1379,7 +1411,7 @@ class PersistentRooted
     const_cast<PersistentRooted&>(rhs).setNext(this);
   }
 
-  bool initialized() { return ListBase::isInList(); }
+  bool initialized() const { return ListBase::isInList(); }
 
   void init(RootingContext* cx) { init(cx, SafelyInitialized<T>()); }
   void init(JSContext* cx) { init(RootingContext::get(cx)); }
@@ -1404,19 +1436,15 @@ class PersistentRooted
 
   DECLARE_POINTER_CONSTREF_OPS(T);
   DECLARE_POINTER_ASSIGN_OPS(PersistentRooted, T);
-  DECLARE_NONPOINTER_ACCESSOR_METHODS(ptr);
 
-  // These are the same as DECLARE_NONPOINTER_MUTABLE_ACCESSOR_METHODS, except
-  // they check that |this| is initialized in case the caller later stores
-  // something in |ptr|.
+  T& get() { return ptr; }
+  const T& get() const { return ptr; }
+
   T* address() {
     MOZ_ASSERT(initialized());
-    return &ptr;
+    return PtrTraits::address(ptr);
   }
-  T& get() {
-    MOZ_ASSERT(initialized());
-    return ptr;
-  }
+  const T* address() const { return PtrTraits::address(ptr); }
 
   template <typename U>
   void set(U&& value) {
@@ -1424,8 +1452,10 @@ class PersistentRooted
     ptr = std::forward<U>(value);
   }
 
+  void trace(JSTracer* trc, const char* name);
+
  private:
-  detail::MaybeWrapped<T> ptr;
+  Ptr ptr;
 } JS_HAZ_ROOTED;
 
 namespace detail {
@@ -1464,6 +1494,33 @@ class MutableWrappedPtrOperations<UniquePtr<T, D>, Container>
     return uniquePtr().release();
   }
   void reset(T* ptr = T()) { uniquePtr().reset(ptr); }
+};
+
+template <typename T, typename Container>
+class WrappedPtrOperations<mozilla::Maybe<T>, Container> {
+  const mozilla::Maybe<T>& maybe() const {
+    return static_cast<const Container*>(this)->get();
+  }
+
+ public:
+  // This only supports a subset of Maybe's interface.
+  bool isSome() const { return maybe().isSome(); }
+  bool isNothing() const { return maybe().isNothing(); }
+  const T value() const { return maybe().value(); }
+  const T* operator->() const { return maybe().ptr(); }
+  const T& operator*() const { return maybe().ref(); }
+};
+
+template <typename T, typename Container>
+class MutableWrappedPtrOperations<mozilla::Maybe<T>, Container>
+    : public WrappedPtrOperations<mozilla::Maybe<T>, Container> {
+  mozilla::Maybe<T>& maybe() { return static_cast<Container*>(this)->get(); }
+
+ public:
+  // This only supports a subset of Maybe's interface.
+  T* operator->() { return maybe().ptr(); }
+  T& operator*() { return maybe().ref(); }
+  void reset() { return maybe().reset(); }
 };
 
 namespace gc {

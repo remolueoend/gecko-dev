@@ -28,6 +28,11 @@ ChromeUtils.defineModuleGetter(
   "RecipeRunner",
   "resource://normandy/lib/RecipeRunner.jsm"
 );
+ChromeUtils.defineModuleGetter(
+  this,
+  "ExperimentManager",
+  "resource://messaging-system/experiments/ExperimentManager.jsm"
+);
 
 var EXPORTED_SYMBOLS = ["AboutPages"];
 
@@ -73,9 +78,7 @@ class AboutPage {
     return channel;
   }
 }
-AboutPage.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIAboutModule,
-]);
+AboutPage.prototype.QueryInterface = ChromeUtils.generateQI(["nsIAboutModule"]);
 
 /**
  * The module exported by this file.
@@ -111,6 +114,10 @@ XPCOMUtils.defineLazyGetter(AboutPages, "aboutStudies", () => {
 
     getPreferenceStudyList() {
       return PreferenceExperiments.getAll();
+    },
+
+    getMessagingSystemList() {
+      return ExperimentManager.store.getAll();
     },
 
     /** Add a browsing context to the weak set;
@@ -198,6 +205,14 @@ XPCOMUtils.defineLazyGetter(AboutPages, "aboutStudies", () => {
           this._sendToAll("Shield:UpdatePreferenceStudyList", list)
         );
       }
+    },
+
+    async removeMessagingSystemExperiment(slug, reason) {
+      ExperimentManager.unenroll(slug, reason);
+      this._sendToAll(
+        "Shield:UpdateMessagingSystemExperimentList",
+        ExperimentManager.store.getAll()
+      );
     },
 
     openDataPreferences() {

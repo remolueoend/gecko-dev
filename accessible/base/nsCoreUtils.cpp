@@ -39,6 +39,11 @@
 
 using namespace mozilla;
 
+using mozilla::dom::DOMRect;
+using mozilla::dom::Element;
+using mozilla::dom::Selection;
+using mozilla::dom::XULTreeElement;
+
 ////////////////////////////////////////////////////////////////////////////////
 // nsCoreUtils
 ////////////////////////////////////////////////////////////////////////////////
@@ -123,7 +128,7 @@ void nsCoreUtils::DispatchMouseEvent(EventMessage aMessage, int32_t aX,
   event.mRefPoint = LayoutDeviceIntPoint(aX, aY);
 
   event.mClickCount = 1;
-  event.mButton = MouseButton::eLeft;
+  event.mButton = MouseButton::ePrimary;
   event.mTime = PR_IntervalNow();
   event.mInputSource = dom::MouseEvent_Binding::MOZ_SOURCE_UNKNOWN;
 
@@ -354,20 +359,13 @@ bool nsCoreUtils::IsContentDocument(Document* aDocument) {
   return (docShellTreeItem->ItemType() == nsIDocShellTreeItem::typeContent);
 }
 
-bool nsCoreUtils::IsTabDocument(Document* aDocumentNode) {
-  nsCOMPtr<nsIDocShellTreeItem> treeItem(aDocumentNode->GetDocShell());
-
-  nsCOMPtr<nsIDocShellTreeItem> parentTreeItem;
-  treeItem->GetInProcessParent(getter_AddRefs(parentTreeItem));
-
-  // Tab document running in own process doesn't have parent.
-  if (XRE_IsContentProcess()) return !parentTreeItem;
-
-  // Parent of docshell for tab document running in chrome process is root.
-  nsCOMPtr<nsIDocShellTreeItem> rootTreeItem;
-  treeItem->GetInProcessRootTreeItem(getter_AddRefs(rootTreeItem));
-
-  return parentTreeItem == rootTreeItem;
+bool nsCoreUtils::IsTopLevelContentDocInProcess(Document* aDocumentNode) {
+  BrowsingContext* bc = aDocumentNode->GetBrowsingContext();
+  return bc->IsContent() && (
+                                // Tab document.
+                                bc->IsTop() ||
+                                // Out-of-process iframe.
+                                !bc->GetParent()->IsInProcess());
 }
 
 bool nsCoreUtils::IsErrorPage(Document* aDocument) {
@@ -379,10 +377,14 @@ bool nsCoreUtils::IsErrorPage(Document* aDocument) {
   nsAutoCString path;
   uri->GetPathQueryRef(path);
 
-  NS_NAMED_LITERAL_CSTRING(neterror, "neterror");
-  NS_NAMED_LITERAL_CSTRING(certerror, "certerror");
+  constexpr auto neterror = "neterror"_ns;
+  constexpr auto certerror = "certerror"_ns;
 
   return StringBeginsWith(path, neterror) || StringBeginsWith(path, certerror);
+}
+
+PresShell* nsCoreUtils::GetPresShellFor(nsINode* aNode) {
+  return aNode->OwnerDoc()->GetPresShell();
 }
 
 bool nsCoreUtils::GetID(nsIContent* aContent, nsAString& aID) {
@@ -538,6 +540,12 @@ void nsCoreUtils::ScrollTo(PresShell* aPresShell, nsIContent* aContent,
   ConvertScrollTypeToPercents(aScrollType, &vertical, &horizontal);
   aPresShell->ScrollContentIntoView(aContent, vertical, horizontal,
                                     ScrollFlags::ScrollOverflowHidden);
+}
+
+bool nsCoreUtils::IsHTMLTableHeader(nsIContent* aContent) {
+  return aContent->NodeInfo()->Equals(nsGkAtoms::th) ||
+         (aContent->IsElement() &&
+          aContent->AsElement()->HasAttr(kNameSpaceID_None, nsGkAtoms::scope));
 }
 
 bool nsCoreUtils::IsWhitespaceString(const nsAString& aString) {

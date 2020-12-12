@@ -18,7 +18,7 @@ add_task(async function run_test() {
   let promise = PromiseUtils.defer();
 
   let bookmarksObserver = {
-    QueryInterface: ChromeUtils.generateQI([Ci.nsINavBookmarkObserver]),
+    QueryInterface: ChromeUtils.generateQI(["nsINavBookmarkObserver"]),
 
     _changedCount: 0,
     onItemChanged(
@@ -54,7 +54,6 @@ add_task(async function run_test() {
 
     onBeginUpdateBatch() {},
     onEndUpdateBatch() {},
-    onItemVisited() {},
     onItemMoved() {},
   };
   PlacesUtils.bookmarks.addObserver(bookmarksObserver);

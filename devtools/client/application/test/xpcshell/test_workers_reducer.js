@@ -11,6 +11,11 @@ const {
 } = require("devtools/client/application/src/actions/workers.js");
 
 const {
+  START_WORKER,
+  UNREGISTER_WORKER,
+} = require("devtools/client/application/src/constants.js");
+
+const {
   workersReducer,
   WorkersState,
 } = require("devtools/client/application/src/reducers/workers-state.js");
@@ -42,14 +47,22 @@ add_task(async function() {
       registration: {
         scope: "lorem-ipsum",
         lastUpdateTime: 42,
+        id: "r1",
       },
       workers: [
         {
-          id: 1,
+          id: "w1",
           state: Ci.nsIServiceWorkerInfo.STATE_ACTIVATED,
-          url: "https://example.com",
-          workerTargetFront: { foo: "bar" },
+          url: "https://example.com/w1.js",
+          workerDescriptorFront: { foo: "bar" },
           stateText: "activated",
+        },
+        {
+          id: "w2",
+          state: Ci.nsIServiceWorkerInfo.STATE_INSTALLED,
+          url: "https://example.com/w2.js",
+          workerDescriptorFront: undefined,
+          stateText: "installed",
         },
       ],
     },
@@ -57,18 +70,48 @@ add_task(async function() {
 
   const expectedData = [
     {
-      id: 1,
-      isActive: true,
-      scope: "lorem-ipsum",
+      id: "r1",
       lastUpdateTime: 42,
-      url: "https://example.com",
       registrationFront: rawData[0].registration,
-      workerTargetFront: rawData[0].workers[0].workerTargetFront,
-      stateText: "activated",
+      scope: "lorem-ipsum",
+      workers: [
+        {
+          id: "w1",
+          url: "https://example.com/w1.js",
+          workerDescriptorFront: rawData[0].workers[0].workerDescriptorFront,
+          registrationFront: rawData[0].registration,
+          state: Ci.nsIServiceWorkerInfo.STATE_ACTIVATED,
+          stateText: "activated",
+        },
+        {
+          id: "w2",
+          url: "https://example.com/w2.js",
+          workerDescriptorFront: undefined,
+          registrationFront: rawData[0].registration,
+          state: Ci.nsIServiceWorkerInfo.STATE_INSTALLED,
+          stateText: "installed",
+        },
+      ],
     },
   ];
 
   const action = updateWorkers(rawData);
   const newState = workersReducer(state, action);
   deepEqual(newState.list, expectedData, "workers contains the expected list");
+});
+
+add_task(async function() {
+  info("Test workers reducer: START_WORKER action");
+  const state = WorkersState();
+  const action = { type: START_WORKER };
+  const newState = workersReducer(state, action);
+  deepEqual(state, newState, "workers state stays the same");
+});
+
+add_task(async function() {
+  info("Test workers reducer: UNREGISTER_WORKER action");
+  const state = WorkersState();
+  const action = { type: UNREGISTER_WORKER };
+  const newState = workersReducer(state, action);
+  deepEqual(state, newState, "workers state stays the same");
 });

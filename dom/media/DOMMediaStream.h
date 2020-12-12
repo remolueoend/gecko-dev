@@ -14,6 +14,7 @@
 #include "MediaTrackConstraints.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/RelativeTimeline.h"
+#include "mozilla/WeakPtr.h"
 
 namespace mozilla {
 
@@ -49,7 +50,7 @@ class OverlayImage;
  */
 class DOMMediaStream : public DOMEventTargetHelper,
                        public RelativeTimeline,
-                       public SupportsWeakPtr<DOMMediaStream> {
+                       public SupportsWeakPtr {
   typedef dom::MediaStreamTrack MediaStreamTrack;
   typedef dom::AudioStreamTrack AudioStreamTrack;
   typedef dom::VideoStreamTrack VideoStreamTrack;
@@ -57,8 +58,6 @@ class DOMMediaStream : public DOMEventTargetHelper,
 
  public:
   typedef dom::MediaTrackConstraints MediaTrackConstraints;
-
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(DOMMediaStream)
 
   class TrackListener {
    public:

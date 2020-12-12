@@ -14,9 +14,8 @@ const TYPE_EMAIL = 4;
 const TYPE_SERVER = 8;
 
 export class AboutCertificateSection extends HTMLElement {
-  constructor(certs) {
+  constructor() {
     super();
-    this.certs = certs;
   }
 
   connectedCallback() {
@@ -31,35 +30,11 @@ export class AboutCertificateSection extends HTMLElement {
     this.shadowRoot.appendChild(this.certificateTabsSection.tabsElement);
     this.infoGroupsContainers = new InfoGroupContainer(true);
 
-    this.certData = {
-      [TYPE_UNKNOWN]: {
-        name: "certificate-viewer-tab-unkonwn",
-        data: null,
-      },
-      [TYPE_CA]: {
-        name: "certificate-viewer-tab-ca",
-        data: null,
-      },
-      [TYPE_USER]: {
-        name: "certificate-viewer-tab-mine",
-        data: null,
-      },
-      [TYPE_EMAIL]: {
-        name: "certificate-viewer-tab-people",
-        data: null,
-      },
-      [TYPE_SERVER]: {
-        name: "certificate-viewer-tab-servers",
-        data: null,
-      },
-    };
-
     this.render();
   }
 
   render() {
-    RPMAddMessageListener("certificates", this.filterCerts.bind(this));
-    RPMSendAsyncMessage("getCertificates");
+    RPMSendQuery("getCertificates").then(this.filterCerts.bind(this));
 
     let title = this.shadowRoot.querySelector(".title");
     title.setAttribute(
@@ -68,24 +43,47 @@ export class AboutCertificateSection extends HTMLElement {
     );
   }
 
-  filterCerts(message) {
-    this.certData[TYPE_UNKNOWN].data = message.data.certs[TYPE_UNKNOWN];
-    this.certData[TYPE_CA].data = message.data.certs[TYPE_CA];
-    this.certData[TYPE_USER].data = message.data.certs[TYPE_USER];
-    this.certData[TYPE_EMAIL].data = message.data.certs[TYPE_EMAIL];
-    this.certData[TYPE_SERVER].data = message.data.certs[TYPE_SERVER];
+  filterCerts(srcCerts) {
+    let certs = [];
+    if (srcCerts[TYPE_USER].length) {
+      certs.push({
+        name: "certificate-viewer-tab-mine",
+        data: srcCerts[TYPE_USER],
+      });
+    }
+    if (srcCerts[TYPE_EMAIL].length) {
+      certs.push({
+        name: "certificate-viewer-tab-people",
+        data: srcCerts[TYPE_EMAIL],
+      });
+    }
+    if (srcCerts[TYPE_SERVER].length) {
+      certs.push({
+        name: "certificate-viewer-tab-servers",
+        data: srcCerts[TYPE_SERVER],
+      });
+    }
+    if (srcCerts[TYPE_CA].length) {
+      certs.push({
+        name: "certificate-viewer-tab-ca",
+        data: srcCerts[TYPE_CA],
+      });
+    }
+    if (srcCerts[TYPE_UNKNOWN].length) {
+      certs.push({
+        name: "certificate-viewer-tab-unkonwn",
+        data: srcCerts[TYPE_UNKNOWN],
+      });
+    }
 
-    let final = false;
     let i = 0;
-    for (let data of Object.values(this.certData)) {
-      if (i === this.certs.length - 1) {
-        final = true;
-      }
-      this.infoGroupsContainers.createInfoGroupsContainers({}, i, final, data);
+    for (let cert of certs) {
+      let final = i == certs.length - 1;
+      this.infoGroupsContainers.createInfoGroupsContainers({}, i, final, cert);
       this.shadowRoot.appendChild(
         this.infoGroupsContainers.infoGroupsContainers[i]
       );
-      this.certificateTabsSection.createTabSection(data.name, i);
+      this.certificateTabsSection.createTabSection(cert.name, i);
       this.infoGroupsContainers.addClass("selected", 0);
       i++;
     }

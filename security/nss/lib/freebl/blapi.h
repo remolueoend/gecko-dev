@@ -380,6 +380,9 @@ extern SECStatus KEA_Derive(SECItem *prime,
  */
 extern PRBool KEA_Verify(SECItem *Y, SECItem *prime, SECItem *subPrime);
 
+/* verify a value is prime */
+PRBool KEA_PrimeCheck(SECItem *prime);
+
 /****************************************
  * J-PAKE key transport
  */
@@ -943,6 +946,38 @@ extern SECStatus
 AESKeyWrap_Decrypt(AESKeyWrapContext *cx, unsigned char *output,
                    unsigned int *outputLen, unsigned int maxOutputLen,
                    const unsigned char *input, unsigned int inputLen);
+
+/*
+** Perform AES padded key wrap.
+**  "cx" the context
+**  "output" the output buffer to store the encrypted data.
+**  "outputLen" how much data is stored in "output". Set by the routine
+**     after some data is stored in output.
+**  "maxOutputLen" the maximum amount of data that can ever be
+**     stored in "output"
+**  "input" the input data
+**  "inputLen" the amount of input data
+*/
+extern SECStatus
+AESKeyWrap_EncryptKWP(AESKeyWrapContext *cx, unsigned char *output,
+                      unsigned int *outputLen, unsigned int maxOutputLen,
+                      const unsigned char *input, unsigned int inputLen);
+
+/*
+** Perform AES padded key unwrap.
+**  "cx" the context
+**  "output" the output buffer to store the decrypted data.
+**  "outputLen" how much data is stored in "output". Set by the routine
+**     after some data is stored in output.
+**  "maxOutputLen" the maximum amount of data that can ever be
+**     stored in "output"
+**  "input" the input data
+**  "inputLen" the amount of input data
+*/
+extern SECStatus
+AESKeyWrap_DecryptKWP(AESKeyWrapContext *cx, unsigned char *output,
+                      unsigned int *outputLen, unsigned int maxOutputLen,
+                      const unsigned char *input, unsigned int inputLen);
 
 /******************************************/
 /*

@@ -16,6 +16,26 @@ registerCleanupFunction(() => {
  */
 const { require } = ChromeUtils.import("resource://devtools/shared/Loader.jsm");
 
+{
+  const {
+    getEnvironmentVariable,
+  } = require("devtools/client/performance-new/browser");
+
+  if (getEnvironmentVariable("MOZ_PROFILER_SHUTDOWN")) {
+    throw new Error(
+      "These tests cannot be run with shutdown profiling as they rely on manipulating " +
+        "the state of the profiler."
+    );
+  }
+
+  if (getEnvironmentVariable("MOZ_PROFILER_STARTUP")) {
+    throw new Error(
+      "These tests cannot be run with startup profiling as they rely on manipulating " +
+        "the state of the profiler."
+    );
+  }
+}
+
 /**
  * Wait for a single requestAnimationFrame tick.
  */
@@ -118,7 +138,8 @@ function getElementByXPath(document, path) {
  * @returns {Promise<HTMLElement>}
  */
 async function getElementFromDocumentByText(document, text) {
-  const xpath = `//*[contains(text(), '${text}')]`;
+  // Fallback on aria-label if there are no results for the text xpath.
+  const xpath = `//*[contains(text(), '${text}')] | //*[contains(@aria-label, '${text}')]`;
   return waitUntil(
     () => getElementByXPath(document, xpath),
     `Trying to find the element with the text "${text}".`
@@ -136,20 +157,6 @@ function maybeGetElementFromDocumentByText(document, text) {
   info(`Immediately trying to find the element with the text "${text}".`);
   const xpath = `//*[contains(text(), '${text}')]`;
   return getElementByXPath(document, xpath);
-}
-
-/**
- * Returns the popup's document.
- * @returns {Document}
- */
-function getIframeDocument() {
-  const iframe = document.getElementById("PanelUI-profilerIframe");
-  if (!iframe) {
-    throw new Error(
-      "This function assumes the profiler iframe is already present."
-    );
-  }
-  return iframe.contentDocument;
 }
 
 /**
@@ -196,11 +203,33 @@ async function makeSureProfilerPopupIsEnabled() {
 }
 
 /**
+ * XUL popups will fire the popupshown and popuphidden events. These will fire for
+ * any type of popup in the browser. This function waits for one of those events, and
+ * checks that the viewId of the popup is PanelUI-profiler
+ *
+ * @param {"popupshown" | "popuphidden"} eventName
+ * @returns {Promise<void>}
+ */
+function waitForProfilerPopupEvent(eventName) {
+  return new Promise(resolve => {
+    function handleEvent(event) {
+      if (event.target.getAttribute("viewId") === "PanelUI-profiler") {
+        window.removeEventListener(eventName, handleEvent);
+        resolve();
+      }
+    }
+    window.addEventListener(eventName, handleEvent);
+  });
+}
+
+/**
+ * Do not use this directly in a test. Prefer withPopupOpen and openPopupAndEnsureCloses.
+ *
  * This function toggles the profiler menu button, and then uses user gestures
  * to click it open. It waits a tick to make sure it has a chance to initialize.
  * @return {Promise<void>}
  */
-async function toggleOpenProfilerPopup() {
+async function _toggleOpenProfilerPopup(window) {
   info("Toggle open the profiler popup.");
 
   info("> Find the profiler menu button.");
@@ -209,9 +238,68 @@ async function toggleOpenProfilerPopup() {
     throw new Error("Could not find the profiler button in the menu.");
   }
 
-  info("> Trigger a click on the profiler menu button.");
-  profilerButton.click();
+  const popupShown = waitForProfilerPopupEvent("popupshown");
+
+  info("> Trigger a click on the profiler button dropmarker.");
+  await EventUtils.synthesizeMouseAtCenter(profilerButton.dropmarker, {});
+
+  if (profilerButton.getAttribute("open") !== "true") {
+    throw new Error(
+      "This test assumes that the button will have an open=true attribute after clicking it."
+    );
+  }
+
+  info("> Wait for the popup to be shown.");
+  await popupShown;
+  // Also wait a tick in case someone else is subscribing to the "popupshown" event
+  // and is doing synchronous work with it.
   await tick();
+}
+
+/**
+ * Do not use this directly in a test. Prefer withPopupOpen.
+ *
+ * This function uses a keyboard shortcut to close the profiler popup.
+ * @return {Promise<void>}
+ */
+async function _closePopup(window) {
+  const popupHiddenPromise = waitForProfilerPopupEvent("popuphidden");
+  info("> Trigger an escape key to hide the popup");
+  EventUtils.synthesizeKey("KEY_Escape");
+
+  info("> Wait for the popup to be hidden.");
+  await popupHiddenPromise;
+  // Also wait a tick in case someone else is subscribing to the "popuphidden" event
+  // and is doing synchronous work with it.
+  await tick();
+}
+
+/**
+ * Perform some action on the popup, and close it afterwards.
+ * @param {Window} window
+ * @param {() => Promise<void>} callback
+ */
+async function withPopupOpen(window, callback) {
+  await _toggleOpenProfilerPopup(window);
+  await callback();
+  await _closePopup(window);
+}
+
+/**
+ * This function opens the profiler popup, but also ensures that something else closes
+ * it before the end of the test. This is useful for tests that trigger the profiler
+ * popup to close through an implicit action, like opening a tab.
+ *
+ * @param {Window} window
+ * @param {() => Promise<void>} callback
+ */
+async function openPopupAndEnsureCloses(window, callback) {
+  await _toggleOpenProfilerPopup(window);
+  // We want to ensure the popup gets closed by the test, during the callback.
+  const popupHiddenPromise = waitForProfilerPopupEvent("popuphidden");
+  await callback();
+  info("> Verifying that the popup was closed by the test.");
+  await popupHiddenPromise;
 }
 
 /**
@@ -278,6 +366,52 @@ async function checkTabLoadedProfile({
 }
 
 /**
+ * This function checks the url of a tab so we can assert the frontend's url
+ * with our expected url. This function runs in a loop every
+ * requestAnimationFrame, and checks for a initialTitle. Asserts as soon as it
+ * finds that title. We don't have to look for success title or error title
+ * since we only care about the url.
+ * @param {{
+ *     initialTitle: string,
+ *     successTitle: string,
+ *     errorTitle: string,
+ *     expectedUrl: string
+ *   }}
+ */
+async function waitForTabUrl({
+  initialTitle,
+  successTitle,
+  errorTitle,
+  expectedUrl,
+}) {
+  const logPeriodically = createPeriodicLogger();
+
+  info(`Waiting for the selected tab to have the url "${expectedUrl}".`);
+
+  return waitUntil(() => {
+    switch (gBrowser.selectedTab.textContent) {
+      case initialTitle:
+      case successTitle:
+        if (gBrowser.currentURI.spec === expectedUrl) {
+          ok(true, `The selected tab has the url ${expectedUrl}`);
+          BrowserTestUtils.removeTab(gBrowser.selectedTab);
+          return true;
+        }
+        throw new Error(
+          `Found a different url on the fake frontend: ${gBrowser.currentURI.spec}`
+        );
+      case errorTitle:
+        throw new Error(
+          "The fake frontend indicated that there was an error injecting the profile."
+        );
+      default:
+        logPeriodically(`> Waiting for the fake frontend tab to be loaded.`);
+        return false;
+    }
+  });
+}
+
+/**
  * This function checks the document title of a tab as an easy way to pass
  * messages from a content page to the mochitest.
  * @param {string} title
@@ -295,39 +429,6 @@ async function waitForTabTitle(title) {
     logPeriodically(`> Waiting for the tab title to change.`);
     return false;
   });
-}
-
-/**
- * Close the popup, and wait for it to be destroyed.
- */
-async function closePopup() {
-  const iframe = document.querySelector("#PanelUI-profilerIframe");
-
-  if (!iframe) {
-    throw new Error(
-      "Could not find the profiler iframe when attempting to close the popup. Was it " +
-        "already closed?"
-    );
-  }
-
-  const panel = iframe.closest("panel");
-  if (!panel) {
-    throw new Error(
-      "Could not find the closest panel to the profiler's iframe."
-    );
-  }
-
-  info("Hide the profiler popup.");
-  panel.hidePopup();
-
-  info("Wait for the profiler popup to be completely hidden.");
-  while (true) {
-    if (!iframe.ownerDocument.contains(iframe)) {
-      info("The iframe was removed.");
-      return;
-    }
-    await tick();
-  }
 }
 
 /**
@@ -399,7 +500,7 @@ function getActiveConfiguration() {
 
   // Immediately pause the sampling, to make sure the test runs fast. The profiler
   // only needs to be started to initialize the configuration.
-  Services.profiler.PauseSampling();
+  Services.profiler.Pause();
 
   const { activeConfiguration } = Services.profiler;
   if (!activeConfiguration) {

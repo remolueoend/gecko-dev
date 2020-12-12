@@ -70,7 +70,7 @@ const TRANSLUCENT_SELECT_APPLIES_ON_BASE_COLOR =
 const DISABLED_OPTGROUP_AND_OPTIONS =
   "<html><head>" +
   "<body><select id='one'>" +
-  '  <optgroup label=\'{"color": "rgb(0, 0, 0)", "backgroundColor": "buttonface"}\'>' +
+  '  <optgroup label=\'{"color": "rgb(0, 0, 0)", "backgroundColor": "rgba(0, 0, 0, 0)"}\'>' +
   '    <option disabled="">{"color": "GrayText", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
   '    <option>{"color": "rgb(0, 0, 0)", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
   '    <option disabled="">{"color": "GrayText", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
@@ -79,7 +79,7 @@ const DISABLED_OPTGROUP_AND_OPTIONS =
   '    <option>{"color": "rgb(0, 0, 0)", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
   '    <option>{"color": "rgb(0, 0, 0)", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
   "  </optgroup>" +
-  '  <optgroup label=\'{"color": "GrayText", "backgroundColor": "buttonface"}\' disabled=\'\'>' +
+  '  <optgroup label=\'{"color": "GrayText", "backgroundColor": "rgba(0, 0, 0, 0)"}\' disabled=\'\'>' +
   '    <option>{"color": "GrayText", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
   '    <option>{"color": "GrayText", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
   '    <option>{"color": "GrayText", "backgroundColor": "rgba(0, 0, 0, 0)"}</option>' +
@@ -185,6 +185,15 @@ const SELECT_INHERITED_COLORS_ON_OPTIONS_DONT_GET_UNIQUE_RULES_IF_RULE_SET_ON_SE
 const SELECT_FONT_INHERITS_TO_OPTION = `
    <html><head><style>
      select { font-family: monospace }
+   </style></head><body><select id='one'>
+     <option>One</option>
+     <option style="font-family: sans-serif">Two</option>
+   </select></body></html>
+`;
+
+const SELECT_SCROLLBAR_PROPS = `
+   <html><head><style>
+     select { scrollbar-width: thin; scrollbar-color: red blue }
    </style></head><body><select id='one'>
      <option>One</option>
      <option style="font-family: sans-serif">Two</option>
@@ -438,11 +447,6 @@ add_task(async function test_translucent_select_applies_on_base_color() {
 });
 
 add_task(async function test_disabled_optgroup_and_options() {
-  // The colors used by this test are platform-specific.
-  if (AppConstants.platform != "win") {
-    return;
-  }
-
   await testSelectColors(DISABLED_OPTGROUP_AND_OPTIONS, 17, {
     skipSelectColorTest: true,
   });
@@ -657,6 +661,22 @@ add_task(async function test_select_font_inherits_to_option() {
     secondItemFont,
     "Second menuitem's font should be the author specified one"
   );
+
+  await hideSelectPopup(selectPopup, "escape");
+  BrowserTestUtils.removeTab(tab);
+});
+
+add_task(async function test_scrollbar_props() {
+  let { tab, selectPopup } = await openSelectPopup(SELECT_SCROLLBAR_PROPS);
+
+  let popupStyle = getComputedStyle(selectPopup);
+  is(popupStyle.getPropertyValue("--content-select-scrollbar-width"), "thin");
+  is(popupStyle.scrollbarColor, "rgb(255, 0, 0) rgb(0, 0, 255)");
+
+  let scrollBoxStyle = getComputedStyle(selectPopup.scrollBox.scrollbox);
+  is(scrollBoxStyle.overflow, "auto", "Should be the scrollable box");
+  is(scrollBoxStyle.scrollbarWidth, "thin");
+  is(scrollBoxStyle.scrollbarColor, "rgb(255, 0, 0) rgb(0, 0, 255)");
 
   await hideSelectPopup(selectPopup, "escape");
   BrowserTestUtils.removeTab(tab);

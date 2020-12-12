@@ -7,12 +7,10 @@
 #ifndef mozilla_dom_indexeddb_actorsparent_h__
 #define mozilla_dom_indexeddb_actorsparent_h__
 
-#include "nscore.h"
-
-#include <stdint.h>
-
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/dom/indexedDB/PermissionRequestBase.h"
 #include "mozilla/dom/PBrowserParent.h"
+#include "mozilla/RefPtr.h"
 
 class nsIPrincipal;
 
@@ -35,7 +33,7 @@ class LoggingInfo;
 class PBackgroundIDBFactoryParent;
 class PBackgroundIndexedDBUtilsParent;
 
-PBackgroundIDBFactoryParent* AllocPBackgroundIDBFactoryParent(
+already_AddRefed<PBackgroundIDBFactoryParent> AllocPBackgroundIDBFactoryParent(
     const LoggingInfo& aLoggingInfo);
 
 bool RecvPBackgroundIDBFactoryConstructor(PBackgroundIDBFactoryParent* aActor,

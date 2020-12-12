@@ -31,14 +31,13 @@
 #include <errno.h>
 #include <string.h>
 
-#ifdef __linux__
+#if defined(__linux__) && defined(HAVE_DLSYM)
 #include <dlfcn.h>
 #endif
 
 #include "dav1d/dav1d.h"
 #include "dav1d/data.h"
 
-#include "common/mem.h"
 #include "common/validate.h"
 
 #include "src/cpu.h"
@@ -77,11 +76,40 @@ COLD void dav1d_default_settings(Dav1dSettings *const s) {
     s->frame_size_limit = 0;
 }
 
+static COLD int init_mem_pools(Dav1dContext *const c) {
+    if (!pthread_mutex_init(&c->seq_hdr_pool.lock, NULL)) {
+        if (!pthread_mutex_init(&c->frame_hdr_pool.lock, NULL)) {
+            if (!pthread_mutex_init(&c->segmap_pool.lock, NULL)) {
+                if (!pthread_mutex_init(&c->refmvs_pool.lock, NULL)) {
+                    if (!pthread_mutex_init(&c->cdf_pool.lock, NULL)) {
+                        if (c->allocator.alloc_picture_callback == dav1d_default_picture_alloc) {
+                            if (!pthread_mutex_init(&c->picture_pool.lock, NULL)) {
+                                c->allocator.cookie = &c->picture_pool;
+                                c->mem_pools_inited = 2;
+                                return 0;
+                            }
+                        } else {
+                            c->mem_pools_inited = 1;
+                            return 0;
+                        }
+                        pthread_mutex_destroy(&c->cdf_pool.lock);
+                    }
+                    pthread_mutex_destroy(&c->refmvs_pool.lock);
+                }
+                pthread_mutex_destroy(&c->segmap_pool.lock);
+            }
+            pthread_mutex_destroy(&c->frame_hdr_pool.lock);
+        }
+        pthread_mutex_destroy(&c->seq_hdr_pool.lock);
+    }
+    return -1;
+}
+
 static void close_internal(Dav1dContext **const c_out, int flush);
 
 NO_SANITIZE("cfi-icall") // CFI is broken with dlsym()
 static COLD size_t get_stack_size_internal(const pthread_attr_t *const thread_attr) {
-#if defined(__linux__) && defined(HAVE_DLSYM)
+#if defined(__linux__) && defined(HAVE_DLSYM) && defined(__GLIBC__)
     /* glibc has an issue where the size of the TLS is subtracted from the stack
      * size instead of allocated separately. As a result the specified stack
      * size may be insufficient when used in an application with large amounts
@@ -128,6 +156,8 @@ COLD int dav1d_open(Dav1dContext **const c_out, const Dav1dSettings *const s) {
     c->operating_point = s->operating_point;
     c->all_layers = s->all_layers;
     c->frame_size_limit = s->frame_size_limit;
+
+    if (init_mem_pools(c)) goto error;
 
     /* On 32-bit systems extremely large frame sizes can cause overflows in
      * dav1d_decode_frame() malloc size calculations. Prevent that from occuring
@@ -191,8 +221,7 @@ COLD int dav1d_open(Dav1dContext **const c_out, const Dav1dSettings *const s) {
                 t->tile_thread.td.inited = 1;
             }
         }
-        f->libaom_cm = dav1d_alloc_ref_mv_common();
-        if (!f->libaom_cm) goto error;
+        dav1d_refmvs_init(&f->rf);
         if (c->n_fc > 1) {
             if (pthread_mutex_init(&f->frame_thread.td.lock, NULL)) goto error;
             if (pthread_cond_init(&f->frame_thread.td.cond, NULL)) {
@@ -271,21 +300,6 @@ error:
     dav1d_close(&c);
 
     return res;
-}
-
-int dav1d_send_data(Dav1dContext *const c, Dav1dData *const in)
-{
-    validate_input_or_ret(c != NULL, DAV1D_ERR(EINVAL));
-    validate_input_or_ret(in != NULL, DAV1D_ERR(EINVAL));
-    validate_input_or_ret(in->data == NULL || in->sz, DAV1D_ERR(EINVAL));
-
-    c->drain = 0;
-
-    if (c->in.data)
-        return DAV1D_ERR(EAGAIN);
-    dav1d_data_move_ref(&c->in, in);
-
-    return 0;
 }
 
 static int output_image(Dav1dContext *const c, Dav1dPicture *const out,
@@ -374,21 +388,13 @@ static int drain_picture(Dav1dContext *const c, Dav1dPicture *const out) {
     return DAV1D_ERR(EAGAIN);
 }
 
-int dav1d_get_picture(Dav1dContext *const c, Dav1dPicture *const out)
+static int gen_picture(Dav1dContext *const c)
 {
     int res;
-
-    validate_input_or_ret(c != NULL, DAV1D_ERR(EINVAL));
-    validate_input_or_ret(out != NULL, DAV1D_ERR(EINVAL));
-
-    const int drain = c->drain;
-    c->drain = 1;
-
     Dav1dData *const in = &c->in;
-    if (!in->data) {
-        if (c->n_fc == 1) return DAV1D_ERR(EAGAIN);
-        return drain_picture(c, out);
-    }
+
+    if (output_picture_ready(c))
+        return 0;
 
     while (in->sz > 0) {
         res = dav1d_parse_obus(c, in, 0);
@@ -405,6 +411,40 @@ int dav1d_get_picture(Dav1dContext *const c, Dav1dPicture *const out)
         if (res < 0)
             return res;
     }
+
+    return 0;
+}
+
+int dav1d_send_data(Dav1dContext *const c, Dav1dData *const in)
+{
+    validate_input_or_ret(c != NULL, DAV1D_ERR(EINVAL));
+    validate_input_or_ret(in != NULL, DAV1D_ERR(EINVAL));
+    validate_input_or_ret(in->data == NULL || in->sz, DAV1D_ERR(EINVAL));
+
+    if (in->data)
+        c->drain = 0;
+    if (c->in.data)
+        return DAV1D_ERR(EAGAIN);
+    dav1d_data_ref(&c->in, in);
+
+    int res = gen_picture(c);
+    if (!res)
+        dav1d_data_unref_internal(in);
+
+    return res;
+}
+
+int dav1d_get_picture(Dav1dContext *const c, Dav1dPicture *const out)
+{
+    validate_input_or_ret(c != NULL, DAV1D_ERR(EINVAL));
+    validate_input_or_ret(out != NULL, DAV1D_ERR(EINVAL));
+
+    const int drain = c->drain;
+    c->drain = 1;
+
+    int res = gen_picture(c);
+    if (res < 0)
+        return res;
 
     if (output_picture_ready(c))
         return output_image(c, out, &c->out);
@@ -533,7 +573,7 @@ static COLD void close_internal(Dav1dContext **const c_out, int flush) {
         free(f->lf.lr_mask);
         free(f->lf.level);
         free(f->lf.tx_lpf_right_edge[0]);
-        if (f->libaom_cm) dav1d_free_ref_mv_common(f->libaom_cm);
+        dav1d_refmvs_clear(&f->rf);
         dav1d_free_aligned(f->lf.cdef_line_buf);
         dav1d_free_aligned(f->lf.lr_lpf_line[0]);
     }
@@ -561,6 +601,16 @@ static COLD void close_internal(Dav1dContext **const c_out, int flush) {
     dav1d_ref_dec(&c->mastering_display_ref);
     dav1d_ref_dec(&c->content_light_ref);
     dav1d_ref_dec(&c->itut_t35_ref);
+
+    if (c->mem_pools_inited) {
+        dav1d_mem_pool_destroy(&c->seq_hdr_pool);
+        dav1d_mem_pool_destroy(&c->frame_hdr_pool);
+        dav1d_mem_pool_destroy(&c->segmap_pool);
+        dav1d_mem_pool_destroy(&c->refmvs_pool);
+        dav1d_mem_pool_destroy(&c->cdf_pool);
+        if (c->mem_pools_inited == 2)
+            dav1d_mem_pool_destroy(&c->picture_pool);
+    }
 
     dav1d_freep_aligned(c_out);
 }

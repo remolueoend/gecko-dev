@@ -16,7 +16,7 @@ import android.content.pm.ServiceInfo;
 import android.content.ServiceConnection;
 import android.os.Build;
 import android.os.IBinder;
-import android.support.annotation.NonNull;
+import androidx.annotation.NonNull;
 import android.util.Log;
 
 import java.util.BitSet;
@@ -49,6 +49,12 @@ import java.util.Map.Entry;
 
         public int getAndroidFlag() {
             return mAndroidFlag;
+        }
+    }
+
+    public static final class BindException extends RuntimeException {
+        public BindException(@NonNull final String msg) {
+            super(msg);
         }
     }
 
@@ -133,14 +139,14 @@ import java.util.Map.Entry;
         private int mRelativeImportance = 0;
 
         protected InstanceInfo(@NonNull final ServiceAllocator allocator, @NonNull final GeckoProcessType type,
-                               @NonNull final PriorityLevel priority) {
+                               @NonNull final PriorityLevel initialPriority) {
             mAllocator = allocator;
             mType = type;
             mId = mAllocator.allocate(type);
             mBindings = new EnumMap<PriorityLevel, Binding>(PriorityLevel.class);
             mBindDelegate = getBindServiceDelegate();
 
-            mCurrentPriority = priority;
+            mCurrentPriority = initialPriority;
         }
 
         private BindServiceDelegate getBindServiceDelegate() {
@@ -156,6 +162,10 @@ import java.util.Map.Entry;
         public PriorityLevel getPriorityLevel() {
             XPCOMEventTarget.assertOnLauncherThread();
             return mCurrentPriority;
+        }
+
+        public boolean setPriorityLevel(@NonNull final PriorityLevel newPriority) {
+            return setPriorityLevel(newPriority, 0);
         }
 
         public boolean setPriorityLevel(@NonNull final PriorityLevel newPriority,
@@ -202,7 +212,8 @@ import java.util.Map.Entry;
 
         protected boolean bindService() {
             if (mIsDefunct) {
-                throw new AssertionError("Attempt to bind a defunct InstanceInfo!");
+                final String errorMsg = "Attempt to bind a defunct InstanceInfo for " + mType + " child process";
+                throw new BindException(errorMsg);
             }
 
             return updateBindings();
@@ -222,8 +233,6 @@ import java.util.Map.Entry;
 
             final Context context = GeckoAppShell.getApplicationContext();
 
-            RuntimeException lastException = null;
-
             // Make a clone of mBindings to iterate over since we're going to mutate the original
             final EnumMap<PriorityLevel, Binding> cloned = mBindings.clone();
             for (final Entry<PriorityLevel, Binding> entry : cloned.entrySet()) {
@@ -231,29 +240,18 @@ import java.util.Map.Entry;
                     context.unbindService(entry.getValue());
                 } catch (final IllegalArgumentException e) {
                     // The binding was already dead. That's okay.
-                } catch (final RuntimeException e) {
-                    lastException = e;
-                    continue;
                 }
 
                 mBindings.remove(entry.getKey());
             }
 
-            if (mBindings.size() == 0) {
-                mIsDefunct = true;
-                mAllocator.release(this);
-                onReleaseResources();
-                return;
+            if (mBindings.size() != 0) {
+                throw new IllegalStateException("Unable to release all bindings");
             }
 
-            final String svcName = mBindDelegate.getServiceName();
-            final StringBuilder builder = new StringBuilder("Unable to release service\"");
-            builder.append(svcName).append("\" because ").append(mBindings.size()).append(" bindings could not be dropped");
-            Log.e(LOGTAG, builder.toString());
-
-            if (lastException != null) {
-                throw lastException;
-            }
+            mIsDefunct = true;
+            mAllocator.release(this);
+            onReleaseResources();
         }
 
         private void onBinderConnectedInternal(@NonNull final IBinder service) {
@@ -305,7 +303,6 @@ import java.util.Map.Entry;
             int numBindSuccesses = 0;
             int numBindFailures = 0;
             int numUnbindSuccesses = 0;
-            int numUnbindFailures = 0;
 
             final Context context = GeckoAppShell.getApplicationContext();
 
@@ -329,12 +326,6 @@ import java.util.Map.Entry;
                             // The binding was already dead. That's okay.
                             ++numUnbindSuccesses;
                             mBindings.remove(curLevel);
-                        } catch (final Throwable e) {
-                            final String svcName = mBindDelegate.getServiceName();
-                            final StringBuilder builder = new StringBuilder(svcName);
-                            builder.append(" updateBindings failed to unbind due to exception: ").append(e);
-                            Log.w(LOGTAG, builder.toString());
-                            ++numUnbindFailures;
                         }
                     }
                 } else {
@@ -374,11 +365,10 @@ import java.util.Map.Entry;
                    .append(mRelativeImportance).append(" importance, ")
                    .append(numBindSuccesses).append(" successful binds, ")
                    .append(numBindFailures).append(" failed binds, ")
-                   .append(numUnbindSuccesses).append(" successful unbinds, ")
-                   .append(numUnbindFailures).append(" failed unbinds");
+                   .append(numUnbindSuccesses).append(" successful unbinds");
             Log.d(LOGTAG, builder.toString());
 
-            return numBindFailures == 0 && numUnbindFailures == 0;
+            return numBindFailures == 0;
         }
     }
 

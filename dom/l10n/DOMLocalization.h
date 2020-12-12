@@ -10,20 +10,29 @@
 #include "nsXULPrototypeDocument.h"
 #include "mozilla/intl/Localization.h"
 #include "mozilla/dom/DOMLocalizationBinding.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/L10nMutations.h"
 #include "mozilla/dom/L10nOverlaysBinding.h"
 #include "mozilla/dom/LocalizationBinding.h"
 
+// XXX Avoid including this here by moving function bodies to the cpp file
+#include "nsINode.h"
+
 namespace mozilla {
 namespace dom {
+
+class Element;
+class L10nMutations;
 
 class DOMLocalization : public intl::Localization {
  public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(DOMLocalization, Localization)
 
-  explicit DOMLocalization(nsIGlobalObject* aGlobal);
+  static already_AddRefed<DOMLocalization> Create(
+      nsIGlobalObject* aGlobal, const bool aSync,
+      const BundleGenerator& aBundleGenerator);
+
+  void Destroy();
 
   static already_AddRefed<DOMLocalization> Constructor(
       const GlobalObject& aGlobal, const Sequence<nsString>& aResourceIds,
@@ -48,8 +57,7 @@ class DOMLocalization : public intl::Localization {
   void SetAttributes(JSContext* aCx, Element& aElement, const nsAString& aId,
                      const Optional<JS::Handle<JSObject*>>& aArgs,
                      ErrorResult& aRv);
-  void GetAttributes(JSContext* aCx, Element& aElement, L10nKey& aResult,
-                     ErrorResult& aRv);
+  void GetAttributes(Element& aElement, L10nIdArgs& aResult, ErrorResult& aRv);
 
   already_AddRefed<Promise> TranslateFragment(nsINode& aNode, ErrorResult& aRv);
 
@@ -84,8 +92,11 @@ class DOMLocalization : public intl::Localization {
    *
    * If `aProto` gets passed, it'll be used to cache
    * the localized elements.
+   *
+   * Result is `true` if all translations were applied
+   * successfully, and `false` otherwise.
    */
-  void ApplyTranslations(nsTArray<nsCOMPtr<Element>>& aElements,
+  bool ApplyTranslations(nsTArray<nsCOMPtr<Element>>& aElements,
                          nsTArray<Nullable<L10nMessage>>& aTranslations,
                          nsXULPrototypeDocument* aProto, ErrorResult& aRv);
 
@@ -100,13 +111,15 @@ class DOMLocalization : public intl::Localization {
   }
 
  protected:
+  explicit DOMLocalization(nsIGlobalObject* aGlobal, const bool aSync,
+                           const BundleGenerator& aBundleGenerator);
   virtual ~DOMLocalization();
   void OnChange() override;
   void DisconnectMutations();
   void DisconnectRoots();
   void ReportL10nOverlaysErrors(nsTArray<L10nOverlaysError>& aErrors);
-  void ConvertStringToL10nArgs(JSContext* aCx, const nsString& aInput,
-                               intl::L10nArgs& aRetVal, ErrorResult& aRv);
+  void ConvertStringToL10nArgs(const nsString& aInput, intl::L10nArgs& aRetVal,
+                               ErrorResult& aRv);
 
   RefPtr<L10nMutations> mMutations;
   nsTHashtable<nsRefPtrHashKey<nsINode>> mRoots;

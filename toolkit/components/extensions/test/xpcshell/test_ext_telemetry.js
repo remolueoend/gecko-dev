@@ -10,13 +10,27 @@ const { TelemetryTestUtils } = ChromeUtils.import(
   "resource://testing-common/TelemetryTestUtils.jsm"
 );
 
+const { TelemetryArchiveTesting } = ChromeUtils.import(
+  "resource://testing-common/TelemetryArchiveTesting.jsm"
+);
+
+const { TestUtils } = ChromeUtils.import(
+  "resource://testing-common/TestUtils.jsm"
+);
+
 // All tests run privileged unless otherwise specified not to.
-function createExtension(backgroundScript, permissions, isPrivileged = true) {
+function createExtension(
+  backgroundScript,
+  permissions,
+  isPrivileged = true,
+  telemetry
+) {
   let extensionData = {
     background: backgroundScript,
-    manifest: { permissions },
+    manifest: { permissions, telemetry },
     isPrivileged,
   };
+
   return ExtensionTestUtils.loadExtension(extensionData);
 }
 
@@ -24,7 +38,8 @@ async function run(test) {
   let extension = createExtension(
     test.backgroundScript,
     test.permissions || ["telemetry"],
-    test.isPrivileged
+    test.isPrivileged,
+    test.telemetry
   );
   await extension.startup();
   await extension.awaitFinish(test.doneSignal);
@@ -710,6 +725,9 @@ if (AppConstants.MOZ_BUILD_APP === "browser") {
   });
 
   add_task(async function test_telemetry_submit_ping() {
+    let archiveTester = new TelemetryArchiveTesting.Checker();
+    await archiveTester.promiseInit();
+
     await run({
       backgroundScript: async () => {
         await browser.telemetry.submitPing("webext-test", {}, {});
@@ -718,9 +736,100 @@ if (AppConstants.MOZ_BUILD_APP === "browser") {
       doneSignal: "submit_ping",
     });
 
-    let pings = await TelemetryArchive.promiseArchivedPingList();
-    equal(pings.length, 1);
-    equal(pings[0].type, "webext-test");
+    await TestUtils.waitForCondition(
+      () => archiveTester.promiseFindPing("webext-test", []),
+      "Failed to find the webext-test ping"
+    );
+  });
+
+  add_task(async function test_telemetry_submit_encrypted_ping() {
+    await run({
+      backgroundScript: async () => {
+        try {
+          await browser.telemetry.submitEncryptedPing(
+            { payload: "encrypted-webext-test" },
+            {
+              schemaName: "schema-name",
+              schemaVersion: 123,
+            }
+          );
+          browser.test.fail(
+            "Expected exception without required manifest entries set."
+          );
+        } catch (e) {
+          browser.test.assertTrue(
+            e,
+            /Encrypted telemetry pings require ping_type and public_key to be set in manifest./
+          );
+          browser.test.notifyPass("submit_encrypted_ping_fail");
+        }
+      },
+      doneSignal: "submit_encrypted_ping_fail",
+    });
+
+    const telemetryManifestEntries = {
+      ping_type: "encrypted-webext-ping",
+      schemaNamespace: "schema-namespace",
+      public_key: {
+        id: "pioneer-dev-20200423",
+        key: {
+          crv: "P-256",
+          kty: "EC",
+          x: "Qqihp7EryDN2-qQ-zuDPDpy5mJD5soFBDZmzPWTmjwk",
+          y: "PiEQVUlywi2bEsA3_5D0VFrCHClCyUlLW52ajYs-5uc",
+        },
+      },
+    };
+
+    await run({
+      backgroundScript: async () => {
+        await browser.telemetry.submitEncryptedPing(
+          {
+            payload: "encrypted-webext-test",
+          },
+          {
+            schemaName: "schema-name",
+            schemaVersion: 123,
+          }
+        );
+        browser.test.notifyPass("submit_encrypted_ping_pass");
+      },
+      permissions: ["telemetry"],
+      doneSignal: "submit_encrypted_ping_pass",
+      isPrivileged: true,
+      telemetry: telemetryManifestEntries,
+    });
+
+    telemetryManifestEntries.pioneer_id = true;
+    telemetryManifestEntries.study_name = "test123";
+    Services.prefs.setStringPref("toolkit.telemetry.pioneerId", "test123");
+
+    await run({
+      backgroundScript: async () => {
+        await browser.telemetry.submitEncryptedPing(
+          { payload: "encrypted-webext-test" },
+          {
+            schemaName: "schema-name",
+            schemaVersion: 123,
+          }
+        );
+        browser.test.notifyPass("submit_encrypted_ping_pass");
+      },
+      permissions: ["telemetry"],
+      doneSignal: "submit_encrypted_ping_pass",
+      isPrivileged: true,
+      telemetry: telemetryManifestEntries,
+    });
+
+    let pings;
+    await TestUtils.waitForCondition(async function() {
+      pings = await TelemetryArchive.promiseArchivedPingList();
+      return pings.length >= 3;
+    }, "Wait until we have at least 3 pings in the telemetry archive");
+
+    equal(pings.length, 3);
+    equal(pings[1].type, "encrypted-webext-ping");
+    equal(pings[2].type, "encrypted-webext-ping");
   });
 
   add_task(async function test_telemetry_can_upload_enabled() {

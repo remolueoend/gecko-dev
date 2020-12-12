@@ -45,14 +45,13 @@ class BrowserBridgeChild : public PBrowserBridgeChild {
 
   BrowsingContext* GetBrowsingContext() { return mBrowsingContext; }
 
-  // XXX(nika): We should have a load context here. (bug 1532664)
-  nsILoadContext* GetLoadContext() { return nullptr; }
+  nsILoadContext* GetLoadContext();
 
   void NavigateByKey(bool aForward, bool aForDocumentNavigation);
 
-  void Activate();
+  void Activate(uint64_t aActionId);
 
-  void Deactivate(bool aWindowLowering);
+  void Deactivate(bool aWindowLowering, uint64_t aActionId);
 
   void SetIsUnderHiddenEmbedderElement(bool aIsUnderHiddenEmbedderElement);
 
@@ -68,14 +67,12 @@ class BrowserBridgeChild : public PBrowserBridgeChild {
 
   static BrowserBridgeChild* GetFrom(nsIContent* aContent);
 
-  BrowserBridgeChild(BrowsingContext* aBrowsingContext, TabId aId);
+  BrowserBridgeChild(BrowsingContext* aBrowsingContext, TabId aId,
+                     const LayersId& aLayersId);
 
  protected:
   friend class ContentChild;
   friend class PBrowserBridgeChild;
-
-  mozilla::ipc::IPCResult RecvSetLayersId(
-      const mozilla::layers::LayersId& aLayersId);
 
   mozilla::ipc::IPCResult RecvRequestFocus(const bool& aCanRaise,
                                            const CallerType aCallerType);
@@ -89,14 +86,17 @@ class BrowserBridgeChild : public PBrowserBridgeChild {
   mozilla::ipc::IPCResult RecvMaybeFireEmbedderLoadEvents(
       EmbedderElementEventType aFireEventAtEmbeddingElement);
 
+  mozilla::ipc::IPCResult RecvIntrinsicSizeOrRatioChanged(
+      const Maybe<IntrinsicSize>& aIntrinsicSize,
+      const Maybe<AspectRatio>& aIntrinsicRatio);
+
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvScrollRectIntoView(
       const nsRect& aRect, const ScrollAxis& aVertical,
       const ScrollAxis& aHorizontal, const ScrollFlags& aScrollFlags,
       const int32_t& aAppUnitsPerDevPixel);
 
-  mozilla::ipc::IPCResult RecvSubFrameCrashed(
-      const MaybeDiscarded<BrowsingContext>& aContext);
+  mozilla::ipc::IPCResult RecvSubFrameCrashed();
 
   void ActorDestroy(ActorDestroyReason aWhy) override;
 

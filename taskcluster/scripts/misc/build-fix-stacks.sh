@@ -27,8 +27,8 @@ x86_64-apple-darwin)
     export CXX=$MOZ_FETCHES_DIR/clang/bin/clang++
     export PATH="$MOZ_FETCHES_DIR/cctools/bin:$PATH"
     export RUSTFLAGS="-C linker=$GECKO_PATH/taskcluster/scripts/misc/osx-cross-linker"
-    export TARGET_CC="$CC -isysroot $MOZ_FETCHES_DIR/MacOSX10.11.sdk"
-    export TARGET_CXX="$CXX -isysroot $MOZ_FETCHES_DIR/MacOSX10.11.sdk"
+    export TARGET_CC="$CC -isysroot $MOZ_FETCHES_DIR/MacOSX10.12.sdk"
+    export TARGET_CXX="$CXX -isysroot $MOZ_FETCHES_DIR/MacOSX10.12.sdk"
     ;;
 i686-pc-windows-msvc)
     # Cross-compiling for Windows on Linux.
@@ -54,11 +54,6 @@ if [ -n "$TOOLTOOL_MANIFEST" ]; then
   . taskcluster/scripts/misc/tooltool-download.sh
 fi
 
-# cargo gets mad if the parent directory has a Cargo.toml file in it
-if [ -e Cargo.toml ]; then
-  mv Cargo.toml Cargo.toml.back
-fi
-
 PATH="$(cd $MOZ_FETCHES_DIR && pwd)/rustc/bin:$PATH"
 
 cd $MOZ_FETCHES_DIR/$PROJECT
@@ -72,8 +67,5 @@ mkdir -p $UPLOAD_DIR
 cp ${PROJECT}.tar.$COMPRESS_EXT $UPLOAD_DIR
 
 cd ..
-if [ -e Cargo.toml.back ]; then
-  mv Cargo.toml.back Cargo.toml
-fi
 
 . $GECKO_PATH/taskcluster/scripts/misc/vs-cleanup.sh

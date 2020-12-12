@@ -46,6 +46,10 @@ void CheckThreadLocal::check() const {
 }
 
 void CheckContextLocal::check() const {
+  if (!cx_->isInitialized()) {
+    return;
+  }
+
   JSContext* cx = TlsContext.get();
   MOZ_ASSERT(cx);
   MOZ_ASSERT_IF(cx->isMainThreadContext(),
@@ -96,14 +100,13 @@ void CheckGlobalLock<Lock, Helper>::check() const {
 
   switch (Lock) {
     case GlobalLock::GCLock:
-      MOZ_ASSERT(TlsContext.get()->runtime()->gc.currentThreadHasLockedGC());
+      TlsContext.get()->runtime()->gc.assertCurrentThreadHasLockedGC();
       break;
     case GlobalLock::ScriptDataLock:
-      MOZ_ASSERT(
-          TlsContext.get()->runtime()->currentThreadHasScriptDataAccess());
+      TlsContext.get()->runtime()->assertCurrentThreadHasScriptDataAccess();
       break;
     case GlobalLock::HelperThreadLock:
-      MOZ_ASSERT(HelperThreadState().isLockedByCurrentThread());
+      gHelperThreadLock.assertOwnedByCurrentThread();
       break;
   }
 }
@@ -131,8 +134,9 @@ void CheckArenaListAccess<Helper>::check() const {
     }
 
     // Otherwise we must hold the GC lock if parallel parsing is running.
-    MOZ_ASSERT_IF(rt->isOffThreadParseRunning(),
-                  rt->gc.currentThreadHasLockedGC());
+    if (rt->isOffThreadParseRunning()) {
+      rt->gc.assertCurrentThreadHasLockedGC();
+    }
     return;
   }
 

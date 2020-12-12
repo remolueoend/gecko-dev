@@ -77,7 +77,7 @@ const ResponsiveActor = protocol.ActorClassWithSpec(responsiveSpec, {
    * monitor, which for historical reasons is part of the console actor.
    */
   get _consoleActor() {
-    if (this.targetActor.exited || !this.targetActor.actorID) {
+    if (this.targetActor.exited || this.targetActor.isDestroyed()) {
       return null;
     }
     const form = this.targetActor.form();
@@ -257,18 +257,19 @@ const ResponsiveActor = protocol.ActorClassWithSpec(responsiveSpec, {
     }
 
     // Start or stop the touch simulator depending on the override flag
-    if (flag == Ci.nsIDocShell.TOUCHEVENTS_OVERRIDE_ENABLED) {
+    // See BrowsingContext.webidl `TouchEventsOverride` enum for values.
+    if (flag == "enabled") {
       this.touchSimulator.start();
     } else {
       this.touchSimulator.stop();
     }
 
-    this.docShell.touchEventsOverride = flag;
+    this.docShell.browsingContext.touchEventsOverride = flag;
     return true;
   },
 
   getTouchEventsOverride() {
-    return this.docShell.touchEventsOverride;
+    return this.docShell.browsingContext.touchEventsOverride;
   },
 
   clearTouchEventsOverride() {
@@ -316,7 +317,9 @@ const ResponsiveActor = protocol.ActorClassWithSpec(responsiveSpec, {
     if (this._previousUserAgentOverride === undefined) {
       this._previousUserAgentOverride = this.getUserAgentOverride();
     }
-    this.docShell.browsingContext.customUserAgent = userAgent;
+    // Bug 1637494: TODO - customUserAgent should only be set from parent
+    // process.
+    this.docShell.customUserAgent = userAgent;
     return true;
   },
 
@@ -372,12 +375,6 @@ const ResponsiveActor = protocol.ActorClassWithSpec(responsiveSpec, {
 
   async captureScreenshot() {
     return this.screenshotActor.capture({});
-  },
-
-  async setDocumentInRDMPane(inRDMPane) {
-    if (this.docShell && this.docShell.document) {
-      this.docShell.browsingContext.inRDMPane = inRDMPane;
-    }
   },
 
   /**

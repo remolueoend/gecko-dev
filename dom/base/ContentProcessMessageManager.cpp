@@ -12,6 +12,7 @@
 #include "mozilla/dom/ParentProcessMessageManager.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ipc/SharedMap.h"
+#include "mozilla/HoldDropJSObjects.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -40,7 +41,7 @@ ContentProcessMessageManager* ContentProcessMessageManager::Get() {
 }
 
 already_AddRefed<mozilla::dom::ipc::SharedMap>
-ContentProcessMessageManager::SharedData() {
+ContentProcessMessageManager::GetSharedData() {
   if (ContentChild* child = ContentChild::GetSingleton()) {
     return do_AddRef(child->SharedData());
   }

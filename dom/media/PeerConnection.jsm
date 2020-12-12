@@ -1,4 +1,3 @@
-/* jshint moz:true, browser:true */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -39,7 +38,7 @@ function logMsg(msg, file, line, flag, winID) {
   let scriptErrorClass = Cc["@mozilla.org/scripterror;1"];
   let scriptError = scriptErrorClass.createInstance(Ci.nsIScriptError);
   scriptError.initWithWindowID(
-    msg,
+    `WebRTC: ${msg}`,
     file,
     null,
     line,
@@ -214,14 +213,14 @@ class GlobalPCList {
 }
 setupPrototype(GlobalPCList, {
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsISupportsWeakReference,
+    "nsIObserver",
+    "nsISupportsWeakReference",
   ]),
   classID: PC_MANAGER_CID,
   _xpcom_factory: {
     createInstance(outer, iid) {
       if (outer) {
-        throw Cr.NS_ERROR_NO_AGGREGATION;
+        throw Components.Exception("", Cr.NS_ERROR_NO_AGGREGATION);
       }
       return _globalPCList.QueryInterface(iid);
     },
@@ -247,13 +246,13 @@ class RTCIceCandidate {
 setupPrototype(RTCIceCandidate, {
   classID: PC_ICE_CID,
   contractID: PC_ICE_CONTRACT,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface: ChromeUtils.generateQI(["nsIDOMGlobalPropertyInitializer"]),
 });
 
 class RTCSessionDescription {
   init(win) {
     this._win = win;
-    this._winID = this._win.windowUtils.currentInnerWindowID;
+    this._winID = this._win.windowGlobalChild.innerWindowId;
   }
 
   __init({ type, sdp }) {
@@ -306,7 +305,7 @@ class RTCSessionDescription {
 setupPrototype(RTCSessionDescription, {
   classID: PC_SESSION_CID,
   contractID: PC_SESSION_CONTRACT,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface: ChromeUtils.generateQI(["nsIDOMGlobalPropertyInitializer"]),
 });
 
 // Records PC related telemetry
@@ -389,7 +388,7 @@ class RTCPeerConnection {
   }
 
   __init(rtcConfig) {
-    this._winID = this._win.windowUtils.currentInnerWindowID;
+    this._winID = this._win.windowGlobalChild.innerWindowId;
     // TODO: Update this code once we support pc.setConfiguration, to track
     // setting from content independently from pref (Bug 1181768).
     if (
@@ -397,6 +396,17 @@ class RTCPeerConnection {
       Services.prefs.getBoolPref("media.peerconnection.ice.relay_only")
     ) {
       rtcConfig.iceTransportPolicy = "relay";
+    }
+    if ("sdpSemantics" in rtcConfig) {
+      if (rtcConfig.sdpSemantics == "plan-b") {
+        this.logWarning(
+          `Outdated and non-standard {sdpSemantics: "plan-b"} is not ` +
+            `supported! WebRTC may be unreliable. Please update code to ` +
+            `follow standard "unified-plan".`
+        );
+      }
+      // Don't let it show up in getConfiguration.
+      delete rtcConfig.sdpSemantics;
     }
     this._config = Object.assign({}, rtcConfig);
 
@@ -1010,7 +1020,7 @@ class RTCPeerConnection {
       } else {
         this._havePermission = new Promise((resolve, reject) => {
           this._settlePermission = { allow: resolve, deny: reject };
-          let outerId = this._win.windowUtils.outerWindowID;
+          let outerId = this._win.docShell.outerWindowID;
 
           let chrome = new CreateOfferRequest(
             outerId,
@@ -1792,7 +1802,7 @@ class RTCPeerConnection {
 setupPrototype(RTCPeerConnection, {
   classID: PC_CID,
   contractID: PC_CONTRACT,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface: ChromeUtils.generateQI(["nsIDOMGlobalPropertyInitializer"]),
   _actions: {
     offer: Ci.IPeerConnection.kActionOffer,
     answer: Ci.IPeerConnection.kActionAnswer,
@@ -2004,12 +2014,12 @@ class PeerConnectionObserver {
 setupPrototype(PeerConnectionObserver, {
   classID: PC_OBS_CID,
   contractID: PC_OBS_CONTRACT,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface: ChromeUtils.generateQI(["nsIDOMGlobalPropertyInitializer"]),
 });
 
 class RTCPeerConnectionStatic {
   init(win) {
-    this._winID = win.windowUtils.currentInnerWindowID;
+    this._winID = win.windowGlobalChild.innerWindowId;
   }
 
   registerPeerConnectionLifecycleCallback(cb) {
@@ -2019,7 +2029,7 @@ class RTCPeerConnectionStatic {
 setupPrototype(RTCPeerConnectionStatic, {
   classID: PC_STATIC_CID,
   contractID: PC_STATIC_CONTRACT,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIDOMGlobalPropertyInitializer]),
+  QueryInterface: ChromeUtils.generateQI(["nsIDOMGlobalPropertyInitializer"]),
 });
 
 class RTCRtpSender {
@@ -2143,6 +2153,10 @@ class RTCRtpSender {
   setTrack(track) {
     this._pc._replaceTrackNoRenegotiation(this._transceiverImpl, track);
     this.track = track;
+  }
+
+  get transport() {
+    return this._transceiverImpl.dtlsTransport;
   }
 
   getStats() {

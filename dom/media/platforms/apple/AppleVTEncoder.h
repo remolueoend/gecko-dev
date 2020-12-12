@@ -29,6 +29,7 @@ class AppleVTEncoder final : public MediaDataEncoder {
         mFramesCompleted(false),
         mError(NS_OK),
         mSession(nullptr) {
+    MOZ_ASSERT(mConfig.mSize.width > 0 && mConfig.mSize.height > 0);
     MOZ_ASSERT(mTaskQueue);
   }
 
@@ -40,9 +41,8 @@ class AppleVTEncoder final : public MediaDataEncoder {
 
   nsCString GetDescriptionName() const override {
     MOZ_ASSERT(mSession);
-    return mIsHardwareAccelerated
-               ? NS_LITERAL_CSTRING("apple hardware VT encoder")
-               : NS_LITERAL_CSTRING("apple software VT encoder");
+    return mIsHardwareAccelerated ? "apple hardware VT encoder"_ns
+                                  : "apple software VT encoder"_ns;
   }
 
   void OutputFrame(CMSampleBufferRef aBuffer);

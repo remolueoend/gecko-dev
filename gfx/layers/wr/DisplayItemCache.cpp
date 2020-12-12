@@ -15,7 +15,8 @@ DisplayItemCache::DisplayItemCache()
       mMaximumSize(0),
       mPipelineId{},
       mCaching(false),
-      mInvalid(false) {}
+      mInvalid(false),
+      mSuppressed(false) {}
 
 void DisplayItemCache::SetDisplayList(nsDisplayListBuilder* aBuilder,
                                       nsDisplayList* aList) {
@@ -72,7 +73,7 @@ void DisplayItemCache::UpdateState() {
 
   // Clear the cache if the current state is invalid.
   if (mInvalid) {
-    ClearCache();
+    Clear();
   } else {
     FreeUnusedSlots();
   }
@@ -80,7 +81,7 @@ void DisplayItemCache::UpdateState() {
   mInvalid = false;
 }
 
-void DisplayItemCache::ClearCache() {
+void DisplayItemCache::Clear() {
   memset(mSlots.Elements(), 0, mSlots.Length() * sizeof(Slot));
   mFreeSlots.ClearAndRetainStorage();
 
@@ -129,10 +130,9 @@ void DisplayItemCache::FreeUnusedSlots() {
 void DisplayItemCache::SetCapacity(const size_t aInitialSize,
                                    const size_t aMaximumSize) {
   mMaximumSize = aMaximumSize;
-  mSlots.SetCapacity(aMaximumSize);
   mSlots.SetLength(aInitialSize);
   mFreeSlots.SetCapacity(aMaximumSize);
-  ClearCache();
+  Clear();
 }
 
 Maybe<uint16_t> DisplayItemCache::AssignSlot(nsPaintedDisplayItem* aItem) {

@@ -49,15 +49,17 @@ public:
 
   bool init(char const * backend_name = nullptr);
   bool init_stream();
-  bool start_stream() const;
-  bool stop_stream() const;
+  bool start_stream();
+  bool stop_stream();
   bool destroy_stream() const;
   bool destroy();
   bool activate_log(cubeb_log_level log_level) const;
   void set_latency_testing(bool on);
   void set_latency_frames(uint32_t latency_frames);
   uint64_t get_stream_position() const;
-  uint32_t get_stream_latency() const;
+  uint32_t get_stream_output_latency() const;
+  uint32_t get_stream_input_latency() const;
+  uint32_t get_max_channel_count() const;
 
   long user_data_cb(cubeb_stream* stm, void* user, const void* input_buffer,
                     void* output_buffer, long nframes);
@@ -69,6 +71,8 @@ public:
 
   cubeb_stream_params output_params = {};
   cubeb_stream_params input_params = {};
+
+  void force_drain() { _force_drain = true; }
 
 private:
   bool has_input() { return input_params.rate != 0; }
@@ -85,6 +89,7 @@ private:
   std::atomic<uint32_t> _channels = {0};
   std::atomic<bool> _latency_testing = {false};
   std::atomic<uint32_t> _latency_frames = {0}; // if !0, override. Else, use min.
+  std::atomic<bool> _force_drain = {false};
 
 
   /* Accessed only from audio thread. */
@@ -92,11 +97,12 @@ private:
 };
 
 bool cubeb_client::init(char const * backend_name) {
-  int rv = cubeb_init(&context, "Cubeb Test Application", nullptr);
+  int rv = cubeb_init(&context, "Cubeb Test Application", backend_name);
   if (rv != CUBEB_OK) {
     fprintf(stderr, "Could not init cubeb\n");
     return false;
   }
+  fprintf(stderr, "Init cubeb backend: %s\n", cubeb_get_backend_id(context));
   return true;
 }
 
@@ -159,7 +165,8 @@ bool cubeb_client::init_stream() {
   return true;
 }
 
-bool cubeb_client::start_stream() const {
+bool cubeb_client::start_stream() {
+  _force_drain = false;
   int rv = cubeb_stream_start(stream);
   if (rv != CUBEB_OK) {
     fprintf(stderr, "Could not start the stream\n");
@@ -168,7 +175,8 @@ bool cubeb_client::start_stream() const {
   return true;
 }
 
-bool cubeb_client::stop_stream() const {
+bool cubeb_client::stop_stream() {
+  _force_drain = false;
   int rv = cubeb_stream_stop(stream);
   if (rv != CUBEB_OK) {
     fprintf(stderr, "Could not stop the stream\n");
@@ -187,7 +195,7 @@ uint64_t cubeb_client::get_stream_position() const {
   return pos;
 }
 
-uint32_t cubeb_client::get_stream_latency() const {
+uint32_t cubeb_client::get_stream_output_latency() const {
   uint32_t latency = 0;
   int rv = cubeb_stream_get_latency(stream, &latency);
   if (rv != CUBEB_OK) {
@@ -195,6 +203,26 @@ uint32_t cubeb_client::get_stream_latency() const {
     return 0;
   }
   return latency;
+}
+
+uint32_t cubeb_client::get_stream_input_latency() const {
+  uint32_t latency = 0;
+  int rv = cubeb_stream_get_input_latency(stream, &latency);
+  if (rv != CUBEB_OK) {
+    fprintf(stderr, "Could not get the latency of the input stream\n");
+    return 0;
+  }
+  return latency;
+}
+
+uint32_t cubeb_client::get_max_channel_count() const {
+  uint32_t channels = 0;
+  int rv = cubeb_get_max_channel_count(context, &channels);
+  if (rv != CUBEB_OK) {
+    fprintf(stderr, "Could not get max channel count\n");
+    return 0;
+  }
+  return channels;
 }
 
 bool cubeb_client::destroy_stream() const {
@@ -248,7 +276,7 @@ long cubeb_client::user_data_cb(cubeb_stream* stm, void* user,
     const float* in = static_cast<const float*>(input_buffer);
     float* out = static_cast<float*>(output_buffer);
     if (_latency_testing) {
-      for (uint32_t i = 0; i < nframes; i++) {
+      for (int32_t i = 0; i < nframes; i++) {
         // Impulses every second, mixed with the input signal fed back at half
         // gain, to measure the input-to-output latency via feedback.
         uint32_t clock = ((_total_frames + i) % _rate);
@@ -263,7 +291,7 @@ long cubeb_client::user_data_cb(cubeb_stream* stm, void* user,
         }
       }
     } else {
-      for (uint32_t i = 0; i < nframes; i++) {
+      for (int32_t i = 0; i < nframes; i++) {
         for (uint32_t j = 0; j < _channels; j++) {
           out[i * _channels + j] = in[i];
         }
@@ -275,6 +303,11 @@ long cubeb_client::user_data_cb(cubeb_stream* stm, void* user,
   }
 
   _total_frames += nframes;
+
+  if (_force_drain) {
+    return nframes - 1;
+  }
+
   return nframes;
 }
 
@@ -331,9 +364,12 @@ void print_help() {
     "0: change log level to disabled\n"
     "1: change log level to normal\n"
     "2: change log level to verbose\n"
+    "c: get max number of channels\n"
     "p: start a initialized stream\n"
     "s: stop a started stream\n"
-    "c: get stream position (client thread)\n"
+    "d: destroy stream\n"
+    "e: force stream to drain\n"
+    "f: get stream position (client thread)\n"
     "i: change device type to input\n"
     "o: change device type to output\n"
     "a: change device type to input and output\n"
@@ -345,7 +381,7 @@ void print_help() {
   fprintf(stderr, "%s\n", msg);
 }
 
-bool choose_action(const cubeb_client& cl, operation_data * op, int c) {
+bool choose_action(cubeb_client& cl, operation_data * op, int c) {
   // Consume "enter" and "space"
   while (c == 10 || c == 32) {
     c = getchar();
@@ -398,10 +434,31 @@ bool choose_action(const cubeb_client& cl, operation_data * op, int c) {
     } else {
       fprintf(stderr, "stop_stream failed\n");
     }
+  } else if (c == 'd') {
+    bool res = cl.destroy_stream();
+    if (res) {
+      fprintf(stderr, "destroy_stream succeed\n");
+    } else {
+      fprintf(stderr, "destroy_stream failed\n");
+    }
+  } else if (c == 'e') {
+    cl.force_drain();
   } else if (c == 'c') {
+    uint32_t channel_count = cl.get_max_channel_count();
+    fprintf(stderr, "max channel count (default output device): %u\n", channel_count);
+  } else if (c == 'f') {
     uint64_t pos = cl.get_stream_position();
-    uint64_t latency = cl.get_stream_latency();
-    fprintf(stderr, "stream position %" PRIu64 " (latency %" PRIu64 ")\n", pos, latency);
+    uint32_t latency;
+    fprintf(stderr, "stream position %" PRIu64 ".", pos);
+    if(op->pm == PLAYBACK || op->pm == DUPLEX) {
+      latency = cl.get_stream_output_latency();
+      fprintf(stderr, " (output latency %" PRIu32 ")", latency);
+    }
+    if(op->pm == RECORD || op->pm == DUPLEX) {
+      latency = cl.get_stream_input_latency();
+      fprintf(stderr, " (input latency %" PRIu32 ")", latency);
+    }
+    fprintf(stderr, "\n");
   } else if (c == 'i') {
     op->collection_device_type = CUBEB_DEVICE_TYPE_INPUT;
     fprintf(stderr, "collection device type changed to INPUT\n");
@@ -468,7 +525,7 @@ int main(int argc, char* argv[]) {
   cubeb_client cl;
   cl.activate_log(CUBEB_LOG_DISABLED);
   fprintf(stderr, "Log level is DISABLED\n");
-  cl.init();
+  cl.init(/* default backend */);
 
   op.collection_device_type = CUBEB_DEVICE_TYPE_UNKNOWN;
   fprintf(stderr, "collection device type is UNKNOWN\n");

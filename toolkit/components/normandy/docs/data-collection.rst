@@ -122,21 +122,18 @@ reported under the key ``normandy/recipe/<recipe id>``:
    Normandy failed to verify the signature of the recipe.
 
 
-Additionally, Normandy reports a `keyed scalar`_ to measure recipe
+Additionally, Normandy reports a :ref:`keyed scalar <Scalars>` to measure recipe
 freshness. This scalar is called ``normandy.recipe_freshness``, and it
 corresponds to the ``last_modified`` date of each recipe (using its ID
 as the key), reported as seconds since 1970 in UTC.
-
-.. _keyed scalar: https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/collection/scalars.html
 
 
 Enrollment
 -----------
 Normandy records enrollment and unenrollment of users into studies, and
-records that data using `Telemetry Events`_. All data is stored in the
+records that data using :ref:`Telemetry Events <eventtelemetry>`. All data is stored in the
 ``normandy`` category.
 
-.. _Telemetry Events: https://firefox-source-docs.mozilla.org/toolkit/components/telemetry/telemetry/collection/events.html
 
 Enrollment IDs
 ^^^^^^^^^^^^^^
@@ -207,8 +204,34 @@ Unenrollment
            changed in a profile while Firefox was not running.
          * ``"unknown"``: A reason was not specified. This should be
            considered a bug.
+      changedPref
+         For ``user-preference-changed`` and
+         ``user-preference-changed-sideload``, the preference that was
+         detected to change that caused the unenrollment. Note that there may
+         be multiple preferences changed, this only reports the first found.
       enrollmentId
          The ID that was generated at enrollment.
+
+Unenroll Failed
+   methods
+      The string ``"unenrollFailed"``.
+   object
+      The string ``"preference_study"``.
+   value
+      The name of the study (``recipe.arguments.slug``)
+   extra
+      enrollmentId
+         The ID that was generated at enrollment.
+      reason
+         A code describing the reason the unenroll failed. Possible values are:
+
+         * ``"does-not-exist"``: The system attempted to unenroll a study that
+           does not exist. This is a bug.
+         * ``"already-unenrolled"``: The system attempted to unenroll a study
+           that has already been unenrolled. This is likely a bug.
+      changedPref
+         In some cases, the preference that was detected to change that
+         caused the attempted unenrollment.
 
 
 Add-on Studies

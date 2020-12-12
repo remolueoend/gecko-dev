@@ -13,6 +13,10 @@ const DUMMY_2_URL = "http://example.com/browser/";
 addRDMTask(
   null,
   async function() {
+    await SpecialPowers.pushPrefEnv({
+      set: [["browser.navigation.requireUserInteraction", false]],
+    });
+
     // Load up a sequence of pages:
     // 0. DUMMY_1_URL
     // 1. TEST_URL
@@ -83,5 +87,5 @@ addRDMTask(
 
     await removeTab(tab);
   },
-  { usingBrowserUI: true, onlyPrefAndTask: true }
+  { onlyPrefAndTask: true }
 );

@@ -29,6 +29,7 @@ class ProcessDescriptorFront extends FrontClassWithSpec(processDescriptorSpec) {
   form(json) {
     this.id = json.id;
     this.isParent = json.isParent;
+    this.traits = json.traits || {};
   }
 
   async _createProcessTargetFront(form) {
@@ -49,7 +50,12 @@ class ProcessDescriptorFront extends FrontClassWithSpec(processDescriptorSpec) {
     // manually like that:
     front.actorID = form.actor;
     front.form(form);
-    front.processID = this.id;
+
+    // @backward-compat { version 84 } Older server don't send the processID in the form
+    if (!front.processID) {
+      front.processID = this.id;
+    }
+
     this.manage(front);
     return front;
   }
@@ -60,7 +66,7 @@ class ProcessDescriptorFront extends FrontClassWithSpec(processDescriptorSpec) {
 
   async getTarget() {
     // Only return the cached Target if it is still alive.
-    if (this._processTargetFront && this._processTargetFront.actorID) {
+    if (this._processTargetFront && !this._processTargetFront.isDestroyed()) {
       return this._processTargetFront;
     }
     // Otherwise, ensure that we don't try to spawn more than one Target by

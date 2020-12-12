@@ -1,9 +1,4 @@
-import {
-  EventEmitter,
-  FakePerformance,
-  FakePrefs,
-  GlobalOverrider,
-} from "test/unit/utils";
+import { EventEmitter, FakePrefs, GlobalOverrider } from "test/unit/utils";
 import Adapter from "enzyme-adapter-react-16";
 import { chaiAssertions } from "test/schemas/pings";
 import chaiJsonSchema from "chai-json-schema";
@@ -49,7 +44,35 @@ const RemoteSettings = name => ({
 });
 RemoteSettings.pollChanges = () => {};
 
+class JSWindowActorParent {
+  sendAsyncMessage(name, data) {
+    return { name, data };
+  }
+}
+
+class JSWindowActorChild {
+  sendAsyncMessage(name, data) {
+    return { name, data };
+  }
+
+  sendQuery(name, data) {
+    return Promise.resolve({ name, data });
+  }
+
+  get contentWindow() {
+    return {
+      Promise,
+    };
+  }
+}
+
 const TEST_GLOBAL = {
+  JSWindowActorParent,
+  JSWindowActorChild,
+  AboutReaderParent: {
+    addMessageListener: (messageName, listener) => {},
+    removeMessageListener: (messageName, listener) => {},
+  },
   AddonManager: {
     getActiveAddons() {
       return Promise.resolve({ addons: [], fullData: false });
@@ -67,6 +90,7 @@ const TEST_GLOBAL = {
     }
     post() {}
   },
+  browserSearchRegion: "US",
   BrowserWindowTracker: { getTopWindow() {} },
   ChromeUtils: {
     defineModuleGetter() {},
@@ -232,6 +256,11 @@ const TEST_GLOBAL = {
     // eslint-disable-next-line object-shorthand
     File: function() {}, // NB: This is a function/constructor
   },
+  Region: {
+    home: "US",
+    REGION_TOPIC: "browser-region",
+    REGION_UPDATED: "region-updated",
+  },
   Services: {
     dirsvc: {
       get: () => ({ parent: { parent: { path: "appPath" } } }),
@@ -247,7 +276,6 @@ const TEST_GLOBAL = {
       addMessageListener: (msg, cb) => this.receiveMessage(),
       removeMessageListener() {},
     },
-    appShell: { hiddenDOMWindow: { performance: new FakePerformance() } },
     obs: {
       addObserver() {},
       removeObserver() {},
@@ -297,6 +325,9 @@ const TEST_GLOBAL = {
       getBaseDomain({ spec }) {
         return spec.match(/\/([^/]+)/)[1];
       },
+      getBaseDomainFromHost(host) {
+        return host.match(/.*?(\w+\.\w+)$/)[1];
+      },
       getPublicSuffix() {},
     },
     io: {
@@ -322,17 +353,14 @@ const TEST_GLOBAL = {
         identifier: "google",
         searchForm:
           "https://www.google.com/search?q=&ie=utf-8&oe=utf-8&client=firefox-b",
-        wrappedJSObject: {
-          __internalAliases: ["@google"],
-        },
+        aliases: ["@google"],
       },
       defaultPrivateEngine: {
         identifier: "bing",
         searchForm: "https://www.bing.com",
-        wrappedJSObject: {
-          __internalAliases: ["@bing"],
-        },
+        aliases: ["@bing"],
       },
+      getEngineByAlias: async () => null,
     },
     scriptSecurityManager: {
       createNullPrincipal() {},
@@ -346,6 +374,17 @@ const TEST_GLOBAL = {
     ww: { registerNotification() {}, unregisterNotification() {} },
     appinfo: { appBuildID: "20180710100040", version: "69.0a1" },
     scriptloader: { loadSubScript: () => {} },
+    startup: {
+      getStartupInfo() {
+        return {
+          process: {
+            getTime() {
+              return 1588010448000;
+            },
+          },
+        };
+      },
+    },
   },
   XPCOMUtils: {
     defineLazyGetter(object, name, f) {
@@ -391,9 +430,19 @@ const TEST_GLOBAL = {
     },
   },
   FX_MONITOR_OAUTH_CLIENT_ID: "fake_client_id",
+  ExperimentAPI: {
+    getExperiment() {},
+    on: () => {},
+    off: () => {},
+  },
   TelemetryEnvironment: {
     setExperimentActive() {},
-    currentEnvironment: { profile: { creationDate: 16587 } },
+    currentEnvironment: {
+      profile: {
+        creationDate: 16587,
+      },
+      settings: {},
+    },
   },
   TelemetryStopwatch: {
     start: () => {},
@@ -416,6 +465,13 @@ const TEST_GLOBAL = {
         sessionId: "fake_session_id",
       };
     },
+  },
+  PageThumbs: {
+    addExpirationFilter() {},
+    removeExpirationFilter() {},
+  },
+  gUUIDGenerator: {
+    generateUUID: () => "{foo-123-foo}",
   },
 };
 overrider.set(TEST_GLOBAL);

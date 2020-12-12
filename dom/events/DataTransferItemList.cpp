@@ -19,8 +19,7 @@
 #include "mozilla/storage/Variant.h"
 #include "mozilla/dom/DataTransferItemListBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(DataTransferItemList, mDataTransfer,
                                       mItems, mIndexedItems, mFiles)
@@ -447,7 +446,7 @@ void DataTransferItemList::GetTypes(nsTArray<nsString>& aTypes,
   }
 
   if (foundFile) {
-    aTypes.AppendElement(NS_LITERAL_STRING("Files"));
+    aTypes.AppendElement(u"Files"_ns);
   }
 }
 
@@ -612,5 +611,4 @@ void DataTransferItemList::GenerateFiles(FileList* aFiles,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

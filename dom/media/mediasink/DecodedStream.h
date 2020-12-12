@@ -7,6 +7,7 @@
 #ifndef DecodedStream_h_
 #define DecodedStream_h_
 
+#include "AudibilityMonitor.h"
 #include "MediaEventSource.h"
 #include "MediaInfo.h"
 #include "MediaSegment.h"
@@ -35,7 +36,7 @@ class MediaQueue;
 class DecodedStream : public MediaSink {
  public:
   DecodedStream(MediaDecoderStateMachine* aStateMachine,
-                nsTArray<RefPtr<ProcessedMediaTrack>> aOutputTracks,
+                CopyableTArray<RefPtr<ProcessedMediaTrack>> aOutputTracks,
                 double aVolume, double aPlaybackRate, bool aPreservesPitch,
                 MediaQueue<AudioData>& aAudioQueue,
                 MediaQueue<VideoData>& aVideoQueue);
@@ -111,6 +112,7 @@ class DecodedStream : public MediaSink {
   MediaInfo mInfo;
   // True when stream is producing audible sound, false when stream is silent.
   bool mIsAudioDataAudible = false;
+  Maybe<AudibilityMonitor> mAudibilityMonitor;
   MediaEventProducer<bool> mAudibleEvent;
 
   MediaQueue<AudioData>& mAudioQueue;

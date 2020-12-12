@@ -6,11 +6,11 @@
 #if !defined(AOMDecoder_h_)
 #  define AOMDecoder_h_
 
-#  include "PlatformDecoderModule.h"
-#  include "mozilla/Span.h"
-
 #  include <stdint.h>
+
+#  include "PlatformDecoderModule.h"
 #  include "aom/aom_decoder.h"
+#  include "mozilla/Span.h"
 
 namespace mozilla {
 
@@ -27,7 +27,7 @@ class AOMDecoder : public MediaDataDecoder,
   RefPtr<FlushPromise> Flush() override;
   RefPtr<ShutdownPromise> Shutdown() override;
   nsCString GetDescriptionName() const override {
-    return NS_LITERAL_CSTRING("av1 libaom video decoder");
+    return "av1 libaom video decoder"_ns;
   }
 
   // Return true if aMimeType is a one of the strings used
@@ -50,7 +50,7 @@ class AOMDecoder : public MediaDataDecoder,
   // AOM decoder state
   aom_codec_ctx_t mCodec;
 
-  const VideoInfo& mInfo;
+  const VideoInfo mInfo;
 };
 
 }  // namespace mozilla

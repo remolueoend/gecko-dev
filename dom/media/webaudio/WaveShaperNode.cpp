@@ -12,8 +12,7 @@
 #include "AudioNodeTrack.h"
 #include "mozilla/PodOperations.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WaveShaperNode)
 
@@ -153,8 +152,8 @@ class WaveShaperNodeEngine final : public AudioNodeEngine {
 
   enum Parameters { TYPE };
 
-  void SetRawArrayData(nsTArray<float>& aCurve) override {
-    mCurve.SwapElements(aCurve);
+  void SetRawArrayData(nsTArray<float>&& aCurve) override {
+    mCurve = std::move(aCurve);
   }
 
   void SetInt32Parameter(uint32_t aIndex, int32_t aValue) override {
@@ -212,10 +211,9 @@ class WaveShaperNodeEngine final : public AudioNodeEngine {
           0.0) {
         *aOutput = aInput;
         return;
-      } else {
-        nullInput = true;
-        channelCount = 1;
       }
+      nullInput = true;
+      channelCount = 1;
     }
 
     aOutput->AllocateChannels(channelCount);
@@ -350,7 +348,7 @@ void WaveShaperNode::SetCurveInternal(const nsTArray<float>& aCurve,
     return;
   }
 
-  mCurve = aCurve;
+  mCurve = aCurve.Clone();
   SendCurveToTrack();
 }
 
@@ -363,8 +361,8 @@ void WaveShaperNode::SendCurveToTrack() {
   AudioNodeTrack* ns = mTrack;
   MOZ_ASSERT(ns, "Why don't we have a track here?");
 
-  nsTArray<float> copyCurve(mCurve);
-  ns->SetRawArrayData(copyCurve);
+  nsTArray<float> copyCurve(mCurve.Clone());
+  ns->SetRawArrayData(std::move(copyCurve));
 }
 
 void WaveShaperNode::GetCurve(JSContext* aCx,
@@ -386,5 +384,4 @@ void WaveShaperNode::SetOversample(OverSampleType aType) {
                             static_cast<int32_t>(aType));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

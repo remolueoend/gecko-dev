@@ -8,6 +8,7 @@
 
 #include "ipc/PresentationIPCService.h"
 #include "mozilla/Services.h"
+#include "nsArrayUtils.h"
 #include "nsGlobalWindow.h"
 #include "nsIMutableArray.h"
 #include "nsIObserverService.h"
@@ -15,6 +16,8 @@
 #include "nsIPresentationDevicePrompt.h"
 #include "nsIPresentationListener.h"
 #include "nsIPresentationRequestUIGlue.h"
+#include "nsIPresentationSessionRequest.h"
+#include "nsIPresentationTerminateRequest.h"
 #include "nsISupportsPrimitives.h"
 #include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
@@ -126,7 +129,7 @@ PresentationDeviceRequest::PresentationDeviceRequest(
     const nsAString& aOrigin, uint64_t aWindowId, EventTarget* aEventTarget,
     nsIPrincipal* aPrincipal, nsIPresentationServiceCallback* aCallback,
     nsIPresentationTransportBuilderConstructor* aBuilderConstructor)
-    : mRequestUrls(aUrls),
+    : mRequestUrls(aUrls.Clone()),
       mId(aId),
       mOrigin(aOrigin),
       mWindowId(aWindowId),
@@ -1102,8 +1105,10 @@ already_AddRefed<nsIPresentationService> NS_CreatePresentationService() {
   if (XRE_GetProcessType() == GeckoProcessType_Content) {
     service = new mozilla::dom::PresentationIPCService();
   } else {
-    service = new PresentationService();
-    if (NS_WARN_IF(!static_cast<PresentationService*>(service.get())->Init())) {
+    service = new mozilla::dom::PresentationService();
+    if (NS_WARN_IF(
+            !static_cast<mozilla::dom::PresentationService*>(service.get())
+                 ->Init())) {
       return nullptr;
     }
   }

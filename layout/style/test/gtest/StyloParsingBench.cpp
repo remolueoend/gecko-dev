@@ -9,6 +9,7 @@
 #include "nsString.h"
 #include "ExampleStylesheet.h"
 #include "ServoBindings.h"
+#include "mozilla/dom/DOMString.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/Utf8.h"
 #include "mozilla/NullPrincipalURI.h"
@@ -50,6 +51,8 @@ static void ServoParsingBench(const StyleUseCounters* aCounters) {
   }
 }
 
+static constexpr uint16_t STYLE_RULE = 1;
+
 static void ServoSetPropertyByIdBench(const nsACString& css) {
   RefPtr<RawServoDeclarationBlock> block =
       Servo_DeclarationBlock_CreateEmpty().Consume();
@@ -64,7 +67,7 @@ static void ServoSetPropertyByIdBench(const nsACString& css) {
     Servo_DeclarationBlock_SetPropertyById(
         block, eCSSProperty_width, &css,
         /* is_important = */ false, data, ParsingMode::Default,
-        eCompatibility_FullStandards, nullptr, {});
+        eCompatibility_FullStandards, nullptr, STYLE_RULE, {});
   }
 }
 
@@ -77,12 +80,12 @@ static void ServoGetPropertyValueById() {
   RefPtr<URLExtraData> data =
       new URLExtraData(uri.forget(), referrerInfo.forget(),
                        NullPrincipal::CreateWithoutOriginAttributes());
-  NS_NAMED_LITERAL_CSTRING(css_, "10px");
+  constexpr auto css_ = "10px"_ns;
   const nsACString& css = css_;
   Servo_DeclarationBlock_SetPropertyById(
       block, eCSSProperty_width, &css,
       /* is_important = */ false, data, ParsingMode::Default,
-      eCompatibility_FullStandards, nullptr, {});
+      eCompatibility_FullStandards, nullptr, STYLE_RULE, {});
 
   for (int i = 0; i < GETPROPERTY_REPETITIONS; i++) {
     DOMString value_;
@@ -102,11 +105,11 @@ MOZ_GTEST_BENCH(Stylo, Servo_StyleSheet_FromUTF8Bytes_Bench_UseCounters, [] {
 });
 
 MOZ_GTEST_BENCH(Stylo, Servo_DeclarationBlock_SetPropertyById_Bench,
-                [] { ServoSetPropertyByIdBench(NS_LITERAL_CSTRING("10px")); });
+                [] { ServoSetPropertyByIdBench("10px"_ns); });
 
 MOZ_GTEST_BENCH(Stylo,
                 Servo_DeclarationBlock_SetPropertyById_WithInitialSpace_Bench,
-                [] { ServoSetPropertyByIdBench(NS_LITERAL_CSTRING(" 10px")); });
+                [] { ServoSetPropertyByIdBench(" 10px"_ns); });
 
 MOZ_GTEST_BENCH(Stylo, Servo_DeclarationBlock_GetPropertyById_Bench,
                 ServoGetPropertyValueById);

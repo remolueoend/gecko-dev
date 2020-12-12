@@ -4,9 +4,10 @@
 
 // @flow
 
-import { PrefsHelper, asyncStoreHelper } from "devtools-modules";
+// $FlowIgnore
+const { PrefsHelper } = require("devtools/client/shared/prefs");
 
-import { isDevelopment } from "devtools-environment";
+import { isNode } from "./environment";
 import Services from "devtools-services";
 
 // Schema version to bump when the async store format has changed incompatibly
@@ -14,7 +15,7 @@ import Services from "devtools-services";
 const prefsSchemaVersion = 11;
 const { pref } = Services;
 
-if (isDevelopment()) {
+if (isNode()) {
   pref("devtools.browsertoolbox.fission", false);
   pref("devtools.debugger.logging", false);
   pref("devtools.debugger.alphabetize-outline", false);
@@ -74,7 +75,7 @@ if (isDevelopment()) {
   pref("devtools.debugger.features.log-points", true);
   pref("devtools.debugger.features.inline-preview", true);
   pref("devtools.debugger.features.overlay-step-buttons", true);
-  pref("devtools.debugger.features.watchpoints", true);
+  pref("devtools.debugger.features.frame-step", true);
   pref("devtools.editor.tabsize", 2);
 }
 
@@ -113,6 +114,11 @@ export const prefs = new PrefsHelper("devtools", {
   fileSearchRegexMatch: ["Bool", "debugger.file-search-regex-match"],
   debuggerPrefsSchemaVersion: ["Int", "debugger.prefs-schema-version"],
   projectDirectoryRoot: ["Char", "debugger.project-directory-root", ""],
+  projectDirectoryRootName: [
+    "Char",
+    "debugger.project-directory-root-name",
+    "",
+  ],
   skipPausing: ["Bool", "debugger.skip-pausing"],
   mapScopes: ["Bool", "debugger.map-scopes-enabled"],
   logActions: ["Bool", "debugger.log-actions"],
@@ -150,17 +156,14 @@ export const features = new PrefsHelper("devtools.debugger.features", {
   commandClick: ["Bool", "command-click"],
   showOverlay: ["Bool", "overlay"],
   inlinePreview: ["Bool", "inline-preview"],
-  watchpoints: ["Bool", "watchpoints"],
   windowlessServiceWorkers: ["Bool", "windowless-service-workers"],
+  frameStep: ["Bool", "frame-step"],
 });
 
-export const asyncStore = asyncStoreHelper("debugger", {
-  pendingBreakpoints: ["pending-breakpoints", {}],
-  tabs: ["tabs", []],
-  xhrBreakpoints: ["xhr-breakpoints", []],
-  eventListenerBreakpoints: ["event-listener-breakpoints", undefined],
-  tabsBlackBoxed: ["tabsBlackBoxed", []],
-});
+// Import the asyncStore already spawned by the TargetMixin class
+// $FlowIgnore
+const ThreadUtils = require("devtools/client/shared/thread-utils");
+export const asyncStore = ThreadUtils.asyncStore;
 
 export function resetSchemaVersion(): void {
   prefs.debuggerPrefsSchemaVersion = prefsSchemaVersion;

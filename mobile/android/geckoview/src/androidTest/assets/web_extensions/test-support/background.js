@@ -17,8 +17,14 @@ const APIS = {
   GetLinkColor({ uri, selector }) {
     return browser.test.getLinkColor(uri, selector);
   },
+  GetPidForTab({ tab }) {
+    return browser.test.getPidForTab(tab.id);
+  },
   GetPrefs({ prefs }) {
     return browser.test.getPrefs(prefs);
+  },
+  GetActive({ tab }) {
+    return browser.test.getActive(tab.id);
   },
   RemoveCertOverride({ host, port }) {
     browser.test.removeCertOverride(host, port);
@@ -32,11 +38,23 @@ const APIS = {
   SetResolutionAndScaleTo({ resolution }) {
     return browser.test.setResolutionAndScaleTo(resolution);
   },
+  FlushApzRepaints({ tab }) {
+    return browser.test.flushApzRepaints(tab.id);
+  },
 };
 
 port.onMessage.addListener(async message => {
   const impl = APIS[message.type];
   apiCall(message, impl);
+});
+
+browser.runtime.onConnect.addListener(contentPort => {
+  contentPort.onMessage.addListener(message => {
+    message.args.tab = contentPort.sender.tab;
+
+    const impl = APIS[message.type];
+    apiCall(message, impl);
+  });
 });
 
 function apiCall(message, impl) {

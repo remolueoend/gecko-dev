@@ -60,12 +60,6 @@ class BackgroundChildImpl : public PBackgroundChild,
   virtual bool DeallocPBackgroundTestChild(
       PBackgroundTestChild* aActor) override;
 
-  virtual PBackgroundIDBFactoryChild* AllocPBackgroundIDBFactoryChild(
-      const LoggingInfo& aLoggingInfo) override;
-
-  virtual bool DeallocPBackgroundIDBFactoryChild(
-      PBackgroundIDBFactoryChild* aActor) override;
-
   virtual PBackgroundIndexedDBUtilsChild* AllocPBackgroundIndexedDBUtilsChild()
       override;
 
@@ -113,14 +107,15 @@ class BackgroundChildImpl : public PBackgroundChild,
       PBackgroundLocalStorageCacheChild* aActor) override;
 
   virtual PBackgroundStorageChild* AllocPBackgroundStorageChild(
-      const nsString& aProfilePath) override;
+      const nsString& aProfilePath,
+      const uint32_t& aPrivateBrowsingId) override;
 
   virtual bool DeallocPBackgroundStorageChild(
       PBackgroundStorageChild* aActor) override;
 
-  virtual already_AddRefed<PIPCBlobInputStreamChild>
-  AllocPIPCBlobInputStreamChild(const nsID& aID,
-                                const uint64_t& aSize) override;
+  virtual already_AddRefed<PRemoteLazyInputStreamChild>
+  AllocPRemoteLazyInputStreamChild(const nsID& aID,
+                                   const uint64_t& aSize) override;
 
   virtual PTemporaryIPCBlobChild* AllocPTemporaryIPCBlobChild() override;
 
@@ -206,11 +201,8 @@ class BackgroundChildImpl : public PBackgroundChild,
 
   virtual bool DeallocPCacheChild(dom::cache::PCacheChild* aActor) override;
 
-  virtual dom::cache::PCacheStreamControlChild* AllocPCacheStreamControlChild()
-      override;
-
-  virtual bool DeallocPCacheStreamControlChild(
-      dom::cache::PCacheStreamControlChild* aActor) override;
+  virtual already_AddRefed<dom::cache::PCacheStreamControlChild>
+  AllocPCacheStreamControlChild() override;
 
   virtual PMessagePortChild* AllocPMessagePortChild(
       const nsID& aUUID, const nsID& aDestinationUUID,
@@ -232,17 +224,6 @@ class BackgroundChildImpl : public PBackgroundChild,
 
   virtual bool DeallocPQuotaChild(PQuotaChild* aActor) override;
 
-  // Gamepad API Background IPC
-  virtual PGamepadEventChannelChild* AllocPGamepadEventChannelChild() override;
-
-  virtual bool DeallocPGamepadEventChannelChild(
-      PGamepadEventChannelChild* aActor) override;
-
-  virtual PGamepadTestChannelChild* AllocPGamepadTestChannelChild() override;
-
-  virtual bool DeallocPGamepadTestChannelChild(
-      PGamepadTestChannelChild* aActor) override;
-
   virtual PClientManagerChild* AllocPClientManagerChild() override;
 
   virtual bool DeallocPClientManagerChild(PClientManagerChild* aActor) override;
@@ -263,22 +244,15 @@ class BackgroundChildImpl : public PBackgroundChild,
   virtual PMIDIManagerChild* AllocPMIDIManagerChild() override;
   virtual bool DeallocPMIDIManagerChild(PMIDIManagerChild*) override;
 
-  virtual PServiceWorkerChild* AllocPServiceWorkerChild(
-      const IPCServiceWorkerDescriptor&) override;
+  already_AddRefed<PServiceWorkerChild> AllocPServiceWorkerChild(
+      const IPCServiceWorkerDescriptor&);
 
-  virtual bool DeallocPServiceWorkerChild(PServiceWorkerChild*) override;
+  already_AddRefed<PServiceWorkerContainerChild>
+  AllocPServiceWorkerContainerChild();
 
-  virtual PServiceWorkerContainerChild* AllocPServiceWorkerContainerChild()
-      override;
-
-  virtual bool DeallocPServiceWorkerContainerChild(
-      PServiceWorkerContainerChild*) override;
-
-  virtual PServiceWorkerRegistrationChild* AllocPServiceWorkerRegistrationChild(
-      const IPCServiceWorkerRegistrationDescriptor&) override;
-
-  virtual bool DeallocPServiceWorkerRegistrationChild(
-      PServiceWorkerRegistrationChild*) override;
+  already_AddRefed<PServiceWorkerRegistrationChild>
+  AllocPServiceWorkerRegistrationChild(
+      const IPCServiceWorkerRegistrationDescriptor&);
 
   virtual PEndpointForReportChild* AllocPEndpointForReportChild(
       const nsString& aGroupName, const PrincipalInfo& aPrincipalInfo) override;

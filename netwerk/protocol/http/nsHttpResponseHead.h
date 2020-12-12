@@ -42,11 +42,16 @@ class nsHttpResponseHead {
       : mVersion(HttpVersion::v1_1),
         mStatus(200),
         mContentLength(-1),
+        mHasCacheControl(false),
         mCacheControlPublic(false),
         mCacheControlPrivate(false),
         mCacheControlNoStore(false),
         mCacheControlNoCache(false),
         mCacheControlImmutable(false),
+        mCacheControlStaleWhileRevalidateSet(false),
+        mCacheControlStaleWhileRevalidate(0),
+        mCacheControlMaxAgeSet(false),
+        mCacheControlMaxAge(0),
         mPragmaNoCache(false),
         mRecursiveMutex("nsHttpResponseHead.mRecursiveMutex"),
         mInVisitHeaders(false) {}
@@ -61,7 +66,7 @@ class nsHttpResponseHead {
   uint16_t Status() const;
   void StatusText(nsACString& aStatusText);
   int64_t ContentLength();
-  void ContentType(nsACString& aContentType);
+  void ContentType(nsACString& aContentType) const;
   void ContentCharset(nsACString& aContentCharset);
   bool Public();
   bool Private();
@@ -153,7 +158,7 @@ class nsHttpResponseHead {
   [[nodiscard]] nsresult GetOriginalHeader(nsHttpAtom aHeader,
                                            nsIHttpHeaderVisitor* aVisitor);
 
-  bool HasContentType();
+  bool HasContentType() const;
   bool HasContentCharset();
   bool GetContentTypeOptionsHeader(nsACString& aOutput);
 
@@ -188,6 +193,12 @@ class nsHttpResponseHead {
     return ParseDateHeader(nsHttp::Last_Modified, result);
   }
 
+  bool NoCache_locked() const {
+    // We ignore Pragma: no-cache if Cache-Control is set.
+    MOZ_ASSERT_IF(mCacheControlNoCache, mHasCacheControl);
+    return mHasCacheControl ? mCacheControlNoCache : mPragmaNoCache;
+  }
+
  private:
   // All members must be copy-constructable and assignable
   nsHttpHeaderArray mHeaders;
@@ -197,11 +208,16 @@ class nsHttpResponseHead {
   int64_t mContentLength;
   nsCString mContentType;
   nsCString mContentCharset;
+  bool mHasCacheControl;
   bool mCacheControlPublic;
   bool mCacheControlPrivate;
   bool mCacheControlNoStore;
   bool mCacheControlNoCache;
   bool mCacheControlImmutable;
+  bool mCacheControlStaleWhileRevalidateSet;
+  uint32_t mCacheControlStaleWhileRevalidate;
+  bool mCacheControlMaxAgeSet;
+  uint32_t mCacheControlMaxAge;
   bool mPragmaNoCache;
 
   // We are using RecursiveMutex instead of a Mutex because VisitHeader

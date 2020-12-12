@@ -10,18 +10,25 @@ webidl Document;
 
 %{C++
 #include "ImgDrawResult.h"
-#include "gfxContext.h"
-#include "gfxMatrix.h"
-#include "gfxRect.h"
-#include "mozilla/gfx/2D.h"
+#include "gfxPoint.h"
+#include "mozilla/gfx/Types.h"
 #include "mozilla/AspectRatio.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
 #include "nsRect.h"
 #include "nsSize.h"
+#include "nsTArray.h"
 #include "limits.h"
 
+class gfxContext;
+
 namespace mozilla {
+struct AspectRatio;
+
+namespace gfx {
+class SourceSurface;
+}
+
 namespace layers {
 class LayerManager;
 class ImageContainer;
@@ -523,13 +530,22 @@ interface imgIContainer : nsISupports
    *
    * @param aFlags Flags of the FLAG_* variety.
    * @param aWhichFrame Frame specifier of the FRAME_* variety.
-   * @return True there is a surface that satisfies the request and it is
-   *         fully decoded, else false.
+   * @return DECODE_SURFACE_AVAILABLE if is a surface that satisfies the
+   *         request and it is fully decoded.
+   *         DECODE_REQUESTED if we requested a decode.
+   *         DECODE_REQUEST_FAILED if we failed to request a decode. This means
+   *         that either there is an error in the image or we cannot allocate a
+   *         surface that big.
    */
-  [noscript, notxpcom] boolean requestDecodeWithResult(in uint32_t aFlags, in uint32_t aWhichFrame);
+   cenum DecodeResult : 8 {
+     DECODE_SURFACE_AVAILABLE = 0,
+     DECODE_REQUESTED = 1,
+     DECODE_REQUEST_FAILED = 2
+   };
+  [noscript, notxpcom] imgIContainer_DecodeResult requestDecodeWithResult(in uint32_t aFlags, in uint32_t aWhichFrame);
 
 %{C++
-  bool RequestDecodeWithResult(uint32_t aFlags) {
+  DecodeResult RequestDecodeWithResult(uint32_t aFlags) {
     return RequestDecodeWithResult(aFlags, FRAME_CURRENT);
   }
 %}
@@ -672,7 +688,7 @@ interface imgIContainer : nsISupports
    * Propagate the use counters (if any) from this container to the passed in
    * document.
    */
-  [noscript, notxpcom] void propagateUseCounters(in Document aDocument);
+  [noscript, notxpcom] void propagateUseCounters(in Document aReferencingDocument);
 
   %{C++
   /*

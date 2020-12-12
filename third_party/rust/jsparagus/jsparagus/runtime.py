@@ -23,8 +23,12 @@ ERROR = ACCEPT - 1
 
 
 @dataclass(frozen=True)
-class ErrorToken:
-    pass
+class ErrorTokenClass:
+    def __repr__(self):
+        return 'ErrorToken'
+
+
+ErrorToken = ErrorTokenClass()
 
 
 def throw_syntax_error(actions, state, t, tokens):
@@ -38,12 +42,12 @@ def throw_syntax_error(actions, state, t, tokens):
     if End() in expected:
         expected.remove(End())
         expected.add("end of input")
-    if ErrorToken() in expected:
+    if ErrorToken in expected:
         # This is possible because we restore the stack in _try_error_handling
         # after reducing and then failing to find a recovery rule after all.
         # But don't tell people in error messages that an error is one of the
         # things we expect. It makes no sense.
-        expected.remove(ErrorToken())
+        expected.remove(ErrorToken)
 
     if len(expected) < 2:
         tokens.throw("expected {!r}, got {!r}".format(list(expected)[0], t))
@@ -155,18 +159,36 @@ class Parser:
             state = goto
             self.stack.append(StateTermValue(state, stv.term, stv.value, stv.new_line))
             action = self.actions[state]
-            while not isinstance(action, dict):  # Action
+            if not isinstance(action, dict):  # Action
                 if self.debug:
                     self._dbg_where("(action {})".format(state))
                 action(self, lexer)
                 state = self.stack[-1].state
                 action = self.actions[state]
+                # Actions should always unwind or do an epsilon transition to a
+                # shift state.
+                assert isinstance(action, dict)
             if self.replay != []:
                 stv = self.replay.pop()
                 if self.debug:
                     self._dbg_where("replay: {}".format(repr(stv.term)))
             else:
                 break
+
+    def replay_action(self, dest):
+        # This code emulates the code which would be executed by the shift
+        # function, if we were to return to this shift function instead of
+        # staying within the action functions. The destination provided as
+        # argument should match the content of the parse table, otherwise this
+        # would imply that the replay action does not encode a transition from
+        # the parse table.
+        state = self.stack[-1].state
+        stv = self.replay.pop()
+        if self.debug:
+            self._dbg_where("(inline-replay: {})".format(repr(stv.term)))
+        goto = self.actions[state].get(stv.term, ERROR)
+        assert goto == dest
+        self.stack.append(StateTermValue(dest, stv.term, stv.value, stv.new_line))
 
     def shift_list(self, stv_list, lexer):
         self.replay.extend(reversed(stv_list))
@@ -202,6 +224,9 @@ class Parser:
             assert isinstance(self.stack[1].term, Nt)
             return self.stack[1].value
 
+    def top_state(self):
+        return self.stack[-1].state
+
     def check_not_on_new_line(self, lexer, peek):
         if peek <= 0:
             raise ValueError("check_not_on_new_line got an impossible peek offset")
@@ -216,7 +241,7 @@ class Parser:
     def _try_error_handling(self, lexer, stv):
         # Error recovery version of the code in write_terminal. Three differences
         # between this and write_terminal are commented below.
-        if isinstance(stv.term, ErrorToken):
+        if stv.term is ErrorToken:
             if stv.value == End():
                 lexer.throw_unexpected_end()
                 raise
@@ -228,7 +253,7 @@ class Parser:
         if error_code is not None:
             self.on_recover(error_code, lexer, stv)
             self.replay.append(stv)
-            self.replay.append(StateTermValue(0, ErrorToken(), stv.value, stv.new_line))
+            self.replay.append(StateTermValue(0, ErrorToken, stv.value, stv.new_line))
         elif stv.term == End():
             lexer.throw_unexpected_end()
             raise
@@ -290,25 +315,3 @@ class Parser:
         except SyntaxError:
             return False
         return True
-
-    def simulate(self, t):
-        """Simulate receiving the terminal `t` without modifying parser state.
-
-        Walk the current stack to simulate the reduce actions that would occur
-        if the next token from the lexer was `t`. Return the state reached when
-        we're done reducing.
-        """
-        sim = self.simulator_clone()
-        stack = self.stack
-        sp = len(stack) - 1
-        state = stack[sp]
-        while True:
-            action = self.actions[state].get(t, ERROR)
-            if ACCEPT < action < 0:  # reduce
-                tag_name, n, _reducer = self.reductions[-action - 1]
-                sp -= 2 * n
-                state = stack[sp]
-                sp += 2
-                state = self.ctns[state][tag_name]
-            else:
-                return state

@@ -9,9 +9,11 @@
 #include "nsICanvasRenderingContextInternal.h"
 #include "nsIHTMLCollection.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/dom/UserActivation.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StaticPrefs_webgl.h"
 #include "nsIPrincipal.h"
@@ -38,14 +40,13 @@
 #define TOPIC_CANVAS_PERMISSIONS_PROMPT "canvas-permissions-prompt"
 #define TOPIC_CANVAS_PERMISSIONS_PROMPT_HIDE_DOORHANGER \
   "canvas-permissions-prompt-hide-doorhanger"
-#define PERMISSION_CANVAS_EXTRACT_DATA NS_LITERAL_CSTRING("canvas")
+#define PERMISSION_CANVAS_EXTRACT_DATA "canvas"_ns
 
 using namespace mozilla::gfx;
 
-namespace mozilla {
-namespace CanvasUtils {
+namespace mozilla::CanvasUtils {
 
-bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
+bool IsImageExtractionAllowed(dom::Document* aDocument, JSContext* aCx,
                               nsIPrincipal& aPrincipal) {
   // Do the rest of the checks only if privacy.resistFingerprinting is on.
   if (!nsContentUtils::ShouldResistFingerprinting(aDocument)) {
@@ -85,7 +86,7 @@ bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
     return true;
   }
 
-  Document* topLevelDocument = aDocument->GetTopLevelContentDocument();
+  dom::Document* topLevelDocument = aDocument->GetTopLevelContentDocument();
   nsIURI* topLevelDocURI =
       topLevelDocument ? topLevelDocument->GetDocumentURI() : nullptr;
   nsCString topLevelDocURISpec;
@@ -108,8 +109,7 @@ bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
     message.AppendPrintf("Blocked third party %s from extracting canvas data.",
                          docURISpec.get());
     nsContentUtils::ReportToConsoleNonLocalized(
-        message, nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Security"),
-        aDocument);
+        message, nsIScriptError::warningFlag, "Security"_ns, aDocument);
     return false;
   }
 
@@ -140,7 +140,7 @@ bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
   bool isAutoBlockCanvas =
       StaticPrefs::
           privacy_resistFingerprinting_autoDeclineNoUserInputCanvasPrompts() &&
-      !UserActivation::IsHandlingUserInput();
+      !dom::UserActivation::IsHandlingUserInput();
 
   if (isAutoBlockCanvas) {
     nsAutoString message;
@@ -149,8 +149,7 @@ bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
         "detected.",
         docURISpec.get());
     nsContentUtils::ReportToConsoleNonLocalized(
-        message, nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Security"),
-        aDocument);
+        message, nsIScriptError::warningFlag, "Security"_ns, aDocument);
   } else {
     // It was in response to user input, so log and display the prompt.
     nsAutoString message;
@@ -158,8 +157,7 @@ bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
         "Blocked %s from extracting canvas data, but prompting the user.",
         docURISpec.get());
     nsContentUtils::ReportToConsoleNonLocalized(
-        message, nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Security"),
-        aDocument);
+        message, nsIScriptError::warningFlag, "Security"_ns, aDocument);
   }
 
   // Prompt the user (asynchronous).
@@ -169,7 +167,7 @@ bool IsImageExtractionAllowed(Document* aDocument, JSContext* aCx,
   NS_ENSURE_SUCCESS(rv, false);
 
   if (XRE_IsContentProcess()) {
-    BrowserChild* browserChild = BrowserChild::GetFrom(win);
+    dom::BrowserChild* browserChild = dom::BrowserChild::GetFrom(win);
     if (browserChild) {
       browserChild->SendShowCanvasPermissionPrompt(origin, isAutoBlockCanvas);
     }
@@ -323,5 +321,4 @@ bool CheckWriteOnlySecurity(bool aCORSUsed, nsIPrincipal* aPrincipal,
   return false;
 }
 
-}  // namespace CanvasUtils
-}  // namespace mozilla
+}  // namespace mozilla::CanvasUtils

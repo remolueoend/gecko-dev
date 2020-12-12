@@ -9,38 +9,37 @@
 #ifndef nsPresContext_h___
 #define nsPresContext_h___
 
+#include "mozilla/AppUnits.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EnumeratedArray.h"
+#include "mozilla/MediaEmulationData.h"
+#include "mozilla/MemoryReporting.h"
 #include "mozilla/NotNull.h"
-#include "mozilla/ScrollStyles.h"
 #include "mozilla/PreferenceSheet.h"
+#include "mozilla/PresShellForwards.h"
+#include "mozilla/ScrollStyles.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
+#include "mozilla/widget/ThemeChangeKind.h"
 #include "nsColor.h"
+#include "nsCompatibility.h"
 #include "nsCoord.h"
 #include "nsCOMPtr.h"
+#include "nsHashKeys.h"
 #include "nsRect.h"
 #include "nsStringFwd.h"
-#include "gfxFontConstants.h"
+#include "nsTHashtable.h"
 #include "nsAtom.h"
-#include "nsCRT.h"
 #include "nsIWidgetListener.h"  // for nsSizeMode
 #include "nsGkAtoms.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsChangeHint.h"
-#include <algorithm>
 #include "gfxTypes.h"
 #include "gfxRect.h"
 #include "nsTArray.h"
-#include "mozilla/MemoryReporting.h"
-#include "mozilla/TimeStamp.h"
-#include "mozilla/AppUnits.h"
-#include "mozilla/MediaEmulationData.h"
-#include "mozilla/PresShellForwards.h"
-#include "prclist.h"
 #include "nsThreadUtils.h"
 #include "Units.h"
-#include "prenv.h"
 
 class nsBidi;
 class nsIPrintSettings;
@@ -78,8 +77,10 @@ class EventStateManager;
 class CounterStyleManager;
 class PresShell;
 class RestyleManager;
+class ServoStyleSet;
 class StaticPresData;
 struct MediaFeatureChange;
+enum class MediaFeatureChangePropagation : uint8_t;
 namespace layers {
 class ContainerLayer;
 class LayerManager;
@@ -126,12 +127,13 @@ class nsRootPresContext;
 // An interface for presentation contexts. Presentation contexts are
 // objects that provide an outer context for a presentation shell.
 
-class nsPresContext : public nsISupports,
-                      public mozilla::SupportsWeakPtr<nsPresContext> {
+class nsPresContext : public nsISupports, public mozilla::SupportsWeakPtr {
  public:
   using Encoding = mozilla::Encoding;
   template <typename T>
   using NotNull = mozilla::NotNull<T>;
+  template <typename T>
+  using Maybe = mozilla::Maybe<T>;
   using MediaEmulationData = mozilla::MediaEmulationData;
   using StylePrefersColorScheme = mozilla::StylePrefersColorScheme;
 
@@ -140,9 +142,8 @@ class nsPresContext : public nsISupports,
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
   NS_DECL_CYCLE_COLLECTION_CLASS(nsPresContext)
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(nsPresContext)
 
-  enum nsPresContextType {
+  enum nsPresContextType : uint8_t {
     eContext_Galley,        // unpaginated screen presentation
     eContext_PrintPreview,  // paginated screen presentation
     eContext_Print,         // paginated printer presentation
@@ -184,10 +185,10 @@ class nsPresContext : public nsISupports,
   nsPresContext* GetParentPresContext() const;
 
   /**
-   * Returns the prescontext of the toplevel content document that contains
-   * this presentation, or null if there isn't one.
+   * Returns the prescontext of the root content document in the same process
+   * that contains this presentation, or null if there isn't one.
    */
-  nsPresContext* GetToplevelContentDocumentPresContext();
+  nsPresContext* GetInProcessRootContentDocumentPresContext();
 
   /**
    * Returns the nearest widget for the root frame or view of this.
@@ -281,20 +282,15 @@ class nsPresContext : public nsISupports,
 
   void ContentLanguageChanged();
 
-  /**
-   * Handle changes in the values of media features (used in media queries).
-   */
-  void MediaFeatureValuesChanged(const mozilla::MediaFeatureChange& aChange);
-
-  void FlushPendingMediaFeatureValuesChanged();
+  /** Returns whether any media query changed. */
+  bool FlushPendingMediaFeatureValuesChanged();
 
   /**
-   * Calls MediaFeatureValuesChanged for this pres context and all descendant
-   * subdocuments that have a pres context. This should be used for media
-   * features that must be updated in all subdocuments e.g. display-mode.
+   * Schedule a media feature change for this document, and potentially for
+   * other subdocuments and images (depending on the arguments).
    */
-  void MediaFeatureValuesChangedAllDocuments(
-      const mozilla::MediaFeatureChange&);
+  void MediaFeatureValuesChanged(const mozilla::MediaFeatureChange&,
+                                 mozilla::MediaFeatureChangePropagation);
 
   /**
    * Updates the size mode on all remote children and recursively notifies this
@@ -430,7 +426,8 @@ class nsPresContext : public nsISupports,
   /**
    * Get/set the size of a page
    */
-  nsSize GetPageSize() { return mPageSize; }
+  const nsSize& GetPageSize() const { return mPageSize; }
+  const nsMargin& GetDefaultPageMargin() const { return mDefaultPageMargin; }
   void SetPageSize(nsSize aSize) { mPageSize = aSize; }
 
   /**
@@ -453,14 +450,19 @@ class nsPresContext : public nsISupports,
   void SetPageScale(float aScale) { mPageScale = aScale; }
 
   /**
-   * Get/set the scaling facor to use when rendering the pages for print
+   * Get/set the scaling factor to use when rendering the pages for print
    * preview. Only safe to get after print preview set up; safe to set anytime.
    * This is a scaling factor for the display of the print preview.  It
    * does not affect layout.  It only affects the size of the onscreen pages
    * in print preview.
+   *
+   * The getter should only be used by the page sequence frame, which is the
+   * frame responsible for applying the scaling. Other callers should use
+   * nsPageSequenceFrame::GetPrintPreviewScale() if needed, instead of this API.
+   *
    * XXX Temporary: see http://wiki.mozilla.org/Gecko:PrintPreview
    */
-  float GetPrintPreviewScale() { return mPPScale; }
+  float GetPrintPreviewScaleForSequenceFrame() { return mPPScale; }
   void SetPrintPreviewScale(float aScale) { mPPScale = aScale; }
 
   nsDeviceContext* DeviceContext() const { return mDeviceContext; }
@@ -491,13 +493,16 @@ class nsPresContext : public nsISupports,
    * font scale into account as well.
    */
   float TextZoom() const { return mTextZoom; }
-  void SetTextZoom(float aZoom) {
-    MOZ_ASSERT(aZoom > 0.0f, "invalid zoom factor");
-    if (aZoom == mTextZoom) return;
 
-    mTextZoom = aZoom;
-    UpdateEffectiveTextZoom();
-  }
+  /**
+   * Corresponds to the product of text zoom and system font scale, limited
+   * by zoom.maxPercent and minPercent.
+   * As the system font scale is automatically set by the PresShell, code that
+   * e.g. wants to transfer zoom levels to a new document should use TextZoom()
+   * instead, which corresponds to the text zoom level that was actually set by
+   * the front-end/user.
+   */
+  float EffectiveTextZoom() const { return mEffectiveTextZoom; }
 
   /**
    * Notify the pres context that the safe area insets have changed.
@@ -513,17 +518,16 @@ class nsPresContext : public nsISupports,
   void ValidatePresShellAndDocumentReleation() const;
 #endif  // #ifdef DEBUG
 
- public:
-  /**
-   * Corresponds to the product of text zoom and system font scale, limited
-   * by zoom.maxPercent and minPercent.
-   * As the system font scale is automatically set by the PresShell, code that
-   * e.g. wants to transfer zoom levels to a new document should use TextZoom()
-   * instead, which corresponds to the text zoom level that was actually set by
-   * the front-end/user.
-   */
-  float EffectiveTextZoom() const { return mEffectiveTextZoom; }
+  void SetTextZoom(float aZoom) {
+    MOZ_ASSERT(aZoom > 0.0f, "invalid zoom factor");
+    if (aZoom == mTextZoom) return;
 
+    mTextZoom = aZoom;
+    UpdateEffectiveTextZoom();
+  }
+  void SetFullZoom(float aZoom);
+
+ public:
   float GetFullZoom() { return mFullZoom; }
   /**
    * Device full zoom differs from full zoom because it gets the zoom from
@@ -531,18 +535,26 @@ class nsPresContext : public nsISupports,
    * of app units to device pixels.
    */
   float GetDeviceFullZoom();
-  void SetFullZoom(float aZoom);
 
   float GetOverrideDPPX() const { return mMediaEmulationData.mDPPX; }
   void SetOverrideDPPX(float);
+
+  /**
+   * Recomputes the data dependent on the browsing context, like zoom and text
+   * zoom.
+   *
+   * TODO(emilio): Eventually stuff like the media emulation data, overrideDPPX
+   * and such should also move here.
+   */
+  void RecomputeBrowsingContextDependentData();
 
   Maybe<StylePrefersColorScheme> GetOverridePrefersColorScheme() const {
     return mMediaEmulationData.mPrefersColorScheme;
   }
   void SetOverridePrefersColorScheme(const Maybe<StylePrefersColorScheme>&);
 
-  nscoord GetAutoQualityMinFontSize() {
-    return DevPixelsToAppUnits(mAutoQualityMinFontSizePixelsPref);
+  mozilla::CSSCoord GetAutoQualityMinFontSize() const {
+    return DevPixelsToFloatCSSPixels(mAutoQualityMinFontSizePixelsPref);
   }
 
   /**
@@ -681,22 +693,15 @@ class nsPresContext : public nsISupports,
 
   /**
    * Check whether the given element would propagate its scrollbar styles to the
-   * viewport in non-paginated mode.  Must only be called if IsPaginated().
+   * viewport in non-paginated mode.
    */
   bool ElementWouldPropagateScrollStyles(const mozilla::dom::Element&);
 
   /**
-   * Set and get methods for controlling the background drawing
+   * Methods for controlling the background drawing.
    */
   bool GetBackgroundImageDraw() const { return mDrawImageBackground; }
-  void SetBackgroundImageDraw(bool aCanDraw) {
-    mDrawImageBackground = aCanDraw;
-  }
-
   bool GetBackgroundColorDraw() const { return mDrawColorBackground; }
-  void SetBackgroundColorDraw(bool aCanDraw) {
-    mDrawColorBackground = aCanDraw;
-  }
 
   /**
    *  Check if bidi enabled (set depending on the presence of RTL
@@ -782,7 +787,7 @@ class nsPresContext : public nsISupports,
    * Classic). Otherwise, the OS is telling us that the native theme for the
    * platform has changed.
    */
-  void ThemeChanged();
+  void ThemeChanged(mozilla::widget::ThemeChangeKind);
 
   /*
    * Notify the pres context that the resolution of the user interface has
@@ -796,11 +801,6 @@ class nsPresContext : public nsISupports,
    * Like UIResolutionChanged() but invalidates values immediately.
    */
   void UIResolutionChangedSync();
-
-  /*
-   * Notify the pres context that a system color has changed
-   */
-  void SysColorChanged();
 
   /** Printing methods below should only be used for Medium() == print **/
   void SetPrintSettings(nsIPrintSettings* aPrintSettings);
@@ -1019,20 +1019,15 @@ class nsPresContext : public nsISupports,
   bool HadContentfulPaint() const { return mHadContentfulPaint; }
   void NotifyNonBlankPaint();
   void NotifyContentfulPaint();
+  void NotifyPaintStatusReset();
   void NotifyDOMContentFlushed();
+
+  bool HasEverBuiltInvisibleText() const { return mHasEverBuiltInvisibleText; }
+  void SetBuiltInvisibleText() { mHasEverBuiltInvisibleText = true; }
 
   bool UsesExChUnits() const { return mUsesExChUnits; }
 
   void SetUsesExChUnits(bool aValue) { mUsesExChUnits = aValue; }
-
-  // true if there are OMTA transition updates for the current document which
-  // have been throttled, and therefore some style information may not be up
-  // to date
-  bool ExistThrottledUpdates() const { return mExistThrottledUpdates; }
-
-  void SetExistThrottledUpdates(bool aExistThrottledUpdates) {
-    mExistThrottledUpdates = aExistThrottledUpdates;
-  }
 
   bool IsDeviceSizePageSize();
 
@@ -1061,7 +1056,6 @@ class nsPresContext : public nsISupports,
  protected:
   friend class nsRunnableMethod<nsPresContext>;
   void ThemeChangedInternal();
-  void SysColorChangedInternal();
   void RefreshSystemMetrics();
 
   // update device context's resolution from the widget
@@ -1144,7 +1138,6 @@ class nsPresContext : public nsISupports,
   // has been explicitly checked.  If you add any members to this class,
   // please make the ownership explicit (pinkerton, scc).
 
-  nsPresContextType mType;
   // the PresShell owns a strong reference to the nsPresContext, and is
   // responsible for nulling this pointer before it is destroyed
   mozilla::PresShell* MOZ_NON_OWNING_REF mPresShell;  // [WEAK]
@@ -1164,19 +1157,11 @@ class nsPresContext : public nsISupports,
   RefPtr<mozilla::CounterStyleManager> mCounterStyleManager;
   const nsStaticAtom* mMedium;
   RefPtr<gfxFontFeatureValueSet> mFontFeatureValuesLookup;
+
   // TODO(emilio): Maybe lazily create and put under a UniquePtr if this grows a
   // lot?
   MediaEmulationData mMediaEmulationData;
 
- public:
-  // The following are public member variables so that we can use them
-  // with mozilla::AutoToggle or mozilla::AutoRestore.
-
-  // Should we disable font size inflation because we're inside of
-  // shrink-wrapping calculations on an inflation container?
-  bool mInflationDisabledForShrinkWrap;
-
- protected:
   float mSystemFontScale;    // Internal text zoom factor, defaults to 1.0
   float mTextZoom;           // Text zoom, defaults to 1.0
   float mEffectiveTextZoom;  // Text zoom * system font scale
@@ -1211,6 +1196,16 @@ class nsPresContext : public nsISupports,
   // Safe area insets support
   mozilla::ScreenIntMargin mSafeAreaInsets;
   nsSize mPageSize;
+
+  // The computed page margins from the print settings.
+  //
+  // This margin will be used for each page in the current print operation, by
+  // default (i.e. unless overridden by @page rules).
+  //
+  // FIXME(emilio): Maybe we could let a global @page rule do that, though it's
+  // sketchy at best, see https://github.com/w3c/csswg-drafts/issues/5437 for
+  // discussion.
+  nsMargin mDefaultPageMargin;
   float mPageScale;
   float mPPScale;
 
@@ -1222,17 +1217,6 @@ class nsPresContext : public nsISupports,
   // fullscreen elements, it happens in the fullscreen-specific cleanup invoked
   // by Element::UnbindFromTree().)
   mozilla::dom::Element* MOZ_NON_OWNING_REF mViewportScrollOverrideElement;
-  ScrollStyles mViewportScrollStyles;
-
-  bool mExistThrottledUpdates;
-
-  uint16_t mImageAnimationMode;
-  uint16_t mImageAnimationModePref;
-
-  uint32_t mInterruptChecksToSkip;
-
-  // During page load we use slower frame rate.
-  uint32_t mNextFrameRateMultiplier;
 
   // Counters for tests and tools that want to detect frame construction
   // or reflow.
@@ -1242,7 +1226,10 @@ class nsPresContext : public nsISupports,
 
   mozilla::TimeStamp mReflowStartTime;
 
-  mozilla::Maybe<TransactionId> mFirstContentfulPaintTransactionId;
+  Maybe<TransactionId> mFirstContentfulPaintTransactionId;
+
+  mozilla::UniquePtr<mozilla::MediaFeatureChange>
+      mPendingMediaFeatureValuesChange;
 
   // Time of various first interaction types, used to report time from
   // first paint of the top level content pres shell to first interaction.
@@ -1252,12 +1239,40 @@ class nsPresContext : public nsISupports,
   mozilla::TimeStamp mFirstMouseMoveTime;
   mozilla::TimeStamp mFirstScrollTime;
 
-  bool mInteractionTimeEnabled;
-
   // last time we did a full style flush
   mozilla::TimeStamp mLastStyleUpdateForAllAnimations;
 
+  nsChangeHint mChangeHintForPrefChange;
+
+  uint32_t mInterruptChecksToSkip;
+
+  // During page load we use slower frame rate.
+  uint32_t mNextFrameRateMultiplier;
+
+  ScrollStyles mViewportScrollStyles;
+
+  uint16_t mImageAnimationMode;
+  uint16_t mImageAnimationModePref;
+
+  nsPresContextType mType;
+
+ public:
+  // The following are public member variables so that we can use them
+  // with mozilla::AutoToggle or mozilla::AutoRestore.
+
+  // Should we disable font size inflation because we're inside of
+  // shrink-wrapping calculations on an inflation container?
+  bool mInflationDisabledForShrinkWrap;
+
+ protected:
+  static constexpr size_t kThemeChangeKindBits = 2;
+  static_assert(unsigned(mozilla::widget::ThemeChangeKind::AllBits) <=
+                    (1u << kThemeChangeKindBits) - 1,
+                "theme change kind doesn't fit");
+
+  unsigned mInteractionTimeEnabled : 1;
   unsigned mHasPendingInterrupt : 1;
+  unsigned mHasEverBuiltInvisibleText : 1;
   unsigned mPendingInterruptFromTest : 1;
   unsigned mInterruptsEnabled : 1;
   unsigned mSendAfterPaintToContent : 1;
@@ -1270,10 +1285,10 @@ class nsPresContext : public nsISupports,
   unsigned mIsRootPaginatedDocument : 1;
   unsigned mPrefBidiDirection : 1;
   unsigned mPrefScrollbarSide : 2;
-  unsigned mPendingSysColorChanged : 1;
   unsigned mPendingThemeChanged : 1;
+  // widget::ThemeChangeKind
+  unsigned mPendingThemeChangeKind : kThemeChangeKindBits;
   unsigned mPendingUIResolutionChanged : 1;
-  unsigned mPrefChangePendingNeedsReflow : 1;
   unsigned mPostedPrefChangedRunnable : 1;
 
   // Are we currently drawing an SVG glyph?
@@ -1319,9 +1334,6 @@ class nsPresContext : public nsISupports,
 #ifdef DEBUG
   unsigned mInitialized : 1;
 #endif
-
-  mozilla::UniquePtr<mozilla::MediaFeatureChange>
-      mPendingMediaFeatureValuesChange;
 
  protected:
   virtual ~nsPresContext();

@@ -25,6 +25,8 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "nsXULPrototypeCache.h"
 #include "mozilla/DeclarationBlock.h"
+#include "mozilla/dom/CustomElementRegistry.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Text.h"
 
@@ -365,9 +367,9 @@ void nsXULPrototypeDocument::SetRootElement(nsXULPrototypeElement* aElement) {
 nsresult nsXULPrototypeDocument::AddProcessingInstruction(
     nsXULPrototypePI* aPI) {
   MOZ_ASSERT(aPI, "null ptr");
-  if (!mProcessingInstructions.AppendElement(aPI)) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier, or change the return type to void.
+  mProcessingInstructions.AppendElement(aPI);
   return NS_OK;
 }
 
@@ -400,9 +402,9 @@ nsresult nsXULPrototypeDocument::AwaitLoadDone(Callback&& aCallback,
   *aResult = mLoaded;
 
   if (!mLoaded) {
-    rv = mPrototypeWaiters.AppendElement(std::move(aCallback))
-             ? NS_OK
-             : NS_ERROR_OUT_OF_MEMORY;  // addrefs
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier, or change the return type to void.
+    mPrototypeWaiters.AppendElement(std::move(aCallback));
   }
 
   return rv;
@@ -440,7 +442,9 @@ void nsXULPrototypeDocument::TraceProtos(JSTracer* aTrc) {
   }
 }
 
-void nsXULPrototypeDocument::SetIsL10nCached() { mWasL10nCached = true; }
+void nsXULPrototypeDocument::SetIsL10nCached(bool aIsCached) {
+  mWasL10nCached = aIsCached;
+}
 
 void nsXULPrototypeDocument::RebuildPrototypeFromElement(
     nsXULPrototypeElement* aPrototype, Element* aElement, bool aDeep) {
@@ -475,6 +479,12 @@ void nsXULPrototypeDocument::RebuildPrototypeFromElement(
 
     protoAttr++;
   }
+
+  // Make sure the mIsAtom is correct in case this prototype element has been
+  // completely rebuilt.
+  CustomElementData* ceData = aElement->GetCustomElementData();
+  nsAtom* isAtom = ceData ? ceData->GetIs(aElement) : nullptr;
+  aPrototype->mIsAtom = isAtom;
 
   if (aDeep) {
     // We have to rebuild the prototype children from this element.

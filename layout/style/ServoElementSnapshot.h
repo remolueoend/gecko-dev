@@ -7,10 +7,10 @@
 #ifndef mozilla_ServoElementSnapshot_h
 #define mozilla_ServoElementSnapshot_h
 
+#include "AttrArray.h"
 #include "mozilla/EventStates.h"
 #include "mozilla/TypedEnumBits.h"
 #include "mozilla/dom/BorrowedAttrInfo.h"
-#include "mozilla/dom/Element.h"
 #include "nsAttrName.h"
 #include "nsAttrValue.h"
 #include "nsChangeHint.h"
@@ -18,6 +18,9 @@
 #include "nsAtom.h"
 
 namespace mozilla {
+namespace dom {
+class Element;
+}
 
 /**
  * A bitflags enum class used to determine what data does a ServoElementSnapshot
@@ -79,8 +82,7 @@ class ServoElementSnapshot {
    * The attribute name and namespace are used to note which kind of attribute
    * has changed.
    */
-  inline void AddAttrs(const Element&, int32_t aNameSpaceID,
-                       nsAtom* aAttribute);
+  void AddAttrs(const Element&, int32_t aNameSpaceID, nsAtom* aAttribute);
 
   /**
    * Captures some other pseudo-class matching state not included in
@@ -142,65 +144,29 @@ class ServoElementSnapshot {
     return mIsMozBrowserFrame;
   }
 
+  bool IsSelectListBox() const {
+    MOZ_ASSERT(HasOtherPseudoClassState());
+    return mIsSelectListBox;
+  }
+
  private:
   // TODO: Profile, a 1 or 2 element AutoTArray could be worth it, given we know
   // we're dealing with attribute changes when we take snapshots of attributes,
   // though it can be wasted space if we deal with a lot of state-only
   // snapshots.
   nsTArray<AttrArray::InternalAttr> mAttrs;
+  nsTArray<RefPtr<nsAtom>> mChangedAttrNames;
   nsAttrValue mClass;
   ServoStateType mState;
   Flags mContains;
-  bool mIsHTMLElementInHTMLDocument : 1;
   bool mIsInChromeDocument : 1;
   bool mSupportsLangAttr : 1;
   bool mIsTableBorderNonzero : 1;
   bool mIsMozBrowserFrame : 1;
+  bool mIsSelectListBox : 1;
   bool mClassAttributeChanged : 1;
   bool mIdAttributeChanged : 1;
-  bool mOtherAttributeChanged : 1;
 };
-
-inline void ServoElementSnapshot::AddAttrs(const Element& aElement,
-                                           int32_t aNameSpaceID,
-                                           nsAtom* aAttribute) {
-  if (aNameSpaceID == kNameSpaceID_None) {
-    if (aAttribute == nsGkAtoms::_class) {
-      mClassAttributeChanged = true;
-    } else if (aAttribute == nsGkAtoms::id) {
-      mIdAttributeChanged = true;
-    } else {
-      mOtherAttributeChanged = true;
-    }
-  } else {
-    mOtherAttributeChanged = true;
-  }
-
-  if (HasAttrs()) {
-    return;
-  }
-
-  uint32_t attrCount = aElement.GetAttrCount();
-  mAttrs.SetCapacity(attrCount);
-  for (uint32_t i = 0; i < attrCount; ++i) {
-    const BorrowedAttrInfo info = aElement.GetAttrInfoAt(i);
-    MOZ_ASSERT(info);
-    mAttrs.AppendElement(AttrArray::InternalAttr{*info.mName, *info.mValue});
-  }
-
-  mContains |= Flags::Attributes;
-  if (aElement.HasID()) {
-    mContains |= Flags::Id;
-  }
-
-  if (const nsAttrValue* classValue = aElement.GetClasses()) {
-    // FIXME(emilio): It's pretty unfortunate that this is only relevant for
-    // SVG, yet it's a somewhat expensive copy. We should be able to do
-    // better!
-    mClass = *classValue;
-    mContains |= Flags::MaybeClass;
-  }
-}
 
 }  // namespace mozilla
 

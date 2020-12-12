@@ -11,7 +11,6 @@
 #include "nsIContent.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
-#include "nsIStyleSheetLinkingElement.h"
 #include "nsHTMLParts.h"
 #include "nsCRT.h"
 #include "mozilla/StyleSheetInlines.h"
@@ -26,7 +25,6 @@
 #include "mozilla/Logging.h"
 #include "nsRect.h"
 #include "nsIScriptElement.h"
-#include "nsStyleLinkElement.h"
 #include "nsReadableUtils.h"
 #include "nsUnicharUtils.h"
 #include "nsIChannel.h"
@@ -46,10 +44,12 @@
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLTemplateElement.h"
 #include "mozilla/dom/ProcessingInstruction.h"
+#include "mozilla/dom/XMLStylesheetProcessingInstruction.h"
 #include "mozilla/dom/ScriptLoader.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/PresShell.h"
 
+#include "GeckoProfiler.h"
 #include "nsXULPrototypeCache.h"
 #include "nsXULElement.h"
 #include "mozilla/CycleCollectedJSContext.h"
@@ -343,7 +343,10 @@ nsresult PrototypeDocumentContentSink::CreateAndInsertPI(
 
   nsresult rv;
   if (aProtoPI->mTarget.EqualsLiteral("xml-stylesheet")) {
-    rv = InsertXMLStylesheetPI(aProtoPI, aParent, aBeforeThis, node);
+    MOZ_ASSERT(LinkStyle::FromNode(*node),
+               "XML Stylesheet node does not implement LinkStyle!");
+    auto* pi = static_cast<XMLStylesheetProcessingInstruction*>(node.get());
+    rv = InsertXMLStylesheetPI(aProtoPI, aParent, aBeforeThis, pi);
   } else {
     // No special processing, just add the PI to the document.
     rv = aParent->InsertChildBefore(
@@ -356,30 +359,23 @@ nsresult PrototypeDocumentContentSink::CreateAndInsertPI(
 
 nsresult PrototypeDocumentContentSink::InsertXMLStylesheetPI(
     const nsXULPrototypePI* aProtoPI, nsINode* aParent, nsINode* aBeforeThis,
-    nsIContent* aPINode) {
-  nsCOMPtr<nsIStyleSheetLinkingElement> ssle(do_QueryInterface(aPINode));
-  NS_ASSERTION(ssle,
-               "passed XML Stylesheet node does not "
-               "implement nsIStyleSheetLinkingElement!");
-
+    XMLStylesheetProcessingInstruction* aPINode) {
   nsresult rv;
 
-  ssle->InitStyleLinkElement(false);
   // We want to be notified when the style sheet finishes loading, so
   // disable style sheet loading for now.
-  ssle->SetEnableUpdates(false);
-  ssle->OverrideBaseURI(mCurrentPrototype->GetURI());
+  aPINode->SetEnableUpdates(false);
+  aPINode->OverrideBaseURI(mCurrentPrototype->GetURI());
 
   rv = aParent->InsertChildBefore(
-      aPINode->AsContent(), aBeforeThis ? aBeforeThis->AsContent() : nullptr,
-      false);
+      aPINode, aBeforeThis ? aBeforeThis->AsContent() : nullptr, false);
   if (NS_FAILED(rv)) return rv;
 
-  ssle->SetEnableUpdates(true);
+  aPINode->SetEnableUpdates(true);
 
   // load the stylesheet if necessary, passing ourselves as
   // nsICSSObserver
-  auto result = ssle->UpdateStyleSheet(this);
+  auto result = aPINode->UpdateStyleSheet(this);
   if (result.isErr()) {
     // Ignore errors from UpdateStyleSheet; we don't want failure to
     // do that to break the XUL document load.  But do propagate out
@@ -410,9 +406,9 @@ nsresult PrototypeDocumentContentSink::ResumeWalk() {
   nsresult rv = ResumeWalkInternal();
   if (NS_FAILED(rv)) {
     nsContentUtils::ReportToConsoleNonLocalized(
-        NS_LITERAL_STRING("Failed to load document from prototype document."),
-        nsIScriptError::errorFlag, NS_LITERAL_CSTRING("Prototype Document"),
-        mDocument, mDocumentURI);
+        u"Failed to load document from prototype document."_ns,
+        nsIScriptError::errorFlag, "Prototype Document"_ns, mDocument,
+        mDocumentURI);
   }
   return rv;
 }
@@ -457,12 +453,11 @@ nsresult PrototypeDocumentContentSink::ResumeWalkInternal() {
               element->NodeInfo()->Equals(nsGkAtoms::style, kNameSpaceID_SVG)) {
             // XXX sucks that we have to do this -
             // see bug 370111
-            nsCOMPtr<nsIStyleSheetLinkingElement> ssle =
-                do_QueryInterface(element);
-            NS_ASSERTION(ssle,
+            auto* linkStyle = LinkStyle::FromNode(*element);
+            NS_ASSERTION(linkStyle,
                          "<html:style> doesn't implement "
                          "nsIStyleSheetLinkingElement?");
-            Unused << ssle->UpdateStyleSheet(nullptr);
+            Unused << linkStyle->UpdateStyleSheet(nullptr);
           }
         }
         // Now pop the context stack back up to the parent
@@ -557,10 +552,10 @@ nsresult PrototypeDocumentContentSink::ResumeWalkInternal() {
           if (piProto->mTarget.EqualsLiteral("xml-stylesheet")) {
             AutoTArray<nsString, 1> params = {piProto->mTarget};
 
-            nsContentUtils::ReportToConsole(
-                nsIScriptError::warningFlag, NS_LITERAL_CSTRING("XUL Document"),
-                nullptr, nsContentUtils::eXUL_PROPERTIES, "PINotInProlog",
-                params, docURI);
+            nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
+                                            "XUL Document"_ns, nullptr,
+                                            nsContentUtils::eXUL_PROPERTIES,
+                                            "PINotInProlog", params, docURI);
           }
 
           nsIContent* parent = element.get();
@@ -586,7 +581,7 @@ nsresult PrototypeDocumentContentSink::ResumeWalkInternal() {
   return MaybeDoneWalking();
 }
 
-void PrototypeDocumentContentSink::InitialDocumentTranslationCompleted() {
+void PrototypeDocumentContentSink::InitialTranslationCompleted() {
   MaybeDoneWalking();
 }
 
@@ -596,7 +591,7 @@ nsresult PrototypeDocumentContentSink::MaybeDoneWalking() {
   }
 
   if (mDocument->HasPendingInitialTranslation()) {
-    mDocument->TriggerInitialDocumentTranslation();
+    mDocument->OnParsingCompleted();
     return NS_OK;
   }
 
@@ -614,10 +609,9 @@ nsresult PrototypeDocumentContentSink::DoneWalking() {
     mDocument->SetReadyStateInternal(Document::READYSTATE_INTERACTIVE);
     mDocument->NotifyPossibleTitleChange(false);
 
-    nsContentUtils::DispatchTrustedEvent(
-        mDocument, ToSupports(mDocument),
-        NS_LITERAL_STRING("MozBeforeInitialXULLayout"), CanBubble::eYes,
-        Cancelable::eNo);
+    nsContentUtils::DispatchEventOnlyToChrome(mDocument, ToSupports(mDocument),
+                                              u"MozBeforeInitialXULLayout"_ns,
+                                              CanBubble::eYes, Cancelable::eNo);
   }
 
   if (mScriptLoader) {
@@ -740,11 +734,12 @@ nsresult PrototypeDocumentContentSink::LoadScript(
 
     // Note: the loader will keep itself alive while it's loading.
     nsCOMPtr<nsIStreamLoader> loader;
-    rv = NS_NewStreamLoader(getter_AddRefs(loader), aScriptProto->mSrcURI,
-                            this,       // aObserver
-                            mDocument,  // aRequestingContext
-                            nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_INHERITS,
-                            nsIContentPolicy::TYPE_INTERNAL_SCRIPT, group);
+    rv = NS_NewStreamLoader(
+        getter_AddRefs(loader), aScriptProto->mSrcURI,
+        this,       // aObserver
+        mDocument,  // aRequestingContext
+        nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_INHERITS_SEC_CONTEXT,
+        nsIContentPolicy::TYPE_INTERNAL_SCRIPT, group);
 
     if (NS_FAILED(rv)) {
       mCurrentScriptProto = nullptr;
@@ -811,7 +806,7 @@ PrototypeDocumentContentSink::OnStreamComplete(nsIStreamLoader* aLoader,
                                         !mOffThreadCompileStringBuf),
                "PrototypeDocument can't load multiple scripts at once");
 
-    rv = ScriptLoader::ConvertToUTF16(channel, string, stringLen, EmptyString(),
+    rv = ScriptLoader::ConvertToUTF16(channel, string, stringLen, u""_ns,
                                       mDocument, mOffThreadCompileStringBuf,
                                       mOffThreadCompileStringLength);
     if (NS_SUCCEEDED(rv)) {

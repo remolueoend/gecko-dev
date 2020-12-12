@@ -37,6 +37,10 @@ struct MiscContainer;
 namespace mozilla {
 class DeclarationBlock;
 class ShadowParts;
+
+namespace dom {
+class DOMString;
+}
 }  // namespace mozilla
 
 #define NS_ATTRVALUE_MAX_STRINGLENGTH_ATOM 12
@@ -236,6 +240,10 @@ class nsAttrValue {
   // aCaseSensitive == eIgnoreCase means ASCII case-insenstive matching
   bool Equals(const nsAString& aValue, nsCaseTreatment aCaseSensitive) const;
   bool Equals(const nsAtom* aValue, nsCaseTreatment aCaseSensitive) const;
+  bool HasPrefix(const nsAString& aValue, nsCaseTreatment aCaseSensitive) const;
+  bool HasSuffix(const nsAString& aValue, nsCaseTreatment aCaseSensitive) const;
+  bool HasSubstring(const nsAString& aValue,
+                    nsCaseTreatment aCaseSensitive) const;
 
   /**
    * Compares this object with aOther according to their string representation.
@@ -507,6 +515,10 @@ class nsAttrValue {
   // the actual integer value we should store.
   int32_t EnumTableEntryToValue(const EnumTable* aEnumTable,
                                 const EnumTable* aTableEntry);
+
+  template <typename F>
+  bool SubstringCheck(const nsAString& aValue,
+                      nsCaseTreatment aCaseSensitive) const;
 
   static MiscContainer* AllocMiscContainer();
   static void DeallocMiscContainer(MiscContainer* aCont);

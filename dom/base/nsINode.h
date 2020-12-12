@@ -73,6 +73,8 @@ inline bool IsSpaceCharacter(char aChar) {
          aChar == '\f';
 }
 class AccessibleNode;
+template <typename T>
+class AncestorsOfTypeIterator;
 struct BoxQuadOptions;
 struct ConvertCoordinateOptions;
 class DocGroup;
@@ -84,6 +86,13 @@ class DOMQuad;
 class DOMRectReadOnly;
 class Element;
 class EventHandlerNonNull;
+template <typename T>
+class FlatTreeAncestorsOfTypeIterator;
+template <typename T>
+class InclusiveAncestorsOfTypeIterator;
+template <typename T>
+class InclusiveFlatTreeAncestorsOfTypeIterator;
+class LinkStyle;
 class MutationObservers;
 template <typename T>
 class Optional;
@@ -356,7 +365,6 @@ class nsINode : public mozilla::dom::EventTarget {
   // always safe to call no matter which object it was invoked on.
   void AddSizeOfIncludingThis(nsWindowSizes& aSizes, size_t* aNodeSize) const;
 
-  friend class mozilla::dom::MutationObservers;
   friend class nsNodeWeakReference;
   friend class nsNodeSupportsWeakRefTearoff;
   friend class AttrArray;
@@ -373,11 +381,9 @@ class nsINode : public mozilla::dom::EventTarget {
   enum {
     /** form control elements */
     eHTML_FORM_CONTROL = 1 << 6,
-    /** animation elements */
-    eANIMATION = 1 << 10,
-    /** filter elements that implement SVGFilterPrimitiveStandardAttributes */
-    eFILTER = 1 << 11,
-    /** SVGGeometryElement */
+    /** SVG use targets */
+    eUSE_TARGET = 1 << 9,
+    /** SVG shapes such as lines and polygons, but not images */
     eSHAPE = 1 << 12
   };
 
@@ -501,12 +507,24 @@ class nsINode : public mozilla::dom::EventTarget {
 
   virtual bool IsTextControlElement() const { return false; }
 
+  // Returns non-null if this element subclasses `LinkStyle`.
+  virtual const mozilla::dom::LinkStyle* AsLinkStyle() const { return nullptr; }
+  mozilla::dom::LinkStyle* AsLinkStyle() {
+    return const_cast<mozilla::dom::LinkStyle*>(
+        static_cast<const nsINode*>(this)->AsLinkStyle());
+  }
+
   /**
    * Return this node as an Element.  Should only be used for nodes
    * for which IsElement() is true.  This is defined inline in Element.h.
    */
   inline mozilla::dom::Element* AsElement();
   inline const mozilla::dom::Element* AsElement() const;
+
+  /**
+   * Return whether the node is an nsStyledElement instance or not.
+   */
+  virtual bool IsStyledElement() const { return false; }
 
   /**
    * Return this node as nsIContent.  Should only be used for nodes for which
@@ -1012,10 +1030,7 @@ class nsINode : public mozilla::dom::EventTarget {
   virtual mozilla::EventListenerManager* GetOrCreateListenerManager() override;
 
   mozilla::Maybe<mozilla::dom::EventCallbackDebuggerNotificationType>
-  GetDebuggerNotificationType() const override {
-    return mozilla::Some(
-        mozilla::dom::EventCallbackDebuggerNotificationType::Node);
-  }
+  GetDebuggerNotificationType() const override;
 
   bool ComputeDefaultWantsUntrusted(mozilla::ErrorResult& aRv) final;
 
@@ -1089,6 +1104,32 @@ class nsINode : public mozilla::dom::EventTarget {
       s->mMutationObservers.RemoveElement(aMutationObserver);
     }
   }
+
+  nsAutoTObserverArray<nsIMutationObserver*, 1>* GetMutationObservers() {
+    return HasSlots() ? &GetExistingSlots()->mMutationObservers : nullptr;
+  }
+
+  /**
+   * Helper methods to access ancestor node(s) of type T.
+   * The implementations of the methods are in mozilla/dom/AncestorIterator.h.
+   */
+  template <typename T>
+  inline mozilla::dom::AncestorsOfTypeIterator<T> AncestorsOfType() const;
+
+  template <typename T>
+  inline mozilla::dom::InclusiveAncestorsOfTypeIterator<T>
+  InclusiveAncestorsOfType() const;
+
+  template <typename T>
+  inline mozilla::dom::FlatTreeAncestorsOfTypeIterator<T>
+  FlatTreeAncestorsOfType() const;
+
+  template <typename T>
+  inline mozilla::dom::InclusiveFlatTreeAncestorsOfTypeIterator<T>
+  InclusiveFlatTreeAncestorsOfType() const;
+
+  template <typename T>
+  T* FirstAncestorOfType() const;
 
  private:
   /**
@@ -1258,16 +1299,6 @@ class nsINode : public mozilla::dom::EventTarget {
   }
 
   /**
-   * Returns true if there is NOT a path through child lists
-   * from the top of this node's parent chain back to this node or
-   * if the node is in native anonymous subtree without a parent.
-   *
-   * TODO(emilio):: Remove this function, and use just
-   * IsInNativeAnonymousSubtree, or something?
-   */
-  bool IsInAnonymousSubtree() const { return IsInNativeAnonymousSubtree(); }
-
-  /**
    * If |this| or any ancestor is native anonymous, return the root of the
    * native anonymous subtree. Note that in case of nested native anonymous
    * content, this returns the innermost root, not the outermost.
@@ -1332,6 +1363,7 @@ class nsINode : public mozilla::dom::EventTarget {
   bool HasBeenInUAWidget() const { return HasFlag(NODE_HAS_BEEN_IN_UA_WIDGET); }
 
   // True for native anonymous content and for content in UA widgets.
+  // Only nsIContent can fulfill this condition.
   bool ChromeOnlyAccess() const {
     return HasFlag(NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE |
                    NODE_HAS_BEEN_IN_UA_WIDGET);
@@ -1395,11 +1427,16 @@ class nsINode : public mozilla::dom::EventTarget {
   bool IsSelected(uint32_t aStartOffset, uint32_t aEndOffset) const;
 
   /**
-   * Get the root content of an editor. So, this node must be a descendant of
-   * an editor. Note that this should be only used for getting input or textarea
-   * editor's root content. This method doesn't support HTML editors.
+   * Get the root element of the text editor associated with this node or the
+   * root element of the text editor of the ancestor 'TextControlElement' if
+   * this is in its native anonymous subtree.  I.e., this returns anonymous
+   * `<div>` element of a `TextEditor`. Note that this can be used only for
+   * getting root content of `<input>` or `<textarea>`.  I.e., this method
+   * doesn't support HTML editors. Note that this may create a `TextEditor`
+   * instance, and it means that the `TextEditor` may modify its native
+   * anonymous subtree and may run selection listeners.
    */
-  nsIContent* GetTextEditorRootContent(
+  MOZ_CAN_RUN_SCRIPT mozilla::dom::Element* GetAnonymousRootElementOfTextEditor(
       mozilla::TextEditor** aTextEditor = nullptr);
 
   /**
@@ -1410,7 +1447,8 @@ class nsINode : public mozilla::dom::EventTarget {
    * node. Be aware that if this node and the computed selection limiter are
    * not in same subtree, this returns the root content of the closeset subtree.
    */
-  nsIContent* GetSelectionRootContent(mozilla::PresShell* aPresShell);
+  MOZ_CAN_RUN_SCRIPT nsIContent* GetSelectionRootContent(
+      mozilla::PresShell* aPresShell);
 
   nsINodeList* ChildNodes();
 
@@ -1489,7 +1527,7 @@ class nsINode : public mozilla::dom::EventTarget {
   void LookupPrefix(const nsAString& aNamespace, nsAString& aResult);
   bool IsDefaultNamespace(const nsAString& aNamespaceURI) {
     nsAutoString defaultNamespace;
-    LookupNamespaceURI(EmptyString(), defaultNamespace);
+    LookupNamespaceURI(u""_ns, defaultNamespace);
     return aNamespaceURI.Equals(defaultNamespace);
   }
   void LookupNamespaceURI(const nsAString& aNamespacePrefix,
@@ -1942,9 +1980,14 @@ class nsINode : public mozilla::dom::EventTarget {
                         mozilla::ErrorResult& aError) {
     return ReplaceOrInsertBefore(false, &aNode, aChild, aError);
   }
+
+  /**
+   * See <https://dom.spec.whatwg.org/#dom-node-appendchild>.
+   */
   nsINode* AppendChild(nsINode& aNode, mozilla::ErrorResult& aError) {
     return InsertBefore(aNode, nullptr, aError);
   }
+
   nsINode* ReplaceChild(nsINode& aNode, nsINode& aChild,
                         mozilla::ErrorResult& aError) {
     return ReplaceOrInsertBefore(true, &aNode, &aChild, aError);
@@ -2005,6 +2048,8 @@ class nsINode : public mozilla::dom::EventTarget {
                                   ErrorResult& aRv);
   MOZ_CAN_RUN_SCRIPT void Append(const Sequence<OwningNodeOrString>& aNodes,
                                  ErrorResult& aRv);
+  MOZ_CAN_RUN_SCRIPT void ReplaceChildren(
+      const Sequence<OwningNodeOrString>& aNodes, ErrorResult& aRv);
 
   void GetBoxQuads(const BoxQuadOptions& aOptions,
                    nsTArray<RefPtr<DOMQuad>>& aResult, CallerType aCallerType,
@@ -2076,10 +2121,6 @@ class nsINode : public mozilla::dom::EventTarget {
       MOZ_ASSERT(mSlots);
     }
     return GetExistingSlots();
-  }
-
-  nsAutoTObserverArray<nsIMutationObserver*, 1>* GetMutationObservers() {
-    return HasSlots() ? &GetExistingSlots()->mMutationObservers : nullptr;
   }
 
   /**

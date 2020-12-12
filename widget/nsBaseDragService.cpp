@@ -14,7 +14,6 @@
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIFrame.h"
 #include "nsFrameLoaderOwner.h"
-#include "mozilla/dom/Document.h"
 #include "nsIContent.h"
 #include "nsViewManager.h"
 #include "nsINode.h"
@@ -27,24 +26,27 @@
 #include "nsRegion.h"
 #include "nsXULPopupManager.h"
 #include "nsMenuPopupFrame.h"
-#include "SVGImageContext.h"
 #ifdef MOZ_XUL
 #  include "nsTreeBodyFrame.h"
 #endif
 #include "mozilla/MouseEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/SVGImageContext.h"
+#include "mozilla/Unused.h"
+#include "mozilla/ViewportUtils.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/DataTransferItemList.h"
 #include "mozilla/dom/DataTransfer.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/DragEvent.h"
 #include "mozilla/dom/MouseEventBinding.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/gfx/2D.h"
-#include "mozilla/Unused.h"
 #include "nsFrameLoader.h"
 #include "BrowserParent.h"
+#include "GeckoProfiler.h"
 #include "nsIMutableArray.h"
 #include "gfxContext.h"
 #include "gfxPlatform.h"
@@ -242,7 +244,8 @@ NS_IMETHODIMP nsBaseDragService::SetDragEndPointForTests(int32_t aScreenX,
 NS_IMETHODIMP
 nsBaseDragService::InvokeDragSession(
     nsINode* aDOMNode, nsIPrincipal* aPrincipal, nsIContentSecurityPolicy* aCsp,
-    nsIArray* aTransferableArray, uint32_t aActionType,
+    nsICookieJarSettings* aCookieJarSettings, nsIArray* aTransferableArray,
+    uint32_t aActionType,
     nsContentPolicyType aContentPolicyType = nsIContentPolicy::TYPE_OTHER) {
   AUTO_PROFILER_LABEL("nsBaseDragService::InvokeDragSession", OTHER);
 
@@ -299,6 +302,7 @@ nsBaseDragService::InvokeDragSession(
       trans->Init(nullptr);
       trans->SetRequestingPrincipal(mSourceNode->NodePrincipal());
       trans->SetContentPolicyType(mContentPolicyType);
+      trans->SetCookieJarSettings(aCookieJarSettings);
       mutableArray->AppendElement(trans);
     }
   } else {
@@ -309,6 +313,7 @@ nsBaseDragService::InvokeDragSession(
         // Set the requestingPrincipal on the transferable.
         trans->SetRequestingPrincipal(mSourceNode->NodePrincipal());
         trans->SetContentPolicyType(mContentPolicyType);
+        trans->SetCookieJarSettings(aCookieJarSettings);
       }
     }
   }
@@ -328,9 +333,9 @@ nsBaseDragService::InvokeDragSession(
 NS_IMETHODIMP
 nsBaseDragService::InvokeDragSessionWithImage(
     nsINode* aDOMNode, nsIPrincipal* aPrincipal, nsIContentSecurityPolicy* aCsp,
-    nsIArray* aTransferableArray, uint32_t aActionType, nsINode* aImage,
-    int32_t aImageX, int32_t aImageY, DragEvent* aDragEvent,
-    DataTransfer* aDataTransfer) {
+    nsICookieJarSettings* aCookieJarSettings, nsIArray* aTransferableArray,
+    uint32_t aActionType, nsINode* aImage, int32_t aImageX, int32_t aImageY,
+    DragEvent* aDragEvent, DataTransfer* aDataTransfer) {
   NS_ENSURE_TRUE(aDragEvent, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(aDataTransfer, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(mSuppressLevel == 0, NS_ERROR_FAILURE);
@@ -368,9 +373,9 @@ nsBaseDragService::InvokeDragSessionWithImage(
   }
 #endif
 
-  nsresult rv =
-      InvokeDragSession(aDOMNode, aPrincipal, aCsp, aTransferableArray,
-                        aActionType, nsIContentPolicy::TYPE_INTERNAL_IMAGE);
+  nsresult rv = InvokeDragSession(
+      aDOMNode, aPrincipal, aCsp, aCookieJarSettings, aTransferableArray,
+      aActionType, nsIContentPolicy::TYPE_INTERNAL_IMAGE);
   mRegion = Nothing();
   return rv;
 }
@@ -378,9 +383,9 @@ nsBaseDragService::InvokeDragSessionWithImage(
 NS_IMETHODIMP
 nsBaseDragService::InvokeDragSessionWithRemoteImage(
     nsINode* aDOMNode, nsIPrincipal* aPrincipal, nsIContentSecurityPolicy* aCsp,
-    nsIArray* aTransferableArray, uint32_t aActionType,
-    RemoteDragStartData* aDragStartData, DragEvent* aDragEvent,
-    DataTransfer* aDataTransfer) {
+    nsICookieJarSettings* aCookieJarSettings, nsIArray* aTransferableArray,
+    uint32_t aActionType, RemoteDragStartData* aDragStartData,
+    DragEvent* aDragEvent, DataTransfer* aDataTransfer) {
   NS_ENSURE_TRUE(aDragEvent, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(aDataTransfer, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(mSuppressLevel == 0, NS_ERROR_FAILURE);
@@ -399,9 +404,9 @@ nsBaseDragService::InvokeDragSessionWithRemoteImage(
   mScreenPosition.y = aDragEvent->ScreenY(CallerType::System);
   mInputSource = aDragEvent->MozInputSource();
 
-  nsresult rv =
-      InvokeDragSession(aDOMNode, aPrincipal, aCsp, aTransferableArray,
-                        aActionType, nsIContentPolicy::TYPE_INTERNAL_IMAGE);
+  nsresult rv = InvokeDragSession(
+      aDOMNode, aPrincipal, aCsp, aCookieJarSettings, aTransferableArray,
+      aActionType, nsIContentPolicy::TYPE_INTERNAL_IMAGE);
   mRegion = Nothing();
   return rv;
 }
@@ -409,8 +414,9 @@ nsBaseDragService::InvokeDragSessionWithRemoteImage(
 NS_IMETHODIMP
 nsBaseDragService::InvokeDragSessionWithSelection(
     Selection* aSelection, nsIPrincipal* aPrincipal,
-    nsIContentSecurityPolicy* aCsp, nsIArray* aTransferableArray,
-    uint32_t aActionType, DragEvent* aDragEvent, DataTransfer* aDataTransfer) {
+    nsIContentSecurityPolicy* aCsp, nsICookieJarSettings* aCookieJarSettings,
+    nsIArray* aTransferableArray, uint32_t aActionType, DragEvent* aDragEvent,
+    DataTransfer* aDataTransfer) {
   NS_ENSURE_TRUE(aSelection, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(aDragEvent, NS_ERROR_NULL_POINTER);
   NS_ENSURE_TRUE(mSuppressLevel == 0, NS_ERROR_FAILURE);
@@ -435,8 +441,9 @@ nsBaseDragService::InvokeDragSessionWithSelection(
   // endpoints of the selection
   nsCOMPtr<nsINode> node = aSelection->GetFocusNode();
 
-  return InvokeDragSession(node, aPrincipal, aCsp, aTransferableArray,
-                           aActionType, nsIContentPolicy::TYPE_OTHER);
+  return InvokeDragSession(node, aPrincipal, aCsp, aCookieJarSettings,
+                           aTransferableArray, aActionType,
+                           nsIContentPolicy::TYPE_OTHER);
 }
 
 //-------------------------------------------------------------------------
@@ -706,30 +713,29 @@ nsresult nsBaseDragService::DrawDrag(nsINode* aDOMNode,
 
   // didn't want an image, so just set the screen rectangle to the frame size
   if (!enableDragImages || !mHasImage) {
-    // if a region was specified, set the screen rectangle to the area that
-    // the region occupies
-    CSSIntRect dragRect;
+    // This holds a quantity in RelativeTo{presShell->GetRootFrame(),
+    // ViewportType::Layout} space.
+    nsRect presLayoutRect;
     if (aRegion) {
-      // the region's coordinates are relative to the root frame
-      dragRect = aRegion->GetBounds();
-
-      nsIFrame* rootFrame = presShell->GetRootFrame();
-      CSSIntRect screenRect = rootFrame->GetScreenRect();
-      dragRect.MoveBy(screenRect.TopLeft());
+      // if a region was specified, set the screen rectangle to the area that
+      // the region occupies
+      presLayoutRect = ToAppUnits(aRegion->GetBounds(), AppUnitsPerCSSPixel());
     } else {
       // otherwise, there was no region so just set the rectangle to
       // the size of the primary frame of the content.
       nsCOMPtr<nsIContent> content = do_QueryInterface(dragNode);
       nsIFrame* frame = content->GetPrimaryFrame();
       if (frame) {
-        dragRect = frame->GetScreenRect();
+        presLayoutRect = frame->GetRect();
       }
     }
 
-    nsIntRect dragRectDev =
-        ToAppUnits(dragRect, AppUnitsPerCSSPixel())
-            .ToOutsidePixels((*aPresContext)->AppUnitsPerDevPixel());
-    aScreenDragRect->SizeTo(dragRectDev.Width(), dragRectDev.Height());
+    LayoutDeviceRect screenVisualRect = ViewportUtils::ToScreenRelativeVisual(
+        LayoutDeviceRect::FromAppUnits(presLayoutRect,
+                                       (*aPresContext)->AppUnitsPerDevPixel()),
+        *aPresContext);
+    aScreenDragRect->SizeTo(screenVisualRect.Width(),
+                            screenVisualRect.Height());
     return NS_OK;
   }
 

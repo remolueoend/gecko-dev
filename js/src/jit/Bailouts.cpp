@@ -9,11 +9,16 @@
 #include "mozilla/ScopeExit.h"
 
 #include "jit/BaselineJIT.h"
+#include "jit/Invalidation.h"
 #include "jit/Ion.h"
-#include "jit/JitRealm.h"
+#include "jit/JitFrames.h"
+#include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
+#include "jit/JSJitFrameIter.h"
+#include "jit/SafepointIndex.h"
 #include "jit/Snapshots.h"
 #include "vm/JSContext.h"
+#include "vm/Stack.h"
 #include "vm/TraceLogging.h"
 
 #include "jit/JSJitFrameIter-inl.h"
@@ -63,8 +68,7 @@ bool jit::Bailout(BailoutStack* sp, BaselineBailoutInfo** bailoutInfo) {
 
   *bailoutInfo = nullptr;
   bool success = BailoutIonToBaseline(cx, bailoutData.activation(), frame,
-                                      false, bailoutInfo,
-                                      /* excInfo = */ nullptr);
+                                      bailoutInfo, /*exceptionInfo=*/nullptr);
   MOZ_ASSERT_IF(success, *bailoutInfo != nullptr);
 
   if (!success) {
@@ -139,12 +143,15 @@ bool jit::InvalidationBailout(InvalidationBailoutStack* sp,
   MOZ_ASSERT(IsBaselineJitEnabled(cx));
 
   *bailoutInfo = nullptr;
-  bool success = BailoutIonToBaseline(cx, bailoutData.activation(), frame, true,
-                                      bailoutInfo,
-                                      /* excInfo = */ nullptr);
+  bool success = BailoutIonToBaseline(cx, bailoutData.activation(), frame,
+                                      bailoutInfo, /*exceptionInfo=*/nullptr);
   MOZ_ASSERT_IF(success, *bailoutInfo != nullptr);
 
-  if (!success) {
+  if (success) {
+    // Update the bailout kind.
+    (*bailoutInfo)->bailoutKind =
+        mozilla::Some(BailoutKind::OnStackInvalidation);
+  } else {
     MOZ_ASSERT(cx->isExceptionPending());
 
     // If the bailout failed, then bailout trampoline will pop the
@@ -221,14 +228,15 @@ bool jit::ExceptionHandlerBailout(JSContext* cx,
 
   BaselineBailoutInfo* bailoutInfo = nullptr;
   bool success = BailoutIonToBaseline(cx, bailoutData.activation(), frameView,
-                                      true, &bailoutInfo, &excInfo);
+                                      &bailoutInfo, &excInfo);
   if (success) {
     MOZ_ASSERT(bailoutInfo);
 
     // Overwrite the kind so HandleException after the bailout returns
     // false, jumping directly to the exception tail.
     if (excInfo.propagatingIonExceptionForDebugMode()) {
-      bailoutInfo->bailoutKind = mozilla::Some(Bailout_IonExceptionDebugMode);
+      bailoutInfo->bailoutKind =
+          mozilla::Some(BailoutKind::IonExceptionDebugMode);
     }
 
     rfe->kind = ResumeFromException::RESUME_BAILOUT;
@@ -283,9 +291,9 @@ void jit::CheckFrequentBailouts(JSContext* cx, JSScript* script,
       // which should prevent this from happening again.  Also note that
       // the first execution bailout can be related to an inlined script,
       // so there is no need to penalize the caller.
-      if (bailoutKind != Bailout_FirstExecution &&
-          !script->hadFrequentBailouts()) {
-        script->setHadFrequentBailouts();
+      if (bailoutKind != BailoutKind::FirstExecution &&
+          !script->hadLICMInvalidation()) {
+        script->setHadLICMInvalidation();
       }
 
       JitSpew(JitSpew_IonInvalidate, "Invalidating due to too many bailouts");

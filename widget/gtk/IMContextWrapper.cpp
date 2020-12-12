@@ -12,11 +12,13 @@
 #include "nsWindow.h"
 #include "mozilla/AutoRestore.h"
 #include "mozilla/Likely.h"
+#include "mozilla/LookAndFeel.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TextEventDispatcher.h"
 #include "mozilla/TextEvents.h"
+#include "mozilla/ToString.h"
 #include "WritingModes.h"
 
 namespace mozilla {
@@ -407,8 +409,7 @@ nsDependentCSubstring IMContextWrapper::GetIMName() const {
   // If the context is XIM, actual engine must be specified with
   // |XMODIFIERS=@im=foo|.
   const char* xmodifiersChar = PR_GetEnv("XMODIFIERS");
-  if (!xmodifiersChar ||
-      (!im.EqualsLiteral("xim") && !im.EqualsLiteral("wayland"))) {
+  if (!xmodifiersChar || !im.EqualsLiteral("xim")) {
     return im;
   }
 
@@ -503,6 +504,10 @@ void IMContextWrapper::Init() {
     mIMContextID = IMContextID::eIIIMF;
     mIsIMInAsyncKeyHandlingMode = false;
     mIsKeySnooped = false;
+  } else if (im.EqualsLiteral("wayland")) {
+    mIMContextID = IMContextID::eWayland;
+    mIsIMInAsyncKeyHandlingMode = false;
+    mIsKeySnooped = true;
   } else {
     mIMContextID = IMContextID::eUnknown;
     mIsIMInAsyncKeyHandlingMode = false;
@@ -1294,8 +1299,7 @@ void IMContextWrapper::SetInputContext(nsWindow* aCaller,
   mInputContext = *aContext;
 
   if (changingEnabledState) {
-    static bool sInputPurposeSupported = !gtk_check_version(3, 6, 0);
-    if (sInputPurposeSupported && mInputContext.mIMEState.MaybeEditable()) {
+    if (mInputContext.mIMEState.MaybeEditable()) {
       GtkIMContext* currentContext = GetCurrentContext();
       if (currentContext) {
         GtkInputPurpose purpose = GTK_INPUT_PURPOSE_FREE_FORM;
@@ -1347,6 +1351,14 @@ void IMContextWrapper::SetInputContext(nsWindow* aCaller,
         gint hints = GTK_INPUT_HINT_NONE;
         if (mInputContext.mHTMLInputInputmode.EqualsLiteral("none")) {
           hints |= GTK_INPUT_HINT_INHIBIT_OSK;
+        }
+
+        if (mInputContext.mAutocapitalize.EqualsLiteral("characters")) {
+          hints |= GTK_INPUT_HINT_UPPERCASE_CHARS;
+        } else if (mInputContext.mAutocapitalize.EqualsLiteral("sentences")) {
+          hints |= GTK_INPUT_HINT_UPPERCASE_SENTENCES;
+        } else if (mInputContext.mAutocapitalize.EqualsLiteral("words")) {
+          hints |= GTK_INPUT_HINT_UPPERCASE_WORDS;
         }
 
         g_object_set(currentContext, "input-hints", hints, nullptr);
@@ -2007,8 +2019,9 @@ bool IMContextWrapper::MaybeDispatchKeyEventAsProcessedByIME(
     }
   } else {
     MOZ_ASSERT(mIsKeySnooped);
-    // Currently, we support key snooper mode of uim only.
-    MOZ_ASSERT(mIMContextID == IMContextID::eUim);
+    // Currently, we support key snooper mode of uim and wayland only.
+    MOZ_ASSERT(mIMContextID == IMContextID::eUim ||
+               mIMContextID == IMContextID::eWayland);
     // uim sends "preedit_start" signal and "preedit_changed" separately
     // at starting composition, "commit" and "preedit_end" separately at
     // committing composition.
@@ -2772,25 +2785,27 @@ void IMContextWrapper::SetCursorPosition(GtkIMContext* aContext) {
     return;
   }
 
-  WidgetQueryContentEvent charRect(
+  WidgetQueryContentEvent queryCaretOrTextRectEvent(
       true, useCaret ? eQueryCaretRect : eQueryTextRect, mLastFocusedWindow);
   if (useCaret) {
-    charRect.InitForQueryCaretRect(mSelection.mOffset);
+    queryCaretOrTextRectEvent.InitForQueryCaretRect(mSelection.mOffset);
   } else {
     if (mSelection.mWritingMode.IsVertical()) {
       // For preventing the candidate window to overlap the target
       // clause, we should set fake (typically, very tall) caret rect.
       uint32_t length =
           mCompositionTargetRange.mLength ? mCompositionTargetRange.mLength : 1;
-      charRect.InitForQueryTextRect(mCompositionTargetRange.mOffset, length);
+      queryCaretOrTextRectEvent.InitForQueryTextRect(
+          mCompositionTargetRange.mOffset, length);
     } else {
-      charRect.InitForQueryTextRect(mCompositionTargetRange.mOffset, 1);
+      queryCaretOrTextRectEvent.InitForQueryTextRect(
+          mCompositionTargetRange.mOffset, 1);
     }
   }
-  InitEvent(charRect);
+  InitEvent(queryCaretOrTextRectEvent);
   nsEventStatus status;
-  mLastFocusedWindow->DispatchEvent(&charRect, status);
-  if (!charRect.mSucceeded) {
+  mLastFocusedWindow->DispatchEvent(&queryCaretOrTextRectEvent, status);
+  if (queryCaretOrTextRectEvent.Failed()) {
     MOZ_LOG(gGtkIMLog, LogLevel::Error,
             ("0x%p   SetCursorPosition(), FAILED, %s was failed", this,
              useCaret ? "eQueryCaretRect" : "eQueryTextRect"));
@@ -2807,7 +2822,8 @@ void IMContextWrapper::SetCursorPosition(GtkIMContext* aContext) {
   LayoutDeviceIntPoint owner = mOwnerWindow->WidgetToScreenOffset();
 
   // Compute the caret position in the IM owner window.
-  LayoutDeviceIntRect rect = charRect.mReply.mRect + root - owner;
+  LayoutDeviceIntRect rect =
+      queryCaretOrTextRectEvent.mReply->mRect + root - owner;
   rect.width = 0;
   GdkRectangle area = rootWindow->DevicePixelsToGdkRectRoundOut(rect);
 
@@ -2870,20 +2886,22 @@ nsresult IMContextWrapper::GetCurrentParagraph(nsAString& aText,
                                                 mLastFocusedWindow);
   queryTextContentEvent.InitForQueryTextContent(0, UINT32_MAX);
   mLastFocusedWindow->DispatchEvent(&queryTextContentEvent, status);
-  NS_ENSURE_TRUE(queryTextContentEvent.mSucceeded, NS_ERROR_FAILURE);
+  if (NS_WARN_IF(queryTextContentEvent.Failed())) {
+    return NS_ERROR_FAILURE;
+  }
 
-  nsAutoString textContent(queryTextContentEvent.mReply.mString);
-  if (selOffset + selLength > textContent.Length()) {
+  if (selOffset + selLength > queryTextContentEvent.mReply->DataLength()) {
     MOZ_LOG(gGtkIMLog, LogLevel::Error,
             ("0x%p   GetCurrentParagraph(), FAILED, The selection is "
-             "invalid, textContent.Length()=%u",
-             this, textContent.Length()));
+             "invalid, queryTextContentEvent={ mReply=%s }",
+             this, ToString(queryTextContentEvent.mReply).c_str()));
     return NS_ERROR_FAILURE;
   }
 
   // Remove composing string and restore the selected string because
   // GtkEntry doesn't remove selected string until committing, however,
   // our editor does it.  We should emulate the behavior for IME.
+  nsAutoString textContent(queryTextContentEvent.mReply->DataRef());
   if (EditorHasCompositionString() &&
       mDispatchedCompositionString != mSelectedStringRemovedByComposition) {
     textContent.Replace(mCompositionStart,
@@ -2964,15 +2982,17 @@ nsresult IMContextWrapper::DeleteText(GtkIMContext* aContext, int32_t aOffset,
                                                 mLastFocusedWindow);
   queryTextContentEvent.InitForQueryTextContent(0, UINT32_MAX);
   mLastFocusedWindow->DispatchEvent(&queryTextContentEvent, status);
-  NS_ENSURE_TRUE(queryTextContentEvent.mSucceeded, NS_ERROR_FAILURE);
-  if (queryTextContentEvent.mReply.mString.IsEmpty()) {
+  if (NS_WARN_IF(queryTextContentEvent.Failed())) {
+    return NS_ERROR_FAILURE;
+  }
+  if (queryTextContentEvent.mReply->IsDataEmpty()) {
     MOZ_LOG(gGtkIMLog, LogLevel::Error,
             ("0x%p   DeleteText(), FAILED, there is no contents", this));
     return NS_ERROR_FAILURE;
   }
 
-  NS_ConvertUTF16toUTF8 utf8Str(
-      nsDependentSubstring(queryTextContentEvent.mReply.mString, 0, selOffset));
+  NS_ConvertUTF16toUTF8 utf8Str(nsDependentSubstring(
+      queryTextContentEvent.mReply->DataRef(), 0, selOffset));
   glong offsetInUTF8Characters =
       g_utf8_strlen(utf8Str.get(), utf8Str.Length()) + aOffset;
   if (offsetInUTF8Characters < 0) {
@@ -2984,7 +3004,7 @@ nsresult IMContextWrapper::DeleteText(GtkIMContext* aContext, int32_t aOffset,
   }
 
   AppendUTF16toUTF8(
-      nsDependentSubstring(queryTextContentEvent.mReply.mString, selOffset),
+      nsDependentSubstring(queryTextContentEvent.mReply->DataRef(), selOffset),
       utf8Str);
   glong countOfCharactersInUTF8 =
       g_utf8_strlen(utf8Str.get(), utf8Str.Length());
@@ -3104,11 +3124,11 @@ bool IMContextWrapper::EnsureToCacheSelection(nsAString* aSelectedString) {
   }
 
   nsEventStatus status;
-  WidgetQueryContentEvent selection(true, eQuerySelectedText,
-                                    mLastFocusedWindow);
-  InitEvent(selection);
-  mLastFocusedWindow->DispatchEvent(&selection, status);
-  if (NS_WARN_IF(!selection.mSucceeded)) {
+  WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                 mLastFocusedWindow);
+  InitEvent(querySelectedTextEvent);
+  mLastFocusedWindow->DispatchEvent(&querySelectedTextEvent, status);
+  if (NS_WARN_IF(querySelectedTextEvent.Failed())) {
     MOZ_LOG(gGtkIMLog, LogLevel::Error,
             ("0x%p EnsureToCacheSelection(), FAILED, due to "
              "failure of query selection event",
@@ -3116,7 +3136,7 @@ bool IMContextWrapper::EnsureToCacheSelection(nsAString* aSelectedString) {
     return false;
   }
 
-  mSelection.Assign(selection);
+  mSelection.Assign(querySelectedTextEvent);
   if (!mSelection.IsValid()) {
     MOZ_LOG(gGtkIMLog, LogLevel::Error,
             ("0x%p EnsureToCacheSelection(), FAILED, due to "
@@ -3126,7 +3146,7 @@ bool IMContextWrapper::EnsureToCacheSelection(nsAString* aSelectedString) {
   }
 
   if (!mSelection.Collapsed() && aSelectedString) {
-    aSelectedString->Assign(selection.mReply.mString);
+    aSelectedString->Assign(querySelectedTextEvent.mReply->DataRef());
   }
 
   MOZ_LOG(gGtkIMLog, LogLevel::Debug,
@@ -3152,10 +3172,11 @@ void IMContextWrapper::Selection::Assign(
 void IMContextWrapper::Selection::Assign(
     const WidgetQueryContentEvent& aEvent) {
   MOZ_ASSERT(aEvent.mMessage == eQuerySelectedText);
-  MOZ_ASSERT(aEvent.mSucceeded);
-  mString = aEvent.mReply.mString;
-  mOffset = aEvent.mReply.mOffset;
-  mWritingMode = aEvent.GetWritingMode();
+  MOZ_ASSERT(aEvent.Succeeded());
+  MOZ_ASSERT(aEvent.mReply->mOffsetAndData.isSome());
+  mString = aEvent.mReply->DataRef();
+  mOffset = aEvent.mReply->StartOffset();
+  mWritingMode = aEvent.mReply->WritingModeRef();
 }
 
 }  // namespace widget

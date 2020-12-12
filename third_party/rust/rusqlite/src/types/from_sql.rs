@@ -26,7 +26,7 @@ pub enum FromSqlError {
     InvalidUuidSize(usize),
 
     /// An error case available for implementors of the `FromSql` trait.
-    Other(Box<dyn Error + Send + Sync>),
+    Other(Box<dyn Error + Send + Sync + 'static>),
 }
 
 impl PartialEq for FromSqlError {
@@ -62,25 +62,11 @@ impl fmt::Display for FromSqlError {
 }
 
 impl Error for FromSqlError {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        match *self {
-            FromSqlError::InvalidType => "invalid type",
-            FromSqlError::OutOfRange(_) => "value out of range",
-            #[cfg(feature = "i128_blob")]
-            FromSqlError::InvalidI128Size(_) => "unexpected blob size for 128bit value",
-            #[cfg(feature = "uuid")]
-            FromSqlError::InvalidUuidSize(_) => "unexpected blob size for UUID value",
-            FromSqlError::Other(ref err) => err.description(),
-        }
-    }
-
-    #[allow(clippy::match_same_arms)]
-    #[allow(deprecated)]
-    fn cause(&self) -> Option<&dyn Error> {
-        match *self {
-            FromSqlError::Other(ref err) => err.cause(),
-            _ => None,
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        if let FromSqlError::Other(ref err) = self {
+            Some(&**err)
+        } else {
+            None
         }
     }
 }
@@ -100,6 +86,7 @@ pub type FromSqlResult<T> = Result<T, FromSqlError>;
 /// fetching values as i64 and then doing the interpretation themselves or by
 /// defining a newtype and implementing `FromSql`/`ToSql` for it.
 pub trait FromSql: Sized {
+    /// Converts SQLite value into Rust value.
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self>;
 }
 
@@ -156,10 +143,7 @@ impl FromSql for f64 {
 
 impl FromSql for bool {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-        i64::column_result(value).map(|i| match i {
-            0 => false,
-            _ => true,
-        })
+        i64::column_result(value).map(|i| !matches!(i, 0))
     }
 }
 

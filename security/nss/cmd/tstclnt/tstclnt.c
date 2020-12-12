@@ -109,6 +109,8 @@ SSLNamedGroup *enabledGroups = NULL;
 unsigned int enabledGroupsCount = 0;
 const SSLSignatureScheme *enabledSigSchemes = NULL;
 unsigned int enabledSigSchemeCount = 0;
+SECItem psk = { siBuffer, NULL, 0 };
+SECItem pskLabel = { siBuffer, NULL, 0 };
 
 const char *
 signatureSchemeName(SSLSignatureScheme scheme)
@@ -229,7 +231,7 @@ PrintUsageHeader()
             "  [-r N] [-w passwd] [-W pwfile] [-q [-t seconds]]\n"
             "  [-I groups] [-J signatureschemes]\n"
             "  [-A requestfile] [-L totalconnections] [-P {client,server}]\n"
-            "  [-N encryptedSniKeys] [-Q]\n"
+            "  [-N echConfigs] [-Q] [-z externalPsk]\n"
             "\n",
             progName);
 }
@@ -311,10 +313,9 @@ PrintParameterUsage()
                     "%-20s rsa_pss_pss_sha256, rsa_pss_pss_sha384, rsa_pss_pss_sha512,\n"
                     "%-20s dsa_sha1, dsa_sha256, dsa_sha384, dsa_sha512\n",
             "-J", "", "", "", "", "", "", "");
-    fprintf(stderr, "%-20s Enable alternative TLS 1.3 handshake\n", "-X alt-server-hello");
     fprintf(stderr, "%-20s Use DTLS\n", "-P {client, server}");
     fprintf(stderr, "%-20s Exit after handshake\n", "-Q");
-    fprintf(stderr, "%-20s Encrypted SNI Keys\n", "-N");
+    fprintf(stderr, "%-20s Use Encrypted Client Hello with the given Base64-encoded ECHConfigs\n", "-N");
     fprintf(stderr, "%-20s Enable post-handshake authentication\n"
                     "%-20s for TLS 1.3; need to specify -n\n",
             "-E", "");
@@ -325,6 +326,12 @@ PrintParameterUsage()
                     "%-20s a hex string if it is preceded by \"0x\"; OUTPUT-LENGTH\n"
                     "%-20s is a decimal integer.\n",
             "-x", "", "", "", "", "");
+    fprintf(stderr,
+            "%-20s Configure a TLS 1.3 External PSK with the given hex string for a key\n"
+            "%-20s To specify a label, use ':' as a delimiter. For example\n"
+            "%-20s 0xAAAABBBBCCCCDDDD:mylabel. Otherwise, the default label of\n"
+            "%-20s 'Client_identity' will be used.\n",
+            "-z externalPsk", "", "", "");
 }
 
 static void
@@ -1002,7 +1009,7 @@ PRBool stopAfterHandshake = PR_FALSE;
 PRBool requestToExit = PR_FALSE;
 char *versionString = NULL;
 PRBool handshakeComplete = PR_FALSE;
-char *encryptedSNIKeys = NULL;
+char *echConfigs = NULL;
 PRBool enablePostHandshakeAuth = PR_FALSE;
 PRBool enableDelegatedCredentials = PR_FALSE;
 const secuExporter *enabledExporters = NULL;
@@ -1227,6 +1234,55 @@ connectToServer(PRFileDesc *s, PRPollDesc *pollset)
         }
     }
 
+    return SECSuccess;
+}
+
+static SECStatus
+importPsk(PRFileDesc *s)
+{
+    SECU_PrintAsHex(stdout, &psk, "Using External PSK", 0);
+    PK11SlotInfo *slot = NULL;
+    PK11SymKey *symKey = NULL;
+    slot = PK11_GetInternalSlot();
+    if (!slot) {
+        SECU_PrintError(progName, "PK11_GetInternalSlot failed");
+        return SECFailure;
+    }
+    symKey = PK11_ImportSymKey(slot, CKM_HKDF_KEY_GEN, PK11_OriginUnwrap,
+                               CKA_DERIVE, &psk, NULL);
+    PK11_FreeSlot(slot);
+    if (!symKey) {
+        SECU_PrintError(progName, "PK11_ImportSymKey failed");
+        return SECFailure;
+    }
+
+    SECStatus rv = SSL_AddExternalPsk(s, symKey, (const PRUint8 *)pskLabel.data,
+                                      pskLabel.len, ssl_hash_sha256);
+    PK11_FreeSymKey(symKey);
+    return rv;
+}
+
+static SECStatus
+printEchRetryConfigs(PRFileDesc *s)
+{
+    if (PORT_GetError() == SSL_ERROR_ECH_RETRY_WITH_ECH) {
+        SECItem retries = { siBuffer, NULL, 0 };
+        SECStatus rv = SSL_GetEchRetryConfigs(s, &retries);
+        if (rv != SECSuccess) {
+            SECU_PrintError(progName, "SSL_GetEchRetryConfigs failed");
+            return SECFailure;
+        }
+        char *retriesBase64 = NSSBase64_EncodeItem(NULL, NULL, 0, &retries);
+        if (!retriesBase64) {
+            SECU_PrintError(progName, "NSSBase64_EncodeItem on retry_configs failed");
+            SECITEM_FreeItem(&retries, PR_FALSE);
+            return SECFailure;
+        }
+
+        fprintf(stderr, "Received ECH retry_configs: \n%s\n", retriesBase64);
+        PORT_Free(retriesBase64);
+        SECITEM_FreeItem(&retries, PR_FALSE);
+    }
     return SECSuccess;
 }
 
@@ -1478,21 +1534,29 @@ run()
         }
     }
 
-    if (encryptedSNIKeys) {
-        SECItem esniKeysBin = { siBuffer, NULL, 0 };
+    if (echConfigs) {
+        SECItem echConfigsBin = { siBuffer, NULL, 0 };
 
-        if (!NSSBase64_DecodeBuffer(NULL, &esniKeysBin, encryptedSNIKeys,
-                                    strlen(encryptedSNIKeys))) {
-            SECU_PrintError(progName, "ESNIKeys record is invalid base64");
+        if (!NSSBase64_DecodeBuffer(NULL, &echConfigsBin, echConfigs,
+                                    strlen(echConfigs))) {
+            SECU_PrintError(progName, "ECHConfigs record is invalid base64");
             error = 1;
             goto done;
         }
 
-        rv = SSL_EnableESNI(s, esniKeysBin.data, esniKeysBin.len,
-                            "dummy.invalid");
-        SECITEM_FreeItem(&esniKeysBin, PR_FALSE);
+        rv = SSL_SetClientEchConfigs(s, echConfigsBin.data, echConfigsBin.len);
+        SECITEM_FreeItem(&echConfigsBin, PR_FALSE);
         if (rv < 0) {
-            SECU_PrintError(progName, "SSL_EnableESNI failed");
+            SECU_PrintError(progName, "SSL_SetClientEchConfigs failed");
+            error = 1;
+            goto done;
+        }
+    }
+
+    if (psk.data) {
+        rv = importPsk(s);
+        if (rv != SECSuccess) {
+            SECU_PrintError(progName, "importPsk failed");
             error = 1;
             goto done;
         }
@@ -1660,6 +1724,9 @@ run()
             } else {
                 error = writeBytesToServer(s, buf, nb);
                 if (error) {
+                    if (echConfigs) {
+                        (void)printEchRetryConfigs(s);
+                    }
                     goto done;
                 }
                 pollset[SSOCK_FD].in_flags = PR_POLL_READ;
@@ -1752,11 +1819,8 @@ main(int argc, char **argv)
         }
     }
 
-    /* Note: 'z' was removed in 3.39
-     * Please leave some time before reusing these.
-     */
     optstate = PL_CreateOptState(argc, argv,
-                                 "46A:BCDEFGHI:J:KL:M:N:OP:QR:STUV:W:X:YZa:bc:d:fgh:m:n:op:qr:st:uvw:x:");
+                                 "46A:BCDEFGHI:J:KL:M:N:OP:QR:STUV:W:X:YZa:bc:d:fgh:m:n:op:qr:st:uvw:x:z:");
     while ((optstatus = PL_GetNextOpt(optstate)) == PL_OPT_OK) {
         switch (optstate->option) {
             case '?':
@@ -1842,7 +1906,7 @@ main(int argc, char **argv)
                 break;
 
             case 'N':
-                encryptedSNIKeys = PORT_Strdup(optstate->value);
+                echConfigs = PORT_Strdup(optstate->value);
                 break;
 
             case 'P':
@@ -2012,6 +2076,15 @@ main(int argc, char **argv)
                 if (rv != SECSuccess) {
                     PL_DestroyOptState(optstate);
                     fprintf(stderr, "Bad exporter specified.\n");
+                    Usage();
+                }
+                break;
+
+            case 'z':
+                rv = readPSK(optstate->value, &psk, &pskLabel);
+                if (rv != SECSuccess) {
+                    PL_DestroyOptState(optstate);
+                    fprintf(stderr, "Bad PSK specified.\n");
                     Usage();
                 }
                 break;
@@ -2209,7 +2282,9 @@ done:
     PORT_Free(pwdata.data);
     PORT_Free(host);
     PORT_Free(zeroRttData);
-    PORT_Free(encryptedSNIKeys);
+    PORT_Free(echConfigs);
+    SECITEM_ZfreeItem(&psk, PR_FALSE);
+    SECITEM_ZfreeItem(&pskLabel, PR_FALSE);
 
     if (enabledGroups) {
         PORT_Free(enabledGroups);

@@ -6,6 +6,7 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_alerts.h"
 #include "mozilla/Telemetry.h"
 #include "nsXULAppAPI.h"
 
@@ -144,13 +145,25 @@ bool nsAlertsService::ShouldShowAlert() {
   bool result = true;
 
 #ifdef XP_WIN
-  QUERY_USER_NOTIFICATION_STATE qstate;
-  if (SUCCEEDED(SHQueryUserNotificationState(&qstate))) {
-    if (qstate != QUNS_ACCEPTS_NOTIFICATIONS) {
-      result = false;
+  if (!xpc::IsInAutomation()) {
+    QUERY_USER_NOTIFICATION_STATE qstate;
+    if (SUCCEEDED(SHQueryUserNotificationState(&qstate))) {
+      if (qstate != QUNS_ACCEPTS_NOTIFICATIONS) {
+        result = false;
+      }
     }
   }
 #endif
+
+  nsCOMPtr<nsIAlertsDoNotDisturb> alertsDND(GetDNDBackend());
+  if (alertsDND) {
+    bool suppressForScreenSharing = false;
+    nsresult rv =
+        alertsDND->GetSuppressForScreenSharing(&suppressForScreenSharing);
+    if (NS_SUCCEEDED(rv)) {
+      result &= !suppressForScreenSharing;
+    }
+  }
 
   return result;
 }
@@ -159,14 +172,7 @@ bool nsAlertsService::ShouldUseSystemBackend() {
   if (!mBackend) {
     return false;
   }
-  static bool sAlertsUseSystemBackend;
-  static bool sAlertsUseSystemBackendCached = false;
-  if (!sAlertsUseSystemBackendCached) {
-    sAlertsUseSystemBackendCached = true;
-    Preferences::AddBoolVarCache(&sAlertsUseSystemBackend,
-                                 "alerts.useSystemBackend", true);
-  }
-  return sAlertsUseSystemBackend;
+  return StaticPrefs::alerts_useSystemBackend();
 }
 
 NS_IMETHODIMP nsAlertsService::ShowAlertNotification(
@@ -189,7 +195,7 @@ NS_IMETHODIMP nsAlertsService::ShowAlertNotification(
 
 NS_IMETHODIMP nsAlertsService::ShowAlert(nsIAlertNotification* aAlert,
                                          nsIObserver* aAlertListener) {
-  return ShowPersistentNotification(EmptyString(), aAlert, aAlertListener);
+  return ShowPersistentNotification(u""_ns, aAlert, aAlertListener);
 }
 
 NS_IMETHODIMP nsAlertsService::ShowPersistentNotification(
@@ -235,18 +241,17 @@ NS_IMETHODIMP nsAlertsService::ShowPersistentNotification(
   return ShowWithBackend(xulBackend, aAlert, aAlertListener, aPersistentData);
 }
 
-NS_IMETHODIMP nsAlertsService::CloseAlert(const nsAString& aAlertName,
-                                          nsIPrincipal* aPrincipal) {
+NS_IMETHODIMP nsAlertsService::CloseAlert(const nsAString& aAlertName) {
   if (XRE_IsContentProcess()) {
     ContentChild* cpc = ContentChild::GetSingleton();
-    cpc->SendCloseAlert(nsAutoString(aAlertName), IPC::Principal(aPrincipal));
+    cpc->SendCloseAlert(nsAutoString(aAlertName));
     return NS_OK;
   }
 
   nsresult rv;
   // Try the system notification service.
   if (ShouldUseSystemBackend()) {
-    rv = mBackend->CloseAlert(aAlertName, aPrincipal);
+    rv = mBackend->CloseAlert(aAlertName);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       // If the system backend failed to close the alert, fall back to XUL for
       // future alerts.
@@ -255,7 +260,7 @@ NS_IMETHODIMP nsAlertsService::CloseAlert(const nsAString& aAlertName,
   } else {
     nsCOMPtr<nsIAlertsService> xulBackend(nsXULAlerts::GetInstance());
     NS_ENSURE_TRUE(xulBackend, NS_ERROR_FAILURE);
-    rv = xulBackend->CloseAlert(aAlertName, aPrincipal);
+    rv = xulBackend->CloseAlert(aAlertName);
   }
   return rv;
 }
@@ -283,6 +288,26 @@ NS_IMETHODIMP nsAlertsService::SetManualDoNotDisturb(bool aDoNotDisturb) {
     Telemetry::Accumulate(Telemetry::ALERTS_SERVICE_DND_ENABLED, 1);
   }
   return rv;
+#endif
+}
+
+NS_IMETHODIMP nsAlertsService::GetSuppressForScreenSharing(bool* aRetVal) {
+#ifdef MOZ_WIDGET_ANDROID
+  return NS_ERROR_NOT_IMPLEMENTED;
+#else
+  nsCOMPtr<nsIAlertsDoNotDisturb> alertsDND(GetDNDBackend());
+  NS_ENSURE_TRUE(alertsDND, NS_ERROR_NOT_IMPLEMENTED);
+  return alertsDND->GetSuppressForScreenSharing(aRetVal);
+#endif
+}
+
+NS_IMETHODIMP nsAlertsService::SetSuppressForScreenSharing(bool aSuppress) {
+#ifdef MOZ_WIDGET_ANDROID
+  return NS_ERROR_NOT_IMPLEMENTED;
+#else
+  nsCOMPtr<nsIAlertsDoNotDisturb> alertsDND(GetDNDBackend());
+  NS_ENSURE_TRUE(alertsDND, NS_ERROR_NOT_IMPLEMENTED);
+  return alertsDND->SetSuppressForScreenSharing(aSuppress);
 #endif
 }
 

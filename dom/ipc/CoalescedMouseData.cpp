@@ -10,6 +10,7 @@
 
 #include "mozilla/PresShell.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "nsRefreshDriver.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -59,7 +60,9 @@ bool CoalescedMouseData::CanCoalesce(const WidgetMouseEvent& aEvent,
                                      const uint64_t& aInputBlockId) {
   MOZ_ASSERT(aEvent.mMessage == eMouseMove);
   return !mCoalescedInputEvent ||
-         (mCoalescedInputEvent->mModifiers == aEvent.mModifiers &&
+         (!mCoalescedInputEvent->mFlags.mIsSynthesizedForTests &&
+          !aEvent.mFlags.mIsSynthesizedForTests &&
+          mCoalescedInputEvent->mModifiers == aEvent.mModifiers &&
           mCoalescedInputEvent->mInputSource == aEvent.mInputSource &&
           mCoalescedInputEvent->pointerId == aEvent.pointerId &&
           mCoalescedInputEvent->mButton == aEvent.mButton &&
@@ -83,7 +86,8 @@ void CoalescedMouseMoveFlusher::StartObserver() {
   RemoveObserver();
   if (refreshDriver) {
     mRefreshDriver = refreshDriver;
-    mRefreshDriver->AddRefreshObserver(this, FlushType::Event);
+    mRefreshDriver->AddRefreshObserver(this, FlushType::Event,
+                                       "Coalesced mouse move flusher");
   }
 }
 
@@ -93,6 +97,14 @@ void CoalescedMouseMoveFlusher::RemoveObserver() {
     mRefreshDriver = nullptr;
   }
 }
+
+CoalescedMouseMoveFlusher::CoalescedMouseMoveFlusher(
+    BrowserChild* aBrowserChild)
+    : mBrowserChild(aBrowserChild) {
+  MOZ_ASSERT(mBrowserChild);
+}
+
+CoalescedMouseMoveFlusher::~CoalescedMouseMoveFlusher() { RemoveObserver(); }
 
 nsRefreshDriver* CoalescedMouseMoveFlusher::GetRefreshDriver() {
   PresShell* presShell = mBrowserChild->GetTopLevelPresShell();

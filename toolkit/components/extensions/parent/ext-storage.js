@@ -8,17 +8,25 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   AddonManagerPrivate: "resource://gre/modules/AddonManager.jsm",
   ExtensionStorage: "resource://gre/modules/ExtensionStorage.jsm",
   ExtensionStorageIDB: "resource://gre/modules/ExtensionStorageIDB.jsm",
-  extensionStorageSync: "resource://gre/modules/ExtensionStorageSync.jsm",
   NativeManifests: "resource://gre/modules/NativeManifests.jsm",
 });
 
 var { ExtensionError } = ExtensionUtils;
 
+XPCOMUtils.defineLazyGetter(this, "extensionStorageSync", () => {
+  let url = Services.prefs.getBoolPref("webextensions.storage.sync.kinto")
+    ? "resource://gre/modules/ExtensionStorageSyncKinto.jsm"
+    : "resource://gre/modules/ExtensionStorageSync.jsm";
+
+  const { extensionStorageSync } = ChromeUtils.import(url, {});
+  return extensionStorageSync;
+});
+
 const enforceNoTemporaryAddon = extensionId => {
   const EXCEPTION_MESSAGE =
     "The storage API will not work with a temporary addon ID. " +
     "Please add an explicit addon ID to your manifest. " +
-    "For more information see https://bugzil.la/1323228.";
+    "For more information see https://mzl.la/3lPk1aE.";
   if (AddonManagerPrivate.isTemporaryInstallID(extensionId)) {
     throw new ExtensionError(EXCEPTION_MESSAGE);
   }
@@ -150,6 +158,10 @@ this.storage = class extends ExtensionAPI {
           clear() {
             enforceNoTemporaryAddon(extension.id);
             return extensionStorageSync.clear(extension, context);
+          },
+          getBytesInUse(keys) {
+            enforceNoTemporaryAddon(extension.id);
+            return extensionStorageSync.getBytesInUse(extension, keys, context);
           },
         },
 

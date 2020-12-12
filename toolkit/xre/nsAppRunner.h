@@ -25,6 +25,7 @@
 #  endif
 #endif
 
+#include "nsCOMPtr.h"
 #include "nsStringFwd.h"
 #include "nsXULAppAPI.h"
 
@@ -41,6 +42,7 @@ extern nsXREDirProvider* gDirServiceProvider;
 // NOTE: gAppData will be null in embedded contexts.
 extern const mozilla::XREAppData* gAppData;
 extern bool gSafeMode;
+extern bool gFxREmbedded;
 
 extern int gArgc;
 extern char** gArgv;
@@ -124,6 +126,8 @@ BOOL WinLaunchChild(const wchar_t* exePath, int argc, char** argv,
 #  define PREF_WIN_REGISTER_APPLICATION_RESTART \
     "toolkit.winRegisterApplicationRestart"
 
+#  define PREF_WIN_ALTERED_DLL_PREFETCH "startup.experiments.alteredDllPrefetch"
+
 #  if defined(MOZ_LAUNCHER_PROCESS)
 #    define PREF_WIN_LAUNCHER_PROCESS_ENABLED "browser.launcherProcess.enabled"
 #  endif  // defined(MOZ_LAUNCHER_PROCESS)
@@ -137,6 +141,8 @@ extern GeckoProcessType sChildProcessType;
 }  // namespace startup
 
 const char* PlatformBuildID();
+
+bool RunningGTest();
 
 }  // namespace mozilla
 

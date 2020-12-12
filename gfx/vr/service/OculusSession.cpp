@@ -15,6 +15,7 @@
 #include "mozilla/dom/GamepadEventTypes.h"
 #include "mozilla/dom/GamepadBinding.h"
 #include "mozilla/gfx/DeviceManagerDx.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/SharedLibrary.h"
 #include "OculusSession.h"
 
@@ -211,8 +212,11 @@ OculusSession::~OculusSession() { Shutdown(); }
 
 bool OculusSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
                                bool aDetectRuntimesOnly) {
-  if (!StaticPrefs::dom_vr_enabled() ||
-      !StaticPrefs::dom_vr_oculus_enabled_AtStartup()) {
+  if (StaticPrefs::dom_vr_puppet_enabled()) {
+    // Ensure that tests using the VR Puppet do not find real hardware
+    return false;
+  }
+  if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_oculus_enabled()) {
     return false;
   }
 
@@ -564,7 +568,7 @@ bool OculusSession::LoadOvrLib() {
   libName.AppendPrintf("LibOVRRT%d_%d.dll", BUILD_BITS, OVR_PRODUCT_VERSION);
 
   // search the path/module dir
-  libSearchPaths.InsertElementsAt(0, 1, EmptyString());
+  libSearchPaths.InsertElementsAt(0, 1, u""_ns);
 
   // If the env var is present, we override libName
   if (_wgetenv(L"OVR_LIB_PATH")) {
@@ -586,7 +590,7 @@ bool OculusSession::LoadOvrLib() {
     if (libPath.Length() == 0) {
       fullName.Assign(libName);
     } else {
-      fullName.Assign(libPath + NS_LITERAL_STRING(u"\\") + libName);
+      fullName.Assign(libPath + u"\\"_ns + libName);
     }
 
     mOvrLib = LoadLibraryWithFlags(fullName.get());
@@ -1051,6 +1055,7 @@ bool OculusSession::InitState(VRSystemState& aSystemState) {
                                        texSize[VRDisplayState::Eye_Right].w);
   state.eyeResolution.height = std::max(texSize[VRDisplayState::Eye_Left].h,
                                         texSize[VRDisplayState::Eye_Right].h);
+  state.nativeFramebufferScaleFactor = 1.0f;
 
   // default to an identity quaternion
   aSystemState.sensorState.pose.orientation[3] = 1.0f;
@@ -1128,9 +1133,9 @@ void OculusSession::UpdateEyeParameters(VRSystemState& aState) {
 
     Matrix4x4 pose;
     pose.SetRotationFromQuaternion(
-        gfx::Quaternion(renderDesc.HmdToEyePose.Orientation.x,
-                        renderDesc.HmdToEyePose.Orientation.y,
-                        renderDesc.HmdToEyePose.Orientation.z,
+        gfx::Quaternion(-renderDesc.HmdToEyePose.Orientation.x,
+                        -renderDesc.HmdToEyePose.Orientation.y,
+                        -renderDesc.HmdToEyePose.Orientation.z,
                         renderDesc.HmdToEyePose.Orientation.w));
     pose.PreTranslate(renderDesc.HmdToEyePose.Position.x,
                       renderDesc.HmdToEyePose.Position.y,
@@ -1154,6 +1159,7 @@ void OculusSession::UpdateEyeParameters(VRSystemState& aState) {
       NS_WARNING("Failed to decompose eye pose matrix for Oculus");
     }
 
+    eyeRotation.Invert();
     mFrameStartPose[eye].Orientation.x = eyeRotation.x;
     mFrameStartPose[eye].Orientation.y = eyeRotation.y;
     mFrameStartPose[eye].Orientation.z = eyeRotation.z;
@@ -1266,7 +1272,7 @@ void OculusSession::UpdateControllerPose(VRSystemState& aState,
         controllerState.flags |=
             dom::GamepadCapabilityFlags::Cap_LinearAcceleration;
         controllerState.flags |=
-            dom::GamepadCapabilityFlags::Cap_TargetRaySpacePosition;
+            dom::GamepadCapabilityFlags::Cap_GripSpacePosition;
       }
 
       if (bNewController || trackingState.HandStatusFlags[handIdx] &
@@ -1409,7 +1415,8 @@ void OculusSession::UpdateControllerInputs(VRSystemState& aState,
 
       MOZ_ASSERT(axisIdx == kNumOculusAxes);
     }
-    SetControllerSelectionAndSqueezeFrameId(controllerState, aState.displayState.lastSubmittedFrameId);
+    SetControllerSelectionAndSqueezeFrameId(
+        controllerState, aState.displayState.lastSubmittedFrameId);
   }
 }
 

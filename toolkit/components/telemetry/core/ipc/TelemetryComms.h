@@ -7,10 +7,11 @@
 #define Telemetry_Comms_h__
 
 #include "ipc/IPCMessageUtils.h"
+#include "ipc/IPCMessageUtilsSpecializations.h"
 #include "mozilla/TelemetryProcessEnums.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Variant.h"
 #include "nsITelemetry.h"
-#include "nsVariant.h"
 
 namespace mozilla {
 namespace Telemetry {
@@ -90,7 +91,7 @@ struct ChildEventData {
   nsCString method;
   nsCString object;
   mozilla::Maybe<nsCString> value;
-  nsTArray<EventExtraEntry> extra;
+  CopyableTArray<EventExtraEntry> extra;
 };
 
 struct DiscardedData {

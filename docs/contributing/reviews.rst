@@ -48,9 +48,15 @@ Review groups
    * - #geckoview-reviewers
      - Changes to GeckoView
      - `Member list <https://phabricator.services.mozilla.com/project/members/92/>`__
+   * - #gfx-reviewers
+     - Changes to Graphics code
+     - `Member list <https://phabricator.services.mozilla.com/project/members/122/>`__
    * - #intermittent-reviewers
      - Test manifest changes
      - `Member list <https://phabricator.services.mozilla.com/project/members/110/>`__
+   * - #layout-reviewers
+     - Layout changes.
+     - `Member list <https://phabricator.services.mozilla.com/project/members/126/>`__
    * - #linter-reviewers
      - tools/lint/*
      - `Member list <https://phabricator.services.mozilla.com/project/members/119/>`__
@@ -66,6 +72,9 @@ Review groups
    * - #perftest-reviewers
      - Perf Tests
      - `Member list <https://phabricator.services.mozilla.com/project/members/102/>`__
+   * - #preferences-reviewers
+     - Firefox for Desktop Preferences (Options) user interface
+     - `Member list <https://phabricator.services.mozilla.com/project/members/132/>`__
    * - #remote-protocol-reviewers
      - Remote protocol
      - `Member list <https://phabricator.services.mozilla.com/project/members/101/>`__
@@ -78,6 +87,9 @@ Review groups
    * - #style or #firefox-style-system-reviewers
      - Firefox style system (servo, layout/style).
      - `Member list <https://phabricator.services.mozilla.com/project/members/90/>`__
+   * - #webcompat-reviewers
+     - System addons maintained by the Web Compatibility team
+     - `Member list <https://phabricator.services.mozilla.com/project/members/124/>`__
    * - #webdriver-reviewers
      - Marionette and Geckodriver in Firefox
      - `Member list <https://phabricator.services.mozilla.com/project/members/103/>`__

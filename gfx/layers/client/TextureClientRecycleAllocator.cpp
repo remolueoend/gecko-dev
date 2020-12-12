@@ -83,6 +83,10 @@ bool YCbCrTextureClientAllocationHelper::IsCompatible(
   if (!bufferData || aTextureClient->GetSize() != mData.mYSize ||
       bufferData->GetCbCrSize().isNothing() ||
       bufferData->GetCbCrSize().ref() != mData.mCbCrSize ||
+      bufferData->GetYStride().isNothing() ||
+      bufferData->GetYStride().ref() != mData.mYStride ||
+      bufferData->GetCbCrStride().isNothing() ||
+      bufferData->GetCbCrStride().ref() != mData.mCbCrStride ||
       bufferData->GetYUVColorSpace().isNothing() ||
       bufferData->GetYUVColorSpace().ref() != mData.mYUVColorSpace ||
       bufferData->GetColorDepth().isNothing() ||
@@ -97,8 +101,8 @@ bool YCbCrTextureClientAllocationHelper::IsCompatible(
 already_AddRefed<TextureClient> YCbCrTextureClientAllocationHelper::Allocate(
     KnowsCompositor* aKnowsCompositor) {
   return TextureClient::CreateForYCbCr(
-      aKnowsCompositor, mData.mYSize, mData.mYStride, mData.mCbCrSize,
-      mData.mCbCrStride, mData.mStereoMode, mData.mColorDepth,
+      aKnowsCompositor, mData.GetPictureRect(), mData.mYSize, mData.mYStride,
+      mData.mCbCrSize, mData.mCbCrStride, mData.mStereoMode, mData.mColorDepth,
       mData.mYUVColorSpace, mData.mColorRange, mTextureFlags);
 }
 
@@ -138,7 +142,7 @@ already_AddRefed<TextureClient> TextureClientRecycleAllocator::CreateOrRecycle(
 
   {
     MutexAutoLock lock(mLock);
-    if (mIsDestroyed) {
+    if (mIsDestroyed || !mKnowsCompositor->GetTextureForwarder()) {
       return nullptr;
     }
     if (!mPooledClients.empty()) {
@@ -153,7 +157,7 @@ already_AddRefed<TextureClient> TextureClientRecycleAllocator::CreateOrRecycle(
             new TextureClientReleaseTask(textureHolder->GetTextureClient());
         textureHolder->ClearTextureClient();
         textureHolder = nullptr;
-        mKnowsCompositor->GetTextureForwarder()->GetMessageLoop()->PostTask(
+        mKnowsCompositor->GetTextureForwarder()->GetThread()->Dispatch(
             task.forget());
       } else {
         textureHolder->GetTextureClient()->RecycleTexture(

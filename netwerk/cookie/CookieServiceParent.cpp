@@ -3,6 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "CookieCommons.h"
 #include "mozilla/net/CookieService.h"
 #include "mozilla/net/CookieServiceParent.h"
 #include "mozilla/net/NeckoParent.h"
@@ -80,10 +81,11 @@ void CookieServiceParent::TrackCookieLoad(nsIChannel* aChannel) {
 
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
   OriginAttributes attrs = loadInfo->GetOriginAttributes();
-  bool isSafeTopLevelNav = NS_IsSafeTopLevelNav(aChannel);
-  bool aIsSameSiteForeign = NS_IsSameSiteForeign(aChannel, uri);
+  bool isSafeTopLevelNav = CookieCommons::IsSafeTopLevelNav(aChannel);
+  bool aIsSameSiteForeign = CookieCommons::IsSameSiteForeign(aChannel, uri);
 
-  StoragePrincipalHelper::PrepareOriginAttributes(aChannel, attrs);
+  StoragePrincipalHelper::PrepareEffectiveStoragePrincipalOriginAttributes(
+      aChannel, attrs);
 
   // Send matching cookies to Child.
   nsCOMPtr<mozIThirdPartyUtil> thirdPartyUtil;
@@ -98,7 +100,7 @@ void CookieServiceParent::TrackCookieLoad(nsIChannel* aChannel) {
       uri, aChannel, result.contains(ThirdPartyAnalysis::IsForeign),
       result.contains(ThirdPartyAnalysis::IsThirdPartyTrackingResource),
       result.contains(ThirdPartyAnalysis::IsThirdPartySocialTrackingResource),
-      result.contains(ThirdPartyAnalysis::IsFirstPartyStorageAccessGranted),
+      result.contains(ThirdPartyAnalysis::IsStorageAccessPermissionGranted),
       rejectedReason, isSafeTopLevelNav, aIsSameSiteForeign, false, attrs,
       foundCookieList);
   nsTArray<CookieStruct> matchingCookiesList;
@@ -122,22 +124,24 @@ void CookieServiceParent::SerialializeCookieList(
 }
 
 IPCResult CookieServiceParent::RecvPrepareCookieList(
-    const URIParams& aHost, const bool& aIsForeign,
+    nsIURI* aHost, const bool& aIsForeign,
     const bool& aIsThirdPartyTrackingResource,
     const bool& aIsThirdPartySocialTrackingResource,
-    const bool& aFirstPartyStorageAccessGranted,
+    const bool& aStorageAccessPermissionGranted,
     const uint32_t& aRejectedReason, const bool& aIsSafeTopLevelNav,
     const bool& aIsSameSiteForeign, const OriginAttributes& aAttrs) {
-  nsCOMPtr<nsIURI> hostURI = DeserializeURI(aHost);
-
   // Send matching cookies to Child.
+  if (!aHost) {
+    return IPC_FAIL(this, "aHost must not be null");
+  }
+
   nsTArray<Cookie*> foundCookieList;
   // Note: passing nullptr as aChannel to GetCookiesForURI() here is fine since
   // this argument is only used for proper reporting of cookie loads, but the
   // child process already does the necessary reporting in this case for us.
   mCookieService->GetCookiesForURI(
-      hostURI, nullptr, aIsForeign, aIsThirdPartyTrackingResource,
-      aIsThirdPartySocialTrackingResource, aFirstPartyStorageAccessGranted,
+      aHost, nullptr, aIsForeign, aIsThirdPartyTrackingResource,
+      aIsThirdPartySocialTrackingResource, aStorageAccessPermissionGranted,
       aRejectedReason, aIsSafeTopLevelNav, aIsSameSiteForeign, false, aAttrs,
       foundCookieList);
   nsTArray<CookieStruct> matchingCookiesList;
@@ -153,17 +157,15 @@ void CookieServiceParent::ActorDestroy(ActorDestroyReason aWhy) {
 
 IPCResult CookieServiceParent::RecvSetCookies(
     const nsCString& aBaseDomain, const OriginAttributes& aOriginAttributes,
-    const URIParams& aHost, bool aFromHttp,
-    const nsTArray<CookieStruct>& aCookies) {
+    nsIURI* aHost, bool aFromHttp, const nsTArray<CookieStruct>& aCookies) {
   if (!mCookieService) {
     return IPC_OK();
   }
 
   // Deserialize URI. Having a host URI is mandatory and should always be
   // provided by the child; thus we consider failure fatal.
-  nsCOMPtr<nsIURI> hostURI = DeserializeURI(aHost);
-  if (!hostURI) {
-    return IPC_FAIL_NO_REASON(this);
+  if (!aHost) {
+    return IPC_FAIL(this, "aHost must not be null");
   }
 
   // We set this to true while processing this cookie update, to make sure
@@ -171,8 +173,7 @@ IPCResult CookieServiceParent::RecvSetCookies(
   mProcessingCookie = true;
 
   bool ok = mCookieService->SetCookiesFromIPC(aBaseDomain, aOriginAttributes,
-                                              hostURI, aFromHttp, aCookies);
-
+                                              aHost, aFromHttp, aCookies);
   mProcessingCookie = false;
   return ok ? IPC_OK() : IPC_FAIL(this, "Invalid cookie received.");
 }

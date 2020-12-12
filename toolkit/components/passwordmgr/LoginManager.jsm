@@ -46,9 +46,9 @@ function LoginManager() {
 LoginManager.prototype = {
   classID: Components.ID("{cb9e0de8-3598-4ed7-857b-827f011ad5d8}"),
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsILoginManager,
-    Ci.nsISupportsWeakReference,
-    Ci.nsIInterfaceRequestor,
+    "nsILoginManager",
+    "nsISupportsWeakReference",
+    "nsIInterfaceRequestor",
   ]),
   getInterface(aIID) {
     if (aIID.equals(Ci.mozIStorageConnection) && this._storage) {
@@ -116,8 +116,8 @@ LoginManager.prototype = {
     _pwmgr: null,
 
     QueryInterface: ChromeUtils.generateQI([
-      Ci.nsIObserver,
-      Ci.nsISupportsWeakReference,
+      "nsIObserver",
+      "nsISupportsWeakReference",
     ]),
 
     // nsIObserver
@@ -159,7 +159,7 @@ LoginManager.prototype = {
    *        the number of milliseconds since January 1, 1970, 00:00:00 UTC.
    *        This is set to a fake value during unit testing.
    */
-  _gatherTelemetry(referenceTimeMs) {
+  async _gatherTelemetry(referenceTimeMs) {
     function clearAndGetHistogram(histogramId) {
       let histogram = Services.telemetry.getHistogramById(histogramId);
       histogram.clear();
@@ -200,7 +200,7 @@ LoginManager.prototype = {
       return;
     }
 
-    let logins = this.getAllLogins();
+    let logins = await this.getAllLoginsAsync();
 
     let usernamePresentHistogram = clearAndGetHistogram(
       "PWMGR_USERNAME_PRESENT"
@@ -241,6 +241,8 @@ LoginManager.prototype = {
       "weave:telemetry:histogram",
       "PWMGR_NUM_PASSWORDS_PER_HOSTNAME"
     );
+
+    Services.obs.notifyObservers(null, "passwordmgr-gather-telemetry-complete");
   },
 
   /**
@@ -388,12 +390,31 @@ LoginManager.prototype = {
   /**
    * Record that the password of a saved login was used (e.g. submitted or copied).
    */
-  recordPasswordUse(login) {
+  recordPasswordUse(
+    login,
+    privateContextWithoutExplicitConsent,
+    loginType,
+    filled
+  ) {
     log.debug(
       "Recording password use",
+      loginType,
       login.QueryInterface(Ci.nsILoginMetaInfo).guid
     );
-    this._storage.recordPasswordUse(login);
+    if (!privateContextWithoutExplicitConsent) {
+      // don't record non-interactive use in private browsing
+      this._storage.recordPasswordUse(login);
+    }
+
+    Services.telemetry.recordEvent(
+      "pwmgr",
+      "saved_login_used",
+      loginType,
+      null,
+      {
+        filled: "" + filled,
+      }
+    );
   },
 
   /**
@@ -417,10 +438,24 @@ LoginManager.prototype = {
   },
 
   /**
-   * Remove all stored logins.
+   * Remove all user facing stored logins.
+   *
+   * This will not remove the FxA Sync key, which is stored with the rest of a user's logins.
+   */
+  removeAllUserFacingLogins() {
+    log.debug("Removing all user facing logins");
+    this._storage.removeAllUserFacingLogins();
+  },
+
+  /**
+   * Remove all logins from data store, including the FxA Sync key.
+   *
+   * NOTE: You probably want `removeAllUserFacingLogins()` instead of this function.
+   * This function will remove the FxA Sync key, which will break syncing of saved user data
+   * e.g. bookmarks, history, open tabs, logins and passwords, add-ons, and options
    */
   removeAllLogins() {
-    log.debug("Removing all logins");
+    log.debug("Removing all logins from local store, including FxA key");
     this._storage.removeAllLogins();
   },
 
@@ -510,6 +545,23 @@ LoginManager.prototype = {
     );
 
     return this._storage.countLogins(origin, formActionOrigin, httpRealm);
+  },
+
+  /* Sync metadata functions - see nsILoginManagerStorage for details */
+  async getSyncID() {
+    return this._storage.getSyncID();
+  },
+
+  async setSyncID(id) {
+    await this._storage.setSyncID(id);
+  },
+
+  async getLastSync() {
+    return this._storage.getLastSync();
+  },
+
+  async setLastSync(timestamp) {
+    await this._storage.setLastSync(timestamp);
   },
 
   get uiBusy() {

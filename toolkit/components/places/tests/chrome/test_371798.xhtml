@@ -27,7 +27,6 @@ function promiseOnItemChanged() {
       onBeginUpdateBatch() {},
       onEndUpdateBatch() {},
       onItemRemoved() {},
-      onItemVisited() {},
       onItemMoved() {},
 
       onItemChanged() {
@@ -35,7 +34,7 @@ function promiseOnItemChanged() {
         resolve();
       },
 
-      QueryInterface: ChromeUtils.generateQI([Ci.nsINavBookmarkObserver])
+      QueryInterface: ChromeUtils.generateQI(["nsINavBookmarkObserver"])
     });
   });
 }

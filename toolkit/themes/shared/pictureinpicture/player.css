@@ -44,7 +44,7 @@ browser {
 }
 
 #controls button {
-  -moz-appearance: none;
+  appearance: none;
   border: 0;
 }
 
@@ -107,6 +107,11 @@ browser {
   position: absolute;
   right: 10px;
   top: 10px;
+}
+
+#close[mac="true"] {
+  right: auto;
+  left: 10px;
 }
 
 #playpause {

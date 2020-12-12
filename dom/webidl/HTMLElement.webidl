@@ -31,6 +31,8 @@ interface HTMLElement : Element {
   // user interaction
   [CEReactions, SetterThrows, Pure]
            attribute boolean hidden;
+  [CEReactions, SetterThrows, Pure, Pref="html5.inert.enabled"]
+           attribute boolean inert;
   [NeedsCallerType]
   void click();
   [CEReactions, SetterThrows, Pure]
@@ -44,14 +46,16 @@ interface HTMLElement : Element {
            attribute DOMString contentEditable;
   [Pure]
   readonly attribute boolean isContentEditable;
-  [Pure]
+  [Pure, Pref="dom.menuitem.enabled"]
   readonly attribute HTMLMenuElement? contextMenu;
-  //[SetterThrows]
-  //         attribute HTMLMenuElement? contextMenu;
   [CEReactions, SetterThrows, Pure]
            attribute boolean spellcheck;
   [CEReactions, Pure, SetterThrows, Pref="dom.forms.inputmode"]
            attribute DOMString inputMode;
+  [CEReactions, Pure, SetterThrows, Pref="dom.forms.enterkeyhint"]
+           attribute DOMString enterKeyHint;
+  [CEReactions, Pure, SetterThrows, Pref="dom.forms.autocapitalize"]
+           attribute DOMString autocapitalize;
 
   attribute DOMString nonce;
 
@@ -64,7 +68,7 @@ interface HTMLElement : Element {
   //readonly attribute boolean? commandChecked;
 
   // https://html.spec.whatwg.org/multipage/custom-elements.html#dom-attachinternals
-  [Pref="dom.webcomponents.elementInternals.enabled", Throws]
+  [Pref="dom.webcomponents.formAssociatedCustomElement.enabled", Throws]
   ElementInternals attachInternals();
 };
 

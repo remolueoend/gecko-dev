@@ -8,19 +8,17 @@ AwaitIdleMixed
 AwaitIdlePaused
 BGReadURLs
 BHMgr Processor
-BgFileSaver
 COM Intcpt Log
 COM MTA
-Cache Deleter
 Cache I/O
 Cameras IPC
 ChainedPipePump
 ChainedPipeRecv
 Checker Test
+Compositor
 Cookie
 CrashRep Inject
 DDMediaLogs
-DOM File
 DOMCacheThread
 DataChannel IO
 DataStorage
@@ -41,6 +39,7 @@ IMAP
 IPC Launch
 IPDL Background
 IdentityCrypto
+ImageBridgeChld
 LS Thread
 LayerScope
 MDCDMThread
@@ -50,7 +49,6 @@ MediaTelemetry
 MediaTrackGrph
 mtransport
 NamedPipeSrv
-NetPredictClean
 Netlink Monitor
 OSKeyStore
 OutputDrain
@@ -61,10 +59,10 @@ ProcessHangMon
 ProfSymbolTable
 ProfilerChild
 ProxyResolution
+RemoteLzyStream
 RWLockTester
 RacingServMan
 RemVidChild
-RemVidParent
 Sandbox Testing
 SaveScripts
 Socket Thread
@@ -74,7 +72,6 @@ StressRunner
 SuicideManager
 SuicideThread
 TEQ AwaitIdle
-TelemetryGVIO
 Test Thread
 Test thread
 TestPipe
@@ -86,6 +83,7 @@ ToastBgThread
 TRR Background
 URL Classifier
 Update Watcher
+VRService
 VsyncIOThread
 Wifi Monitor
 Worker Launcher

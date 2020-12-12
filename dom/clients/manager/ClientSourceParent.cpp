@@ -13,12 +13,13 @@
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/PClientManagerParent.h"
+#include "mozilla/dom/ServiceWorkerManager.h"
+#include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/Unused.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::AssertIsOnBackgroundThread;
 using mozilla::ipc::BackgroundParent;
@@ -120,8 +121,7 @@ IPCResult ClientSourceParent::RecvFreeze() {
 
   // Frozen clients should not be observable.  Act as if the client has
   // been destroyed.
-  nsTArray<ClientHandleParent*> handleList(mHandleList);
-  for (ClientHandleParent* handle : handleList) {
+  for (ClientHandleParent* handle : mHandleList.Clone()) {
     Unused << ClientHandleParent::Send__delete__(handle);
   }
 
@@ -182,8 +182,7 @@ void ClientSourceParent::ActorDestroy(ActorDestroyReason aReason) {
   DebugOnly<bool> removed = mService->RemoveSource(this);
   MOZ_ASSERT(removed);
 
-  nsTArray<ClientHandleParent*> handleList(mHandleList);
-  for (ClientHandleParent* handle : handleList) {
+  for (ClientHandleParent* handle : mHandleList.Clone()) {
     // This should trigger DetachHandle() to be called removing
     // the entry from the mHandleList.
     Unused << ClientHandleParent::Send__delete__(handle);
@@ -295,5 +294,4 @@ RefPtr<ClientOpPromise> ClientSourceParent::StartOp(
   return promise;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

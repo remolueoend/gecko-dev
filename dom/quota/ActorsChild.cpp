@@ -6,14 +6,28 @@
 
 #include "ActorsChild.h"
 
-#include "nsVariant.h"
+// Local includes
 #include "QuotaManagerService.h"
 #include "QuotaRequests.h"
 #include "QuotaResults.h"
 
-namespace mozilla {
-namespace dom {
-namespace quota {
+// Global includes
+#include <new>
+#include <utility>
+#include "mozilla/Assertions.h"
+#include "mozilla/dom/quota/PQuotaRequest.h"
+#include "mozilla/dom/quota/PQuotaUsageRequest.h"
+#include "nsError.h"
+#include "nsID.h"
+#include "nsIEventTarget.h"
+#include "nsIQuotaResults.h"
+#include "nsISupports.h"
+#include "nsIVariant.h"
+#include "nsString.h"
+#include "nsThreadUtils.h"
+#include "nsVariant.h"
+
+namespace mozilla::dom::quota {
 
 /*******************************************************************************
  * QuotaChild
@@ -23,7 +37,7 @@ QuotaChild::QuotaChild(QuotaManagerService* aService)
     : mService(aService)
 #ifdef DEBUG
       ,
-      mOwningThread(GetCurrentThreadEventTarget())
+      mOwningThread(GetCurrentEventTarget())
 #endif
 {
   AssertIsOnOwningThread();
@@ -255,6 +269,16 @@ void QuotaRequestChild::HandleResponse(bool aResponse) {
   mRequest->SetResult(variant);
 }
 
+void QuotaRequestChild::HandleResponse(const nsAString& aResponse) {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(mRequest);
+
+  RefPtr<nsVariant> variant = new nsVariant();
+  variant->SetAsAString(aResponse);
+
+  mRequest->SetResult(variant);
+}
+
 void QuotaRequestChild::HandleResponse(const EstimateResponse& aResponse) {
   AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
@@ -304,6 +328,10 @@ mozilla::ipc::IPCResult QuotaRequestChild::Recv__delete__(
       HandleResponse(aResponse.get_nsresult());
       break;
 
+    case RequestResponse::TStorageNameResponse:
+      HandleResponse(aResponse.get_StorageNameResponse().name());
+      break;
+
     case RequestResponse::TStorageInitializedResponse:
       HandleResponse(aResponse.get_StorageInitializedResponse().initialized());
       break;
@@ -324,8 +352,14 @@ mozilla::ipc::IPCResult QuotaRequestChild::Recv__delete__(
       HandleResponse();
       break;
 
-    case RequestResponse::TInitStorageAndOriginResponse:
-      HandleResponse(aResponse.get_InitStorageAndOriginResponse().created());
+    case RequestResponse::TInitializePersistentOriginResponse:
+      HandleResponse(
+          aResponse.get_InitializePersistentOriginResponse().created());
+      break;
+
+    case RequestResponse::TInitializeTemporaryOriginResponse:
+      HandleResponse(
+          aResponse.get_InitializeTemporaryOriginResponse().created());
       break;
 
     case RequestResponse::TPersistedResponse:
@@ -347,6 +381,4 @@ mozilla::ipc::IPCResult QuotaRequestChild::Recv__delete__(
   return IPC_OK();
 }
 
-}  // namespace quota
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::quota

@@ -9,14 +9,14 @@
 #include <string>
 #include <unordered_set>
 
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/MediaErrorBinding.h"
 #include "nsContentUtils.h"
 #include "nsIScriptError.h"
 #include "jsapi.h"
 #include "js/Warnings.h"  // JS::WarnASCII
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(MediaError, mParent)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(MediaError)
@@ -45,7 +45,7 @@ void MediaError::GetMessage(nsAString& aResult) const {
     // Print a warning message to JavaScript console to alert developers of
     // a non-whitelisted error message.
     nsAutoCString message =
-        NS_LITERAL_CSTRING(
+        nsLiteralCString(
             "This error message will be blank when "
             "privacy.resistFingerprinting = true."
             "  If it is really necessary, please add it to the whitelist in"
@@ -63,7 +63,7 @@ void MediaError::GetMessage(nsAString& aResult) const {
       // JavaScript console.
       nsContentUtils::ReportToConsoleNonLocalized(
           NS_ConvertASCIItoUTF16(message), nsIScriptError::warningFlag,
-          NS_LITERAL_CSTRING("MediaError"), ownerDoc);
+          "MediaError"_ns, ownerDoc);
     }
   }
 
@@ -82,5 +82,4 @@ JSObject* MediaError::WrapObject(JSContext* aCx,
   return MediaError_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -27,7 +27,8 @@ class OriginAttributes;
 
 namespace dom {
 class BrowsingContext;
-}
+class ContentParent;
+}  // namespace dom
 
 class ContentBlocking final {
  public:
@@ -88,11 +89,19 @@ class ContentBlocking final {
   typedef MozPromise<int, bool, true> StorageAccessFinalCheckPromise;
   typedef std::function<RefPtr<StorageAccessFinalCheckPromise>()>
       PerformFinalChecks;
-  typedef MozPromise<int, bool, true> StorageAccessGrantPromise;
-  static MOZ_MUST_USE RefPtr<StorageAccessGrantPromise> AllowAccessFor(
+  typedef MozPromise<int, bool, true> StorageAccessPermissionGrantPromise;
+  [[nodiscard]] static RefPtr<StorageAccessPermissionGrantPromise>
+  AllowAccessFor(
       nsIPrincipal* aPrincipal, dom::BrowsingContext* aParentContext,
-      ContentBlockingNotifier::StorageAccessGrantedReason aReason,
+      ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason,
       const PerformFinalChecks& aPerformFinalChecks = nullptr);
+
+  // This function handles tasks that have to be done in the process
+  // of the window that we just grant permission for.
+  static void OnAllowAccessFor(
+      dom::BrowsingContext* aParentContext, const nsCString& aTrackingOrigin,
+      uint32_t aCookieBehavior,
+      ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason);
 
   // For IPC only.
   typedef MozPromise<nsresult, bool, true> ParentAccessGrantPromise;
@@ -103,10 +112,29 @@ class ContentBlocking final {
           StaticPrefs::privacy_restrict3rdpartystorage_expiration());
 
   static RefPtr<ParentAccessGrantPromise> SaveAccessForOriginOnParentProcess(
-      uint64_t aParentWindowId, nsIPrincipal* aTrackingPrinciapl,
-      const nsCString& aTrackingOrigin, int aAllowMode,
+      uint64_t aTopLevelWindowId, dom::BrowsingContext* aParentContext,
+      nsIPrincipal* aTrackingPrinciapl, const nsCString& aTrackingOrigin,
+      int aAllowMode,
       uint64_t aExpirationTime =
           StaticPrefs::privacy_restrict3rdpartystorage_expiration());
+
+ private:
+  friend class dom::ContentParent;
+  // This should be running either in the parent process or in the child
+  // processes with an in-process browsing context.
+  [[nodiscard]] static RefPtr<StorageAccessPermissionGrantPromise>
+  CompleteAllowAccessFor(
+      dom::BrowsingContext* aParentContext, uint64_t aTopLevelWindowId,
+      nsIPrincipal* aTrackingPrincipal, const nsCString& aTrackingOrigin,
+      uint32_t aCookieBehavior,
+      ContentBlockingNotifier::StorageAccessPermissionGrantedReason aReason,
+      const PerformFinalChecks& aPerformFinalChecks = nullptr);
+
+  static void UpdateAllowAccessOnCurrentProcess(
+      dom::BrowsingContext* aParentContext, const nsACString& aTrackingOrigin);
+
+  static void UpdateAllowAccessOnParentProcess(
+      dom::BrowsingContext* aParentContext, const nsACString& aTrackingOrigin);
 };
 
 }  // namespace mozilla

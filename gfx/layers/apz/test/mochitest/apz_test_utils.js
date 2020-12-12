@@ -24,6 +24,12 @@ function convertEntries(entries) {
 function parseRect(str) {
   var pieces = str.replace(/[()\s]+/g, "").split(",");
   SimpleTest.is(pieces.length, 4, "expected string of form (x,y,w,h)");
+  for (var i = 0; i < 4; i++) {
+    var eq = pieces[i].indexOf("=");
+    if (eq >= 0) {
+      pieces[i] = pieces[i].substring(eq + 1);
+    }
+  }
   return {
     x: parseInt(pieces[0]),
     y: parseInt(pieces[1]),
@@ -229,6 +235,13 @@ function waitForFrame() {
   });
 }
 
+// Return a promise that is resolved on the next MozAfterPaint event
+function promiseAfterPaint() {
+  return new Promise(resolve => {
+    window.addEventListener("MozAfterPaint", resolve, { once: true });
+  });
+}
+
 function promiseApzRepaintsFlushed(aWindow = window) {
   return new Promise(function(resolve, reject) {
     var repaintDone = function() {
@@ -285,6 +298,13 @@ function waitForApzFlushedRepaints(aCallback) {
     .then(aCallback);
 }
 
+// Same as waitForApzFlushedRepaints, but in async form.
+async function promiseApzFlushedRepaints() {
+  await promiseAllPaintsDone();
+  await promiseApzRepaintsFlushed();
+  await promiseAllPaintsDone();
+}
+
 // This function takes a set of subtests to run one at a time in new top-level
 // windows, and returns a Promise that is resolved once all the subtests are
 // done running.
@@ -304,9 +324,10 @@ function waitForApzFlushedRepaints(aCallback) {
 //     { 'file': 'file_3.html', 'onload': function(w) { w.subtestDone(); } }
 //   ];
 //
-// Each subtest should call the subtestDone() function when it is done, to
-// indicate that the window should be torn down and the next text should run.
-// The subtestDone() function is injected into the subtest's window by this
+// Each subtest should call one of the subtestDone() or subtestFailed()
+// functions when it is done, to indicate that the window should be torn
+// down and the next test should run.
+// These functions are injected into the subtest's window by this
 // function prior to loading the subtest. For convenience, the |is| and |ok|
 // functions provided by SimpleTest are also mapped into the subtest's window.
 // For other things from the parent, the subtest can use window.opener.<whatever>
@@ -322,6 +343,11 @@ function runSubtestsSeriallyInFreshWindows(aSubtests) {
       "apz.subtest",
       /* default = */ ""
     );
+
+    function advanceSubtestExecutionWithFailure(msg) {
+      SimpleTest.ok(false, msg);
+      advanceSubtestExecution();
+    }
 
     function advanceSubtestExecution() {
       var test = aSubtests[testIndex];
@@ -404,6 +430,7 @@ function runSubtestsSeriallyInFreshWindows(aSubtests) {
       function spawnTest(aFile) {
         w = window.open("", "_blank");
         w.subtestDone = advanceSubtestExecution;
+        w.subtestFailed = advanceSubtestExecutionWithFailure;
         w.isApzSubtest = true;
         w.SimpleTest = SimpleTest;
         w.dump = function(msg) {
@@ -411,6 +438,9 @@ function runSubtestsSeriallyInFreshWindows(aSubtests) {
         };
         w.is = function(a, b, msg) {
           return is(a, b, aFile + " | " + msg);
+        };
+        w.isnot = function(a, b, msg) {
+          return isnot(a, b, aFile + " | " + msg);
         };
         w.isfuzzy = function(a, b, eps, msg) {
           return isfuzzy(a, b, eps, aFile + " | " + msg);
@@ -646,26 +676,6 @@ function runContinuation(testFunction) {
         );
       }
     });
-  };
-}
-
-// Same as runContinuation, except it takes an async generator, and doesn't
-// invoke it with any callback, since the generator doesn't need one.
-function runAsyncContinuation(testFunction) {
-  return async function() {
-    var asyncContinuation = testFunction();
-    try {
-      var ret = await asyncContinuation.next();
-      while (!ret.done) {
-        ret = await asyncContinuation.next();
-      }
-    } catch (ex) {
-      SimpleTest.ok(
-        false,
-        "APZ async test continuation failed with exception: " + ex
-      );
-      throw ex;
-    }
   };
 }
 
@@ -1032,6 +1042,10 @@ function getPrefs(ident) {
         // position is synced back to the main thread. So we disable displayport
         // expiry for these tests.
         ["apz.displayport_expiry_ms", 0],
+        // We need to disable touch resampling during these tests because we
+        // rely on touch move events being processed without delay. Touch
+        // resampling only processes them once vsync fires.
+        ["android.touch_resampling.enabled", false],
       ];
     case "TOUCH_ACTION":
       return [
@@ -1076,3 +1090,88 @@ var ApzCleanup = {
     }
   },
 };
+
+/**
+ * Returns a promise that will resolve if `eventTarget` receives an event of the
+ * given type that passes the given filter. Only the first matching message is
+ * used. The filter must be a function (or null); it is called with the event
+ * object and the call must return true to resolve the promise.
+ */
+function promiseOneEvent(eventTarget, eventType, filter) {
+  return new Promise((resolve, reject) => {
+    eventTarget.addEventListener(eventType, function listener(e) {
+      let success = false;
+      if (filter == null) {
+        success = true;
+      } else if (typeof filter == "function") {
+        try {
+          success = filter(e);
+        } catch (ex) {
+          dump(
+            `ERROR: Filter passed to promiseOneEvent threw exception: ${ex}\n`
+          );
+          reject();
+          return;
+        }
+      } else {
+        dump(
+          "ERROR: Filter passed to promiseOneEvent was neither null nor a function\n"
+        );
+        reject();
+        return;
+      }
+      if (success) {
+        eventTarget.removeEventListener(eventType, listener);
+        resolve(e);
+      }
+    });
+  });
+}
+
+function visualViewportAsZoomedRect() {
+  let vv = window.visualViewport;
+  return {
+    x: vv.pageLeft,
+    y: vv.pageTop,
+    w: vv.width,
+    h: vv.height,
+    z: vv.scale,
+  };
+}
+
+// Pulls the latest compositor APZ test data and checks to see if the
+// scroller with id `scrollerId` was checkerboarding. It also ensures that
+// a scroller with id `scrollerId` was actually found in the test data.
+// This function requires that "apz.test.logging_enabled" be set to true,
+// in order for the test data to be logged.
+function assertNotCheckerboarded(utils, scrollerId, msgPrefix) {
+  utils.advanceTimeAndRefresh(0);
+  var data = utils.getCompositorAPZTestData();
+  //dump(JSON.stringify(data, null, 4));
+  var found = false;
+  for (apzcData of data.additionalData) {
+    if (apzcData.key == scrollerId) {
+      var checkerboarding = apzcData.value
+        .split(",")
+        .includes("checkerboarding");
+      ok(!checkerboarding, `${msgPrefix}: scroller is not checkerboarding`);
+      found = true;
+    }
+  }
+  ok(found, `${msgPrefix}: Found the scroller in the APZ data`);
+  utils.restoreNormalRefresh();
+}
+
+function waitToClearOutAnyPotentialScrolls(aWindow) {
+  return new Promise(resolve => {
+    aWindow.requestAnimationFrame(() => {
+      aWindow.requestAnimationFrame(() => {
+        flushApzRepaints(() => {
+          aWindow.requestAnimationFrame(() => {
+            aWindow.requestAnimationFrame(resolve);
+          });
+        }, aWindow);
+      });
+    });
+  });
+}

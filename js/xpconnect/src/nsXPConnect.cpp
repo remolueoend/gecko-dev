@@ -13,6 +13,9 @@
 
 #include "XPCWrapper.h"
 #include "jsfriendapi.h"
+#include "js/AllocationLogging.h"  // JS::SetLogCtorDtorFunctions
+#include "js/CompileOptions.h"     // JS::ReadOnlyCompileOptions
+#include "js/Object.h"             // JS::GetClass
 #include "js/ProfilingStack.h"
 #include "GeckoProfiler.h"
 #include "nsJSEnvironment.h"
@@ -84,9 +87,6 @@ void nsXPConnect::InitJSContext() {
   gSelf->mContext = xpccx;
   gSelf->mRuntime = xpccx->Runtime();
 
-  // Initialize our singleton scopes.
-  gSelf->mRuntime->InitSingletonScopes();
-
   mozJSComponentLoader::InitStatics();
 
   // Initialize the script preloader cache.
@@ -138,7 +138,7 @@ void nsXPConnect::InitStatics() {
 #ifdef NS_BUILD_REFCNT_LOGGING
   // These functions are used for reporting leaks, so we register them as early
   // as possible to avoid missing any classes' creations.
-  js::SetLogCtorDtorFunctions(NS_LogCtor, NS_LogDtor);
+  JS::SetLogCtorDtorFunctions(NS_LogCtor, NS_LogDtor);
 #endif
   ReadOnlyPage::Init();
 
@@ -194,8 +194,7 @@ void xpc::ErrorNote::Init(JSErrorNotes::Note* aNote) {
 void xpc::ErrorReport::Init(JSErrorReport* aReport, const char* aToStringResult,
                             bool aIsChrome, uint64_t aWindowID) {
   xpc::ErrorBase::Init(aReport);
-  mCategory = aIsChrome ? NS_LITERAL_CSTRING("chrome javascript")
-                        : NS_LITERAL_CSTRING("content javascript");
+  mCategory = aIsChrome ? "chrome javascript"_ns : "content javascript"_ns;
   mWindowID = aWindowID;
 
   if (aToStringResult) {
@@ -234,8 +233,7 @@ void xpc::ErrorReport::Init(JSErrorReport* aReport, const char* aToStringResult,
 
 void xpc::ErrorReport::Init(JSContext* aCx, mozilla::dom::Exception* aException,
                             bool aIsChrome, uint64_t aWindowID) {
-  mCategory = aIsChrome ? NS_LITERAL_CSTRING("chrome javascript")
-                        : NS_LITERAL_CSTRING("content javascript");
+  mCategory = aIsChrome ? "chrome javascript"_ns : "content javascript"_ns;
   mWindowID = aWindowID;
 
   aException->GetErrorMessage(mErrorMsg);
@@ -296,11 +294,12 @@ void xpc::ErrorReport::LogToStderr() {
 }
 
 void xpc::ErrorReport::LogToConsole() {
-  LogToConsoleWithStack(nullptr, nullptr);
+  LogToConsoleWithStack(nullptr, JS::NothingHandleValue, nullptr, nullptr);
 }
 
-void xpc::ErrorReport::LogToConsoleWithStack(JS::HandleObject aStack,
-                                             JS::HandleObject aStackGlobal) {
+void xpc::ErrorReport::LogToConsoleWithStack(
+    nsGlobalWindowInner* aWin, JS::Handle<mozilla::Maybe<JS::Value>> aException,
+    JS::HandleObject aStack, JS::HandleObject aStackGlobal) {
   if (aStack) {
     MOZ_ASSERT(aStackGlobal);
     MOZ_ASSERT(JS_IsGlobalObject(aStackGlobal));
@@ -322,26 +321,21 @@ void xpc::ErrorReport::LogToConsoleWithStack(JS::HandleObject aStack,
       do_GetService(NS_CONSOLESERVICE_CONTRACTID);
   NS_ENSURE_TRUE_VOID(consoleService);
 
-  RefPtr<nsScriptErrorBase> errorObject;
-  if (mWindowID && aStack) {
-    // Only set stack on messages related to a document
-    // As we cache messages in the console service,
-    // we have to ensure not leaking them after the related
-    // context is destroyed and we only track document lifecycle for now.
-    errorObject = new nsScriptErrorWithStack(aStack, aStackGlobal);
-  } else {
-    errorObject = new nsScriptError();
-  }
+  RefPtr<nsScriptErrorBase> errorObject =
+      CreateScriptError(aWin, aException, aStack, aStackGlobal);
   errorObject->SetErrorMessageName(mErrorMsgName);
 
   uint32_t flags =
       mIsWarning ? nsIScriptError::warningFlag : nsIScriptError::errorFlag;
   nsresult rv = errorObject->InitWithWindowID(
       mErrorMsg, mFileName, mSourceLine, mLineNumber, mColumn, flags, mCategory,
-      mWindowID, mCategory.Equals(NS_LITERAL_CSTRING("chrome javascript")));
+      mWindowID, mCategory.Equals("chrome javascript"_ns));
   NS_ENSURE_SUCCESS_VOID(rv);
 
   rv = errorObject->InitSourceId(mSourceId);
+  NS_ENSURE_SUCCESS_VOID(rv);
+
+  rv = errorObject->InitIsPromiseRejection(mIsPromiseRejection);
   NS_ENSURE_SUCCESS_VOID(rv);
 
   for (size_t i = 0, len = mNotes.Length(); i < len; i++) {
@@ -406,7 +400,7 @@ static inline T UnexpectedFailure(T rv) {
 }
 
 void xpc::TraceXPCGlobal(JSTracer* trc, JSObject* obj) {
-  if (js::GetObjectClass(obj)->flags & JSCLASS_DOM_GLOBAL) {
+  if (JS::GetClass(obj)->flags & JSCLASS_DOM_GLOBAL) {
     mozilla::dom::TraceProtoAndIfaceCache(trc, obj);
   }
 
@@ -502,7 +496,7 @@ bool InitGlobalObject(JSContext* aJSContext, JS::Handle<JSObject*> aGlobal,
   JSAutoRealm ar(aJSContext, aGlobal);
 
   // Stuff coming through this path always ends up as a DOM global.
-  MOZ_ASSERT(js::GetObjectClass(aGlobal)->flags & JSCLASS_DOM_GLOBAL);
+  MOZ_ASSERT(JS::GetClass(aGlobal)->flags & JSCLASS_DOM_GLOBAL);
 
   if (!(aFlags & xpc::OMIT_COMPONENTS_OBJECT)) {
     // XPCCallContext gives us an active request needed to save/restore.
@@ -763,7 +757,7 @@ nsXPConnect::EvalInSandboxObject(const nsAString& source, const char* filename,
   if (filename) {
     filenameStr.Assign(filename);
   } else {
-    filenameStr = NS_LITERAL_CSTRING("x-bogus://XPConnect/Sandbox");
+    filenameStr = "x-bogus://XPConnect/Sandbox"_ns;
   }
   return EvalInSandbox(cx, sandbox, source, filenameStr, 1,
                        /* enforceFilenameRestrictions */ true, rval);
@@ -955,7 +949,7 @@ nsXPConnect::WriteScript(nsIObjectOutputStream* stream, JSContext* cx,
   rv = stream->Write32(size);
   if (NS_SUCCEEDED(rv)) {
     // Ideally we could just pass "buffer" here.  See bug 1566574.
-    rv = stream->WriteBytes(MakeSpan(buffer.begin(), size));
+    rv = stream->WriteBytes(Span(buffer.begin(), size));
   }
 
   return rv;
@@ -963,6 +957,7 @@ nsXPConnect::WriteScript(nsIObjectOutputStream* stream, JSContext* cx,
 
 NS_IMETHODIMP
 nsXPConnect::ReadScript(nsIObjectInputStream* stream, JSContext* cx,
+                        const JS::ReadOnlyCompileOptions& options,
                         JSScript** scriptp) {
   uint8_t flags;
   nsresult rv = stream->Read8(&flags);
@@ -998,7 +993,7 @@ nsXPConnect::ReadScript(nsIObjectInputStream* stream, JSContext* cx,
   {
     TranscodeResult code;
     Rooted<JSScript*> script(cx);
-    code = DecodeScript(cx, buffer, &script);
+    code = DecodeScript(cx, options, buffer, &script);
     if (code == TranscodeResult_Ok) {
       *scriptp = script.get();
     }

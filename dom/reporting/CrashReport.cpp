@@ -20,7 +20,7 @@ namespace dom {
 struct StringWriteFunc : public JSONWriteFunc {
   nsCString& mCString;
   explicit StringWriteFunc(nsCString& aCString) : mCString(aCString) {}
-  void Write(const char* aStr) override { mCString.Append(aStr); }
+  void Write(const Span<const char>& aStr) override { mCString.Append(aStr); }
 };
 
 /* static */
@@ -28,8 +28,8 @@ bool CrashReport::Deliver(nsIPrincipal* aPrincipal, bool aIsOOM) {
   MOZ_ASSERT(aPrincipal);
 
   nsAutoCString endpoint_url;
-  ReportingHeader::GetEndpointForReport(NS_LITERAL_STRING("default"),
-                                        aPrincipal, endpoint_url);
+  ReportingHeader::GetEndpointForReport(u"default"_ns, aPrincipal,
+                                        endpoint_url);
   if (endpoint_url.IsEmpty()) {
     return false;
   }
@@ -38,9 +38,9 @@ bool CrashReport::Deliver(nsIPrincipal* aPrincipal, bool aIsOOM) {
   aPrincipal->GetExposableSpec(safe_origin_spec);
 
   ReportDeliver::ReportData data;
-  data.mType = NS_LITERAL_STRING("crash");
-  data.mGroupName = NS_LITERAL_STRING("default");
-  data.mURL = NS_ConvertUTF8toUTF16(safe_origin_spec);
+  data.mType = u"crash"_ns;
+  data.mGroupName = u"default"_ns;
+  CopyUTF8toUTF16(safe_origin_spec, data.mURL);
   data.mCreationTime = TimeStamp::Now();
 
   Navigator::GetUserAgent(nullptr, aPrincipal, false, data.mUserAgent);

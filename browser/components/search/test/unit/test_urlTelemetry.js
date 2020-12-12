@@ -1,14 +1,19 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-const { NetUtil } = ChromeUtils.import("resource://gre/modules/NetUtil.jsm");
-const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { SearchTelemetry } = ChromeUtils.import(
-  "resource:///modules/SearchTelemetry.jsm"
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
 );
-const { TelemetryTestUtils } = ChromeUtils.import(
-  "resource://testing-common/TelemetryTestUtils.jsm"
-);
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  BrowserSearchTelemetry: "resource:///modules/BrowserSearchTelemetry.jsm",
+  NetUtil: "resource://gre/modules/NetUtil.jsm",
+  SearchSERPTelemetry: "resource:///modules/SearchSERPTelemetry.jsm",
+  SearchUtils: "resource://gre/modules/SearchUtils.jsm",
+  Services: "resource://gre/modules/Services.jsm",
+  sinon: "resource://testing-common/Sinon.jsm",
+  TelemetryTestUtils: "resource://testing-common/TelemetryTestUtils.jsm",
+});
 
 const TESTS = [
   {
@@ -16,7 +21,7 @@ const TESTS = [
     trackingUrl:
       "https://www.google.com/search?q=test&ie=utf-8&oe=utf-8&client=firefox-b-1-ab",
     expectedSearchCountEntry: "google.in-content:sap:firefox-b-1-ab",
-    expectedAdKey: "google",
+    expectedAdKey: "google:sap",
     adUrls: [
       "https://www.googleadservices.com/aclk=foobar",
       "https://www.googleadservices.com/pagead/aclk=foobar",
@@ -40,6 +45,9 @@ const TESTS = [
     trackingUrl:
       "https://www.google.com/search?source=hp&ei=EI_VALUE&q=test&oq=test&gs_l=GS_L_VALUE",
     expectedSearchCountEntry: "google.in-content:organic:none",
+    expectedAdKey: "google:organic",
+    adUrls: ["https://www.googleadservices.com/aclk=foobar"],
+    nonAdUrls: ["https://www.googleadservices.com/?aclk=foobar"],
   },
   {
     title: "Google organic UK",
@@ -63,7 +71,7 @@ const TESTS = [
     title: "Bing search access point",
     trackingUrl: "https://www.bing.com/search?q=test&pc=MOZI&form=MOZLBR",
     expectedSearchCountEntry: "bing.in-content:sap:MOZI",
-    expectedAdKey: "bing",
+    expectedAdKey: "bing:sap",
     adUrls: [
       "https://www.bing.com/aclick?ld=foo",
       "https://www.bing.com/fd/ls/GLinkPingPost.aspx?IG=bar&url=https%3A%2F%2Fwww.bing.com%2Faclick",
@@ -90,7 +98,8 @@ const TESTS = [
         false,
         Date.now() + 1000 * 60 * 60,
         {},
-        Ci.nsICookie.SAMESITE_NONE
+        Ci.nsICookie.SAMESITE_NONE,
+        Ci.nsICookie.SCHEME_HTTPS
       );
     },
     tearDown() {
@@ -106,18 +115,23 @@ const TESTS = [
     trackingUrl:
       "https://www.bing.com/search?q=test&qs=n&form=QBLH&sp=-1&pq=&sc=0-0&sk=&cvid=CVID_VALUE",
     expectedSearchCountEntry: "bing.in-content:organic:none",
+    expectedAdKey: "bing:organic",
+    adUrls: ["https://www.bing.com/aclick?ld=foo"],
+    nonAdUrls: ["https://www.bing.com/fd/ls/ls.gif?IG=foo"],
   },
   {
     title: "DuckDuckGo search access point",
     trackingUrl: "https://duckduckgo.com/?q=test&t=ffab",
     expectedSearchCountEntry: "duckduckgo.in-content:sap:ffab",
-    expectedAdKey: "duckduckgo",
+    expectedAdKey: "duckduckgo:sap",
     adUrls: [
-      "https://duckduckgo.com/y.js?foo",
+      "https://duckduckgo.com/y.js?ad_provider=foo",
+      "https://duckduckgo.com/y.js?f=bar&ad_provider=foo",
       "https://www.amazon.co.uk/foo?tag=duckduckgo-ffab-uk-32-xk",
     ],
     nonAdUrls: [
       "https://duckduckgo.com/?q=foo&t=ffab&ia=images&iax=images",
+      "https://duckduckgo.com/y.js?ifu=foo",
       "https://improving.duckduckgo.com/t/bar",
     ],
   },
@@ -125,6 +139,9 @@ const TESTS = [
     title: "DuckDuckGo organic",
     trackingUrl: "https://duckduckgo.com/?q=test&t=hi&ia=news",
     expectedSearchCountEntry: "duckduckgo.in-content:organic:hi",
+    expectedAdKey: "duckduckgo:organic",
+    adUrls: ["https://duckduckgo.com/y.js?ad_provider=foo"],
+    nonAdUrls: ["https://duckduckgo.com/?q=foo&t=ffab&ia=images&iax=images"],
   },
   {
     title: "Baidu search access point",
@@ -168,7 +185,7 @@ async function testAdUrlClicked(serpUrl, adUrl, expectedAdKey) {
     ),
     loadUsingSystemPrincipal: true,
   });
-  SearchTelemetry._contentHandler.observeActivity(
+  SearchSERPTelemetry._contentHandler.observeActivity(
     channel,
     Ci.nsIHttpActivityObserver.ACTIVITY_TYPE_HTTP_TRANSACTION,
     Ci.nsIHttpActivityObserver.ACTIVITY_SUBTYPE_TRANSACTION_CLOSE
@@ -193,13 +210,24 @@ async function testAdUrlClicked(serpUrl, adUrl, expectedAdKey) {
   }
 }
 
+add_task(async function setup() {
+  Services.prefs.setBoolPref(SearchUtils.BROWSER_SEARCH_PREF + "log", true);
+  await SearchSERPTelemetry.init();
+  sinon.stub(BrowserSearchTelemetry, "shouldRecordSearchCount").returns(true);
+});
+
 add_task(async function test_parsing_search_urls() {
   for (const test of TESTS) {
     info(`Running ${test.title}`);
     if (test.setUp) {
       test.setUp();
     }
-    SearchTelemetry.updateTrackingStatus({}, test.trackingUrl);
+    SearchSERPTelemetry.updateTrackingStatus(
+      {
+        getTabBrowser: () => {},
+      },
+      test.trackingUrl
+    );
     const hs = Services.telemetry
       .getKeyedHistogramById("SEARCH_COUNTS")
       .snapshot();

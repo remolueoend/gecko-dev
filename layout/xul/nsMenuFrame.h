@@ -41,8 +41,6 @@ class Element;
 }  // namespace dom
 }  // namespace mozilla
 
-#define NS_STATE_ACCELTEXT_IS_DERIVED NS_STATE_BOX_CHILD_RESERVED
-
 // the type of menuitem
 enum nsMenuType {
   // a normal menuitem where a command is carried out when activated
@@ -122,7 +120,7 @@ class nsMenuFrame final : public nsBoxFrame, public nsIReflowCallback {
 
   NS_IMETHOD SelectMenu(bool aActivateFlag);
 
-  virtual nsIScrollableFrame* GetScrollTargetFrame() override;
+  virtual nsIScrollableFrame* GetScrollTargetFrame() const override;
 
   /**
    * NOTE: OpenMenu will open the menu asynchronously.
@@ -147,13 +145,13 @@ class nsMenuFrame final : public nsBoxFrame, public nsIReflowCallback {
 
   const nsAString& GetRadioGroupName() { return mGroupName; }
   nsMenuType GetMenuType() { return mType; }
-  nsMenuPopupFrame* GetPopup();
+  nsMenuPopupFrame* GetPopup() const;
 
   /**
    * @return true if this frame has a popup child frame.
    */
   bool HasPopup() const {
-    return (GetStateBits() & NS_STATE_MENU_HAS_POPUP_LIST) != 0;
+    return HasAnyStateBits(NS_STATE_MENU_HAS_POPUP_LIST);
   }
 
   // nsMenuFrame methods
@@ -192,7 +190,7 @@ class nsMenuFrame final : public nsBoxFrame, public nsIReflowCallback {
 
 #ifdef DEBUG_FRAME_DUMP
   virtual nsresult GetFrameName(nsAString& aResult) const override {
-    return MakeFrameName(NS_LITERAL_STRING("Menu"), aResult);
+    return MakeFrameName(u"Menu"_ns, aResult);
   }
 #endif
 
@@ -231,9 +229,6 @@ class nsMenuFrame final : public nsBoxFrame, public nsIReflowCallback {
   // checked items. This method can destroy the frame.
   void UpdateMenuSpecialState();
 
-  // Examines the key node and builds the accelerator.
-  void BuildAcceleratorText(bool aNotify);
-
   // Called to execute our command handler. This method can destroy the frame.
   void Execute(mozilla::WidgetGUIEvent* aEvent);
 
@@ -256,8 +251,6 @@ class nsMenuFrame final : public nsBoxFrame, public nsIReflowCallback {
 
   bool mIsMenu;   // Whether or not we can even have children or not.
   bool mChecked;  // are we checked?
-  bool mIgnoreAccelTextChange;  // temporarily set while determining the
-                                // accelerator key
   bool mReflowCallbackPosted;
   nsMenuType mType;
 

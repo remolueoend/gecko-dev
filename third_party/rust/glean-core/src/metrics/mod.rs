@@ -4,6 +4,8 @@
 
 //! The different metric types supported by the Glean SDK to handle data.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -14,6 +16,7 @@ mod custom_distribution;
 mod datetime;
 mod event;
 mod experiment;
+mod jwe;
 mod labeled;
 mod memory_distribution;
 mod memory_unit;
@@ -26,22 +29,25 @@ mod timespan;
 mod timing_distribution;
 mod uuid;
 
+pub use crate::event_database::RecordedEvent;
 use crate::histogram::{Functional, Histogram, PrecomputedExponential, PrecomputedLinear};
+pub use crate::metrics::datetime::Datetime;
 use crate::util::get_iso_time_string;
 use crate::CommonMetricData;
 use crate::Glean;
 
 pub use self::boolean::BooleanMetric;
 pub use self::counter::CounterMetric;
+pub use self::custom_distribution::CustomDistributionMetric;
 pub use self::datetime::DatetimeMetric;
 pub use self::event::EventMetric;
 pub(crate) use self::experiment::ExperimentMetric;
 pub use crate::histogram::HistogramType;
 // Note: only expose RecordedExperimentData to tests in
 // the next line, so that glean-core\src\lib.rs won't fail to build.
-pub use self::custom_distribution::CustomDistributionMetric;
 #[cfg(test)]
 pub(crate) use self::experiment::RecordedExperimentData;
+pub use self::jwe::JweMetric;
 pub use self::labeled::{
     combine_base_identifier_and_label, dynamic_label, strip_label, LabeledMetric,
 };
@@ -57,6 +63,18 @@ pub use self::timing_distribution::TimerId;
 pub use self::timing_distribution::TimingDistributionMetric;
 pub use self::uuid::UuidMetric;
 
+/// A snapshot of all buckets and the accumulated sum of a distribution.
+#[derive(Debug, Serialize)]
+pub struct DistributionData {
+    /// A map containig the bucket index mapped to the accumulated count.
+    ///
+    /// This can contain buckets with a count of `0`.
+    pub values: HashMap<u64, u64>,
+
+    /// The accumulated sum of all the samples in the distribution.
+    pub sum: u64,
+}
+
 /// The available metrics.
 ///
 /// This is the in-memory and persisted layout of a metric.
@@ -69,37 +87,39 @@ pub use self::uuid::UuidMetric;
 /// **Any new metric must be added at the end.**
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Metric {
-    /// A boolean metric. See [`BooleanMetric`](struct.BooleanMetric.html) for more information.
+    /// A boolean metric. See [`BooleanMetric`] for more information.
     Boolean(bool),
-    /// A counter metric. See [`CounterMetric`](struct.CounterMetric.html) for more information.
+    /// A counter metric. See [`CounterMetric`] for more information.
     Counter(i32),
     /// A custom distribution with precomputed exponential bucketing.
-    /// See [`CustomDistributionMetric`](struct.CustomDistributionMetric.html) for more information.
+    /// See [`CustomDistributionMetric`] for more information.
     CustomDistributionExponential(Histogram<PrecomputedExponential>),
     /// A custom distribution with precomputed linear bucketing.
-    /// See [`CustomDistributionMetric`](struct.CustomDistributionMetric.html) for more information.
+    /// See [`CustomDistributionMetric`] for more information.
     CustomDistributionLinear(Histogram<PrecomputedLinear>),
-    /// A datetime metric. See [`DatetimeMetric`](struct.DatetimeMetric.html) for more information.
+    /// A datetime metric. See [`DatetimeMetric`] for more information.
     Datetime(DateTime<FixedOffset>, TimeUnit),
-    /// An experiment metric. See [`ExperimentMetric`](struct.ExperimentMetric.html) for more information.
+    /// An experiment metric. See `ExperimentMetric` for more information.
     Experiment(experiment::RecordedExperimentData),
-    /// A quantity metric. See [`QuantityMetric`](struct.QuantityMetric.html) for more information.
+    /// A quantity metric. See [`QuantityMetric`] for more information.
     Quantity(i64),
-    /// A string metric. See [`StringMetric`](struct.StringMetric.html) for more information.
+    /// A string metric. See [`StringMetric`] for more information.
     String(String),
-    /// A string list metric. See [`StringListMetric`](struct.StringListMetric.html) for more information.
+    /// A string list metric. See [`StringListMetric`] for more information.
     StringList(Vec<String>),
-    /// A UUID metric. See [`UuidMetric`](struct.UuidMetric.html) for more information.
+    /// A UUID metric. See [`UuidMetric`] for more information.
     Uuid(String),
-    /// A timespan metric. See [`TimespanMetric`](struct.TimespanMetric.html) for more information.
+    /// A timespan metric. See [`TimespanMetric`] for more information.
     Timespan(std::time::Duration, TimeUnit),
-    /// A timing distribution. See [`TimingDistributionMetric`](struct.TimingDistributionMetric.html) for more information.
+    /// A timing distribution. See [`TimingDistributionMetric`] for more information.
     TimingDistribution(Histogram<Functional>),
-    /// A memory distribution. See [`MemoryDistributionMetric`](struct.MemoryDistributionMetric.html) for more information.
+    /// A memory distribution. See [`MemoryDistributionMetric`] for more information.
     MemoryDistribution(Histogram<Functional>),
+    /// A JWE metric. See [`JweMetric`] for more information.
+    Jwe(String),
 }
 
-/// A `MetricType` describes common behavior across all metrics.
+/// A [`MetricType`] describes common behavior across all metrics.
 pub trait MetricType {
     /// Access the stored metadata
     fn meta(&self) -> &CommonMetricData;
@@ -117,7 +137,7 @@ pub trait MetricType {
 }
 
 impl Metric {
-    /// The ping section the metric fits into.
+    /// Gets the ping section the metric fits into.
     ///
     /// This determines the section of the ping to place the metric data in when
     /// assembling the ping payload.
@@ -137,6 +157,7 @@ impl Metric {
             Metric::TimingDistribution(_) => "timing_distribution",
             Metric::Uuid(_) => "uuid",
             Metric::MemoryDistribution(_) => "memory_distribution",
+            Metric::Jwe(_) => "jwe",
         }
     }
 
@@ -160,6 +181,7 @@ impl Metric {
             Metric::TimingDistribution(hist) => json!(timing_distribution::snapshot(hist)),
             Metric::Uuid(s) => json!(s),
             Metric::MemoryDistribution(hist) => json!(memory_distribution::snapshot(hist)),
+            Metric::Jwe(s) => json!(s),
         }
     }
 }

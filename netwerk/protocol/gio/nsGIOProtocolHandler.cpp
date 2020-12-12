@@ -10,8 +10,10 @@
 #include "nsGIOProtocolHandler.h"
 #include "mozilla/Components.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/Logging.h"
 #include "mozilla/NullPrincipal.h"
 #include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsIObserver.h"
 #include "nsThreadUtils.h"
 #include "nsProxyRelease.h"
@@ -960,11 +962,10 @@ nsGIOProtocolHandler::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
   }
 
   RefPtr<nsGIOInputStream> tmpStream = stream;
-  rv =
-      NS_NewInputStreamChannelInternal(aResult, aURI, tmpStream.forget(),
-                                       NS_LITERAL_CSTRING(UNKNOWN_CONTENT_TYPE),
-                                       EmptyCString(),  // aContentCharset
-                                       aLoadInfo);
+  rv = NS_NewInputStreamChannelInternal(aResult, aURI, tmpStream.forget(),
+                                        nsLiteralCString(UNKNOWN_CONTENT_TYPE),
+                                        ""_ns,  // aContentCharset
+                                        aLoadInfo);
   if (NS_SUCCEEDED(rv)) {
     stream->SetChannel(*aResult);
   }

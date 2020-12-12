@@ -15,6 +15,7 @@
 #include "PresentationCallbacks.h"
 #include "PresentationLog.h"
 #include "PresentationTransportBuilderConstructor.h"
+#include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Navigator.h"
@@ -31,8 +32,8 @@
 #include "nsSandboxFlags.h"
 #include "nsServiceManagerUtils.h"
 
-using namespace mozilla;
-using namespace mozilla::dom;
+namespace mozilla {
+namespace dom {
 
 NS_IMPL_ADDREF_INHERITED(PresentationRequest, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(PresentationRequest, DOMEventTargetHelper)
@@ -58,7 +59,7 @@ static nsresult GetAbsoluteURL(const nsAString& aUrl, nsIURI* aBaseUri,
   nsAutoCString spec;
   uri->GetSpec(spec);
 
-  aAbsoluteUrl = NS_ConvertUTF8toUTF16(spec);
+  CopyUTF8toUTF16(spec, aAbsoluteUrl);
 
   return NS_OK;
 }
@@ -67,7 +68,10 @@ static nsresult GetAbsoluteURL(const nsAString& aUrl, nsIURI* aBaseUri,
 already_AddRefed<PresentationRequest> PresentationRequest::Constructor(
     const GlobalObject& aGlobal, const nsAString& aUrl, ErrorResult& aRv) {
   Sequence<nsString> urls;
-  urls.AppendElement(aUrl, fallible);
+  if (!urls.AppendElement(aUrl, fallible)) {
+    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
+    return nullptr;
+  }
   return Constructor(aGlobal, urls, aRv);
 }
 
@@ -196,7 +200,7 @@ already_AddRefed<Promise> PresentationRequest::StartWithDevice(
   char buffer[NSID_LENGTH];
   uuid.ToProvidedString(buffer);
   nsAutoString id;
-  CopyASCIItoUTF16(MakeSpan(buffer, NSID_LENGTH - 1), id);
+  CopyASCIItoUTF16(Span(buffer, NSID_LENGTH - 1), id);
 
   nsCOMPtr<nsIPresentationService> service =
       do_GetService(PRESENTATION_SERVICE_CONTRACTID);
@@ -424,7 +428,7 @@ nsresult PresentationRequest::DispatchConnectionAvailableEvent(
 
   RefPtr<PresentationConnectionAvailableEvent> event =
       PresentationConnectionAvailableEvent::Constructor(
-          this, NS_LITERAL_STRING("connectionavailable"), init);
+          this, u"connectionavailable"_ns, init);
   if (NS_WARN_IF(!event)) {
     return NS_ERROR_FAILURE;
   }
@@ -509,9 +513,7 @@ bool PresentationRequest::IsPrioriAuthenticatedURL(const nsAString& aUrl) {
     return false;
   }
 
-  bool isTrustworthyOrigin = false;
-  principal->GetIsOriginPotentiallyTrustworthy(&isTrustworthyOrigin);
-  return isTrustworthyOrigin;
+  return principal->GetIsOriginPotentiallyTrustworthy();
 }
 
 bool PresentationRequest::IsAllURLAuthenticated() {
@@ -523,3 +525,6 @@ bool PresentationRequest::IsAllURLAuthenticated() {
 
   return true;
 }
+
+}  // namespace dom
+}  // namespace mozilla

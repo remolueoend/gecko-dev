@@ -9,6 +9,7 @@
 #include "nsAtom.h"
 #include "nsString.h"
 #include "UTFStrings.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
 
 #include "gtest/gtest.h"
@@ -55,7 +56,7 @@ TEST(Atoms, 16vs8)
 
 TEST(Atoms, Null)
 {
-  nsAutoString str(NS_LITERAL_STRING("string with a \0 char"));
+  nsAutoString str(u"string with a \0 char"_ns);
   nsDependentString strCut(str.get());
 
   EXPECT_FALSE(str.Equals(strCut));
@@ -140,10 +141,8 @@ TEST(Atoms, Table)
   EXPECT_EQ(NS_GetNumberOfAtoms(), count + 1);
 }
 
-class nsAtomRunner final : public nsIRunnable {
+class nsAtomRunner final : public Runnable {
  public:
-  NS_DECL_THREADSAFE_ISUPPORTS
-
   NS_IMETHOD Run() final {
     for (int i = 0; i < 10000; i++) {
       RefPtr<nsAtom> atom = NS_Atomize(u"A Testing Atom");
@@ -151,11 +150,11 @@ class nsAtomRunner final : public nsIRunnable {
     return NS_OK;
   }
 
+  nsAtomRunner() : Runnable("nsAtomRunner") {}
+
  private:
   ~nsAtomRunner() = default;
 };
-
-NS_IMPL_ISUPPORTS(nsAtomRunner, nsIRunnable)
 
 TEST(Atoms, ConcurrentAccessing)
 {

@@ -25,7 +25,7 @@ function LazyPool(conn) {
 
 LazyPool.prototype = extend(Pool.prototype, {
   // The actor for a given actor id stored in this pool
-  actor: function(actorID) {
+  getActorByID: function(actorID) {
     if (this.__poolMap) {
       const entry = this._poolMap.get(actorID);
       if (entry instanceof LazyActor) {
@@ -34,12 +34,6 @@ LazyPool.prototype = extend(Pool.prototype, {
       return entry;
     }
     return null;
-  },
-
-  // Same as actor, should update debugger connection to use 'actor'
-  // and then remove this.
-  get: function(actorID) {
-    return this.actor(actorID);
   },
 });
 
@@ -69,7 +63,7 @@ exports.LazyPool = LazyPool;
  *     - _extraActors
  *        An object whose own property names are factory table (and packet)
  *        property names, and whose values are no-argument actor constructors,
- *        of the sort that one can add to an ActorPool.
+ *        of the sort that one can add to a Pool.
  *
  *     - conn
  *        The DevToolsServerConnection in which the new actors will participate.
@@ -130,7 +124,7 @@ exports.createExtraActors = createExtraActors;
  *     - _extraActors
  *        An object whose own property names are factory table (and packet)
  *        property names, and whose values are no-argument actor constructors,
- *        of the sort that one can add to an ActorPool.
+ *        of the sort that one can add to a Pool.
  *
  *     - conn
  *        The DevToolsServerConnection in which the new actors will participate.

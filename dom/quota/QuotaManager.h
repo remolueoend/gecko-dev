@@ -7,31 +7,43 @@
 #ifndef mozilla_dom_quota_quotamanager_h__
 #define mozilla_dom_quota_quotamanager_h__
 
-#include "QuotaCommon.h"
-
+#include <cstdint>
+#include <utility>
+#include "Client.h"
+#include "ErrorList.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Mutex.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Result.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/ipc/IdType.h"
-#include "mozilla/Mutex.h"
-
+#include "mozilla/dom/quota/InitializationTypes.h"
+#include "mozilla/dom/quota/PersistenceType.h"
+#include "mozilla/dom/quota/QuotaCommon.h"
+#include "mozilla/dom/quota/QuotaInfo.h"
+#include "nsCOMPtr.h"
 #include "nsClassHashtable.h"
-#include "nsRefPtrHashtable.h"
-
-#include "InitializationTypes.h"
-#include "Client.h"
-#include "PersistenceType.h"
-
+#include "nsDataHashtable.h"
+#include "nsDebug.h"
+#include "nsHashKeys.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
+#include "nsTStringRepr.h"
+#include "nscore.h"
 #include "prenv.h"
 
 #define QUOTA_MANAGER_CONTRACTID "@mozilla.org/dom/quota/manager;1"
 
 class mozIStorageConnection;
 class nsIEventTarget;
+class nsIFile;
 class nsIPrincipal;
+class nsIRunnable;
 class nsIThread;
 class nsITimer;
-class nsIURI;
 class nsPIDOMWindowOuter;
-class nsIRunnable;
 
 namespace mozilla {
 
@@ -69,16 +81,16 @@ class DirectoryLock : public RefCountedObject {
   // 'Get' prefix is to avoid name collisions with the enum
   PersistenceType GetPersistenceType() const;
 
-  const nsACString& Group() const;
+  quota::GroupAndOrigin GroupAndOrigin() const;
 
   const nsACString& Origin() const;
 
   Client::Type ClientType() const;
 
-  already_AddRefed<DirectoryLock> Specialize(PersistenceType aPersistenceType,
-                                             const nsACString& aGroup,
-                                             const nsACString& aOrigin,
-                                             Client::Type aClientType) const;
+  already_AddRefed<DirectoryLock> Specialize(
+      PersistenceType aPersistenceType,
+      const quota::GroupAndOrigin& aGroupAndOrigin,
+      Client::Type aClientType) const;
 
   void Log() const;
 
@@ -170,7 +182,7 @@ class QuotaManager final : public BackgroundThreadObject {
    * methods.
    */
   void InitQuotaForOrigin(PersistenceType aPersistenceType,
-                          const nsACString& aGroup, const nsACString& aOrigin,
+                          const GroupAndOrigin& aGroupAndOrigin,
                           const ClientUsageArray& aClientUsages,
                           uint64_t aUsageBytes, int64_t aAccessTime,
                           bool aPersisted);
@@ -186,8 +198,7 @@ class QuotaManager final : public BackgroundThreadObject {
    * LSNG's 0 usage to the QuotaObject).
    */
   void EnsureQuotaForOrigin(PersistenceType aPersistenceType,
-                            const nsACString& aGroup,
-                            const nsACString& aOrigin);
+                            const GroupAndOrigin& aGroupAndOrigin);
 
   /**
    * For use when creating an origin directory. It's possible that origin usage
@@ -196,35 +207,31 @@ class QuotaManager final : public BackgroundThreadObject {
    * one.
    */
   void NoteOriginDirectoryCreated(PersistenceType aPersistenceType,
-                                  const nsACString& aGroup,
-                                  const nsACString& aOrigin, bool aPersisted,
-                                  int64_t& aTimestamp);
+                                  const GroupAndOrigin& aGroupAndOrigin,
+                                  bool aPersisted, int64_t& aTimestamp);
 
   // XXX clients can use QuotaObject instead of calling this method directly.
   void DecreaseUsageForOrigin(PersistenceType aPersistenceType,
-                              const nsACString& aGroup,
-                              const nsACString& aOrigin,
+                              const GroupAndOrigin& aGroupAndOrigin,
                               Client::Type aClientType, int64_t aSize);
 
   void ResetUsageForClient(PersistenceType aPersistenceType,
-                           const nsACString& aGroup, const nsACString& aOrigin,
+                           const GroupAndOrigin& aGroupAndOrigin,
                            Client::Type aClientType);
 
-  bool GetUsageForClient(PersistenceType aPersistenceType,
-                         const nsACString& aGroup, const nsACString& aOrigin,
-                         Client::Type aClientType, uint64_t& aUsage);
+  UsageInfo GetUsageForClient(PersistenceType aPersistenceType,
+                              const GroupAndOrigin& aGroupAndOrigin,
+                              Client::Type aClientType);
 
   void UpdateOriginAccessTime(PersistenceType aPersistenceType,
-                              const nsACString& aGroup,
-                              const nsACString& aOrigin);
+                              const GroupAndOrigin& aGroupAndOrigin);
 
   void RemoveQuota();
 
   void RemoveQuotaForOrigin(PersistenceType aPersistenceType,
-                            const nsACString& aGroup,
-                            const nsACString& aOrigin) {
+                            const GroupAndOrigin& aGroupAndOrigin) {
     MutexAutoLock lock(mQuotaMutex);
-    LockedRemoveQuotaForOrigin(aPersistenceType, aGroup, aOrigin);
+    LockedRemoveQuotaForOrigin(aPersistenceType, aGroupAndOrigin);
   }
 
   nsresult LoadQuota();
@@ -232,44 +239,37 @@ class QuotaManager final : public BackgroundThreadObject {
   void UnloadQuota();
 
   already_AddRefed<QuotaObject> GetQuotaObject(
-      PersistenceType aPersistenceType, const nsACString& aGroup,
-      const nsACString& aOrigin, Client::Type aClientType, nsIFile* aFile,
-      int64_t aFileSize = -1, int64_t* aFileSizeOut = nullptr);
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      Client::Type aClientType, nsIFile* aFile, int64_t aFileSize = -1,
+      int64_t* aFileSizeOut = nullptr);
 
-  already_AddRefed<QuotaObject> GetQuotaObject(PersistenceType aPersistenceType,
-                                               const nsACString& aGroup,
-                                               const nsACString& aOrigin,
-                                               Client::Type aClientType,
-                                               const nsAString& aPath,
-                                               int64_t aFileSize = -1,
-                                               int64_t* aFileSizeOut = nullptr);
+  already_AddRefed<QuotaObject> GetQuotaObject(
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      Client::Type aClientType, const nsAString& aPath, int64_t aFileSize = -1,
+      int64_t* aFileSizeOut = nullptr);
 
   already_AddRefed<QuotaObject> GetQuotaObject(const int64_t aDirectoryLockId,
                                                const nsAString& aPath);
 
-  Nullable<bool> OriginPersisted(const nsACString& aGroup,
-                                 const nsACString& aOrigin);
+  Nullable<bool> OriginPersisted(const GroupAndOrigin& aGroupAndOrigin);
 
-  void PersistOrigin(const nsACString& aGroup, const nsACString& aOrigin);
+  void PersistOrigin(const GroupAndOrigin& aGroupAndOrigin);
 
   // Called when a process is being shot down. Aborts any running operations
   // for the given process.
   void AbortOperationsForProcess(ContentParentId aContentParentId);
 
-  nsresult GetDirectoryForOrigin(PersistenceType aPersistenceType,
-                                 const nsACString& aASCIIOrigin,
-                                 nsIFile** aDirectory) const;
+  Result<nsCOMPtr<nsIFile>, nsresult> GetDirectoryForOrigin(
+      PersistenceType aPersistenceType, const nsACString& aASCIIOrigin) const;
 
   nsresult RestoreDirectoryMetadata2(nsIFile* aDirectory, bool aPersistent);
 
   nsresult GetDirectoryMetadata2(nsIFile* aDirectory, int64_t* aTimestamp,
-                                 bool* aPersisted, nsACString& aSuffix,
-                                 nsACString& aGroup, nsACString& aOrigin);
+                                 bool* aPersisted, QuotaInfo& aQuotaInfo);
 
   nsresult GetDirectoryMetadata2WithRestore(
       nsIFile* aDirectory, bool aPersistent, int64_t* aTimestamp,
-      bool* aPersisted, nsACString& aSuffix, nsACString& aGroup,
-      nsACString& aOrigin, const bool aTelemetry = false);
+      bool* aPersisted, QuotaInfo& aQuotaInfo, const bool aTelemetry = false);
 
   nsresult GetDirectoryMetadata2(nsIFile* aDirectory, int64_t* aTimestamp,
                                  bool* aPersisted);
@@ -295,9 +295,9 @@ class QuotaManager final : public BackgroundThreadObject {
   // In other words, protection which the lock represents dies with the lock
   // object itself.
   already_AddRefed<DirectoryLock> OpenDirectory(
-      PersistenceType aPersistenceType, const nsACString& aGroup,
-      const nsACString& aOrigin, Client::Type aClientType, bool aExclusive,
-      OpenDirectoryListener* aOpenListener);
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      Client::Type aClientType, bool aExclusive,
+      RefPtr<OpenDirectoryListener> aOpenListener);
 
   // XXX RemoveMe once bug 1170279 gets fixed.
   already_AddRefed<DirectoryLock> OpenDirectoryInternal(
@@ -338,37 +338,23 @@ class QuotaManager final : public BackgroundThreadObject {
 
   nsresult EnsureStorageIsInitialized();
 
-  nsresult EnsureStorageAndOriginIsInitialized(PersistenceType aPersistenceType,
-                                               const nsACString& aSuffix,
-                                               const nsACString& aGroup,
-                                               const nsACString& aOrigin,
-                                               Client::Type aClientType,
-                                               nsIFile** aDirectory);
+  // Returns a pair of an nsIFile object referring to the directory, and a bool
+  // indicating whether the directory was newly created.
+  Result<std::pair<nsCOMPtr<nsIFile>, bool>, nsresult>
+  EnsurePersistentOriginIsInitialized(const QuotaInfo& aQuotaInfo);
 
-  nsresult EnsureStorageAndOriginIsInitializedInternal(
-      PersistenceType aPersistenceType, const nsACString& aSuffix,
-      const nsACString& aGroup, const nsACString& aOrigin,
-      const Nullable<Client::Type>& aClientType, nsIFile** aDirectory,
-      bool* aCreated = nullptr);
-
-  nsresult EnsurePersistentOriginIsInitialized(const nsACString& aSuffix,
-                                               const nsACString& aGroup,
-                                               const nsACString& aOrigin,
-                                               nsIFile** aDirectory,
-                                               bool* aCreated);
-
-  nsresult EnsureTemporaryOriginIsInitialized(PersistenceType aPersistenceType,
-                                              const nsACString& aSuffix,
-                                              const nsACString& aGroup,
-                                              const nsACString& aOrigin,
-                                              nsIFile** aDirectory,
-                                              bool* aCreated);
+  // Returns a pair of an nsIFile object referring to the directory, and a bool
+  // indicating whether the directory was newly created.
+  Result<std::pair<nsCOMPtr<nsIFile>, bool>, nsresult>
+  EnsureTemporaryOriginIsInitialized(PersistenceType aPersistenceType,
+                                     const QuotaInfo& aQuotaInfo);
 
   nsresult EnsureTemporaryStorageIsInitialized();
 
   void ShutdownStorage();
 
-  nsresult EnsureOriginDirectory(nsIFile* aDirectory, bool* aCreated);
+  // Returns a bool indicating whether the directory was newly created.
+  Result<bool, nsresult> EnsureOriginDirectory(nsIFile& aDirectory);
 
   nsresult AboutToClearOrigins(
       const Nullable<PersistenceType>& aPersistenceType,
@@ -410,6 +396,8 @@ class QuotaManager final : public BackgroundThreadObject {
 
   const nsString& GetBasePath() const { return mBasePath; }
 
+  const nsString& GetStorageName() const { return mStorageName; }
+
   const nsString& GetStoragePath() const { return mStoragePath; }
 
   const nsString& GetStoragePath(PersistenceType aPersistenceType) const {
@@ -430,7 +418,7 @@ class QuotaManager final : public BackgroundThreadObject {
 
   uint64_t GetGroupUsage(const nsACString& aGroup);
 
-  uint64_t GetOriginUsage(const nsACString& aGroup, const nsACString& aOrigin);
+  uint64_t GetOriginUsage(const GroupAndOrigin& aGroupAndOrigin);
 
   void NotifyStoragePressure(uint64_t aUsage);
 
@@ -440,26 +428,29 @@ class QuotaManager final : public BackgroundThreadObject {
 
   static bool IsPrincipalInfoValid(const PrincipalInfo& aPrincipalInfo);
 
-  static void GetInfoFromValidatedPrincipalInfo(
-      const PrincipalInfo& aPrincipalInfo, nsACString* aSuffix,
-      nsACString* aGroup, nsACString* aOrigin);
+  static QuotaInfo GetInfoFromValidatedPrincipalInfo(
+      const PrincipalInfo& aPrincipalInfo);
 
-  static nsresult GetInfoFromPrincipal(nsIPrincipal* aPrincipal,
-                                       nsACString* aSuffix, nsACString* aGroup,
-                                       nsACString* aOrigin);
+  static nsAutoCString GetOriginFromValidatedPrincipalInfo(
+      const PrincipalInfo& aPrincipalInfo);
 
-  static nsresult GetInfoFromWindow(nsPIDOMWindowOuter* aWindow,
-                                    nsACString* aSuffix, nsACString* aGroup,
-                                    nsACString* aOrigin);
+  static Result<QuotaInfo, nsresult> GetInfoFromPrincipal(
+      nsIPrincipal* aPrincipal);
 
-  static void GetInfoForChrome(nsACString* aSuffix, nsACString* aGroup,
-                               nsACString* aOrigin);
+  static Result<nsAutoCString, nsresult> GetOriginFromPrincipal(
+      nsIPrincipal* aPrincipal);
+
+  static Result<nsAutoCString, nsresult> GetOriginFromWindow(
+      nsPIDOMWindowOuter* aWindow);
+
+  static nsLiteralCString GetOriginForChrome();
+
+  static QuotaInfo GetInfoForChrome();
 
   static bool IsOriginInternal(const nsACString& aOrigin);
 
-  static void ChromeOrigin(nsACString& aOrigin);
-
-  static bool AreOriginsEqualOnDisk(nsACString& aOrigin1, nsACString& aOrigin2);
+  static bool AreOriginsEqualOnDisk(const nsACString& aOrigin1,
+                                    const nsACString& aOrigin2);
 
   static bool ParseOrigin(const nsACString& aOrigin, nsCString& aSpec,
                           OriginAttributes* aAttrs);
@@ -467,11 +458,11 @@ class QuotaManager final : public BackgroundThreadObject {
   static void InvalidateQuotaCache();
 
  private:
-  QuotaManager();
+  QuotaManager(const nsAString& aBasePath, const nsAString& aStorageName);
 
   virtual ~QuotaManager();
 
-  nsresult Init(const nsAString& aBaseDirPath);
+  nsresult Init();
 
   void Shutdown();
 
@@ -479,31 +470,29 @@ class QuotaManager final : public BackgroundThreadObject {
       const Nullable<PersistenceType>& aPersistenceType,
       const nsACString& aGroup, const OriginScope& aOriginScope,
       const Nullable<Client::Type>& aClientType, bool aExclusive,
-      bool aInternal, OpenDirectoryListener* aOpenListener, bool& aBlockedOut);
+      bool aInternal, RefPtr<OpenDirectoryListener> aOpenListener,
+      bool& aBlockedOut);
 
   already_AddRefed<DirectoryLockImpl> CreateDirectoryLockForEviction(
-      PersistenceType aPersistenceType, const nsACString& aGroup,
-      const nsACString& aOrigin);
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin);
 
-  void RegisterDirectoryLock(DirectoryLockImpl* aLock);
+  void RegisterDirectoryLock(DirectoryLockImpl& aLock);
 
-  void UnregisterDirectoryLock(DirectoryLockImpl* aLock);
+  void UnregisterDirectoryLock(DirectoryLockImpl& aLock);
 
-  void RemovePendingDirectoryLock(DirectoryLockImpl* aLock);
+  void RemovePendingDirectoryLock(DirectoryLockImpl& aLock);
 
   uint64_t LockedCollectOriginsForEviction(
       uint64_t aMinSizeToBeFreed, nsTArray<RefPtr<DirectoryLockImpl>>& aLocks);
 
   void LockedRemoveQuotaForOrigin(PersistenceType aPersistenceType,
-                                  const nsACString& aGroup,
-                                  const nsACString& aOrigin);
+                                  const GroupAndOrigin& aGroupAndOrigin);
 
   already_AddRefed<GroupInfo> LockedGetOrCreateGroupInfo(
       PersistenceType aPersistenceType, const nsACString& aGroup);
 
   already_AddRefed<OriginInfo> LockedGetOriginInfo(
-      PersistenceType aPersistenceType, const nsACString& aGroup,
-      const nsACString& aOrigin);
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin);
 
   nsresult UpgradeFromIndexedDBDirectoryToPersistentStorageDirectory(
       nsIFile* aIndexedDBDir);
@@ -532,8 +521,10 @@ class QuotaManager final : public BackgroundThreadObject {
   nsresult CreateLocalStorageArchiveConnectionFromWebAppsStore(
       mozIStorageConnection** aConnection);
 
-  nsresult CreateLocalStorageArchiveConnection(
-      mozIStorageConnection** aConnection, bool& aNewlyCreated);
+  // The second object in the pair is used to signal if the localStorage
+  // archive database was newly created or recreated.
+  Result<std::pair<nsCOMPtr<mozIStorageConnection>, bool>, nsresult>
+  CreateLocalStorageArchiveConnection();
 
   nsresult RecreateLocalStorageArchive(
       nsCOMPtr<mozIStorageConnection>& aConnection);
@@ -551,7 +542,7 @@ class QuotaManager final : public BackgroundThreadObject {
   nsresult InitializeRepository(PersistenceType aPersistenceType);
 
   nsresult InitializeOrigin(PersistenceType aPersistenceType,
-                            const nsACString& aGroup, const nsACString& aOrigin,
+                            const GroupAndOrigin& aGroupAndOrigin,
                             int64_t aAccessTime, bool aPersisted,
                             nsIFile* aDirectory);
 
@@ -560,7 +551,7 @@ class QuotaManager final : public BackgroundThreadObject {
   void DeleteFilesForOrigin(PersistenceType aPersistenceType,
                             const nsACString& aOrigin);
 
-  void FinalizeOriginEviction(nsTArray<RefPtr<DirectoryLockImpl>>& aLocks);
+  void FinalizeOriginEviction(nsTArray<RefPtr<DirectoryLockImpl>>&& aLocks);
 
   void ReleaseIOThreadObjects() {
     AssertIsOnIOThread();
@@ -637,6 +628,7 @@ class QuotaManager final : public BackgroundThreadObject {
   InitializationInfo mInitializationInfo;
 
   nsString mBasePath;
+  nsString mStorageName;
   nsString mIndexedDBPath;
   nsString mStoragePath;
   nsString mPermanentStoragePath;

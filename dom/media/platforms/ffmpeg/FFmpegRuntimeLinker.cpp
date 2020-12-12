@@ -54,22 +54,7 @@ bool FFmpegRuntimeLinker::Init() {
   }
 
 #ifdef MOZ_WAYLAND
-  {
-    const char* lib = "libva.so.2";
-    PRLibSpec lspec;
-    lspec.type = PR_LibSpec_Pathname;
-    lspec.value.pathname = lib;
-    sLibAV.mVALib = PR_LoadLibraryWithFlags(lspec, PR_LD_NOW | PR_LD_LOCAL);
-    // Don't use libva when it's missing vaExportSurfaceHandle.
-    if (sLibAV.mVALib &&
-        !PR_FindSymbol(sLibAV.mVALib, "vaExportSurfaceHandle")) {
-      PR_UnloadLibrary(sLibAV.mVALib);
-      sLibAV.mVALib = nullptr;
-    }
-    if (!sLibAV.mVALib) {
-      FFMPEG_LOG("VA-API support: Missing or old %s library.\n", lib);
-    }
-  }
+  sLibAV.LinkVAAPILibs();
 #endif
 
   // While going through all possible libs, this status will be updated with a
@@ -145,8 +130,7 @@ bool FFmpegRuntimeLinker::Init() {
 }
 
 /* static */
-already_AddRefed<PlatformDecoderModule>
-FFmpegRuntimeLinker::CreateDecoderModule() {
+already_AddRefed<PlatformDecoderModule> FFmpegRuntimeLinker::Create() {
   if (!Init()) {
     return nullptr;
   }

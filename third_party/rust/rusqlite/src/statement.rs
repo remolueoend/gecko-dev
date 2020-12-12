@@ -6,7 +6,7 @@ use std::slice::from_raw_parts;
 use std::{convert, fmt, mem, ptr, str};
 
 use super::ffi;
-use super::{len_as_c_int, str_for_sqlite, str_to_cstring};
+use super::{len_as_c_int, str_for_sqlite};
 use super::{
     AndThenRows, Connection, Error, MappedRows, RawStatement, Result, Row, Rows, ValueRef,
 };
@@ -219,6 +219,8 @@ impl Statement<'_> {
     ///     Ok(names)
     /// }
     /// ```
+    /// `f` is used to tranform the _streaming_ iterator into a _standard_
+    /// iterator.
     ///
     /// ## Failure
     ///
@@ -256,6 +258,8 @@ impl Statement<'_> {
     ///     Ok(names)
     /// }
     /// ```
+    /// `f` is used to tranform the _streaming_ iterator into a _standard_
+    /// iterator.
     ///
     /// ## Failure
     ///
@@ -432,8 +436,7 @@ impl Statement<'_> {
     /// Will return Err if `name` is invalid. Will return Ok(None) if the name
     /// is valid but not a bound parameter of this statement.
     pub fn parameter_index(&self, name: &str) -> Result<Option<usize>> {
-        let c_name = str_to_cstring(name)?;
-        Ok(self.stmt.bind_parameter_index(&c_name))
+        Ok(self.stmt.bind_parameter_index(name))
     }
 
     fn bind_parameters<P>(&mut self, params: P) -> Result<()>
@@ -451,7 +454,7 @@ impl Statement<'_> {
             self.bind_parameter(&p, index)?;
         }
         if index != expected {
-            Err(Error::InvalidParameterCount(expected, index))
+            Err(Error::InvalidParameterCount(index, expected))
         } else {
             Ok(())
         }
@@ -619,7 +622,7 @@ impl Statement<'_> {
     }
 
     fn finalize_(&mut self) -> Result<()> {
-        let mut stmt = unsafe { RawStatement::new(ptr::null_mut(), false) };
+        let mut stmt = unsafe { RawStatement::new(ptr::null_mut(), 0) };
         mem::swap(&mut stmt, &mut self.stmt);
         self.conn.decode_result(stmt.finalize())
     }
@@ -643,7 +646,7 @@ impl Statement<'_> {
     #[inline]
     fn check_update(&self) -> Result<()> {
         // sqlite3_column_count works for DML but not for DDL (ie ALTER)
-        if self.column_count() > 0 || self.stmt.readonly() {
+        if self.column_count() > 0 && self.stmt.readonly() {
             return Err(Error::ExecuteReturnedResults);
         }
         Ok(())
@@ -669,16 +672,9 @@ impl Statement<'_> {
     /// bound parameters expanded.
     #[cfg(feature = "modern_sqlite")]
     pub fn expanded_sql(&self) -> Option<String> {
-        unsafe {
-            match self.stmt.expanded_sql() {
-                Some(s) => {
-                    let sql = str::from_utf8_unchecked(s.to_bytes()).to_owned();
-                    ffi::sqlite3_free(s.as_ptr() as *mut _);
-                    Some(sql)
-                }
-                _ => None,
-            }
-        }
+        self.stmt
+            .expanded_sql()
+            .map(|s| s.to_string_lossy().to_string())
     }
 
     /// Get the value for one of the status counters for this statement.
@@ -706,11 +702,12 @@ impl Statement<'_> {
     pub(crate) fn check_no_tail(&self) -> Result<()> {
         Ok(())
     }
-}
 
-impl Into<RawStatement> for Statement<'_> {
-    fn into(mut self) -> RawStatement {
-        let mut stmt = unsafe { RawStatement::new(ptr::null_mut(), false) };
+    /// Safety: This is unsafe, because using `sqlite3_stmt` after the
+    /// connection has closed is illegal, but `RawStatement` does not enforce
+    /// this, as it loses our protective `'conn` lifetime bound.
+    pub(crate) unsafe fn into_raw(mut self) -> RawStatement {
+        let mut stmt = RawStatement::new(ptr::null_mut(), 0);
         mem::swap(&mut stmt, &mut self.stmt);
         stmt
     }
@@ -739,11 +736,11 @@ impl Drop for Statement<'_> {
 }
 
 impl Statement<'_> {
-    pub(crate) fn new(conn: &Connection, stmt: RawStatement) -> Statement<'_> {
+    pub(super) fn new(conn: &Connection, stmt: RawStatement) -> Statement<'_> {
         Statement { conn, stmt }
     }
 
-    pub(crate) fn value_ref(&self, col: usize) -> ValueRef<'_> {
+    pub(super) fn value_ref(&self, col: usize) -> ValueRef<'_> {
         let raw = unsafe { self.stmt.ptr() };
 
         match self.stmt.column_type(col) {
@@ -757,8 +754,9 @@ impl Statement<'_> {
             ffi::SQLITE_TEXT => {
                 let s = unsafe {
                     // Quoting from "Using SQLite" book:
-                    // To avoid problems, an application should first extract the desired type using a sqlite3_column_xxx() function,
-                    // and then call the appropriate sqlite3_column_bytes() function.
+                    // To avoid problems, an application should first extract the desired type using
+                    // a sqlite3_column_xxx() function, and then call the
+                    // appropriate sqlite3_column_bytes() function.
                     let text = ffi::sqlite3_column_text(raw, col as c_int);
                     let len = ffi::sqlite3_column_bytes(raw, col as c_int);
                     assert!(
@@ -798,7 +796,7 @@ impl Statement<'_> {
         }
     }
 
-    pub(crate) fn step(&self) -> Result<bool> {
+    pub(super) fn step(&self) -> Result<bool> {
         match self.stmt.step() {
             ffi::SQLITE_ROW => Ok(true),
             ffi::SQLITE_DONE => Ok(false),
@@ -806,7 +804,7 @@ impl Statement<'_> {
         }
     }
 
-    pub(crate) fn reset(&self) -> c_int {
+    pub(super) fn reset(&self) -> c_int {
         self.stmt.reset()
     }
 }
@@ -1065,7 +1063,7 @@ mod test {
 
     #[test]
     fn test_insert_different_tables() {
-        // Test for https://github.com/jgallagher/rusqlite/issues/171
+        // Test for https://github.com/rusqlite/rusqlite/issues/171
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch(
             r"

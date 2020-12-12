@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/HTMLAllCollection.h"
 
+#include "jsfriendapi.h"
 #include "mozilla/dom/HTMLAllCollectionBinding.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/Document.h"
@@ -13,8 +14,7 @@
 #include "nsContentList.h"
 #include "nsGenericHTMLElement.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLAllCollection::HTMLAllCollection(mozilla::dom::Document* aDocument)
     : mDocument(aDocument) {
@@ -69,7 +69,7 @@ void HTMLAllCollection::Item(const Optional<nsAString>& aNameOrIndex,
 nsContentList* HTMLAllCollection::Collection() {
   if (!mCollection) {
     Document* document = mDocument;
-    mCollection = document->GetElementsByTagName(NS_LITERAL_STRING("*"));
+    mCollection = document->GetElementsByTagName(u"*"_ns);
     MOZ_ASSERT(mCollection);
   }
   return mCollection;
@@ -189,5 +189,4 @@ JSObject* HTMLAllCollection::WrapObject(JSContext* aCx,
   return HTMLAllCollection_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

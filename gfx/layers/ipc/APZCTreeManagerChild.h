@@ -20,6 +20,7 @@ class RemoteCompositorSession;
 class APZCTreeManagerChild : public IAPZCTreeManager,
                              public PAPZCTreeManagerChild {
   friend class PAPZCTreeManagerChild;
+  using TapType = GeckoContentController_TapType;
 
  public:
   APZCTreeManagerChild();
@@ -61,6 +62,9 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
 
   APZInputBridge* InputBridge() override;
 
+  void AddInputBlockCallback(uint64_t aInputBlockId,
+                             InputBlockCallback&& aCallback) override;
+
   void AddIPDLReference();
   void ReleaseIPDLReference();
   void ActorDestroy(ActorDestroyReason aWhy) override;
@@ -75,6 +79,7 @@ class APZCTreeManagerChild : public IAPZCTreeManager,
 
   mozilla::ipc::IPCResult RecvNotifyPinchGesture(
       const PinchGestureType& aType, const ScrollableLayerGuid& aGuid,
+      const LayoutDevicePoint& aFocusPoint,
       const LayoutDeviceCoord& aSpanChange, const Modifiers& aModifiers);
 
   mozilla::ipc::IPCResult RecvCancelAutoscroll(

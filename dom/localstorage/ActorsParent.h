@@ -7,6 +7,9 @@
 #ifndef mozilla_dom_localstorage_ActorsParent_h
 #define mozilla_dom_localstorage_ActorsParent_h
 
+#include <cstdint>
+#include "mozilla/AlreadyAddRefed.h"
+
 namespace mozilla {
 
 namespace ipc {
@@ -32,8 +35,6 @@ class Client;
 }  // namespace quota
 
 void InitializeLocalStorage();
-
-bool GetCurrentNextGenPrefValue();
 
 PBackgroundLSDatabaseParent* AllocPBackgroundLSDatabaseParent(
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,

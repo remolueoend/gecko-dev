@@ -441,6 +441,7 @@ function BuildConditionSandbox(aURL) {
     var xr = Cc[NS_XREAPPINFO_CONTRACTID].getService(Ci.nsIXULRuntime);
     var appInfo = Cc[NS_XREAPPINFO_CONTRACTID].getService(Ci.nsIXULAppInfo);
     sandbox.isDebugBuild = g.debug.isDebugBuild;
+    sandbox.isCoverageBuild = g.isCoverageBuild;
     var prefs = Cc["@mozilla.org/preferences-service;1"].
                 getService(Ci.nsIPrefBranch);
     var env = Cc["@mozilla.org/process/environment;1"].
@@ -465,9 +466,11 @@ function BuildConditionSandbox(aURL) {
     try {
       sandbox.d2d = readGfxInfo(gfxInfo, "D2DEnabled");
       sandbox.dwrite = readGfxInfo(gfxInfo, "DWriteEnabled");
+      sandbox.embeddedInFirefoxReality = readGfxInfo(gfxInfo, "EmbeddedInFirefoxReality");
     } catch (e) {
       sandbox.d2d = false;
       sandbox.dwrite = false;
+      sandbox.embeddedInFirefoxReality = false;
     }
 
     var info = gfxInfo.getInfo();
@@ -493,8 +496,10 @@ function BuildConditionSandbox(aURL) {
       g.windowUtils.layerManagerType == "Direct3D 9";
     sandbox.layersOpenGL =
       g.windowUtils.layerManagerType == "OpenGL";
+    sandbox.swgl =
+      g.windowUtils.layerManagerType == "WebRender (Software)";
     sandbox.webrender =
-      g.windowUtils.layerManagerType == "WebRender";
+      g.windowUtils.layerManagerType == "WebRender" || sandbox.swgl;
     sandbox.layersOMTC =
       g.windowUtils.layerManagerRemote == true;
     sandbox.advancedLayers =
@@ -522,9 +527,8 @@ function BuildConditionSandbox(aURL) {
     // Scrollbars that are semi-transparent. See bug 1169666.
     sandbox.transparentScrollbars = xr.widgetToolkit == "gtk";
 
+    var sysInfo = Cc["@mozilla.org/system-info;1"].getService(Ci.nsIPropertyBag2);
     if (sandbox.Android) {
-        var sysInfo = Cc["@mozilla.org/system-info;1"].getService(Ci.nsIPropertyBag2);
-
         // This is currently used to distinguish Android 4.0.3 (SDK version 15)
         // and later from Android 2.x
         sandbox.AndroidVersion = sysInfo.getPropertyAsInt32("version");
@@ -532,6 +536,8 @@ function BuildConditionSandbox(aURL) {
         sandbox.emulator = readGfxInfo(gfxInfo, "adapterDeviceID").includes("Android Emulator");
         sandbox.device = !sandbox.emulator;
     }
+
+    sandbox.MinGW = sandbox.winWidget && sysInfo.getPropertyAsBool("isMinGW");
 
 #if MOZ_ASAN
     sandbox.AddressSanitizer = true;
@@ -548,8 +554,6 @@ function BuildConditionSandbox(aURL) {
     let retainedDisplayListsEnabled = prefs.getBoolPref("layout.display-list.retain", false);
     sandbox.retainedDisplayLists = retainedDisplayListsEnabled && !g.compareRetainedDisplayLists;
     sandbox.compareRetainedDisplayLists = g.compareRetainedDisplayLists;
-
-    sandbox.skiaPdf = false;
 
 #ifdef RELEASE_OR_BETA
     sandbox.release_or_beta = true;
@@ -572,9 +576,8 @@ function BuildConditionSandbox(aURL) {
     var osxmatch = /Mac OS X (\d+).(\d+)$/.exec(hh.oscpu);
     sandbox.OSX = osxmatch ? parseInt(osxmatch[1]) * 100 + parseInt(osxmatch[2]) : undefined;
 
-    // see if we have the test plugin available,
-    // and set a sandox prop accordingly
-    sandbox.haveTestPlugin = !sandbox.Android && !!getTestPlugin("Test Plug-in");
+    // Plugins are no longer supported.  Don't try to use TestPlugin.
+    sandbox.haveTestPlugin = false;
 
     // Set a flag on sandbox if the windows default theme is active
     sandbox.windowsDefaultTheme = g.containingWindow.matchMedia("(-moz-windows-default-theme)").matches;
@@ -609,7 +612,7 @@ function BuildConditionSandbox(aURL) {
     sandbox.verify = prefs.getBoolPref("reftest.verify", false);
 
     // Running with a variant enabled?
-    sandbox.fission = prefs.getBoolPref("fission.autostart", false);
+    sandbox.fission = Services.appinfo.fissionAutostart;
     sandbox.serviceWorkerE10s = prefs.getBoolPref("dom.serviceWorkers.parent_intercept", false);
 
     if (!g.dumpedConditionSandbox) {
@@ -715,9 +718,9 @@ function CreateUrls(test) {
             return file;
 
         var testURI = g.ioService.newURI(file, null, testbase);
-        let isChrome = testURI.scheme == "chrome";
-        let principal = isChrome ? secMan.getSystemPrincipal() :
-                                   secMan.createContentPrincipal(manifestURL, {});
+        let isChromeOrViewSource = testURI.scheme == "chrome" || testURI.scheme == "view-source";
+        let principal = isChromeOrViewSource ? secMan.getSystemPrincipal() :
+                                               secMan.createContentPrincipal(manifestURL, {});
         secMan.checkLoadURIWithPrincipal(principal, testURI,
                                          Ci.nsIScriptSecurityManager.DISALLOW_SCRIPT);
         return testURI;

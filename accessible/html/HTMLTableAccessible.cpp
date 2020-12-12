@@ -118,8 +118,7 @@ HTMLTableCellAccessible::NativeAttributes() {
 
 #ifdef DEBUG
   nsAutoString unused;
-  attributes->SetStringProperty(NS_LITERAL_CSTRING("cppclass"),
-                                NS_LITERAL_STRING("HTMLTableCellAccessible"),
+  attributes->SetStringProperty("cppclass"_ns, u"HTMLTableCellAccessible"_ns,
                                 unused);
 #endif
 
@@ -396,8 +395,7 @@ HTMLTableAccessible::NativeAttributes() {
 
   if (IsProbablyLayoutTable()) {
     nsAutoString unused;
-    attributes->SetStringProperty(NS_LITERAL_CSTRING("layout-guess"),
-                                  NS_LITERAL_STRING("true"), unused);
+    attributes->SetStringProperty("layout-guess"_ns, u"true"_ns, unused);
   }
 
   return attributes.forget();
@@ -539,7 +537,7 @@ Accessible* HTMLTableAccessible::CellAt(uint32_t aRowIdx, uint32_t aColIdx) {
     return CellInRowAt(cell, aColIdx);
   }
 
-  // XXX bug 576838: crazy tables (like table6 in tables/test_table2.html) may
+  // XXX bug 576838: bizarre tables (like table6 in tables/test_table2.html) may
   // return itself as a cell what makes Orca hang.
   return cell == this ? nullptr : cell;
 }

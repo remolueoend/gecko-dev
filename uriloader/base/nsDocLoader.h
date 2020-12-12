@@ -31,6 +31,7 @@
 namespace mozilla {
 namespace dom {
 class BrowserBridgeChild;
+class BrowsingContext;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -61,6 +62,8 @@ class nsDocLoader : public nsIDocumentLoader,
   nsDocLoader();
 
   [[nodiscard]] virtual nsresult Init();
+  [[nodiscard]] nsresult InitWithBrowsingContext(
+      mozilla::dom::BrowsingContext* aBrowsingContext);
 
   static already_AddRefed<nsDocLoader> GetAsDocLoader(nsISupports* aSupports);
   // Needed to deal with ambiguous inheritance from nsISupports...
@@ -245,7 +248,11 @@ class nsDocLoader : public nsIDocumentLoader,
   // fact empty.  This method _does_ make sure that layout is flushed if our
   // loadgroup has no active requests before checking for "real" emptiness if
   // aFlushLayout is true.
-  void DocLoaderIsEmpty(bool aFlushLayout);
+  // @param aOverrideStatus An optional status to use when notifying listeners
+  // of the completed load, instead of using the load group's status.
+  void DocLoaderIsEmpty(
+      bool aFlushLayout,
+      const mozilla::Maybe<nsresult>& aOverrideStatus = mozilla::Nothing());
 
  protected:
   struct nsStatusInfo : public mozilla::LinkedListElement<nsStatusInfo> {

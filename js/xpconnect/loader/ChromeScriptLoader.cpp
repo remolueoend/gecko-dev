@@ -6,6 +6,7 @@
 
 #include "PrecompiledScript.h"
 
+#include "nsIIncrementalStreamLoader.h"
 #include "nsIURI.h"
 #include "nsIChannel.h"
 #include "nsNetUtil.h"
@@ -107,11 +108,15 @@ nsresult AsyncScriptCompiler::Start(
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIChannel> channel;
-  rv = NS_NewChannel(getter_AddRefs(channel), uri, aPrincipal,
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
-                     nsIContentPolicy::TYPE_OTHER);
+  rv = NS_NewChannel(
+      getter_AddRefs(channel), uri, aPrincipal,
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+      nsIContentPolicy::TYPE_INTERNAL_CHROMEUTILS_COMPILED_SCRIPT);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  // allow deprecated HTTP request from SystemPrincipal
+  nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+  loadInfo->SetAllowDeprecatedSystemRequests(true);
   nsCOMPtr<nsIIncrementalStreamLoader> loader;
   rv = NS_NewIncrementalStreamLoader(getter_AddRefs(loader), this);
   NS_ENSURE_SUCCESS(rv, rv);

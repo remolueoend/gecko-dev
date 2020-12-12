@@ -19,8 +19,7 @@
 #include "nsError.h"
 #include "nsLiteralString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::dom::indexedDB;
 
@@ -60,29 +59,8 @@ void IDBFileRequest::FireProgressEvent(uint64_t aLoaded, uint64_t aTotal) {
   init.mTotal = aTotal;
 
   RefPtr<ProgressEvent> event =
-      ProgressEvent::Constructor(this, NS_LITERAL_STRING("progress"), init);
+      ProgressEvent::Constructor(this, u"progress"_ns, init);
   DispatchTrustedEvent(event);
-}
-
-void IDBFileRequest::SetResultCallback(ResultCallback* aCallback) {
-  AssertIsOnOwningThread();
-  MOZ_ASSERT(aCallback);
-
-  AutoJSAPI autoJS;
-  if (NS_WARN_IF(!autoJS.Init(GetOwnerGlobal()))) {
-    FireError(NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR);
-    return;
-  }
-
-  JSContext* cx = autoJS.cx();
-
-  JS::Rooted<JS::Value> result(cx);
-  nsresult rv = aCallback->GetResult(cx, &result);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    FireError(rv);
-  } else {
-    FireSuccess(result);
-  }
 }
 
 NS_IMPL_ADDREF_INHERITED(IDBFileRequest, DOMRequest)
@@ -111,5 +89,4 @@ JSObject* IDBFileRequest::WrapObject(JSContext* aCx,
   return IDBFileRequest_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

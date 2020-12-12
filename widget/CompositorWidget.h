@@ -8,10 +8,13 @@
 #include "nsISupports.h"
 #include "mozilla/RefPtr.h"
 #include "Units.h"
-#include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Rect.h"
 #include "mozilla/layers/CompositorOptions.h"
 #include "mozilla/layers/LayersTypes.h"
-#include "mozilla/layers/NativeLayer.h"
+
+#ifdef MOZ_IS_GCC
+#  include "mozilla/layers/NativeLayer.h"
+#endif
 
 class nsIWidget;
 class nsBaseWidget;
@@ -25,7 +28,7 @@ namespace layers {
 class Compositor;
 class LayerManager;
 class LayerManagerComposite;
-class Compositor;
+class NativeLayerRoot;
 }  // namespace layers
 namespace gfx {
 class DrawTarget;
@@ -230,24 +233,6 @@ class CompositorWidget {
    * after each composition to back buffer.
    */
   virtual already_AddRefed<gfx::SourceSurface> EndBackBufferDrawing();
-
-#ifdef XP_MACOSX
-  /**
-   * Return the opaque region of the widget. This is racy and can only be used
-   * on macOS, where the widget works around the raciness.
-   * Bug 1576491 tracks fixing this properly.
-   * The problem with this method is that it can return values "from the future"
-   * - the compositor might be working on frame N but the widget will return its
-   * opaque region from frame N + 1.
-   * It is believed that this won't lead to visible glitches on macOS due to the
-   * SuspendAsyncCATransactions call when the vibrant region changes or when the
-   * window resizes. Whenever the compositor uses an opaque region that's a
-   * frame ahead, the result it renders won't be shown on the screen; instead,
-   * the next composite will happen with the correct display list, and that's
-   * what's shown on the screen once the FlushRendering call completes.
-   */
-  virtual LayoutDeviceIntRegion GetOpaqueWidgetRegion() { return {}; }
-#endif
 
   /**
    * Observe or unobserve vsync.

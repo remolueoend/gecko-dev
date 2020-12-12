@@ -37,8 +37,7 @@ waitForExplicitFinish();
  * @param {String} url The url to be loaded in the new tab
  * @return a promise that resolves to the new browser that the document
  *         is loaded in. Note that we cannot return the document
- *         directly, since this would be a CPOW in the e10s case,
- *         and Promises cannot be resolved with CPOWs (see bug 1233497).
+ *         directly, as we aren't able to access that in the parent.
  */
 var addTab = async function(url) {
   info(`Adding a new tab with URL: ${url}`);
@@ -89,7 +88,6 @@ async function initAccessibilityFrontsForUrl(
     "parentaccessibility"
   );
   const accessibility = await target.getFront("accessibility");
-  await accessibility.bootstrap();
   const a11yWalker = accessibility.accessibleWalkerFront;
   if (enableByDefault) {
     await parentAccessibility.enable();
@@ -199,10 +197,9 @@ function idleWait(time) {
 
 function busyWait(time) {
   const start = Date.now();
-  // eslint-disable-next-line
   let stack;
   while (Date.now() - start < time) {
-    stack = Components.stack;
+    stack = Components.stack; // eslint-disable-line no-unused-vars
   }
 }
 
@@ -239,33 +236,32 @@ function waitForMarkerType(
       return true;
     };
   let filteredMarkers = [];
-  const { promise, resolve } = defer();
 
-  info("Waiting for markers of type: " + types);
+  return new Promise(resolve => {
+    info("Waiting for markers of type: " + types);
 
-  function handler(name, data) {
-    if (typeof name === "string" && name !== "markers") {
-      return;
+    function handler(name, data) {
+      if (typeof name === "string" && name !== "markers") {
+        return;
+      }
+
+      const markers = unpackFun(name, data);
+      info("Got markers");
+
+      filteredMarkers = filteredMarkers.concat(
+        markers.filter(m => types.includes(m.name))
+      );
+
+      if (
+        types.every(t => filteredMarkers.some(m => m.name === t)) &&
+        predicate(filteredMarkers)
+      ) {
+        front.off(eventName, handler);
+        resolve(filteredMarkers);
+      }
     }
-
-    const markers = unpackFun(name, data);
-    info("Got markers");
-
-    filteredMarkers = filteredMarkers.concat(
-      markers.filter(m => types.includes(m.name))
-    );
-
-    if (
-      types.every(t => filteredMarkers.some(m => m.name === t)) &&
-      predicate(filteredMarkers)
-    ) {
-      front.off(eventName, handler);
-      resolve(filteredMarkers);
-    }
-  }
-  front.on(eventName, handler);
-
-  return promise;
+    front.on(eventName, handler);
+  });
 }
 
 function getCookieId(name, domain, path) {

@@ -7,6 +7,7 @@
 #include "ServiceWorkerRegistrationProxy.h"
 
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "ServiceWorkerManager.h"
 #include "ServiceWorkerRegistrationParent.h"
@@ -166,9 +167,7 @@ bool ServiceWorkerRegistrationProxy::MatchesDescriptor(
 
 ServiceWorkerRegistrationProxy::ServiceWorkerRegistrationProxy(
     const ServiceWorkerRegistrationDescriptor& aDescriptor)
-    : mActor(nullptr),
-      mEventTarget(GetCurrentThreadSerialEventTarget()),
-      mDescriptor(aDescriptor) {}
+    : mEventTarget(GetCurrentSerialEventTarget()), mDescriptor(aDescriptor) {}
 
 void ServiceWorkerRegistrationProxy::Init(
     ServiceWorkerRegistrationParent* aActor) {

@@ -54,10 +54,8 @@ class MediaStreamTrackSource : public nsISupports {
   NS_DECL_CYCLE_COLLECTION_CLASS(MediaStreamTrackSource)
 
  public:
-  class Sink : public SupportsWeakPtr<Sink> {
+  class Sink : public SupportsWeakPtr {
    public:
-    MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackSource::Sink)
-
     /**
      * Must be constant throughout the Sink's lifetime.
      *
@@ -142,6 +140,12 @@ class MediaStreamTrackSource : public nsISupports {
    * MediaStreamTrack::GetLabel (see spec) calls through to here.
    */
   void GetLabel(nsAString& aLabel) { aLabel.Assign(mLabel); }
+
+  /**
+   * Whether this TrackSource provides video frames with an alpha channel. Only
+   * applies to video sources. Used by HTMLVideoElement.
+   */
+  virtual bool HasAlpha() const { return false; }
 
   /**
    * Forwards a photo request to backends that support it. Other backends return
@@ -261,8 +265,7 @@ class MediaStreamTrackSource : public nsISupports {
    */
   void PrincipalChanged() {
     MOZ_ASSERT(NS_IsMainThread());
-    nsTArray<WeakPtr<Sink>> sinks(mSinks);
-    for (auto& sink : sinks) {
+    for (auto& sink : mSinks.Clone()) {
       if (!sink) {
         MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
         mSinks.RemoveElement(sink);
@@ -279,8 +282,7 @@ class MediaStreamTrackSource : public nsISupports {
    */
   void MutedChanged(bool aNewState) {
     MOZ_ASSERT(NS_IsMainThread());
-    nsTArray<WeakPtr<Sink>> sinks(mSinks);
-    for (auto& sink : sinks) {
+    for (auto& sink : mSinks.Clone()) {
       if (!sink) {
         MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
         mSinks.RemoveElement(sink);
@@ -296,8 +298,7 @@ class MediaStreamTrackSource : public nsISupports {
    */
   void OverrideEnded() {
     MOZ_ASSERT(NS_IsMainThread());
-    nsTArray<WeakPtr<Sink>> sinks(mSinks);
-    for (auto& sink : sinks) {
+    for (auto& sink : mSinks.Clone()) {
       if (!sink) {
         MOZ_ASSERT_UNREACHABLE("Sink was not explicitly removed");
         mSinks.RemoveElement(sink);
@@ -348,11 +349,8 @@ class BasicTrackSource : public MediaStreamTrackSource {
  * Base class that consumers of a MediaStreamTrack can use to get notifications
  * about state changes in the track.
  */
-class MediaStreamTrackConsumer
-    : public SupportsWeakPtr<MediaStreamTrackConsumer> {
+class MediaStreamTrackConsumer : public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrackConsumer)
-
   /**
    * Called when the track's readyState transitions to "ended".
    * Unlike the "ended" event exposed to script this is called for any reason,
@@ -403,8 +401,7 @@ class MediaStreamTrackConsumer
  *   (*) is a copy of A's mInputTrack
  */
 // clang-format on
-class MediaStreamTrack : public DOMEventTargetHelper,
-                         public SupportsWeakPtr<MediaStreamTrack> {
+class MediaStreamTrack : public DOMEventTargetHelper, public SupportsWeakPtr {
   // PeerConnection and friends need to know our owning DOMStream and track id.
   friend class mozilla::PeerConnectionImpl;
   friend class mozilla::PeerConnectionMedia;
@@ -425,8 +422,6 @@ class MediaStreamTrack : public DOMEventTargetHelper,
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaStreamTrack,
                                            DOMEventTargetHelper)
-
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(MediaStreamTrack)
 
   nsPIDOMWindowInner* GetParentObject() const { return mWindow; }
   JSObject* WrapObject(JSContext* aCx,
@@ -558,7 +553,7 @@ class MediaStreamTrack : public DOMEventTargetHelper,
    * Forces the ready state to a particular value, for instance when we're
    * cloning an already ended track.
    */
-  void SetReadyState(MediaStreamTrackState aState);
+  virtual void SetReadyState(MediaStreamTrackState aState);
 
   /**
    * Notified by the MediaTrackGraph, through our owning MediaStream on the
@@ -600,6 +595,7 @@ class MediaStreamTrack : public DOMEventTargetHelper,
 
   /**
    * Sets this track's muted state without raising any events.
+   * Only really set by cloning. See MutedChanged for runtime changes.
    */
   void SetMuted(bool aMuted) { mMuted = aMuted; }
 

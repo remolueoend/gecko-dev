@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.5.2
+
+- `OnceBox` API uses `Box<T>`.
+  This a breaking change to unstable API.
+
+## 1.5.1
+
+- MSRV is increased to `1.36.0`.
+- document `once_cell::race` module.
+- introduce `alloc` feature for `OnceBox`.
+- fix `OnceBox::set`.
+
+## 1.5.0
+
+- add new `once_cell::race` module for "first one wins" no_std-compatible initialization flavor.
+  The API is provisional, subject to change and is gated by the `unstable` cargo feature.
+
+## 1.4.1
+
+- upgrade `parking_lot` to `0.11.0`
+- make `sync::OnceCell<T>` pass https://doc.rust-lang.org/nomicon/dropck.html#an-escape-hatch[dropck] with `parking_lot` feature enabled.
+  This fixes a (minor) semver-incompatible changed introduced in `1.4.0`
+
+## 1.4.0
+
+- upgrade `parking_lot` to `0.10` (note that this bumps MSRV with `parking_lot` feature enabled to `1.36.0`).
+- add `OnceCell::take`.
+- upgrade crossbeam utils (private dependency) to `0.7`.
+
+## 1.3.1
+
+- remove unnecessary `F: fmt::Debug` bound from `impl fmt::Debug for Lazy<T, F>`.
+
+## 1.3.0
+
+- `Lazy<T>` now implements `DerefMut`.
+- update implementation according to the latest changes in `std`.
+
 ## 1.2.0
 
 - add `sync::OnceCell::get_unchecked`.

@@ -162,6 +162,21 @@ xpcAccessible::GetIndexInParent(int32_t* aIndexInParent) {
 }
 
 NS_IMETHODIMP
+xpcAccessible::GetUniqueID(int64_t* aUniqueID) {
+  NS_ENSURE_ARG_POINTER(aUniqueID);
+
+  if (IntlGeneric().IsNull()) return NS_ERROR_FAILURE;
+
+  if (IntlGeneric().IsAccessible()) {
+    *aUniqueID = reinterpret_cast<uintptr_t>(Intl()->UniqueID());
+  } else if (IntlGeneric().IsProxy()) {
+    *aUniqueID = IntlGeneric().AsProxy()->ID();
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 xpcAccessible::GetDOMNode(nsINode** aDOMNode) {
   NS_ENSURE_ARG_POINTER(aDOMNode);
   *aDOMNode = nullptr;
@@ -395,7 +410,8 @@ xpcAccessible::GetNativeInterface(nsISupports** aNativeInterface) {
   // We don't cache or store this instance anywhere so each get returns a
   // different instance. So `acc.nativeInterface != acc.nativeInterface`. This
   // just seems simpler and more robust for now.
-  nsCOMPtr<nsISupports> macIface = new xpcAccessibleMacInterface(IntlGeneric());
+  nsCOMPtr<nsISupports> macIface = static_cast<nsIAccessibleMacInterface*>(
+      new xpcAccessibleMacInterface(IntlGeneric()));
   macIface.swap(*aNativeInterface);
 
   return NS_OK;

@@ -13,13 +13,16 @@ const { DevToolsServer } = require("devtools/server/devtools-server");
 const {
   ActorRegistry,
 } = require("devtools/server/actors/utils/actor-registry");
-const { TabSources } = require("devtools/server/actors/utils/TabSources");
+const {
+  SourcesManager,
+} = require("devtools/server/actors/utils/sources-manager");
 const makeDebugger = require("devtools/server/actors/utils/make-debugger");
 const protocol = require("devtools/shared/protocol");
 const {
   browsingContextTargetSpec,
 } = require("devtools/shared/specs/targets/browsing-context");
 const { tabDescriptorSpec } = require("devtools/shared/specs/descriptors/tab");
+const Targets = require("devtools/server/actors/targets/index");
 
 var gTestGlobals = new Set();
 DevToolsServer.addTestGlobal = function(global) {
@@ -125,10 +128,7 @@ const TestDescriptorActor = protocol.ActorClassWithSpec(tabDescriptorSpec, {
   form() {
     const form = {
       actor: this.actorID,
-      traits: {
-        getFavicon: true,
-        hasTabInfo: true,
-      },
+      traits: {},
       selected: this.selected,
       title: this._targetActor.title,
       url: this._targetActor.url,
@@ -160,20 +160,13 @@ const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
     this._extraActors.threadActor = this.threadActor;
     this.makeDebugger = makeDebugger.bind(null, {
       findDebuggees: () => [this._global],
-      shouldAddNewGlobalAsDebuggee: g => {
-        if (gAllowNewThreadGlobals) {
-          return true;
-        }
-
-        return (
-          g.hostAnnotations &&
-          g.hostAnnotations.type == "document" &&
-          g.hostAnnotations.element === this._global
-        );
-      },
+      shouldAddNewGlobalAsDebuggee: g => gAllowNewThreadGlobals,
     });
     this.dbg = this.makeDebugger();
+    this.notifyResourceAvailable = this.notifyResourceAvailable.bind(this);
   },
+
+  targetType: Targets.TYPES.FRAME,
 
   get window() {
     return this._global;
@@ -188,11 +181,11 @@ const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
     return this._global.__name;
   },
 
-  get sources() {
-    if (!this._sources) {
-      this._sources = new TabSources(this.threadActor);
+  get sourcesManager() {
+    if (!this._sourcesManager) {
+      this._sourcesManager = new SourcesManager(this.threadActor);
     }
-    return this._sources;
+    return this._sourcesManager;
   },
 
   form: function() {
@@ -205,7 +198,7 @@ const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
       actorPool,
       this
     );
-    if (!actorPool.isEmpty()) {
+    if (actorPool?._poolMap.size > 0) {
       this._descriptorActorPool = actorPool;
       this.conn.addActorPool(this._descriptorActorPool);
     }
@@ -223,12 +216,12 @@ const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
     if (!this._attached) {
       return { error: "wrongState" };
     }
-    this.threadActor.exit();
+    this.threadActor.destroy();
     return { type: "detached" };
   },
 
   reload: function(request) {
-    this.sources.reset();
+    this.sourcesManager.reset();
     this.threadActor.clearDebuggees();
     this.threadActor.dbg.addDebuggees();
     return {};
@@ -240,5 +233,9 @@ const TestTargetActor = protocol.ActorClassWithSpec(browsingContextTargetSpec, {
       this._descriptorActorPool.removeActor(actor);
     }
     delete this._extraActors[name];
+  },
+
+  notifyResourceAvailable(resources) {
+    this.emit("resource-available-form", resources);
   },
 });

@@ -25,8 +25,7 @@ class BoxModelProperties extends PureComponent {
   static get propTypes() {
     return {
       boxModel: PropTypes.shape(Types.boxModel).isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
+      dispatch: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
     };
   }
@@ -79,12 +78,7 @@ class BoxModelProperties extends PureComponent {
   }
 
   render() {
-    const {
-      boxModel,
-      onHideBoxModelHighlighter,
-      onShowBoxModelHighlighterForNode,
-      setSelectedNode,
-    } = this.props;
+    const { boxModel, dispatch, setSelectedNode } = this.props;
     const { layout } = boxModel;
 
     const layoutInfo = [
@@ -103,10 +97,9 @@ class BoxModelProperties extends PureComponent {
       } = this.getReferenceElement(info);
 
       return ComputedProperty({
+        dispatch,
         key: info,
         name: info,
-        onHideBoxModelHighlighter,
-        onShowBoxModelHighlighterForNode,
         referenceElement,
         referenceElementType,
         setSelectedNode,
@@ -119,11 +112,19 @@ class BoxModelProperties extends PureComponent {
       dom.div(
         {
           className: "layout-properties-header",
+          role: "heading",
+          "aria-level": "3",
           onDoubleClick: this.onToggleExpander,
         },
         dom.span({
           className: "layout-properties-expander theme-twisty",
           open: this.state.isOpen,
+          role: "button",
+          "aria-label": BOXMODEL_L10N.getStr(
+            this.state.isOpen
+              ? "boxmodel.propertiesHideLabel"
+              : "boxmodel.propertiesShowLabel"
+          ),
           onClick: this.onToggleExpander,
         }),
         BOXMODEL_L10N.getStr("boxmodel.propertiesLabel")
@@ -132,7 +133,7 @@ class BoxModelProperties extends PureComponent {
         {
           className: "layout-properties-wrapper devtools-monospace",
           hidden: !this.state.isOpen,
-          tabIndex: 0,
+          role: "table",
         },
         properties
       )

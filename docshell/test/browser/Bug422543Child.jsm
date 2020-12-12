@@ -26,8 +26,8 @@ class SHistoryListener {
   OnHistoryReplaceEntry() {}
 }
 SHistoryListener.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsISHistoryListener,
-  Ci.nsISupportsWeakReference,
+  "nsISHistoryListener",
+  "nsISupportsWeakReference",
 ]);
 
 let listeners;
@@ -55,6 +55,7 @@ class Bug422543Child extends JSWindowActorChild {
       this.shistory.legacySHistory.removeSHistoryListener(listener);
     }
     this.shistory = null;
+    listeners = null;
     return {};
   }
 

@@ -69,6 +69,12 @@ extern ArrayObject* JS_FASTCALL NewDenseFullyAllocatedArray(
     JSContext* cx, uint32_t length, HandleObject proto = nullptr,
     NewObjectKind newKind = GenericObject);
 
+// Create a dense array with length == 'length', initialized length set to 0,
+// and capacity == 'length' clamped to EagerAllocationMaxLength.
+extern ArrayObject* NewDensePartlyAllocatedArray(
+    JSContext* cx, uint32_t length, HandleObject proto = nullptr,
+    NewObjectKind newKind = GenericObject);
+
 // Create a dense array from the given array values, which must be rooted.
 extern ArrayObject* NewDenseCopiedArray(JSContext* cx, uint32_t length,
                                         const Value* values,
@@ -79,44 +85,10 @@ extern ArrayObject* NewDenseCopiedArray(JSContext* cx, uint32_t length,
 extern ArrayObject* NewDenseFullyAllocatedArrayWithTemplate(
     JSContext* cx, uint32_t length, ArrayObject* templateObject);
 
-// Create a dense array with the same copy-on-write elements as another object.
-extern ArrayObject* NewDenseCopyOnWriteArray(JSContext* cx,
-                                             HandleArrayObject templateObject);
-
-extern ArrayObject* NewFullyAllocatedArrayTryUseGroup(
-    JSContext* cx, HandleObjectGroup group, size_t length,
-    NewObjectKind newKind = GenericObject);
-
-extern ArrayObject* NewPartlyAllocatedArrayTryUseGroup(JSContext* cx,
-                                                       HandleObjectGroup group,
-                                                       size_t length);
-
-extern ArrayObject* NewFullyAllocatedArrayTryReuseGroup(
-    JSContext* cx, HandleObject obj, size_t length,
-    NewObjectKind newKind = GenericObject);
-
-extern ArrayObject* NewPartlyAllocatedArrayTryReuseGroup(JSContext* cx,
-                                                         HandleObject obj,
-                                                         size_t length);
-
-extern ArrayObject* NewFullyAllocatedArrayForCallingAllocationSite(
-    JSContext* cx, size_t length, NewObjectKind newKind = GenericObject);
-
-extern ArrayObject* NewPartlyAllocatedArrayForCallingAllocationSite(
-    JSContext* cx, size_t length, HandleObject proto);
-
-extern ArrayObject* NewCopiedArrayTryUseGroup(
-    JSContext* cx, HandleObjectGroup group, const Value* vp, size_t length,
-    NewObjectKind newKind = GenericObject,
-    ShouldUpdateTypes updateTypes = ShouldUpdateTypes::Update);
-
-extern ArrayObject* NewCopiedArrayForCallingAllocationSite(
-    JSContext* cx, const Value* vp, size_t length,
-    HandleObject proto = nullptr);
-
 extern ArrayObject* NewArrayWithGroup(JSContext* cx, uint32_t length,
-                                      HandleObjectGroup group,
-                                      bool convertDoubleElements);
+                                      HandleObjectGroup group);
+
+extern bool ToLength(JSContext* cx, HandleValue v, uint64_t* out);
 
 extern bool GetLengthProperty(JSContext* cx, HandleObject obj,
                               uint32_t* lengthp);
@@ -143,7 +115,7 @@ extern bool array_pop(JSContext* cx, unsigned argc, js::Value* vp);
 
 extern bool array_join(JSContext* cx, unsigned argc, js::Value* vp);
 
-extern void ArrayShiftMoveElements(NativeObject* obj);
+extern void ArrayShiftMoveElements(ArrayObject* arr);
 
 extern bool array_shift(JSContext* cx, unsigned argc, js::Value* vp);
 
@@ -162,7 +134,7 @@ extern JSObject* ArraySliceDense(JSContext* cx, HandleObject obj, int32_t begin,
 extern bool NewbornArrayPush(JSContext* cx, HandleObject obj, const Value& v);
 
 extern ArrayObject* ArrayConstructorOneArg(JSContext* cx,
-                                           HandleObjectGroup group,
+                                           HandleArrayObject templateObject,
                                            int32_t lengthInt);
 
 #ifdef DEBUG
@@ -177,7 +149,7 @@ extern bool array_construct(JSContext* cx, unsigned argc, Value* vp);
 
 extern JSString* ArrayToSource(JSContext* cx, HandleObject obj);
 
-extern bool IsCrossRealmArrayConstructor(JSContext* cx, const Value& v,
+extern bool IsCrossRealmArrayConstructor(JSContext* cx, JSObject* obj,
                                          bool* result);
 
 extern bool ObjectMayHaveExtraIndexedProperties(JSObject* obj);

@@ -357,7 +357,12 @@ DistributionCustomizer.prototype = {
       return this._checkCustomizationComplete();
     }
     let globalPrefs = enumToObject(this._ini.getKeys("Global"));
-    if (!(globalPrefs.id && globalPrefs.version && globalPrefs.about)) {
+    if (!(globalPrefs.id && globalPrefs.version)) {
+      return this._checkCustomizationComplete();
+    }
+    let distroID = this._ini.getString("Global", "id");
+    if (!globalPrefs.about && !distroID.startsWith("mozilla-")) {
+      // About is required unless it is a mozilla distro.
       return this._checkCustomizationComplete();
     }
 
@@ -366,7 +371,7 @@ DistributionCustomizer.prototype = {
     // Global really contains info we set as prefs.  They're only
     // separate because they are "special" (read: required)
 
-    defaults.set("distribution.id", this._ini.getString("Global", "id"));
+    defaults.set("distribution.id", distroID);
     defaults.set(
       "distribution.version",
       this._ini.getString("Global", "version")
@@ -548,25 +553,21 @@ DistributionCustomizer.prototype = {
     const BROWSER_DOCURL = AppConstants.BROWSER_CHROME_URL;
 
     if (this._newProfile) {
-      let xulStore = Services.xulStore;
-
       try {
         var showPersonalToolbar = Services.prefs.getBoolPref(
           "browser.showPersonalToolbar"
         );
         if (showPersonalToolbar) {
-          xulStore.setValue(
-            BROWSER_DOCURL,
-            "PersonalToolbar",
-            "collapsed",
-            "false"
+          Services.prefs.setCharPref(
+            "browser.toolbars.bookmarks.visibility",
+            "always"
           );
         }
       } catch (e) {}
       try {
         var showMenubar = Services.prefs.getBoolPref("browser.showMenubar");
         if (showMenubar) {
-          xulStore.setValue(
+          Services.xulStore.setValue(
             BROWSER_DOCURL,
             "toolbar-menubar",
             "autohide",

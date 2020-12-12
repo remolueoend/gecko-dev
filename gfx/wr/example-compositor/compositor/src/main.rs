@@ -159,7 +159,7 @@ impl RenderNotifier for Notifier {
         })
     }
 
-    fn wake_up(&self) {
+    fn wake_up(&self, _composite_needed: bool) {
     }
 
     fn new_frame_ready(&self,
@@ -238,8 +238,6 @@ fn build_display_list(
         Some(scroll_id),
         LayoutRect::new(LayoutPoint::zero(), layout_size),
         LayoutRect::new(LayoutPoint::zero(), layout_size),
-        Vec::new(),
-        None,
         ScrollSensitivity::Script,
         LayoutVector2D::zero(),
     );
@@ -365,7 +363,6 @@ fn main() {
     let opts = webrender::RendererOptions {
         clear_color: Some(ColorF::new(1.0, 1.0, 1.0, 1.0)),
         debug_flags,
-        enable_picture_caching: true,
         compositor_config,
         ..webrender::RendererOptions::default()
     };
@@ -385,10 +382,9 @@ fn main() {
         notifier,
         opts,
         None,
-        device_size,
     ).unwrap();
     let api = sender.create_api();
-    let document_id = api.add_document(device_size, 0);
+    let document_id = api.add_document(device_size);
     let device_pixel_ratio = 1.0;
     let mut current_epoch = Epoch(0);
     let root_pipeline_id = PipelineId(0, 0);
@@ -401,7 +397,7 @@ fn main() {
     txn.set_root_pipeline(root_pipeline_id);
 
     if let Invalidations::Scrolling = inv_mode {
-        let mut root_builder = DisplayListBuilder::new(root_pipeline_id, layout_size);
+        let mut root_builder = DisplayListBuilder::new(root_pipeline_id);
 
         build_display_list(
             &mut root_builder,
@@ -421,7 +417,7 @@ fn main() {
         );
     }
 
-    txn.generate_frame();
+    txn.generate_frame(0);
     api.send_transaction(document_id, txn);
 
     // Tick the compositor (in this sample, we don't block on UI events)
@@ -439,7 +435,7 @@ fn main() {
 
             match inv_mode {
                 Invalidations::Small | Invalidations::Large => {
-                    let mut root_builder = DisplayListBuilder::new(root_pipeline_id, layout_size);
+                    let mut root_builder = DisplayListBuilder::new(root_pipeline_id);
 
                     build_display_list(
                         &mut root_builder,
@@ -468,7 +464,7 @@ fn main() {
                 }
             }
 
-            txn.generate_frame();
+            txn.generate_frame(0);
             api.send_transaction(document_id, txn);
             current_epoch.0 += 1;
             time += 0.001;

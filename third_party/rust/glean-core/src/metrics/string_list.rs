@@ -33,15 +33,19 @@ impl MetricType for StringListMetric {
     }
 }
 
+// IMPORTANT:
+//
+// When changing this implementation, make sure all the operations are
+// also declared in the related trait in `../traits/`.
 impl StringListMetric {
-    /// Create a new string list metric.
+    /// Creates a new string list metric.
     pub fn new(meta: CommonMetricData) -> Self {
         Self { meta }
     }
 
-    /// Add a new string to the list.
+    /// Adds a new string to the list.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `glean` - The Glean instance this metric belongs to.
     /// * `value` - The string to add.
@@ -81,9 +85,9 @@ impl StringListMetric {
         }
     }
 
-    /// Set to a specific list of strings.
+    /// Sets to a specific list of strings.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `glean` - The Glean instance this metric belongs to.
     /// * `value` - The list of string to set the metric to.
@@ -91,7 +95,9 @@ impl StringListMetric {
     /// ## Notes
     ///
     /// If passed an empty list, records an error and returns.
+    ///
     /// Truncates the list if it is longer than `MAX_LIST_LENGTH` and logs an error.
+    ///
     /// Truncates any value in the list if it is longer than `MAX_STRING_LENGTH` and logs an error.
     pub fn set(&self, glean: &Glean, value: Vec<String>) {
         if !self.should_record(glean) {
@@ -123,7 +129,7 @@ impl StringListMetric {
 
     /// **Test-only API (exported for FFI purposes).**
     ///
-    /// Get the currently-stored values.
+    /// Gets the currently-stored values.
     ///
     /// This doesn't clear the stored value.
     pub fn test_get_value(&self, glean: &Glean, storage_name: &str) -> Option<Vec<String>> {
@@ -139,7 +145,7 @@ impl StringListMetric {
 
     /// **Test-only API (exported for FFI purposes).**
     ///
-    /// Get the currently-stored values as a JSON String of the format
+    /// Gets the currently-stored values as a JSON String of the format
     /// ["string1", "string2", ...]
     ///
     /// This doesn't clear the stored value.

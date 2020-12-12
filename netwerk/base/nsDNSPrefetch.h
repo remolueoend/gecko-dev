@@ -17,6 +17,7 @@
 
 class nsIURI;
 class nsIDNSService;
+class nsIDNSHTTPSSVCRecord;
 
 class nsDNSPrefetch final : public nsIDNSListener {
   ~nsDNSPrefetch() = default;
@@ -43,7 +44,7 @@ class nsDNSPrefetch final : public nsIDNSListener {
   nsresult PrefetchMedium(bool refreshDNS = false);
   nsresult PrefetchLow(bool refreshDNS = false);
 
-  static void PrefChanged(const char* aPref, void* aClosure);
+  nsresult FetchHTTPSSVC(bool aRefreshDNS);
 
  private:
   nsCString mHostname;

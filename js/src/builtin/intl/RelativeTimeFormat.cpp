@@ -16,9 +16,11 @@
 #include "builtin/intl/ScopedICUObject.h"
 #include "gc/FreeOp.h"
 #include "js/CharacterEncoding.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/PropertySpec.h"
 #include "unicode/udisplaycontext.h"
 #include "unicode/uloc.h"
+#include "unicode/unum.h"
 #include "unicode/ureldatefmt.h"
 #include "unicode/utypes.h"
 #include "vm/GlobalObject.h"
@@ -51,7 +53,7 @@ const JSClassOps RelativeTimeFormatObject::classOps_ = {
 };
 
 const JSClass RelativeTimeFormatObject::class_ = {
-    js_Object_str,
+    "Intl.RelativeTimeFormat",
     JSCLASS_HAS_RESERVED_SLOTS(RelativeTimeFormatObject::SLOT_COUNT) |
         JSCLASS_HAS_CACHED_PROTO(JSProto_RelativeTimeFormat) |
         JSCLASS_FOREGROUND_FINALIZE,
@@ -76,10 +78,8 @@ static const JSFunctionSpec relativeTimeFormat_methods[] = {
     JS_SELF_HOSTED_FN("resolvedOptions",
                       "Intl_RelativeTimeFormat_resolvedOptions", 0, 0),
     JS_SELF_HOSTED_FN("format", "Intl_RelativeTimeFormat_format", 2, 0),
-#ifndef U_HIDE_DRAFT_API
     JS_SELF_HOSTED_FN("formatToParts", "Intl_RelativeTimeFormat_formatToParts",
                       2, 0),
-#endif
     JS_FN(js_toSource_str, relativeTimeFormat_toSource, 0, 0), JS_FS_END};
 
 static const JSPropertySpec relativeTimeFormat_properties[] = {
@@ -234,13 +234,42 @@ static URelativeDateTimeFormatter* NewURelativeDateTimeFormatter(
   }
 
   UErrorCode status = U_ZERO_ERROR;
+  UNumberFormat* nf = unum_open(UNUM_DECIMAL, nullptr, 0,
+                                IcuLocale(locale.get()), nullptr, &status);
+  if (U_FAILURE(status)) {
+    intl::ReportInternalError(cx);
+    return nullptr;
+  }
+  ScopedICUObject<UNumberFormat, unum_close> toClose(nf);
+
+  // Use the default values as if a new Intl.NumberFormat had been constructed.
+  unum_setAttribute(nf, UNUM_MIN_INTEGER_DIGITS, 1);
+  unum_setAttribute(nf, UNUM_MIN_FRACTION_DIGITS, 0);
+  unum_setAttribute(nf, UNUM_MAX_FRACTION_DIGITS, 3);
+  unum_setAttribute(nf, UNUM_GROUPING_USED, true);
+
+  // The undocumented magic value -2 is needed to request locale-specific data.
+  // See |icu::number::impl::Grouper::{fGrouping1, fGrouping2, fMinGrouping}|.
+  //
+  // Future ICU versions (> ICU 67) will expose it as a proper constant:
+  // https://unicode-org.atlassian.net/browse/ICU-21109
+  // https://github.com/unicode-org/icu/pull/1152
+  constexpr int32_t useLocaleData = -2;
+
+  unum_setAttribute(nf, UNUM_GROUPING_SIZE, useLocaleData);
+  unum_setAttribute(nf, UNUM_SECONDARY_GROUPING_SIZE, useLocaleData);
+  unum_setAttribute(nf, UNUM_MINIMUM_GROUPING_DIGITS, useLocaleData);
+
   URelativeDateTimeFormatter* rtf =
-      ureldatefmt_open(IcuLocale(locale.get()), nullptr, relDateTimeStyle,
+      ureldatefmt_open(IcuLocale(locale.get()), nf, relDateTimeStyle,
                        UDISPCTX_CAPITALIZATION_FOR_STANDALONE, &status);
   if (U_FAILURE(status)) {
     intl::ReportInternalError(cx);
     return nullptr;
   }
+
+  // Ownership was transferred to the URelativeDateTimeFormatter.
+  toClose.forget();
   return rtf;
 }
 
@@ -277,7 +306,6 @@ static bool intl_FormatRelativeTime(JSContext* cx,
   return true;
 }
 
-#ifndef U_HIDE_DRAFT_API
 static bool intl_FormatToPartsRelativeTime(JSContext* cx,
                                            URelativeDateTimeFormatter* rtf,
                                            double t, URelativeDateTimeUnit unit,
@@ -342,7 +370,6 @@ static bool intl_FormatToPartsRelativeTime(JSContext* cx,
   return intl::FormattedRelativeTimeToParts(cx, formattedValue, t, unitType,
                                             result);
 }
-#endif
 
 bool js::intl_FormatRelativeTime(JSContext* cx, unsigned argc, Value* vp) {
   CallArgs args = CallArgsFromVp(argc, vp);
@@ -433,15 +460,9 @@ bool js::intl_FormatRelativeTime(JSContext* cx, unsigned argc, Value* vp) {
     }
   }
 
-#ifndef U_HIDE_DRAFT_API
   return formatToParts
              ? intl_FormatToPartsRelativeTime(cx, rtf, t, relDateTimeUnit,
                                               relDateTimeNumeric, args.rval())
              : intl_FormatRelativeTime(cx, rtf, t, relDateTimeUnit,
                                        relDateTimeNumeric, args.rval());
-#else
-  MOZ_ASSERT(!formatToParts);
-  return intl_FormatRelativeTime(cx, rtf, t, relDateTimeUnit,
-                                 relDateTimeNumeric, args.rval());
-#endif
 }

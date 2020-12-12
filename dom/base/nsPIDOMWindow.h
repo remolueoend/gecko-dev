@@ -13,10 +13,12 @@
 #include "nsCOMPtr.h"
 #include "nsTArray.h"
 #include "mozilla/dom/EventTarget.h"
+#include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/TaskCategory.h"
 #include "js/TypeDecls.h"
 #include "nsRefPtrHashtable.h"
+#include "nsILoadInfo.h"
 
 // Only fired for inner windows.
 #define DOM_WINDOW_DESTROYED_TOPIC "dom-window-destroyed"
@@ -58,6 +60,8 @@ class ContentFrameMessageManager;
 class DocGroup;
 class Document;
 class Element;
+class Location;
+class MediaKeys;
 class Navigator;
 class Performance;
 class Selection;
@@ -89,33 +93,6 @@ enum class FullscreenReason {
   // suppress the fullscreen transition.
   ForForceExitFullscreen
 };
-
-namespace mozilla {
-namespace dom {
-
-class Location;
-
-// The states in this enum represent the different possible outcomes which the
-// window could be experiencing of loading a document with the
-// Large-Allocation header. The NONE case represents the case where no
-// Large-Allocation header was set.
-enum class LargeAllocStatus : uint8_t {
-  // These are the OK states, NONE means that no large allocation status message
-  // should be printed, while SUCCESS means that the success message should be
-  // printed.
-  NONE,
-  SUCCESS,
-
-  // These are the ERROR states. If a window is in one of these states, then the
-  // next document loaded in that window should have an error message reported
-  // to it.
-  NON_GET,
-  NON_E10S,
-  NOT_ONLY_TOPLEVEL_IN_TABGROUP,
-  NON_WIN32
-};
-}  // namespace dom
-}  // namespace mozilla
 
 // Must be kept in sync with xpcom/rust/xpcom/src/interfaces/nonidl.rs
 #define NS_PIDOMWINDOWINNER_IID                      \
@@ -165,6 +142,11 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   // creates new inner windows for the document it is called on.
   inline bool HasActiveDocument();
 
+  // Return true if this object is the currently-active inner window for its
+  // BrowsingContext and any container document is also fully active.
+  // For https://html.spec.whatwg.org/multipage/browsers.html#fully-active
+  bool IsFullyActive() const;
+
   // Returns true if this window is the same as mTopInnerWindow
   inline bool IsTopInnerWindow() const;
 
@@ -186,6 +168,21 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   void UnmuteAudioContexts();
 
   void SetAudioCapture(bool aCapture);
+
+  /**
+   * Associate this inner window with a MediaKeys instance.
+   */
+  void AddMediaKeysInstance(mozilla::dom::MediaKeys* aMediaKeysInstance);
+
+  /**
+   * Remove an association between this inner window and a MediaKeys instance.
+   */
+  void RemoveMediaKeysInstance(mozilla::dom::MediaKeys* aMediaKeysInstance);
+
+  /**
+   * Return if any MediaKeys instances are associated with this window.
+   */
+  bool HasActiveMediaKeysInstance();
 
   mozilla::dom::Performance* GetPerformance();
 
@@ -244,12 +241,41 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   }
 
   /**
-   * Call this to indiate that some node (this window, its document,
-   * or content in that document) has a text event listener in the default
-   * group.
+   * Call this to check whether some node (this window, its document,
+   * or content in that document) has a beforeinput event listener.
+   * Returing false may be wrong if some nodes have come from another document
+   * with `Document.adoptNode`.
    */
-  void SetHasTextEventListenerInDefaultGroup() {
-    mMayHaveTextEventListenerInDefaultGroup = true;
+  bool HasBeforeInputEventListenersForTelemetry() const {
+    return mMayHaveBeforeInputEventListenerForTelemetry;
+  }
+
+  /**
+   * Call this to indicate that some node (this window, its document,
+   * or content in that document) has a beforeinput event listener.
+   */
+  void SetHasBeforeInputEventListenersForTelemetry() {
+    mMayHaveBeforeInputEventListenerForTelemetry = true;
+  }
+
+  /**
+   * Call this to check whether some node (The document, or content in the
+   * document) has been observed by web apps with a mutation observer.
+   * (i.e., `MutationObserver.observe()` called by chrome script and addon's
+   * script does not make this returns true).
+   * Returing false may be wrong if some nodes have come from another document
+   * with `Document.adoptNode`.
+   */
+  bool MutationObserverHasObservedNodeForTelemetry() const {
+    return mMutationObserverHasObservedNodeForTelemetry;
+  }
+
+  /**
+   * Call this to indicate that some node (The document, or content in the
+   * document) is observed by web apps with a mutation observer.
+   */
+  void SetMutationObserverHasObservedNodeForTelemetry() {
+    mMutationObserverHasObservedNodeForTelemetry = true;
   }
 
   // Sets the event for window.event. Does NOT take ownership, so
@@ -277,6 +303,12 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   // a matching number of Resume() calls.
   void Suspend();
   void Resume();
+
+  // Whether or not this window was suspended by the BrowserContextGroup
+  bool GetWasSuspendedByGroup() const { return mWasSuspendedByGroup; }
+  void SetWasSuspendedByGroup(bool aSuspended) {
+    mWasSuspendedByGroup = aSuspended;
+  }
 
   // Apply the parent window's suspend, freeze, and modal state to the current
   // window.
@@ -371,6 +403,10 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   mozilla::dom::WindowGlobalChild* GetWindowGlobalChild() const {
     return mWindowGlobalChild;
   }
+
+  // Removes this inner window from the BFCache, if it is cached, and returns
+  // true if it was.
+  bool RemoveFromBFCacheSync();
 
   // Determine if the window is suspended or frozen.  Outer windows
   // will forward this call to the inner window for convenience.  If
@@ -537,8 +573,8 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
 
   virtual nsresult GetControllers(nsIControllers** aControllers) = 0;
 
-  virtual nsresult GetInnerWidth(int32_t* aWidth) = 0;
-  virtual nsresult GetInnerHeight(int32_t* aHeight) = 0;
+  virtual nsresult GetInnerWidth(double* aWidth) = 0;
+  virtual nsresult GetInnerHeight(double* aHeight) = 0;
 
   virtual already_AddRefed<nsICSSDeclaration> GetComputedStyle(
       mozilla::dom::Element& aElt, const nsAString& aPseudoElt,
@@ -555,9 +591,9 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   virtual nsISerialEventTarget* EventTargetFor(
       mozilla::TaskCategory aCategory) const = 0;
 
-  void SaveStorageAccessGranted(const nsACString& aPermissionKey);
+  void SaveStorageAccessPermissionGranted();
 
-  bool HasStorageAccessGranted(const nsACString& aPermissionKey);
+  bool HasStorageAccessPermissionGranted();
 
   nsIPrincipal* GetDocumentContentBlockingAllowListPrincipal() const;
 
@@ -606,9 +642,10 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   bool mMayHaveSelectionChangeEventListener;
   bool mMayHaveMouseEnterLeaveEventListener;
   bool mMayHavePointerEnterLeaveEventListener;
-  // Only for telemetry probe so that you can remove this after the
-  // telemetry stops working.
-  bool mMayHaveTextEventListenerInDefaultGroup;
+  // Only used for telemetry probes.  This may be wrong if some nodes have
+  // come from another document with `Document.adoptNode`.
+  bool mMayHaveBeforeInputEventListenerForTelemetry;
+  bool mMutationObserverHasObservedNodeForTelemetry;
 
   // Our inner window's outer window.
   nsCOMPtr<nsPIDOMWindowOuter> mOuterWindow;
@@ -619,6 +656,11 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
 
   // The AudioContexts created for the current document, if any.
   nsTArray<mozilla::dom::AudioContext*> mAudioContexts;  // Weak
+
+  // Instances of MediaKeys created in this inner window. Storing these allows
+  // us to shutdown MediaKeys when an inner windows is destroyed. We can also
+  // use the presence of MediaKeys to assess if a window has EME activity.
+  nsTArray<mozilla::dom::MediaKeys*> mMediaKeysInstances;  // Weak
 
   RefPtr<mozilla::dom::BrowsingContext> mBrowsingContext;
 
@@ -651,16 +693,19 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
   // the event object alive.
   mozilla::dom::Event* mEvent;
 
-  // This is a list of storage access granted for the current window. These are
-  // also set as permissions, but it could happen that we need to access them
-  // synchronously in this context, and for this, we need a copy here.
-  nsTArray<nsCString> mStorageAccessGranted;
+  // A boolean flag indicating whether storage access is granted for the
+  // current window. These are also set as permissions, but it could happen
+  // that we need to access them synchronously in this context, and for
+  // this, we need a copy here.
+  bool mStorageAccessPermissionGranted;
 
   // The WindowGlobalChild actor for this window.
   //
   // This will be non-null during the full lifetime of the window, initialized
   // during SetNewDocument, and cleared during FreeInnerObjects.
   RefPtr<mozilla::dom::WindowGlobalChild> mWindowGlobalChild;
+
+  bool mWasSuspendedByGroup;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsPIDOMWindowInner, NS_PIDOMWINDOWINNER_IID)
@@ -712,8 +757,6 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
   mozilla::dom::Element* GetFrameElementInternal() const;
   void SetFrameElementInternal(mozilla::dom::Element* aFrameElement);
 
-  bool IsActive() { return mIsActive; }
-
   void SetDesktopModeViewport(bool aDesktopModeViewport) {
     mDesktopModeViewport = aDesktopModeViewport;
   }
@@ -725,7 +768,6 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
   void SetMediaSuspend(SuspendTypes aSuspend);
 
   bool GetAudioMuted() const;
-  void SetAudioMuted(bool aMuted);
 
   float GetAudioVolume() const;
   nsresult SetAudioVolume(float aVolume);
@@ -739,14 +781,9 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
 
   float GetDevicePixelRatio(mozilla::dom::CallerType aCallerType);
 
-  void SetLargeAllocStatus(mozilla::dom::LargeAllocStatus aStatus);
-
-  bool IsTopLevelWindow();
   bool HadOriginalOpener() const;
 
   virtual nsPIDOMWindowOuter* GetPrivateRoot() = 0;
-
-  virtual void ActivateOrDeactivate(bool aActivate) = 0;
 
   /**
    * |top| gets the root of the window hierarchy.
@@ -773,10 +810,6 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
    * returns null if GetInProcessScriptableParent would return this window.
    */
   virtual nsPIDOMWindowOuter* GetInProcessScriptableParentOrNull() = 0;
-
-  virtual bool IsTopLevelWindowActive() = 0;
-
-  virtual void SetActive(bool aActive) { mIsActive = aActive; }
 
   virtual void SetIsBackground(bool aIsBackground) = 0;
 
@@ -813,8 +846,10 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
   }
 
   // Set the window up with an about:blank document with the current subject
-  // principal and potentially a CSP.
-  virtual void SetInitialPrincipalToSubject(nsIContentSecurityPolicy* aCSP) = 0;
+  // principal and potentially a CSP and a COEP.
+  virtual void SetInitialPrincipalToSubject(
+      nsIContentSecurityPolicy* aCSP,
+      const mozilla::Maybe<nsILoadInfo::CrossOriginEmbedderPolicy>& aCoep) = 0;
 
   // Returns an object containing the window's state.  This also suspends
   // all running timeouts in the window.
@@ -963,7 +998,10 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
    *
    * Outer windows only.
    */
-  virtual bool DispatchCustomEvent(const nsAString& aEventName) = 0;
+  virtual bool DispatchCustomEvent(
+      const nsAString& aEventName,
+      mozilla::ChromeOnlyDispatch aChromeOnlyDispatch =
+          mozilla::ChromeOnlyDispatch::eNo) = 0;
 
   /**
    * Like nsIDOMWindow::Open, except that we don't navigate to the given URL.
@@ -1011,8 +1049,8 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
                               nsISupports* aExtraArgument,
                               mozilla::dom::BrowsingContext** _retval) = 0;
 
-  virtual nsresult GetInnerWidth(int32_t* aWidth) = 0;
-  virtual nsresult GetInnerHeight(int32_t* aHeight) = 0;
+  virtual nsresult GetInnerWidth(double* aWidth) = 0;
+  virtual nsresult GetInnerHeight(double* aHeight) = 0;
 
   virtual mozilla::dom::Element* GetFrameElement() = 0;
 
@@ -1066,9 +1104,6 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
 
   uint32_t mModalStateDepth;
 
-  // Tracks activation state that's used for :-moz-window-inactive.
-  bool mIsActive;
-
   // Tracks whether our docshell is active.  If it is, mIsBackground
   // is false.  Too bad we have so many different concepts of
   // "active".
@@ -1107,8 +1142,6 @@ class nsPIDOMWindowOuter : public mozIDOMWindowProxy {
   // Let the service workers plumbing know that some feature are enabled while
   // testing.
   bool mServiceWorkersTestingEnabled;
-
-  mozilla::dom::LargeAllocStatus mLargeAllocStatus;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsPIDOMWindowOuter, NS_PIDOMWINDOWOUTER_IID)

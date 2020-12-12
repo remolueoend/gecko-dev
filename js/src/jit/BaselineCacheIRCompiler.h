@@ -7,6 +7,8 @@
 #ifndef jit_BaselineCacheIRCompiler_h
 #define jit_BaselineCacheIRCompiler_h
 
+#include "mozilla/Maybe.h"
+
 #include "gc/Barrier.h"
 #include "jit/CacheIR.h"
 #include "jit/CacheIRCompiler.h"
@@ -17,30 +19,26 @@ namespace jit {
 class ICFallbackStub;
 class ICStub;
 
-enum class BaselineCacheIRStubKind { Regular, Monitored, Updated };
-
 ICStub* AttachBaselineCacheIRStub(JSContext* cx, const CacheIRWriter& writer,
-                                  CacheKind kind,
-                                  BaselineCacheIRStubKind stubKind,
-                                  JSScript* outerScript, ICFallbackStub* stub,
+                                  CacheKind kind, JSScript* outerScript,
+                                  ICScript* icScript, ICFallbackStub* stub,
                                   bool* attached);
 
 // BaselineCacheIRCompiler compiles CacheIR to BaselineIC native code.
 class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
   bool makesGCCalls_;
-  BaselineCacheIRStubKind kind_;
 
   void tailCallVMInternal(MacroAssembler& masm, TailCallVMFunctionId id);
 
   template <typename Fn, Fn fn>
   void tailCallVM(MacroAssembler& masm);
 
-  MOZ_MUST_USE bool callTypeUpdateIC(Register obj, ValueOperand val,
-                                     Register scratch,
-                                     LiveGeneralRegisterSet saveRegs);
-
-  MOZ_MUST_USE bool emitStoreSlotShared(bool isFixed);
-  MOZ_MUST_USE bool emitAddAndStoreSlotShared(CacheOp op);
+  MOZ_MUST_USE bool emitStoreSlotShared(bool isFixed, ObjOperandId objId,
+                                        uint32_t offsetOffset,
+                                        ValOperandId rhsId);
+  MOZ_MUST_USE bool emitAddAndStoreSlotShared(
+      CacheOp op, ObjOperandId objId, uint32_t offsetOffset, ValOperandId rhsId,
+      uint32_t newShapeOffset, mozilla::Maybe<uint32_t> numNewSlotsOffset);
 
   bool updateArgc(CallFlags flags, Register argcReg, Register scratch);
   void loadStackObject(ArgumentKind kind, CallFlags flags, size_t stackPushed,
@@ -59,24 +57,34 @@ class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
                         Register scratch2, bool isJitCall);
   void createThis(Register argcReg, Register calleeReg, Register scratch,
                   CallFlags flags);
+  template <typename T>
+  void storeThis(const T& newThis, Register argcReg, CallFlags flags);
   void updateReturnValue();
 
   enum class NativeCallType { Native, ClassHook };
-  bool emitCallNativeShared(NativeCallType callType);
+  bool emitCallNativeShared(NativeCallType callType, ObjOperandId calleeId,
+                            Int32OperandId argcId, CallFlags flags,
+                            mozilla::Maybe<bool> ignoresReturnValue,
+                            mozilla::Maybe<uint32_t> targetOffset);
 
-  MOZ_MUST_USE bool emitCallScriptedGetterResultShared(
-      TypedOrValueRegister receiver);
+  enum class StringCode { CodeUnit, CodePoint };
+  bool emitStringFromCodeResult(Int32OperandId codeId, StringCode stringCode);
 
-  template <typename T, typename CallVM>
-  MOZ_MUST_USE bool emitCallNativeGetterResultShared(T receiver,
-                                                     const CallVM& emitCallVM);
+  bool emitCallScriptedGetterShared(ValOperandId receiverId,
+                                    uint32_t getterOffset, bool sameRealm,
+                                    uint32_t nargsAndFlagsOffset,
+                                    mozilla::Maybe<uint32_t> icScriptOffset);
+  bool emitCallScriptedSetterShared(ObjOperandId receiverId,
+                                    uint32_t setterOffset, ValOperandId rhsId,
+                                    bool sameRealm,
+                                    uint32_t nargsAndFlagsOffset,
+                                    mozilla::Maybe<uint32_t> icScriptOffset);
 
  public:
   friend class AutoStubFrame;
 
   BaselineCacheIRCompiler(JSContext* cx, const CacheIRWriter& writer,
-                          uint32_t stubDataOffset,
-                          BaselineCacheIRStubKind stubKind);
+                          uint32_t stubDataOffset);
 
   MOZ_MUST_USE bool init(CacheKind kind);
 
@@ -90,10 +98,6 @@ class MOZ_RAII BaselineCacheIRCompiler : public CacheIRCompiler {
   Address stubAddress(uint32_t offset) const;
 
  private:
-#define DEFINE_OP(op) MOZ_MUST_USE bool emit##op();
-  CACHE_IR_UNSHARED_OPS(DEFINE_OP)
-#undef DEFINE_OP
-
   CACHE_IR_COMPILER_UNSHARED_GENERATED
 };
 

@@ -7,8 +7,8 @@
 #define mozInlineSpellWordUtil_h
 
 #include "mozilla/Attributes.h"
-#include "nsCOMPtr.h"
 #include "mozilla/dom/Document.h"
+#include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
@@ -19,6 +19,10 @@ class nsINode;
 
 namespace mozilla {
 class TextEditor;
+
+namespace dom {
+class Document;
+}
 }  // namespace mozilla
 
 struct NodeOffset {
@@ -43,18 +47,14 @@ class NodeOffsetRange {
  private:
   NodeOffset mBegin;
   NodeOffset mEnd;
-  bool mEmpty;
 
  public:
-  NodeOffsetRange() : mEmpty(true) {}
-  NodeOffsetRange(NodeOffset b, NodeOffset e)
-      : mBegin(b), mEnd(e), mEmpty(false) {}
+  NodeOffsetRange() {}
+  NodeOffsetRange(NodeOffset b, NodeOffset e) : mBegin(b), mEnd(e) {}
 
   NodeOffset Begin() const { return mBegin; }
 
   NodeOffset End() const { return mEnd; }
-
-  bool Empty() const { return mEmpty; }
 };
 
 /**
@@ -110,11 +110,11 @@ class MOZ_STACK_CLASS mozInlineSpellWordUtil {
   static already_AddRefed<nsRange> MakeRange(const NodeOffsetRange& aRange);
 
   // Moves to the the next word in the range, and retrieves it's text and range.
-  // An empty word and a nullptr range are returned when we are done checking.
+  // false is returned when we are done checking.
   // aSkipChecking will be set if the word is "special" and shouldn't be
   // checked (e.g., an email address).
-  nsresult GetNextWord(nsAString& aText, NodeOffsetRange* aNodeOffsetRange,
-                       bool* aSkipChecking);
+  bool GetNextWord(nsAString& aText, NodeOffsetRange* aNodeOffsetRange,
+                   bool* aSkipChecking);
 
   // Call to normalize some punctuation. This function takes an autostring
   // so we can access characters directly.

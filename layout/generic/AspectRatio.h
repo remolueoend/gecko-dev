@@ -10,12 +10,25 @@
 /* The aspect ratio of a box, in a "width / height" format. */
 
 #include "mozilla/Attributes.h"
-#include "mozilla/Maybe.h"
+#include "mozilla/gfx/BaseSize.h"
 #include "nsCoord.h"
+#include <algorithm>
+#include <limits>
+
+namespace IPC {
+template <typename T>
+struct ParamTraits;
+}  // namespace IPC
 
 namespace mozilla {
 
+enum LogicalAxis : uint8_t;
+class LogicalSize;
+class WritingMode;
+
 struct AspectRatio {
+  friend struct IPC::ParamTraits<mozilla::AspectRatio>;
+
   AspectRatio() : mRatio(0.0f) {}
   explicit AspectRatio(float aRatio) : mRatio(std::max(aRatio, 0.0f)) {}
 
@@ -24,6 +37,11 @@ struct AspectRatio {
       return AspectRatio();
     }
     return AspectRatio(aWidth / aHeight);
+  }
+
+  template <typename T, typename Sub>
+  static AspectRatio FromSize(const gfx::BaseSize<T, Sub>& aSize) {
+    return FromSize(aSize.Width(), aSize.Height());
   }
 
   explicit operator bool() const { return mRatio != 0.0f; }
@@ -40,8 +58,50 @@ struct AspectRatio {
 
   // Inverts the ratio, in order to get the height / width ratio.
   [[nodiscard]] AspectRatio Inverted() const {
-    return *this ? AspectRatio(1.0f / mRatio) : *this;
+    if (!*this) {
+      return AspectRatio();
+    }
+    // Clamp to a small epsilon, in case mRatio is absurdly large & produces
+    // 0.0f in the division here (so that valid ratios always generate other
+    // valid ratios when inverted).
+    return AspectRatio(
+        std::max(std::numeric_limits<float>::epsilon(), 1.0f / mRatio));
   }
+
+  [[nodiscard]] inline AspectRatio ConvertToWritingMode(
+      const WritingMode& aWM) const;
+
+  /**
+   * This method computes the ratio-dependent size by the ratio-determining size
+   * and aspect-ratio (i.e. preferred aspect ratio). Basically this function
+   * will be used in the calculation of 'auto' sizes when the preferred
+   * aspect ratio is not 'auto'.
+   *
+   * @param aRatioDependentAxis  The ratio depenedent axis of the box.
+   * @param aWM  The writing mode of the box.
+   * @param aRatioDetermingSize  The size on the ratio determining axis.
+   *                             Basically, we use this size and |mRatio| to
+   *                             compute the size on the ratio-dependent axis.
+   * @param aContentBoxSizeToBoxSizingAdjust  The border padding box size
+   *                                          adjustment. We need this because
+   *                                          aspect-ratio should take the
+   *                                          box-sizing into account if its
+   *                                          style is '<ratio>'. If its style
+   *                                          is 'auto & <ratio>', we should use
+   *                                          content-box dimensions always.
+   *                                          If the callers want the ratio to
+   *                                          apply to the content-box size, we
+   *                                          should pass a zero LogicalSize.
+   *
+   * The return value is the content-box size on the ratio-dependent axis.
+   * Plese see the definition of the ratio-dependent axis and the
+   * ratio-determining axis in the spec:
+   * https://drafts.csswg.org/css-sizing-4/#aspect-ratio
+   */
+  [[nodiscard]] nscoord ComputeRatioDependentSize(
+      LogicalAxis aRatioDependentAxis, const WritingMode& aWM,
+      nscoord aRatioDeterminingSize,
+      const LogicalSize& aContentBoxSizeToBoxSizingAdjust) const;
 
   bool operator==(const AspectRatio& aOther) const {
     return mRatio == aOther.mRatio;

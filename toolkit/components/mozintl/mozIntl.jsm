@@ -12,21 +12,10 @@ const osPrefs = Cc["@mozilla.org/intl/ospreferences;1"].getService(
 );
 
 /**
- * RegExp used to parse a BCP47 language tag (ex: en-US, sr-Cyrl-RU etc.)
+ * RegExp used to parse variant subtags from a BCP47 language tag.
+ * For example: ca-valencia
  */
-const languageTagMatch = /^([a-z]{2,3}|[a-z]{4}|[a-z]{5,8})(?:[-_]([a-z]{4}))?(?:[-_]([A-Z]{2}|[0-9]{3}))?((?:[-_](?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))*)(?:[-_][a-wy-z0-9](?:[-_][a-z0-9]{2,8})+)*(?:[-_]x(?:[-_][a-z0-9]{1,8})+)?$/i;
-
-/**
- * This helper function retrives currently used app locales, allowing
- * all mozIntl APIs to use the current regional prefs locales unless
- * called with explicitly listed locales.
- */
-function getLocales(locales) {
-  if (!locales) {
-    return Services.locale.regionalPrefsLocales;
-  }
-  return locales;
-}
+const variantSubtagsMatch = /(?:-(?:[a-z0-9]{5,8}|[0-9][a-z0-9]{3}))+$/;
 
 function getDateTimePatternStyle(option) {
   switch (option) {
@@ -656,11 +645,103 @@ const availableLocaleDisplayNames = {
   ]),
 };
 
+class MozRelativeTimeFormat extends Intl.RelativeTimeFormat {
+  constructor(locales, options = {}, ...args) {
+    // If someone is asking for MozRelativeTimeFormat, it's likely they'll want
+    // to use `formatBestUnit` which works better with `auto`
+    if (options.numeric === undefined) {
+      options.numeric = "auto";
+    }
+    super(locales, options, ...args);
+  }
+
+  formatBestUnit(date, { now = new Date() } = {}) {
+    const diff = {
+      _: {},
+      ms: date.getTime() - now.getTime(),
+      years: date.getFullYear() - now.getFullYear(),
+    };
+
+    defineCachedGetter(diff, "months", function() {
+      return this.years * 12 + date.getMonth() - now.getMonth();
+    });
+    defineCachedGetter(diff, "days", function() {
+      return Math.trunc((startOf(date, "day") - startOf(now, "day")) / day);
+    });
+    defineCachedGetter(diff, "hours", function() {
+      return Math.trunc((startOf(date, "hour") - startOf(now, "hour")) / hour);
+    });
+    defineCachedGetter(diff, "minutes", function() {
+      return Math.trunc(
+        (startOf(date, "minute") - startOf(now, "minute")) / minute
+      );
+    });
+    defineCachedGetter(diff, "seconds", function() {
+      return Math.trunc(
+        (startOf(date, "second") - startOf(now, "second")) / second
+      );
+    });
+
+    const absDiff = {
+      _: {},
+    };
+
+    defineGetter(absDiff, "years", function() {
+      return Math.abs(diff.years);
+    });
+    defineGetter(absDiff, "months", function() {
+      return Math.abs(diff.months);
+    });
+    defineGetter(absDiff, "days", function() {
+      return Math.abs(diff.days);
+    });
+    defineGetter(absDiff, "hours", function() {
+      return Math.abs(diff.hours);
+    });
+    defineGetter(absDiff, "minutes", function() {
+      return Math.abs(diff.minutes);
+    });
+    defineGetter(absDiff, "seconds", function() {
+      return Math.abs(diff.seconds);
+    });
+
+    const unit = bestFit(absDiff);
+
+    switch (unit) {
+      case "year":
+        return this.format(diff.years, unit);
+      case "month":
+        return this.format(diff.months, unit);
+      case "day":
+        return this.format(diff.days, unit);
+      case "hour":
+        return this.format(diff.hours, unit);
+      case "minute":
+        return this.format(diff.minutes, unit);
+      default:
+        if (unit !== "second") {
+          throw new TypeError(`Unsupported unit "${unit}"`);
+        }
+        return this.format(diff.seconds, unit);
+    }
+  }
+}
+
 class MozIntl {
+  Collator = Intl.Collator;
+  ListFormat = Intl.ListFormat;
+  Locale = Intl.Locale;
+  NumberFormat = Intl.NumberFormat;
+  PluralRules = Intl.PluralRules;
+  RelativeTimeFormat = MozRelativeTimeFormat;
+
   constructor() {
-    // XXX: We should add an observer on
-    //      intl:app-locales-changed to invalidate
-    //      the cache.
+    this._cache = {};
+    Services.obs.addObserver(this, "intl:app-locales-changed", true);
+  }
+
+  observe() {
+    // Clear cache when things change.
     this._cache = {};
   }
 
@@ -669,7 +750,7 @@ class MozIntl {
       mozIntlHelper.addGetCalendarInfo(this._cache);
     }
 
-    return this._cache.getCalendarInfo(getLocales(locales), ...args);
+    return this._cache.getCalendarInfo(locales, ...args);
   }
 
   getDisplayNames(locales, ...args) {
@@ -677,7 +758,7 @@ class MozIntl {
       mozIntlHelper.addGetDisplayNames(this._cache);
     }
 
-    return this._cache.getDisplayNames(getLocales(locales), ...args);
+    return this._cache.getDisplayNames(locales, ...args);
   }
 
   getLocaleInfo(locales, ...args) {
@@ -685,7 +766,7 @@ class MozIntl {
       mozIntlHelper.addGetLocaleInfo(this._cache);
     }
 
-    return this._cache.getLocaleInfo(getLocales(locales), ...args);
+    return this._cache.getLocaleInfo(locales, ...args);
   }
 
   getAvailableLocaleDisplayNames(type) {
@@ -763,21 +844,21 @@ class MozIntl {
       if (typeof localeCode !== "string") {
         throw new TypeError("All locale codes must be strings.");
       }
-      // Get the display name for this dictionary.
-      // XXX: To be replaced with Intl.Locale once it lands - bug 1433303.
-      const match = localeCode.match(languageTagMatch);
 
-      if (match === null) {
+      let locale;
+      try {
+        locale = new Intl.Locale(localeCode.replaceAll("_", "-"));
+      } catch {
         return localeCode;
       }
 
-      const [
-        ,
-        /* languageTag */ languageSubtag,
-        scriptSubtag,
-        regionSubtag,
-        variantSubtags,
-      ] = match;
+      const {
+        language: languageSubtag,
+        script: scriptSubtag,
+        region: regionSubtag,
+      } = locale;
+
+      const variantSubtags = locale.baseName.match(variantSubtagsMatch);
 
       const displayName = [
         this.getLanguageDisplayNames(locales, [languageSubtag])[0],
@@ -794,7 +875,7 @@ class MozIntl {
       }
 
       if (variantSubtags) {
-        displayName.push(...variantSubtags.substr(1).split(/[-_]/)); // Collapse multiple variants.
+        displayName.push(...variantSubtags[0].substr(1).split("-")); // Collapse multiple variants.
       }
 
       let modifiers;
@@ -814,151 +895,41 @@ class MozIntl {
   get DateTimeFormat() {
     if (!this._cache.hasOwnProperty("DateTimeFormat")) {
       mozIntlHelper.addDateTimeFormatConstructor(this._cache);
-    }
 
-    let DateTimeFormat = this._cache.DateTimeFormat;
+      const DateTimeFormat = this._cache.DateTimeFormat;
 
-    class MozDateTimeFormat extends DateTimeFormat {
-      constructor(locales, options, ...args) {
-        let resolvedLocales = DateTimeFormat.supportedLocalesOf(
-          getLocales(locales)
-        );
-        if (options) {
-          if (options.dateStyle || options.timeStyle) {
-            options.pattern = osPrefs.getDateTimePattern(
-              getDateTimePatternStyle(options.dateStyle),
-              getDateTimePatternStyle(options.timeStyle),
-              resolvedLocales[0]
-            );
-          } else {
-            // make sure that user doesn't pass a pattern explicitly
-            options.pattern = undefined;
-          }
-        }
-        super(resolvedLocales, options, ...args);
-      }
-    }
-    return MozDateTimeFormat;
-  }
-
-  get NumberFormat() {
-    class MozNumberFormat extends Intl.NumberFormat {
-      constructor(locales, options, ...args) {
-        super(getLocales(locales), options, ...args);
-      }
-    }
-    return MozNumberFormat;
-  }
-
-  get Collator() {
-    class MozCollator extends Intl.Collator {
-      constructor(locales, options, ...args) {
-        super(getLocales(locales), options, ...args);
-      }
-    }
-    return MozCollator;
-  }
-
-  get PluralRules() {
-    class MozPluralRules extends Intl.PluralRules {
-      constructor(locales, options, ...args) {
-        super(getLocales(locales), options, ...args);
-      }
-    }
-    return MozPluralRules;
-  }
-
-  get RelativeTimeFormat() {
-    class MozRelativeTimeFormat extends Intl.RelativeTimeFormat {
-      constructor(locales, options = {}, ...args) {
-        // If someone is asking for MozRelativeTimeFormat, it's likely they'll want
-        // to use `formatBestUnit` which works better with `auto`
-        if (options.numeric === undefined) {
-          options.numeric = "auto";
-        }
-        super(getLocales(locales), options, ...args);
-      }
-
-      formatBestUnit(date, { now = new Date() } = {}) {
-        const diff = {
-          _: {},
-          ms: date.getTime() - now.getTime(),
-          years: date.getFullYear() - now.getFullYear(),
-        };
-
-        defineCachedGetter(diff, "months", function() {
-          return this.years * 12 + date.getMonth() - now.getMonth();
-        });
-        defineCachedGetter(diff, "days", function() {
-          return Math.trunc((startOf(date, "day") - startOf(now, "day")) / day);
-        });
-        defineCachedGetter(diff, "hours", function() {
-          return Math.trunc(
-            (startOf(date, "hour") - startOf(now, "hour")) / hour
-          );
-        });
-        defineCachedGetter(diff, "minutes", function() {
-          return Math.trunc(
-            (startOf(date, "minute") - startOf(now, "minute")) / minute
-          );
-        });
-        defineCachedGetter(diff, "seconds", function() {
-          return Math.trunc(
-            (startOf(date, "second") - startOf(now, "second")) / second
-          );
-        });
-
-        const absDiff = {
-          _: {},
-        };
-
-        defineGetter(absDiff, "years", function() {
-          return Math.abs(diff.years);
-        });
-        defineGetter(absDiff, "months", function() {
-          return Math.abs(diff.months);
-        });
-        defineGetter(absDiff, "days", function() {
-          return Math.abs(diff.days);
-        });
-        defineGetter(absDiff, "hours", function() {
-          return Math.abs(diff.hours);
-        });
-        defineGetter(absDiff, "minutes", function() {
-          return Math.abs(diff.minutes);
-        });
-        defineGetter(absDiff, "seconds", function() {
-          return Math.abs(diff.seconds);
-        });
-
-        const unit = bestFit(absDiff);
-
-        switch (unit) {
-          case "year":
-            return this.format(diff.years, unit);
-          case "month":
-            return this.format(diff.months, unit);
-          case "day":
-            return this.format(diff.days, unit);
-          case "hour":
-            return this.format(diff.hours, unit);
-          case "minute":
-            return this.format(diff.minutes, unit);
-          default:
-            if (unit !== "second") {
-              throw new TypeError(`Unsupported unit "${unit}"`);
+      class MozDateTimeFormat extends DateTimeFormat {
+        constructor(locales, options, ...args) {
+          let resolvedLocales = DateTimeFormat.supportedLocalesOf(locales);
+          if (options) {
+            if (options.dateStyle || options.timeStyle) {
+              options.pattern = osPrefs.getDateTimePattern(
+                getDateTimePatternStyle(options.dateStyle),
+                getDateTimePatternStyle(options.timeStyle),
+                resolvedLocales[0]
+              );
+            } else {
+              // make sure that user doesn't pass a pattern explicitly
+              options.pattern = undefined;
             }
-            return this.format(diff.seconds, unit);
+          }
+          super(resolvedLocales, options, ...args);
         }
       }
+      this._cache.MozDateTimeFormat = MozDateTimeFormat;
     }
-    return MozRelativeTimeFormat;
+
+    return this._cache.MozDateTimeFormat;
   }
 }
 
 MozIntl.prototype.classID = Components.ID(
   "{35ec195a-e8d0-4300-83af-c8a2cc84b4a3}"
 );
-MozIntl.prototype.QueryInterface = ChromeUtils.generateQI([Ci.mozIMozIntl]);
+MozIntl.prototype.QueryInterface = ChromeUtils.generateQI([
+  "mozIMozIntl",
+  "nsIObserver",
+  "nsISupportsWeakReference",
+]);
 
 var EXPORTED_SYMBOLS = ["MozIntl"];

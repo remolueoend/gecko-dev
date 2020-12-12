@@ -23,14 +23,15 @@ class nsIPrincipal;
 namespace mozilla {
 
 class ContentBlockingLog final {
-  typedef ContentBlockingNotifier::StorageAccessGrantedReason
-      StorageAccessGrantedReason;
+  typedef ContentBlockingNotifier::StorageAccessPermissionGrantedReason
+      StorageAccessPermissionGrantedReason;
 
   struct LogEntry {
     uint32_t mType;
     uint32_t mRepeatCount;
     bool mBlocked;
-    Maybe<ContentBlockingNotifier::StorageAccessGrantedReason> mReason;
+    Maybe<ContentBlockingNotifier::StorageAccessPermissionGrantedReason>
+        mReason;
     nsTArray<nsCString> mTrackingFullHashes;
   };
 
@@ -61,7 +62,7 @@ class ContentBlockingLog final {
         mBuffer;  // The lifetime of the struct must be bound to the buffer
     explicit StringWriteFunc(nsACString& aBuffer) : mBuffer(aBuffer) {}
 
-    void Write(const char* aStr) override { mBuffer.Append(aStr); }
+    void Write(const Span<const char>& aStr) override { mBuffer.Append(aStr); }
   };
 
   struct Comparator {
@@ -88,12 +89,16 @@ class ContentBlockingLog final {
   // ContentBlockingLog from content processes.
   Maybe<uint32_t> RecordLogParent(
       const nsACString& aOrigin, uint32_t aType, bool aBlocked,
-      const Maybe<ContentBlockingNotifier::StorageAccessGrantedReason>& aReason,
+      const Maybe<
+          ContentBlockingNotifier::StorageAccessPermissionGrantedReason>&
+          aReason,
       const nsTArray<nsCString>& aTrackingFullHashes);
 
   void RecordLog(
       const nsACString& aOrigin, uint32_t aType, bool aBlocked,
-      const Maybe<ContentBlockingNotifier::StorageAccessGrantedReason>& aReason,
+      const Maybe<
+          ContentBlockingNotifier::StorageAccessPermissionGrantedReason>&
+          aReason,
       const nsTArray<nsCString>& aTrackingFullHashes) {
     RecordLogInternal(aOrigin, aType, aBlocked, aReason, aTrackingFullHashes);
   }
@@ -112,7 +117,7 @@ class ContentBlockingLog final {
         continue;
       }
 
-      w.StartArrayProperty(entry.mOrigin.get(), w.SingleLineStyle);
+      w.StartArrayProperty(entry.mOrigin, w.SingleLineStyle);
 
       StringifyCustomFields(entry, w);
       for (const LogEntry& item : entry.mData->mLogs) {
@@ -242,7 +247,8 @@ class ContentBlockingLog final {
  private:
   void RecordLogInternal(
       const nsACString& aOrigin, uint32_t aType, bool aBlocked,
-      const Maybe<ContentBlockingNotifier::StorageAccessGrantedReason>&
+      const Maybe<
+          ContentBlockingNotifier::StorageAccessPermissionGrantedReason>&
           aReason = Nothing(),
       const nsTArray<nsCString>& aTrackingFullHashes = nsTArray<nsCString>()) {
     DebugOnly<bool> isCookiesBlockedTracker =
@@ -290,8 +296,7 @@ class ContentBlockingLog final {
         entry.mData->mLogs.RemoveElementAt(0);
       }
       entry.mData->mLogs.AppendElement(
-          LogEntry{aType, 1u, aBlocked, aReason,
-                   nsTArray<nsCString>(aTrackingFullHashes)});
+          LogEntry{aType, 1u, aBlocked, aReason, aTrackingFullHashes.Clone()});
       return;
     }
 
@@ -322,8 +327,7 @@ class ContentBlockingLog final {
       entry->mData->mHasSocialTrackerCookiesLoaded.emplace(aBlocked);
     } else {
       entry->mData->mLogs.AppendElement(
-          LogEntry{aType, 1u, aBlocked, aReason,
-                   nsTArray<nsCString>(aTrackingFullHashes)});
+          LogEntry{aType, 1u, aBlocked, aReason, aTrackingFullHashes.Clone()});
     }
   }
 

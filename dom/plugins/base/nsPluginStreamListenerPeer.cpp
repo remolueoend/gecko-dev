@@ -436,8 +436,8 @@ nsresult nsPluginStreamListenerPeer::SetUpStreamListener(nsIRequest* request,
     // we require a content len
     // get Last-Modified header for plugin info
     nsAutoCString lastModified;
-    if (NS_SUCCEEDED(httpChannel->GetResponseHeader(
-            NS_LITERAL_CSTRING("last-modified"), lastModified)) &&
+    if (NS_SUCCEEDED(
+            httpChannel->GetResponseHeader("last-modified"_ns, lastModified)) &&
         !lastModified.IsEmpty()) {
       PRTime time64;
       PR_ParseTimeString(lastModified.get(), true,
@@ -479,7 +479,7 @@ nsresult nsPluginStreamListenerPeer::GetInterfaceGlobal(const nsIID& aIID,
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<Document> doc;
+  nsCOMPtr<mozilla::dom::Document> doc;
   nsresult rv = owner->GetDocument(getter_AddRefs(doc));
   if (NS_FAILED(rv) || !doc) {
     return NS_ERROR_FAILURE;

@@ -10,8 +10,7 @@
 #include "AudioNodeTrack.h"
 #include "MediaStreamTrack.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MediaElementAudioSourceNode)
 
@@ -87,7 +86,7 @@ void MediaElementAudioSourceNode::ListenForAllowedToPlay(
           // static analysis. We capture a non-owning reference so as to allow
           // cycle collection of the node. The reference is cleared via
           // DisconnectIfExists() from Destroy() when the node is collected.
-          [& self = *this]() {
+          [&self = *this]() {
             self.Context()->StartBlockedAudioContextIfAllowed();
             self.mAllowedToPlayRequest.Complete();
           })
@@ -103,5 +102,4 @@ HTMLMediaElement* MediaElementAudioSourceNode::MediaElement() {
   return mElement;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

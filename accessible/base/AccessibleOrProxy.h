@@ -27,6 +27,7 @@ class AccessibleOrProxy {
   MOZ_IMPLICIT AccessibleOrProxy(ProxyAccessible* aProxy)
       : mBits(aProxy ? (reinterpret_cast<uintptr_t>(aProxy) | IS_PROXY) : 0) {}
   MOZ_IMPLICIT AccessibleOrProxy(decltype(nullptr)) : mBits(0) {}
+  MOZ_IMPLICIT AccessibleOrProxy() : mBits(0) {}
 
   bool IsProxy() const { return mBits & IS_PROXY; }
   ProxyAccessible* AsProxy() const {
@@ -61,10 +62,15 @@ class AccessibleOrProxy {
   }
 
   /**
+   * Return true if the object has children, false otherwise
+   */
+  bool HasChildren() const { return ChildCount() > 0; }
+
+  /**
    * Return the child object either an accessible or a proxied accessible at
    * the given index.
    */
-  AccessibleOrProxy ChildAt(uint32_t aIdx) {
+  AccessibleOrProxy ChildAt(uint32_t aIdx) const {
     if (IsProxy()) {
       return AsProxy()->ChildAt(aIdx);
     }
@@ -109,6 +115,28 @@ class AccessibleOrProxy {
     return AsAccessible()->LastChild();
   }
 
+  /**
+   * Return the next sibling object.
+   */
+  AccessibleOrProxy NextSibling() {
+    if (IsProxy()) {
+      return AsProxy()->NextSibling();
+    }
+
+    return AsAccessible()->NextSibling();
+  }
+
+  /**
+   * Return the prev sibling object.
+   */
+  AccessibleOrProxy PrevSibling() {
+    if (IsProxy()) {
+      return AsProxy()->PrevSibling();
+    }
+
+    return AsAccessible()->PrevSibling();
+  }
+
   role Role() const {
     if (IsProxy()) {
       return AsProxy()->Role();
@@ -117,10 +145,20 @@ class AccessibleOrProxy {
     return AsAccessible()->Role();
   }
 
+  int32_t IndexInParent() const;
+
   AccessibleOrProxy Parent() const;
 
   AccessibleOrProxy ChildAtPoint(int32_t aX, int32_t aY,
                                  Accessible::EWhichChildAtPoint aWhichChild);
+
+  bool operator!=(const AccessibleOrProxy& aOther) const {
+    return mBits != aOther.mBits;
+  }
+
+  bool operator==(const AccessibleOrProxy& aOther) const {
+    return mBits == aOther.mBits;
+  }
 
   // XXX these are implementation details that ideally would not be exposed.
   uintptr_t Bits() const { return mBits; }

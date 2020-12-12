@@ -2,17 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at <http://mozilla.org/MPL/2.0/>. */
 
-async function getScopeValue(dbg, index) {
-  return (await waitForElement(dbg, "scopeValue", index)).innerText;
-}
-
 // - Tests adding a watchpoint
 // - Tests removing a watchpoint
 // - Tests adding a watchpoint, resuming to after the youngest frame has popped,
 // then removing and adding a watchpoint during the same pause
 
 add_task(async function() {
-  pushPref("devtools.debugger.features.watchpoints", true);
   const dbg = await initDebugger("doc-sources.html");
 
   await navigate(dbg, "doc-watchpoints.html", "doc-watchpoints.html");
@@ -40,7 +35,7 @@ add_task(async function() {
   resume(dbg);
   await waitForPaused(dbg);
   assertPausedAtSourceAndLine(dbg, sourceId, 19);
-   
+
   info("Remove the get watchpoint on b");
   const removedWatchpoint1 = waitForDispatch(dbg, "REMOVE_WATCHPOINT");
   const el1 = await waitForElementWithSelector(dbg, ".remove-get-watchpoint");
@@ -48,11 +43,13 @@ add_task(async function() {
   clickElementWithSelector(dbg, ".remove-get-watchpoint");
   await removedWatchpoint1;
 
-  info("Resume and wait to skip the second `obj.b` and pause on the debugger statement");
+  info(
+    "Resume and wait to skip the second `obj.b` and pause on the debugger statement"
+  );
   resume(dbg);
   await waitForPaused(dbg);
   assertPausedAtSourceAndLine(dbg, sourceId, 21);
-   
+
   info("Resume and pause on the debugger statement in getB");
   resume(dbg);
   await waitForPaused(dbg);
@@ -72,19 +69,19 @@ add_task(async function() {
   resume(dbg);
   await waitForPaused(dbg);
   assertPausedAtSourceAndLine(dbg, sourceId, 6);
-  
+
   info("Resume and pause on the debugger statement");
   resume(dbg);
   await waitForPaused(dbg);
   assertPausedAtSourceAndLine(dbg, sourceId, 24);
-  
+
   info("Remove the get watchpoint on b");
   const removedWatchpoint2 = waitForDispatch(dbg, "REMOVE_WATCHPOINT");
   await toggleScopeNode(dbg, 3);
   await rightClickScopeNode(dbg, 5);
   const el2 = await waitForElementWithSelector(dbg, ".remove-get-watchpoint");
   el2.scrollIntoView();
-     clickElementWithSelector(dbg, ".remove-get-watchpoint");
+  clickElementWithSelector(dbg, ".remove-get-watchpoint");
   await removedWatchpoint2;
 
   info("Add back the get watchpoint on b");
@@ -103,3 +100,7 @@ add_task(async function() {
   assertPausedAtSourceAndLine(dbg, sourceId, 25);
   await waitForRequestsToSettle(dbg);
 });
+
+async function getScopeValue(dbg, index) {
+  return (await waitForElement(dbg, "scopeValue", index)).innerText;
+}

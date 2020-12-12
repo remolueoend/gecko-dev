@@ -13,7 +13,6 @@
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/HTMLOptionsCollection.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCheapSets.h"
 #include "nsCOMPtr.h"
 #include "nsError.h"
@@ -27,6 +26,7 @@ class nsISelectControlFrame;
 
 namespace mozilla {
 
+class ErrorResult;
 class EventChainPostVisitor;
 class EventChainPreVisitor;
 class SelectContentData;
@@ -112,9 +112,7 @@ class HTMLSelectElement final : public nsGenericHTMLFormElementWithState,
   virtual int32_t TabIndexDefault() override;
 
   // Element
-  virtual bool IsInteractiveHTMLContent(bool aIgnoreTabindex) const override {
-    return true;
-  }
+  virtual bool IsInteractiveHTMLContent() const override { return true; }
 
   // WebIdl HTMLSelectElement
   bool Autofocus() const { return GetBoolAttr(nsGkAtoms::autofocus); }

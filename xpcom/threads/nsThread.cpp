@@ -31,19 +31,19 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/SchedulerGroup.h"
 #include "mozilla/Services.h"
+#include "mozilla/SpinEventLoopUntil.h"
+#include "mozilla/StaticPrefs_threads.h"
+#include "mozilla/TaskController.h"
 #include "nsXPCOMPrivate.h"
 #include "mozilla/ChaosMode.h"
-#include "mozilla/SchedulerGroup.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Unused.h"
+#include "mozilla/dom/DocGroup.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "nsThreadSyncDispatch.h"
 #include "nsServiceManagerUtils.h"
 #include "GeckoProfiler.h"
-#ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerMarkerPayload.h"
-#endif
 #include "InputEventStatistics.h"
 #include "ThreadEventQueue.h"
 #include "ThreadEventTarget.h"
@@ -91,14 +91,6 @@ using GetCurrentThreadStackLimitsFn = void(WINAPI*)(PULONG_PTR LowLimit,
 #  include <signal.h>
 #  include <fcntl.h>
 #  include "nsXULAppAPI.h"
-#endif
-
-#if defined(NS_FUNCTION_TIMER) && defined(_MSC_VER)
-#  include "nsTimerImpl.h"
-#  include "mozilla/StackWalk.h"
-#endif
-#ifdef NS_FUNCTION_TIMER
-#  include "nsCRT.h"
 #endif
 
 #ifdef MOZ_TASK_TRACER
@@ -196,6 +188,7 @@ NS_INTERFACE_MAP_BEGIN(nsThread)
   NS_INTERFACE_MAP_ENTRY(nsIEventTarget)
   NS_INTERFACE_MAP_ENTRY(nsISerialEventTarget)
   NS_INTERFACE_MAP_ENTRY(nsISupportsPriority)
+  NS_INTERFACE_MAP_ENTRY(nsIDirectTaskDispatcher)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIThread)
   if (aIID.Equals(NS_GET_IID(nsIClassInfo))) {
     static nsThreadClassInfo sThreadClassInfo;
@@ -203,7 +196,8 @@ NS_INTERFACE_MAP_BEGIN(nsThread)
   } else
 NS_INTERFACE_MAP_END
 NS_IMPL_CI_INTERFACE_GETTER(nsThread, nsIThread, nsIThreadInternal,
-                            nsIEventTarget, nsISupportsPriority)
+                            nsIEventTarget, nsISerialEventTarget,
+                            nsISupportsPriority)
 
 //-----------------------------------------------------------------------------
 
@@ -420,12 +414,15 @@ void nsThread::ThreadFunc(void* aArg) {
 
   mozilla::IOInterposer::RegisterCurrentThread();
 
+#ifdef MOZ_GECKO_PROFILER
   // This must come after the call to nsThreadManager::RegisterCurrentThread(),
   // because that call is needed to properly set up this thread as an nsThread,
   // which profiler_register_thread() requires. See bug 1347007.
-  if (!initData->name.IsEmpty()) {
+  const bool registerWithProfiler = !initData->name.IsEmpty();
+  if (registerWithProfiler) {
     PROFILER_REGISTER_THREAD(initData->name.BeginReading());
   }
+#endif  // MOZ_GECKO_PROFILER
 
   // Wait for and process startup event
   nsCOMPtr<nsIRunnable> event = self->mEvents->GetEvent(true, nullptr);
@@ -470,7 +467,12 @@ void nsThread::ThreadFunc(void* aArg) {
   // Inform the threadmanager that this thread is going away
   nsThreadManager::get().UnregisterCurrentThread(*self);
 
-  PROFILER_UNREGISTER_THREAD();
+#ifdef MOZ_GECKO_PROFILER
+  // The thread should only unregister itself if it was registered above.
+  if (registerWithProfiler) {
+    PROFILER_UNREGISTER_THREAD();
+  }
+#endif  // MOZ_GECKO_PROFILER
 
   // Dispatch shutdown ACK
   NotNull<nsThreadShutdownContext*> context =
@@ -588,12 +590,17 @@ nsThread::nsThread(NotNull<SynchronizedEventQueue*> aQueue,
       mShutdownRequired(false),
       mPriority(PRIORITY_NORMAL),
       mIsMainThread(aMainThread == MAIN_THREAD),
+      mUseHangMonitor(aMainThread == MAIN_THREAD),
       mIsAPoolThreadFree(nullptr),
       mCanInvokeJS(false),
 #ifdef EARLY_BETA_OR_EARLIER
       mLastWakeupCheckTime(TimeStamp::Now()),
 #endif
       mPerformanceCounterState(mNestedEventLoopDepth, mIsMainThread) {
+  if (mIsMainThread) {
+    mozilla::TaskController::Get()->SetPerformanceCounterState(
+        &mPerformanceCounterState);
+  }
 }
 
 nsThread::nsThread()
@@ -606,6 +613,7 @@ nsThread::nsThread()
       mShutdownRequired(false),
       mPriority(PRIORITY_NORMAL),
       mIsMainThread(false),
+      mUseHangMonitor(false),
       mCanInvokeJS(false),
 #ifdef EARLY_BETA_OR_EARLIER
       mLastWakeupCheckTime(TimeStamp::Now()),
@@ -900,7 +908,11 @@ nsThread::HasPendingEvents(bool* aResult) {
     return NS_ERROR_NOT_SAME_THREAD;
   }
 
-  *aResult = mEvents->HasPendingEvent();
+  if (mIsMainThread && !mIsInLocalExecutionMode) {
+    *aResult = TaskController::Get()->HasMainThreadPendingTasks();
+  } else {
+    *aResult = mEvents->HasPendingEvent();
+  }
   return NS_OK;
 }
 
@@ -910,7 +922,8 @@ nsThread::HasPendingHighPriorityEvents(bool* aResult) {
     return NS_ERROR_NOT_SAME_THREAD;
   }
 
-  *aResult = mEvents->HasPendingHighPriorityEvents();
+  // This function appears to never be called anymore.
+  *aResult = false;
   return NS_OK;
 }
 
@@ -967,22 +980,19 @@ void canary_alarm_handler(int signum) {
 
 #endif
 
-#define NOTIFY_EVENT_OBSERVERS(observers_, func_, params_)                  \
-  do {                                                                      \
-    if (!observers_.IsEmpty()) {                                            \
-      nsTObserverArray<nsCOMPtr<nsIThreadObserver>>::ForwardIterator iter_( \
-          observers_);                                                      \
-      nsCOMPtr<nsIThreadObserver> obs_;                                     \
-      while (iter_.HasMore()) {                                             \
-        obs_ = iter_.GetNext();                                             \
-        obs_->func_ params_;                                                \
-      }                                                                     \
-    }                                                                       \
+#define NOTIFY_EVENT_OBSERVERS(observers_, func_, params_)                 \
+  do {                                                                     \
+    if (!observers_.IsEmpty()) {                                           \
+      for (nsCOMPtr<nsIThreadObserver> obs_ : observers_.ForwardRange()) { \
+        obs_->func_ params_;                                               \
+      }                                                                    \
+    }                                                                      \
   } while (0)
 
 #ifdef MOZ_COLLECTING_RUNNABLE_TELEMETRY
-static bool GetLabeledRunnableName(nsIRunnable* aEvent, nsACString& aName,
-                                   EventQueuePriority aPriority) {
+// static
+bool nsThread::GetLabeledRunnableName(nsIRunnable* aEvent, nsACString& aName,
+                                      EventQueuePriority aPriority) {
   bool labeled = false;
   if (RefPtr<SchedulerGroup::Runnable> groupRunnable = do_QueryObject(aEvent)) {
     labeled = true;
@@ -996,7 +1006,7 @@ static bool GetLabeledRunnableName(nsIRunnable* aEvent, nsACString& aName,
     aName.AssignLiteral("anonymous runnable");
   }
 
-  if (!labeled && aPriority > EventQueuePriority::Input) {
+  if (!labeled && aPriority > EventQueuePriority::InputHigh) {
     aName.AppendLiteral("(unlabeled)");
   }
 
@@ -1005,6 +1015,12 @@ static bool GetLabeledRunnableName(nsIRunnable* aEvent, nsACString& aName,
 #endif
 
 mozilla::PerformanceCounter* nsThread::GetPerformanceCounter(
+    nsIRunnable* aEvent) const {
+  return GetPerformanceCounterBase(aEvent);
+}
+
+// static
+mozilla::PerformanceCounter* nsThread::GetPerformanceCounterBase(
     nsIRunnable* aEvent) {
   RefPtr<SchedulerGroup::Runnable> docRunnable = do_QueryObject(aEvent);
   if (docRunnable) {
@@ -1054,22 +1070,21 @@ nsThread::ProcessNextEvent(bool aMayWait, bool* aResult) {
   }
 
   // The toplevel event loop normally blocks waiting for the next event, but
-  // if we're trying to shut this thread down, we must exit the event loop when
-  // the event queue is empty.
-  // This only applys to the toplevel event loop! Nested event loops (e.g.
-  // during sync dispatch) are waiting for some state change and must be able
-  // to block even if something has requested shutdown of the thread. Otherwise
-  // we'll just busywait as we endlessly look for an event, fail to find one,
-  // and repeat the nested event loop since its state change hasn't happened
-  // yet.
+  // if we're trying to shut this thread down, we must exit the event loop
+  // when the event queue is empty. This only applys to the toplevel event
+  // loop! Nested event loops (e.g. during sync dispatch) are waiting for
+  // some state change and must be able to block even if something has
+  // requested shutdown of the thread. Otherwise we'll just busywait as we
+  // endlessly look for an event, fail to find one, and repeat the nested
+  // event loop since its state change hasn't happened yet.
   bool reallyWait = aMayWait && (mNestedEventLoopDepth > 0 || !ShuttingDown());
 
   if (mIsInLocalExecutionMode) {
-    EventQueuePriority priority;
-    if (const nsCOMPtr<nsIRunnable> event =
-            mEvents->GetEvent(reallyWait, &priority)) {
+    if (nsCOMPtr<nsIRunnable> event = mEvents->GetEvent(reallyWait)) {
       *aResult = true;
+      LogRunnable::Run log(event);
       event->Run();
+      event = nullptr;
     } else {
       *aResult = false;
     }
@@ -1077,14 +1092,19 @@ nsThread::ProcessNextEvent(bool aMayWait, bool* aResult) {
   }
 
   Maybe<dom::AutoNoJSAPI> noJSAPI;
+
+  if (mUseHangMonitor && reallyWait) {
+    BackgroundHangMonitor().NotifyWait();
+  }
+
   if (mIsMainThread) {
-    DoMainThreadSpecificProcessing(reallyWait);
+    DoMainThreadSpecificProcessing();
   }
 
   ++mNestedEventLoopDepth;
 
-  // We only want to create an AutoNoJSAPI on threads that actually do DOM stuff
-  // (including workers).  Those are exactly the threads that have an
+  // We only want to create an AutoNoJSAPI on threads that actually do DOM
+  // stuff (including workers).  Those are exactly the threads that have an
   // mScriptObserver.
   bool callScriptObserver = !!mScriptObserver;
   if (callScriptObserver) {
@@ -1116,9 +1136,13 @@ nsThread::ProcessNextEvent(bool aMayWait, bool* aResult) {
     // Scope for |event| to make sure that its destructor fires while
     // mNestedEventLoopDepth has been incremented, since that destructor can
     // also do work.
-    EventQueuePriority priority;
-    nsCOMPtr<nsIRunnable> event =
-        mEvents->GetEvent(reallyWait, &priority, &mLastEventDelay);
+    nsCOMPtr<nsIRunnable> event;
+    bool usingTaskController = mIsMainThread;
+    if (usingTaskController) {
+      event = TaskController::Get()->GetRunnableForMTTask(reallyWait);
+    } else {
+      event = mEvents->GetEvent(reallyWait, &mLastEventDelay);
+    }
 
     *aResult = (event.get() != nullptr);
 
@@ -1149,59 +1173,40 @@ nsThread::ProcessNextEvent(bool aMayWait, bool* aResult) {
 
       LOG(("THRD(%p) running [%p]\n", this, event.get()));
 
+      Maybe<LogRunnable::Run> log;
+
+      if (!usingTaskController) {
+        log.emplace(event);
+      }
+
       // Delay event processing to encourage whoever dispatched this event
       // to run.
       DelayForChaosMode(ChaosFeature::TaskRunning, 1000);
 
       mozilla::TimeStamp now = mozilla::TimeStamp::Now();
 
-      if (mIsMainThread) {
+      if (mUseHangMonitor) {
         BackgroundHangMonitor().NotifyActivity();
       }
 
-#ifdef MOZ_COLLECTING_RUNNABLE_TELEMETRY
-      // If we're on the main thread, we want to record our current runnable's
-      // name in a static so that BHR can record it.
-      Array<char, kRunnableNameBufSize> restoreRunnableName;
-      restoreRunnableName[0] = '\0';
-      auto clear = MakeScopeExit([&] {
-        if (mIsMainThread) {
-          MOZ_ASSERT(NS_IsMainThread());
-          sMainThreadRunnableName = restoreRunnableName;
-        }
-      });
-      if (mIsMainThread) {
-        nsAutoCString name;
-        GetLabeledRunnableName(event, name, priority);
-
-        MOZ_ASSERT(NS_IsMainThread());
-        restoreRunnableName = sMainThreadRunnableName;
-
-        // Copy the name into sMainThreadRunnableName's buffer, and append a
-        // terminating null.
-        uint32_t length = std::min((uint32_t)kRunnableNameBufSize - 1,
-                                   (uint32_t)name.Length());
-        memcpy(sMainThreadRunnableName.begin(), name.BeginReading(), length);
-        sMainThreadRunnableName[length] = '\0';
+      Maybe<PerformanceCounterState::Snapshot> snapshot;
+      if (!usingTaskController) {
+        snapshot.emplace(mPerformanceCounterState.RunnableWillRun(
+            GetPerformanceCounter(event), now, false));
       }
-#endif
-      Maybe<AutoTimeDurationHelper> timeDurationHelper;
-      if (priority == EventQueuePriority::Input) {
-        timeDurationHelper.emplace();
-      }
-
-      PerformanceCounterState::Snapshot snapshot =
-          mPerformanceCounterState.RunnableWillRun(
-              GetPerformanceCounter(event), now,
-              priority == EventQueuePriority::Idle);
 
       mLastEventStart = now;
 
       event->Run();
 
-      mEvents->DidRunEvent();
+      if (usingTaskController) {
+        *aResult = TaskController::Get()->MTTaskRunnableProcessedTask();
+      } else {
+        mPerformanceCounterState.RunnableDidRun(std::move(snapshot.ref()));
+      }
 
-      mPerformanceCounterState.RunnableDidRun(std::move(snapshot));
+      // To cover the event's destructor code inside the LogRunnable span.
+      event = nullptr;
     } else {
       mLastEventDelay = TimeDuration();
       mLastEventStart = TimeStamp();
@@ -1213,12 +1218,18 @@ nsThread::ProcessNextEvent(bool aMayWait, bool* aResult) {
     }
   }
 
+  DrainDirectTasks();
+
   NOTIFY_EVENT_OBSERVERS(EventQueue()->EventObservers(), AfterProcessNextEvent,
                          (this, *aResult));
 
   if (obs) {
     obs->AfterProcessNextEvent(this, *aResult);
   }
+
+  // In case some EventObserver dispatched some direct tasks; process them
+  // now.
+  DrainDirectTasks();
 
   if (callScriptObserver) {
     if (mScriptObserver) {
@@ -1252,7 +1263,8 @@ nsThread::SetPriority(int32_t aPriority) {
   //   PR_PRIORITY_NORMAL
   //   PR_PRIORITY_HIGH
   //   PR_PRIORITY_URGENT
-  // We map the priority values defined on nsISupportsPriority to these values.
+  // We map the priority values defined on nsISupportsPriority to these
+  // values.
 
   mPriority = aPriority;
 
@@ -1352,14 +1364,10 @@ void nsThread::SetScriptObserver(
   mScriptObserver = aScriptObserver;
 }
 
-void nsThread::DoMainThreadSpecificProcessing(bool aReallyWait) {
+void nsThread::DoMainThreadSpecificProcessing() const {
   MOZ_ASSERT(mIsMainThread);
 
   ipc::CancelCPOWs();
-
-  if (aReallyWait) {
-    BackgroundHangMonitor().NotifyWait();
-  }
 
   // Fire a memory pressure notification, if one is pending.
   if (!ShuttingDown()) {
@@ -1387,6 +1395,35 @@ NS_IMETHODIMP
 nsThread::GetEventTarget(nsIEventTarget** aEventTarget) {
   nsCOMPtr<nsIEventTarget> target = this;
   target.forget(aEventTarget);
+  return NS_OK;
+}
+
+//-----------------------------------------------------------------------------
+// nsIDirectTaskDispatcher
+
+NS_IMETHODIMP
+nsThread::DispatchDirectTask(already_AddRefed<nsIRunnable> aEvent) {
+  if (!IsOnCurrentThread()) {
+    return NS_ERROR_FAILURE;
+  }
+  mDirectTasks.AddTask(std::move(aEvent));
+  return NS_OK;
+}
+
+NS_IMETHODIMP nsThread::DrainDirectTasks() {
+  if (!IsOnCurrentThread()) {
+    return NS_ERROR_FAILURE;
+  }
+  mDirectTasks.DrainTasks();
+  return NS_OK;
+}
+
+NS_IMETHODIMP nsThread::HaveDirectTasks(bool* aValue) {
+  if (!IsOnCurrentThread()) {
+    return NS_ERROR_FAILURE;
+  }
+
+  *aValue = mDirectTasks.HaveTasks();
   return NS_OK;
 }
 
@@ -1456,8 +1493,8 @@ void PerformanceCounterState::RunnableDidRun(Snapshot&& aSnapshot) {
   mCurrentPerformanceCounter = std::move(aSnapshot.mOldPerformanceCounter);
   mCurrentRunnableIsIdleRunnable = aSnapshot.mOldIsIdleRunnable;
   if (IsNestedRunnable()) {
-    // Reset mCurrentTimeSliceStart to right now, so our parent runnable's next
-    // slice can be properly accounted for.
+    // Reset mCurrentTimeSliceStart to right now, so our parent runnable's
+    // next slice can be properly accounted for.
     mCurrentTimeSliceStart = now;
   } else {
     // We are done at the outermost level; we are no longer in a timeslice.
@@ -1490,9 +1527,28 @@ void PerformanceCounterState::MaybeReportAccumulatedTime(TimeStamp aNow) {
 
 #ifdef MOZ_GECKO_PROFILER
     if (profiler_thread_is_being_profiled()) {
-      PROFILER_ADD_MARKER_WITH_PAYLOAD(
-          mCurrentRunnableIsIdleRunnable ? "LongIdleTask" : "LongTask", OTHER,
-          LongTaskMarkerPayload, (mCurrentTimeSliceStart, aNow));
+      struct LongTaskMarker {
+        static constexpr Span<const char> MarkerTypeName() {
+          return MakeStringSpan("MainThreadLongTask");
+        }
+        static void StreamJSONMarkerData(
+            baseprofiler::SpliceableJSONWriter& aWriter) {
+          aWriter.StringProperty("category", "LongTask");
+        }
+        static MarkerSchema MarkerTypeDisplay() {
+          using MS = MarkerSchema;
+          MS schema{MS::Location::markerChart, MS::Location::markerTable};
+          schema.AddKeyLabelFormat("category", "Type", MS::Format::string);
+          return schema;
+        }
+      };
+
+      profiler_add_marker(mCurrentRunnableIsIdleRunnable
+                              ? ProfilerString8View("LongIdleTask")
+                              : ProfilerString8View("LongTask"),
+                          geckoprofiler::category::OTHER,
+                          MarkerTiming::Interval(mCurrentTimeSliceStart, aNow),
+                          LongTaskMarker{});
     }
 #endif
   }

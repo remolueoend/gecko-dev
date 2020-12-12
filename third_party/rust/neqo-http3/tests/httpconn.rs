@@ -6,7 +6,7 @@
 
 #![allow(unused_assignments)]
 
-use neqo_common::{matches, Datagram};
+use neqo_common::{event::Provider, Datagram};
 use neqo_crypto::AuthenticationStatus;
 use neqo_http3::{Http3Client, Http3ClientEvent, Http3Server, Http3ServerEvent, Http3State};
 use test_fixture::*;
@@ -38,7 +38,7 @@ fn process_server_events(server: &mut Http3Server) {
                         (String::from(":status"), String::from("200")),
                         (String::from("content-length"), String::from("3")),
                     ],
-                    RESPONSE_DATA.to_vec(),
+                    RESPONSE_DATA,
                 )
                 .unwrap();
             request_found = true;
@@ -52,18 +52,15 @@ fn process_client_events(conn: &mut Http3Client) {
     let mut response_data_found = false;
     while let Some(event) = conn.next_event() {
         match event {
-            Http3ClientEvent::HeaderReady { stream_id } => {
-                let h = conn.read_response_headers(stream_id);
+            Http3ClientEvent::HeaderReady { headers, fin, .. } => {
                 assert_eq!(
-                    h,
-                    Ok((
-                        vec![
-                            (String::from(":status"), String::from("200")),
-                            (String::from("content-length"), String::from("3")),
-                        ],
-                        false
-                    ))
+                    headers,
+                    vec![
+                        (String::from(":status"), String::from("200")),
+                        (String::from("content-length"), String::from("3")),
+                    ]
                 );
+                assert_eq!(fin, false);
                 response_header_found = true;
             }
             Http3ClientEvent::DataReadable { stream_id } => {
@@ -116,7 +113,7 @@ fn test_fetch() {
 
     eprintln!("-----client");
     let req = hconn_c
-        .fetch("GET", "https", "something.com", "/", &[])
+        .fetch(now(), "GET", "https", "something.com", "/", &[])
         .unwrap();
     assert_eq!(req, 0);
     hconn_c.stream_close_send(req).unwrap();

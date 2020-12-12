@@ -13,6 +13,7 @@
 #include "mozilla/MacroArgs.h"  // for MOZ_CONCAT
 #include "mozilla/TypedEnumBits.h"
 
+#include <iosfwd>  // for ostream
 #include <stddef.h>
 #include <stdint.h>
 
@@ -72,14 +73,14 @@ enum class SurfaceFormat : int8_t {
 
   // These ones are their own special cases.
   YUV,
-  NV12,  // YUV 4:2:0 image with a plane of 8 bit Y samples followed by
-         // an interleaved U/V plane containing 8 bit 2x2 subsampled
-         // colour difference samples.
-  P016,  // Similar to NV12, but with 16 bits plane values
-  P010,  // Identical to P016 but the 6 least significant bits are 0.
-         // With DXGI in theory entirely compatible, however practice has
-         // shown that it's not the case.
-  YUV422,
+  NV12,    // YUV 4:2:0 image with a plane of 8 bit Y samples followed by
+           // an interleaved U/V plane containing 8 bit 2x2 subsampled
+           // colour difference samples.
+  P016,    // Similar to NV12, but with 16 bits plane values
+  P010,    // Identical to P016 but the 6 least significant bits are 0.
+           // With DXGI in theory entirely compatible, however practice has
+           // shown that it's not the case.
+  YUV422,  // Single plane YUV 4:2:2 interleaved as Y`0 Cb Y`1 Cr.
   HSV,
   Lab,
   Depth,
@@ -107,6 +108,8 @@ enum class SurfaceFormat : int8_t {
   OS_RGBA = A8R8G8B8_UINT32,
   OS_RGBX = X8R8G8B8_UINT32
 };
+
+std::ostream& operator<<(std::ostream& aOut, const SurfaceFormat& aFormat);
 
 // Represents the bit-shifts required to access color channels when the layout
 // is viewed as a uint32_t value.
@@ -192,10 +195,12 @@ inline bool IsOpaque(SurfaceFormat aFormat) {
   }
 }
 
+// The matrix coeffiecients used for YUV to RGB conversion.
 enum class YUVColorSpace : uint8_t {
   BT601,
   BT709,
   BT2020,
+  Identity,  // aka RGB
   // This represents the unknown format and is a valid value.
   UNKNOWN,
   _NUM_COLORSPACE
@@ -411,6 +416,8 @@ enum class SamplingFilter : int8_t {
   SENTINEL  // one past the last valid value
 };
 
+std::ostream& operator<<(std::ostream& aOut, const SamplingFilter& aFilter);
+
 // clang-format off
 MOZ_DEFINE_ENUM_CLASS_WITH_BASE(PatternType, int8_t, (
   COLOR,
@@ -443,10 +450,11 @@ enum class LuminanceType : int8_t {
 /* Color is stored in non-premultiplied form in sRGB color space */
 struct sRGBColor {
  public:
-  sRGBColor() : r(0.0f), g(0.0f), b(0.0f), a(0.0f) {}
-  sRGBColor(Float aR, Float aG, Float aB, Float aA)
+  constexpr sRGBColor() : r(0.0f), g(0.0f), b(0.0f), a(0.0f) {}
+  constexpr sRGBColor(Float aR, Float aG, Float aB, Float aA)
       : r(aR), g(aG), b(aB), a(aA) {}
-  sRGBColor(Float aR, Float aG, Float aB) : r(aR), g(aG), b(aB), a(1.0f) {}
+  constexpr sRGBColor(Float aR, Float aG, Float aB)
+      : r(aR), g(aG), b(aB), a(1.0f) {}
 
   static sRGBColor White(float aA) { return sRGBColor(1.f, 1.f, 1.f, aA); }
 
@@ -570,6 +578,9 @@ struct DeviceColor {
     return !(*this == aColor);
   }
 
+  friend std::ostream& operator<<(std::ostream& aOut,
+                                  const DeviceColor& aColor);
+
   Float r, g, b, a;
 };
 
@@ -673,13 +684,13 @@ constexpr HalfCorner FullToHalfCorner(Corner aCorner, bool aIsVertical) {
   return HalfCorner(aCorner * 2 + aIsVertical);
 }
 
-constexpr bool SideIsVertical(Side aSide) { return aSide % 2; }
+constexpr bool SideIsVertical(mozilla::Side aSide) { return aSide % 2; }
 
 // @param aIsSecond when true, return the clockwise second of the two
 // corners associated with aSide. For example, with aSide = eSideBottom the
 // result is eCornerBottomRight when aIsSecond is false, and
 // eCornerBottomLeft when aIsSecond is true.
-constexpr Corner SideToFullCorner(Side aSide, bool aIsSecond) {
+constexpr Corner SideToFullCorner(mozilla::Side aSide, bool aIsSecond) {
   return Corner((aSide + aIsSecond) % 4);
 }
 
@@ -690,7 +701,7 @@ constexpr Corner SideToFullCorner(Side aSide, bool aIsSecond) {
 // eCornerTopRightY when aIsParallel is false (because "X" is parallel with
 // eSideTop/eSideBottom, similarly "Y" is parallel with
 // eSideLeft/eSideRight)
-constexpr HalfCorner SideToHalfCorner(Side aSide, bool aIsSecond,
+constexpr HalfCorner SideToHalfCorner(mozilla::Side aSide, bool aIsSecond,
                                       bool aIsParallel) {
   return HalfCorner(((aSide + aIsSecond) * 2 + (aSide + !aIsParallel) % 2) % 8);
 }

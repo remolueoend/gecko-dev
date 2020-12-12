@@ -6,9 +6,9 @@
 
 package org.mozilla.geckoview;
 
-import android.support.annotation.AnyThread;
-import android.support.annotation.IntDef;
-import android.support.annotation.NonNull;
+import androidx.annotation.AnyThread;
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -54,8 +54,14 @@ public class GeckoWebExecutor {
     }
 
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef({FETCH_FLAGS_NONE, FETCH_FLAGS_ANONYMOUS, FETCH_FLAGS_NO_REDIRECTS, FETCH_FLAGS_STREAM_FAILURE_TEST})
-    /* package */ @interface FetchFlags {};
+    @IntDef({
+            FETCH_FLAGS_NONE,
+            FETCH_FLAGS_ANONYMOUS,
+            FETCH_FLAGS_NO_REDIRECTS,
+            FETCH_FLAGS_PRIVATE,
+            FETCH_FLAGS_STREAM_FAILURE_TEST,
+    })
+    /* package */ @interface FetchFlags {}
 
     /**
      * No special treatment.
@@ -73,6 +79,15 @@ public class GeckoWebExecutor {
      */
     @WrapForJNI
     public static final int FETCH_FLAGS_NO_REDIRECTS = 1 << 1;
+
+    // There was supposed to be another flag, which we then decided not to implement.
+    // That's the reason there's no value 1 << 2, and it can absolutely be used :)
+
+    /**
+     * Associates this download with the current private browsing session
+     */
+    @WrapForJNI
+    public static final int FETCH_FLAGS_PRIVATE = 1 << 3;
 
     /**
      * This flag causes a read error in the {@link WebResponse} body. Useful for testing.
@@ -124,8 +139,8 @@ public class GeckoWebExecutor {
         }
 
         // We don't need to fully validate the URI here, just a sanity check
-        if (!request.uri.toLowerCase().startsWith("http")) {
-            throw new IllegalArgumentException("URI scheme must be http or https");
+        if (!request.uri.toLowerCase().matches("(http|blob).*")) {
+            throw new IllegalArgumentException("Unsupported URI scheme");
         }
 
         final GeckoResult<WebResponse> result = new GeckoResult<>();

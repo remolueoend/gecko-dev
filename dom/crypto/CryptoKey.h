@@ -7,23 +7,36 @@
 #ifndef mozilla_dom_CryptoKey_h
 #define mozilla_dom_CryptoKey_h
 
-#include "nsCycleCollectionParticipant.h"
-#include "nsWrapperCache.h"
-#include "nsIGlobalObject.h"
-#include "pk11pub.h"
-#include "keyhi.h"
+#include <cstdint>
+#include "ErrorList.h"
 #include "ScopedNSSTypes.h"
-#include "mozilla/ErrorResult.h"
+#include "js/RootingAPI.h"
+#include "keythi.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/CryptoBuffer.h"
 #include "mozilla/dom/KeyAlgorithmProxy.h"
-#include "js/StructuredClone.h"
-#include "js/TypeDecls.h"
+#include "nsCycleCollectionParticipant.h"
+#include "nsIGlobalObject.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsTArrayForwardDeclare.h"
+#include "nsWrapperCache.h"
 
 #define CRYPTOKEY_SC_VERSION 0x00000001
 
+class JSObject;
 class nsIGlobalObject;
+struct JSContext;
+struct JSStructuredCloneReader;
+struct JSStructuredCloneWriter;
 
 namespace mozilla {
+
+class ErrorResult;
+
 namespace dom {
 
 /*
@@ -113,13 +126,17 @@ class CryptoKey final : public nsISupports, public nsWrapperCache {
   nsresult AddPublicKeyData(SECKEYPublicKey* point);
   void ClearUsages();
   nsresult AddUsage(const nsString& aUsage);
-  nsresult AddUsageIntersecting(const nsString& aUsage, uint32_t aUsageMask);
+  nsresult AddAllowedUsage(const nsString& aUsage, const nsString& aAlgorithm);
+  nsresult AddAllowedUsageIntersecting(const nsString& aUsage,
+                                       const nsString& aAlgorithm,
+                                       uint32_t aUsageMask = USAGES_MASK);
   void AddUsage(KeyUsage aUsage);
   bool HasAnyUsage();
   bool HasUsage(KeyUsage aUsage);
   bool HasUsageOtherThan(uint32_t aUsages);
   static bool IsRecognizedUsage(const nsString& aUsage);
   static bool AllUsagesRecognized(const Sequence<nsString>& aUsages);
+  static uint32_t GetAllowedUsagesForAlgorithm(const nsString& aAlgorithm);
 
   nsresult SetSymKey(const CryptoBuffer& aSymKey);
   nsresult SetPrivateKey(SECKEYPrivateKey* aPrivateKey);

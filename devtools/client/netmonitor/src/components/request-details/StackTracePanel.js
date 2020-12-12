@@ -30,7 +30,7 @@ class StackTracePanel extends Component {
     return {
       connector: PropTypes.object.isRequired,
       request: PropTypes.object.isRequired,
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       openLink: PropTypes.func,
     };
   }
@@ -50,26 +50,25 @@ class StackTracePanel extends Component {
    */
   componentWillReceiveProps(nextProps) {
     const { request, connector } = nextProps;
-    // If we're not dealing with a new request, bail out.
-    if (this.props.request && this.props.request.id === request.id) {
-      return;
+    // Only try to fetch the stacktrace if we don't already have the stacktrace yet
+    if (!request.stacktrace) {
+      fetchNetworkUpdatePacket(connector.requestData, request, ["stackTrace"]);
     }
-    fetchNetworkUpdatePacket(connector.requestData, request, ["stackTrace"]);
   }
 
   render() {
-    const { connector, openLink, request, sourceMapService } = this.props;
+    const { connector, openLink, request, sourceMapURLService } = this.props;
 
-    const { stacktrace = [] } = request;
+    const { stacktrace } = request;
 
     return div(
       { className: "panel-container" },
       StackTrace({
-        stacktrace,
+        stacktrace: stacktrace || [],
         onViewSourceInDebugger: ({ url, line, column }) => {
           return connector.viewSourceInDebugger(url, line, column);
         },
-        sourceMapService,
+        sourceMapURLService,
         openLink,
       })
     );

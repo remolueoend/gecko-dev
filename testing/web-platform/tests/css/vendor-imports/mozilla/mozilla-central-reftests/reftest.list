@@ -49,17 +49,11 @@ include images3/reftest.list
 # Masking Level 1
 include masking/reftest.list
 
-# Multi-column Layout 3
-include multicol3/reftest.list
-
 # Ruby Layout Module
 include ruby/reftest.list
 
 # Selectors Level 4
 include selectors4/reftest.list
-
-# Shapes Level 1
-include shapes1/reftest.list
 
 # CSS Intrinsic & Extrinsic Sizing Module Level 3
 include sizing/reftest.list

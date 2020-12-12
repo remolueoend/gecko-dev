@@ -25,10 +25,17 @@
 #include "nsIThread.h"
 #include "nsITimer.h"
 
-#include "jsapi.h"
-#include "js/GCAnnotations.h"
+#include "js/GCAnnotations.h"  // for JS_HAZ_NON_GC_POINTER
+#include "js/RootingAPI.h"     // for Handle, Heap
+#include "js/Transcoding.h"  // for TranscodeBuffer, TranscodeRange, TranscodeSources
+#include "js/TypeDecls.h"  // for HandleObject, HandleScript
 
 #include <prio.h>
+
+namespace JS {
+class CompileOptions;
+class OffThreadToken;
+}  // namespace JS
 
 namespace mozilla {
 namespace dom {
@@ -75,11 +82,17 @@ class ScriptPreloader : public nsIObserver,
   static ScriptPreloader& GetSingleton();
   static ScriptPreloader& GetChildSingleton();
 
-  static ProcessType GetChildProcessType(const nsAString& remoteType);
+  static ProcessType GetChildProcessType(const nsACString& remoteType);
+
+  // Fill some options that should be consistent across all scripts stored
+  // into preloader cache.
+  static void FillCompileOptionsForCachedScript(JS::CompileOptions& options);
 
   // Retrieves the script with the given cache key from the script cache.
   // Returns null if the script is not cached.
-  JSScript* GetCachedScript(JSContext* cx, const nsCString& name);
+  JSScript* GetCachedScript(JSContext* cx,
+                            const JS::ReadOnlyCompileOptions& options,
+                            const nsCString& path);
 
   // Notes the execution of a script with the given URL and cache key.
   // Depending on the stage of startup, the script may be serialized and
@@ -96,8 +109,7 @@ class ScriptPreloader : public nsIObserver,
                   TimeStamp loadTime);
 
   // Initializes the script cache from the startup script cache file.
-  Result<Ok, nsresult> InitCache(
-      const nsAString& = NS_LITERAL_STRING("scriptCache"));
+  Result<Ok, nsresult> InitCache(const nsAString& = u"scriptCache"_ns);
 
   Result<Ok, nsresult> InitCache(const Maybe<ipc::FileDescriptor>& cacheFile,
                                  ScriptCacheChild* cacheChild);
@@ -106,7 +118,9 @@ class ScriptPreloader : public nsIObserver,
 
  private:
   Result<Ok, nsresult> InitCacheInternal(JS::HandleObject scope = nullptr);
-  JSScript* GetCachedScriptInternal(JSContext* cx, const nsCString& name);
+  JSScript* GetCachedScriptInternal(JSContext* cx,
+                                    const JS::ReadOnlyCompileOptions& options,
+                                    const nsCString& path);
 
  public:
   void Trace(JSTracer* trc);
@@ -198,6 +212,50 @@ class ScriptPreloader : public nsIObserver,
       const ScriptStatus mStatus;
     };
 
+    // The purpose of this helper class is to avoid a race between
+    // ScriptPreloader::WriteCache() and the GC on a JSScript*.
+    // The former checks if the actual JSScript* is null on the save thread
+    // while holding mMonitor. Aside from GC tracing, all places that mutate
+    // the JSScript* either hold mMonitor or don't run at the same time as the
+    // save thread. The GC can move the script, which will cause the value to
+    // change, but this will not change whether it is null or not.
+    //
+    // We can't hold mMonitor while tracing, because we can end running the
+    // GC while the current thread already holds mMonitor. Instead, this class
+    // avoids the race by storing a separate field to indicate if the script is
+    // null or not. To enforce this, the mutation by the GC that cannot affect
+    // the nullness of the script is split out from other mutation.
+    class MOZ_HEAP_CLASS ScriptHolder {
+     public:
+      explicit ScriptHolder(JSScript* script)
+          : mScript(script), mHasScript(script) {}
+      ScriptHolder() : mHasScript(false) {}
+
+      // This should only be called on the main thread (either while holding
+      // the preloader's mMonitor or while the save thread isn't running), or on
+      // the save thread while holding the preloader's mMonitor.
+      explicit operator bool() const { return mHasScript; }
+
+      // This should only be called on the main thread.
+      JSScript* Get() const {
+        MOZ_ASSERT(NS_IsMainThread());
+        return mScript;
+      }
+
+      // This should only be called on the main thread (or from a GC thread
+      // while the main thread is GCing).
+      void Trace(JSTracer* trc);
+
+      // These should only be called on the main thread, either while holding
+      // the preloader's mMonitor or while the save thread isn't running.
+      void Set(JS::HandleScript jsscript);
+      void Clear();
+
+     private:
+      JS::Heap<JSScript*> mScript;
+      bool mHasScript;  // true iff mScript is non-null.
+    };
+
     void FreeData() {
       // If the script data isn't mmapped, we need to release both it
       // and the Range that points to it at the same time.
@@ -223,7 +281,7 @@ class ScriptPreloader : public nsIObserver,
     // not.
     bool MaybeDropScript() {
       if (mIsRunOnce && (HasRange() || !mCache.WillWriteScripts())) {
-        mScript = nullptr;
+        mScript.Clear();
         return true;
       }
       return false;
@@ -268,7 +326,8 @@ class ScriptPreloader : public nsIObserver,
 
     bool HasArray() { return mXDRData.constructed<nsTArray<uint8_t>>(); }
 
-    JSScript* GetJSScript(JSContext* cx);
+    JSScript* GetJSScript(JSContext* cx,
+                          const JS::ReadOnlyCompileOptions& options);
 
     size_t HeapSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
       auto size = mallocSizeOf(this);
@@ -306,7 +365,7 @@ class ScriptPreloader : public nsIObserver,
 
     TimeStamp mLoadTime{};
 
-    JS::Heap<JSScript*> mScript;
+    ScriptHolder mScript;
 
     // True if this script is ready to be executed. This means that either the
     // off-thread portion of an off-thread decode has finished, or the script
@@ -412,7 +471,9 @@ class ScriptPreloader : public nsIObserver,
 
   // Waits for the given cached script to finish compiling off-thread, or
   // decodes it synchronously on the main thread, as appropriate.
-  JSScript* WaitForCachedScript(JSContext* cx, CachedScript* script);
+  JSScript* WaitForCachedScript(JSContext* cx,
+                                const JS::ReadOnlyCompileOptions& options,
+                                CachedScript* script);
 
   void DecodeNextBatch(size_t chunkSize, JS::HandleObject scope = nullptr);
 
@@ -449,6 +510,7 @@ class ScriptPreloader : public nsIObserver,
   bool mCacheInitialized = false;
   bool mSaveComplete = false;
   bool mDataPrepared = false;
+  // May only be changed on the main thread, while `mSaveMonitor` is held.
   bool mCacheInvalidated = false;
 
   // The list of scripts that we read from the initial startup cache file,

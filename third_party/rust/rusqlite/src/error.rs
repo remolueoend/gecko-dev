@@ -94,6 +94,7 @@ pub enum Error {
     #[allow(dead_code)]
     ModuleError(String),
 
+    /// An unwinding panic occurs in an UDF (user-defined function).
     #[cfg(feature = "functions")]
     UnwindingPanic,
 
@@ -108,6 +109,12 @@ pub enum Error {
     /// parameters in the query. The first `usize` is how many parameters were
     /// given, the 2nd is how many were expected.
     InvalidParameterCount(usize, usize),
+
+    /// Returned from various functions in the Blob IO positional API. For
+    /// example, [`Blob::raw_read_at_exact`](crate::blob::Blob::raw_read_at_exact)
+    /// will return it if the blob has insufficient data.
+    #[cfg(feature = "blob")]
+    BlobSizeError,
 }
 
 impl PartialEq for Error {
@@ -150,6 +157,8 @@ impl PartialEq for Error {
             (Error::InvalidParameterCount(i1, n1), Error::InvalidParameterCount(i2, n2)) => {
                 i1 == i2 && n1 == n2
             }
+            #[cfg(feature = "blob")]
+            (Error::BlobSizeError, Error::BlobSizeError) => true,
             (..) => false,
         }
     }
@@ -261,53 +270,14 @@ impl fmt::Display for Error {
             #[cfg(feature = "functions")]
             Error::GetAuxWrongType => write!(f, "get_aux called with wrong type"),
             Error::MultipleStatement => write!(f, "Multiple statements provided"),
+
+            #[cfg(feature = "blob")]
+            Error::BlobSizeError => "Blob size is insufficient".fmt(f),
         }
     }
 }
 
 impl error::Error for Error {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        match *self {
-            Error::SqliteFailure(ref err, None) => err.description(),
-            Error::SqliteFailure(_, Some(ref s)) => s,
-            Error::SqliteSingleThreadedMode => {
-                "SQLite was compiled or configured for single-threaded use only"
-            }
-            Error::FromSqlConversionFailure(_, _, ref err) => err.description(),
-            Error::IntegralValueOutOfRange(..) => "integral value out of range of requested type",
-            Error::Utf8Error(ref err) => err.description(),
-            Error::InvalidParameterName(_) => "invalid parameter name",
-            Error::NulError(ref err) => err.description(),
-            Error::InvalidPath(_) => "invalid path",
-            Error::ExecuteReturnedResults => {
-                "execute returned results - did you mean to call query?"
-            }
-            Error::InvalidParameterCount(..) => "Wrong number of parameters passed to query.",
-            Error::QueryReturnedNoRows => "query returned no rows",
-            Error::InvalidColumnIndex(_) => "invalid column index",
-            Error::InvalidColumnName(_) => "invalid column name",
-            Error::InvalidColumnType(..) => "invalid column type",
-            Error::StatementChangedRows(_) => "query inserted zero or more than one row",
-
-            #[cfg(feature = "functions")]
-            Error::InvalidFunctionParameterType(..) => "invalid function parameter type",
-            #[cfg(feature = "vtab")]
-            Error::InvalidFilterParameterType(..) => "invalid filter parameter type",
-            #[cfg(feature = "functions")]
-            Error::UserFunctionError(ref err) => err.description(),
-            Error::ToSqlConversionFailure(ref err) => err.description(),
-            Error::InvalidQuery => "query is not read-only",
-            #[cfg(feature = "vtab")]
-            Error::ModuleError(ref desc) => desc,
-            #[cfg(feature = "functions")]
-            Error::UnwindingPanic => "unwinding panic",
-            #[cfg(feature = "functions")]
-            Error::GetAuxWrongType => "get_aux called with wrong type",
-            Error::MultipleStatement => "multiple statements provided",
-        }
-    }
-
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
             Error::SqliteFailure(ref err, _) => Some(err),
@@ -347,6 +317,9 @@ impl error::Error for Error {
 
             #[cfg(feature = "functions")]
             Error::GetAuxWrongType => None,
+
+            #[cfg(feature = "blob")]
+            Error::BlobSizeError => None,
         }
     }
 }

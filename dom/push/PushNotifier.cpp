@@ -14,6 +14,7 @@
 #include "nsXPCOM.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/Unused.h"
 
@@ -103,8 +104,7 @@ nsresult PushNotifier::Dispatch(PushDispatcher& aDispatcher) {
         // remote type is acceptable. This should not run when Fission is
         // enabled, and we specifically don't want this for
         // LARGE_ALLOCATION_REMOTE_TYPE, so don't use IsWebRemoteType().
-        if (!contentActors[i]->GetRemoteType().EqualsLiteral(
-                DEFAULT_REMOTE_TYPE)) {
+        if (contentActors[i]->GetRemoteType() != DEFAULT_REMOTE_TYPE) {
           continue;
         }
 
@@ -147,7 +147,7 @@ nsresult PushNotifier::Dispatch(PushDispatcher& aDispatcher) {
   return rv;
 }
 
-PushData::PushData(const nsTArray<uint8_t>& aData) : mData(aData) {}
+PushData::PushData(const nsTArray<uint8_t>& aData) : mData(aData.Clone()) {}
 
 PushData::~PushData() = default;
 
@@ -198,7 +198,7 @@ PushData::Json(JSContext* aCx, JS::MutableHandle<JS::Value> aResult) {
 
 NS_IMETHODIMP
 PushData::Binary(nsTArray<uint8_t>& aData) {
-  aData = mData;
+  aData = mData.Clone();
   return NS_OK;
 }
 
@@ -306,7 +306,7 @@ PushMessageDispatcher::PushMessageDispatcher(
     const nsAString& aMessageId, const Maybe<nsTArray<uint8_t>>& aData)
     : PushDispatcher(aScope, aPrincipal),
       mMessageId(aMessageId),
-      mData(aData) {}
+      mData(aData ? Some(aData->Clone()) : Nothing()) {}
 
 PushMessageDispatcher::~PushMessageDispatcher() = default;
 
@@ -433,11 +433,11 @@ nsresult PushErrorDispatcher::NotifyWorkers() {
       (!mPrincipal || mPrincipal->IsSystemPrincipal())) {
     // For system subscriptions, log the error directly to the browser console.
     return nsContentUtils::ReportToConsoleNonLocalized(
-        mMessage, mFlags, NS_LITERAL_CSTRING("Push"), nullptr, /* aDocument */
-        nullptr,                                               /* aURI */
-        EmptyString(),                                         /* aLine */
-        0,                                                     /* aLineNumber */
-        0, /* aColumnNumber */
+        mMessage, mFlags, "Push"_ns, nullptr, /* aDocument */
+        nullptr,                              /* aURI */
+        u""_ns,                               /* aLine */
+        0,                                    /* aLineNumber */
+        0,                                    /* aColumnNumber */
         nsContentUtils::eOMIT_LOCATION);
   }
 
@@ -446,7 +446,7 @@ nsresult PushErrorDispatcher::NotifyWorkers() {
   if (swm) {
     swm->ReportToAllClients(mScope, mMessage,
                             NS_ConvertUTF8toUTF16(mScope), /* aFilename */
-                            EmptyString(),                 /* aLine */
+                            u""_ns,                        /* aLine */
                             0,                             /* aLineNumber */
                             0,                             /* aColumnNumber */
                             mFlags);
@@ -472,11 +472,11 @@ nsresult PushErrorDispatcher::HandleNoChildProcesses() {
     return rv;
   }
   return nsContentUtils::ReportToConsoleNonLocalized(
-      mMessage, mFlags, NS_LITERAL_CSTRING("Push"), nullptr, /* aDocument */
-      scopeURI,                                              /* aURI */
-      EmptyString(),                                         /* aLine */
-      0,                                                     /* aLineNumber */
-      0,                                                     /* aColumnNumber */
+      mMessage, mFlags, "Push"_ns, nullptr, /* aDocument */
+      scopeURI,                             /* aURI */
+      u""_ns,                               /* aLine */
+      0,                                    /* aLineNumber */
+      0,                                    /* aColumnNumber */
       nsContentUtils::eOMIT_LOCATION);
 }
 

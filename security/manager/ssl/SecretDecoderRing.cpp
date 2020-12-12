@@ -206,7 +206,8 @@ SecretDecoderRing::AsyncEncryptStrings(const nsTArray<nsCString>& plaintexts,
 
   // plaintexts are already expected to be UTF-8.
   nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundSdrEncryptStrings", [promise, plaintexts]() mutable {
+      "BackgroundSdrEncryptStrings",
+      [promise, plaintexts = plaintexts.Clone()]() mutable {
         BackgroundSdrEncryptStrings(plaintexts, promise);
       }));
 
@@ -263,7 +264,8 @@ SecretDecoderRing::AsyncDecryptStrings(
 
   // encryptedStrings are expected to be base64.
   nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
-      "BackgroundSdrDecryptStrings", [promise, encryptedStrings]() mutable {
+      "BackgroundSdrDecryptStrings",
+      [promise, encryptedStrings = encryptedStrings.Clone()]() mutable {
         BackgroundSdrDecryptStrings(encryptedStrings, promise);
       }));
 
@@ -308,24 +310,26 @@ SecretDecoderRing::ChangePassword() {
 NS_IMETHODIMP
 SecretDecoderRing::Logout() {
   PK11_LogoutAll();
-  nsNSSComponent::ClearSSLExternalAndInternalSessionCacheNative();
-  return NS_OK;
+  nsCOMPtr<nsINSSComponent> nssComponent(do_GetService(NS_NSSCOMPONENT_CID));
+  if (!nssComponent) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+  return nssComponent->ClearSSLExternalAndInternalSessionCache();
 }
 
 NS_IMETHODIMP
 SecretDecoderRing::LogoutAndTeardown() {
-  static NS_DEFINE_CID(kNSSComponentCID, NS_NSSCOMPONENT_CID);
-
   PK11_LogoutAll();
-  nsNSSComponent::ClearSSLExternalAndInternalSessionCacheNative();
+  nsCOMPtr<nsINSSComponent> nssComponent(do_GetService(NS_NSSCOMPONENT_CID));
+  if (!nssComponent) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
 
-  nsresult rv;
-  nsCOMPtr<nsINSSComponent> nssComponent(do_GetService(kNSSComponentCID, &rv));
+  // LogoutAuthenticatedPK11 also clears the SSL caches.
+  nsresult rv = nssComponent->LogoutAuthenticatedPK11();
   if (NS_FAILED(rv)) {
     return rv;
   }
-
-  rv = nssComponent->LogoutAuthenticatedPK11();
 
   // After we just logged out, we need to prune dead connections to make
   // sure that all connections that should be stopped, are stopped. See
@@ -335,5 +339,5 @@ SecretDecoderRing::LogoutAndTeardown() {
     os->NotifyObservers(nullptr, "net:prune-dead-connections", nullptr);
   }
 
-  return rv;
+  return NS_OK;
 }

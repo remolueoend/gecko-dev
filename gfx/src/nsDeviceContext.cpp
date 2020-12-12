@@ -137,8 +137,9 @@ nsFontCache::Observe(nsISupports*, const char* aTopic, const char16_t*) {
 
 already_AddRefed<nsFontMetrics> nsFontCache::GetMetricsFor(
     const nsFont& aFont, const nsFontMetrics::Params& aParams) {
-  nsAtom* language =
-      aParams.language ? aParams.language : mLocaleLanguage.get();
+  nsAtom* language = aParams.language && !aParams.language->IsEmpty()
+                         ? aParams.language
+                         : mLocaleLanguage.get();
 
   // First check our cache
   // start from the end, which is where we put the most-recent-used element
@@ -148,7 +149,8 @@ already_AddRefed<nsFontMetrics> nsFontCache::GetMetricsFor(
     if (fm->Font().Equals(aFont) &&
         fm->GetUserFontSet() == aParams.userFontSet &&
         fm->Language() == language &&
-        fm->Orientation() == aParams.orientation) {
+        fm->Orientation() == aParams.orientation &&
+        fm->ExplicitLanguage() == aParams.explicitLanguage) {
       if (i != n) {
         // promote it to the end of the cache
         mFontMetrics.RemoveElementAt(i);

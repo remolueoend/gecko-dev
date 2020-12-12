@@ -27,6 +27,7 @@
 
 #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
 #include "mozilla/XPCOM.h"
+#include "mozilla/dom/ScriptSettings.h"
 
 #include "nsIPrincipal.h"
 #include "nsIScriptSecurityManager.h"
@@ -359,12 +360,7 @@ bool XPCShellEnvironment::Init() {
             "principals");
   }
 
-  RefPtr<BackstagePass> backstagePass;
-  rv = NS_NewBackstagePass(getter_AddRefs(backstagePass));
-  if (NS_FAILED(rv)) {
-    NS_ERROR("Failed to create backstage pass!");
-    return false;
-  }
+  auto backstagePass = MakeRefPtr<BackstagePass>();
 
   JS::RealmOptions options;
   options.creationOptions().setNewCompartmentInSystemZone();

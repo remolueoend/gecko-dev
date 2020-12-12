@@ -1,4 +1,6 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -27,4 +29,30 @@
   // /hwaara
   id<mozView, mozAccessible> mParallelView;  // weak ref
 }
+
+// override
+- (id)initWithAccessible:(mozilla::a11y::AccessibleOrProxy)aAccOrProxy;
+
+#pragma mark - MOXAccessible
+
+// override
+- (NSNumber*)moxMain;
+
+// override
+- (NSNumber*)moxMinimized;
+
+// override
+- (id)moxUnignoredParent;
+
+#pragma mark - mozAccessible/widget
+
+// override
+- (BOOL)hasRepresentedView;
+
+// override
+- (id)representedView;
+
+// override
+- (BOOL)isRoot;
+
 @end

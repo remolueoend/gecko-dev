@@ -19,7 +19,6 @@
 #include "nsIWindowProvider.h"
 #include "nsIDocShell.h"
 #include "nsIInterfaceRequestorUtils.h"
-#include "nsFrameMessageManager.h"
 #include "nsWeakReference.h"
 #include "nsIBrowserChild.h"
 #include "nsITooltipListener.h"
@@ -29,18 +28,21 @@
 #include "mozilla/dom/TabContext.h"
 #include "mozilla/dom/CoalescedMouseData.h"
 #include "mozilla/dom/CoalescedWheelData.h"
+#include "mozilla/dom/MessageManagerCallback.h"
+#include "mozilla/dom/VsyncChild.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include "mozilla/layers/CompositorOptions.h"
+#include "mozilla/layers/GeckoContentControllerTypes.h"
 #include "nsIWebBrowserChrome3.h"
 #include "mozilla/dom/ipc/IdType.h"
 #include "AudioChannelService.h"
 #include "PuppetWidget.h"
-#include "mozilla/layers/GeckoContentController.h"
 #include "nsDeque.h"
+#include "nsIRemoteTab.h"
 
 class nsBrowserStatusFilter;
 class nsIDOMWindow;
@@ -49,6 +51,7 @@ class nsIRequest;
 class nsISerialEventTarget;
 class nsIWebProgress;
 class nsWebBrowser;
+class nsDocShellLoadState;
 
 template <typename T>
 class nsTHashtable;
@@ -105,7 +108,6 @@ class BrowserChildMessageManager : public ContentFrameMessageManager,
   virtual already_AddRefed<nsIDocShell> GetDocShell(
       ErrorResult& aError) override;
   virtual already_AddRefed<nsIEventTarget> GetTabEventTarget() override;
-  virtual uint64_t ChromeOuterWindowID() override;
 
   NS_FORWARD_SAFE_NSIMESSAGESENDER(mMessageManager)
 
@@ -189,8 +191,8 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                dom::BrowsingContext* aBrowsingContext, uint32_t aChromeFlags,
                bool aIsTopLevel);
 
-  nsresult Init(mozIDOMWindowProxy* aParent,
-                WindowGlobalChild* aInitialWindowChild);
+  MOZ_CAN_RUN_SCRIPT nsresult Init(mozIDOMWindowProxy* aParent,
+                                   WindowGlobalChild* aInitialWindowChild);
 
   /** Return a BrowserChild with the given attributes. */
   static already_AddRefed<BrowserChild> Create(
@@ -227,7 +229,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
     return mBrowserChildMessageManager->WrapObject(aCx, aGivenProto);
   }
 
-  nsIPrincipal* GetPrincipal() { return mPrincipal; }
   // Get the Document for the top-level window in this tab.
   already_AddRefed<Document> GetTopLevelDocument() const;
 
@@ -243,27 +244,25 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   /**
    * MessageManagerCallback methods that we override.
    */
-  virtual bool DoSendBlockingMessage(JSContext* aCx, const nsAString& aMessage,
-                                     StructuredCloneData& aData,
-                                     JS::Handle<JSObject*> aCpows,
-                                     nsIPrincipal* aPrincipal,
-                                     nsTArray<StructuredCloneData>* aRetVal,
-                                     bool aIsSync) override;
+  virtual bool DoSendBlockingMessage(
+      const nsAString& aMessage, StructuredCloneData& aData,
+      nsTArray<StructuredCloneData>* aRetVal) override;
 
-  virtual nsresult DoSendAsyncMessage(JSContext* aCx, const nsAString& aMessage,
-                                      StructuredCloneData& aData,
-                                      JS::Handle<JSObject*> aCpows,
-                                      nsIPrincipal* aPrincipal) override;
+  virtual nsresult DoSendAsyncMessage(const nsAString& aMessage,
+                                      StructuredCloneData& aData) override;
 
   bool DoUpdateZoomConstraints(const uint32_t& aPresShellId,
                                const ViewID& aViewId,
                                const Maybe<ZoomConstraints>& aConstraints);
 
-  mozilla::ipc::IPCResult RecvLoadURL(const nsCString& aURI,
-                                      const ParentShowInfo&);
+  mozilla::ipc::IPCResult RecvLoadURL(nsDocShellLoadState* aLoadState,
+                                      const ParentShowInfo& aInfo);
 
   mozilla::ipc::IPCResult RecvResumeLoad(const uint64_t& aPendingSwitchID,
                                          const ParentShowInfo&);
+
+  mozilla::ipc::IPCResult RecvCloneDocumentTreeIntoSelf(
+      const MaybeDiscarded<BrowsingContext>& aSourceBC);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvShow(const ParentShowInfo&, const OwnerShowInfo&);
@@ -292,23 +291,27 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvDynamicToolbarOffsetChanged(
       const mozilla::ScreenIntCoord& aOffset);
 
-  mozilla::ipc::IPCResult RecvActivate();
+  mozilla::ipc::IPCResult RecvActivate(uint64_t aActionId);
 
-  mozilla::ipc::IPCResult RecvDeactivate();
+  mozilla::ipc::IPCResult RecvDeactivate(uint64_t aActionId);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvMouseEvent(const nsString& aType, const float& aX,
                                          const float& aY,
                                          const int32_t& aButton,
                                          const int32_t& aClickCount,
-                                         const int32_t& aModifiers,
-                                         const bool& aIgnoreRootScrollFrame);
+                                         const int32_t& aModifiers);
 
   mozilla::ipc::IPCResult RecvRealMouseMoveEvent(
       const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
       const uint64_t& aInputBlockId);
-
   mozilla::ipc::IPCResult RecvNormalPriorityRealMouseMoveEvent(
+      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
+      const uint64_t& aInputBlockId);
+  mozilla::ipc::IPCResult RecvRealMouseMoveEventForTests(
+      const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
+      const uint64_t& aInputBlockId);
+  mozilla::ipc::IPCResult RecvNormalPriorityRealMouseMoveEventForTests(
       const mozilla::WidgetMouseEvent& aEvent, const ScrollableLayerGuid& aGuid,
       const uint64_t& aInputBlockId);
 
@@ -416,8 +419,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                                                const bool& aRunInGlobalScope);
 
   mozilla::ipc::IPCResult RecvAsyncMessage(const nsString& aMessage,
-                                           nsTArray<CpowEntry>&& aCpows,
-                                           nsIPrincipal* aPrincipal,
                                            const ClonedMessageData& aData);
   mozilla::ipc::IPCResult RecvSwappedWithOtherRemoteLoader(
       const IPCTabContext& aContext);
@@ -441,6 +442,12 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   PFilePickerChild* AllocPFilePickerChild(const nsString& aTitle,
                                           const int16_t& aMode);
 
+  virtual PVsyncChild* AllocPVsyncChild();
+
+  virtual bool DeallocPVsyncChild(PVsyncChild* aActor);
+
+  RefPtr<VsyncChild> GetVsyncChild();
+
   bool DeallocPFilePickerChild(PFilePickerChild* aActor);
 
   nsIWebNavigation* WebNavigation() const { return mWebNav; }
@@ -454,8 +461,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   hal::ScreenOrientation GetOrientation() const { return mOrientation; }
 
   void SetBackgroundColor(const nscolor& aColor);
-
-  void NotifyPainted();
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual mozilla::ipc::IPCResult RecvUpdateEffects(
       const EffectsInfo& aEffects);
@@ -517,6 +522,8 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   void ReinitRendering();
   void ReinitRenderingForDeviceReset();
 
+  void NotifyJankedAnimations(const nsTArray<uint64_t>& aJankedAnimations);
+
   static inline BrowserChild* GetFrom(nsIDOMWindow* aWindow) {
     nsCOMPtr<nsIWebNavigation> webNav = do_GetInterface(aWindow);
     nsCOMPtr<nsIDocShell> docShell = do_QueryInterface(webNav);
@@ -527,16 +534,18 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
                                                   const int32_t& aRounding,
                                                   const double& aScale);
 
-  mozilla::ipc::IPCResult RecvThemeChanged(
-      nsTArray<LookAndFeelInt>&& aLookAndFeelIntCache);
-
   mozilla::ipc::IPCResult RecvHandleAccessKey(const WidgetKeyboardEvent& aEvent,
                                               nsTArray<uint32_t>&& aCharCodes);
 
-  mozilla::ipc::IPCResult RecvSetUseGlobalHistory(const bool& aUse);
-
   mozilla::ipc::IPCResult RecvHandledWindowedPluginKeyEvent(
       const mozilla::NativeEventData& aKeyEventData, const bool& aIsConsumed);
+
+  mozilla::ipc::IPCResult RecvPrintPreview(
+      const PrintData& aPrintData,
+      const mozilla::Maybe<uint64_t>& aSourceOuterWindowID,
+      PrintPreviewResolver&& aCallback);
+
+  mozilla::ipc::IPCResult RecvExitPrintPreview();
 
   mozilla::ipc::IPCResult RecvPrint(const uint64_t& aOuterWindowID,
                                     const PrintData& aPrintData);
@@ -569,15 +578,13 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   bool IPCOpen() const { return mIPCOpen; }
 
-  bool ParentIsActive() const { return mParentIsActive; }
-
   const mozilla::layers::CompositorOptions& GetCompositorOptions() const;
   bool AsyncPanZoomEnabled() const;
 
   ScreenIntSize GetInnerSize();
   CSSSize GetUnscaledInnerSize() { return mUnscaledInnerSize; }
 
-  Maybe<LayoutDeviceIntRect> GetVisibleRect() const;
+  Maybe<nsRect> GetVisibleRect() const;
 
   // Call RecvShow(nsIntSize(0, 0)) and block future calls to RecvShow().
   void DoFakeShow(const ParentShowInfo&);
@@ -589,13 +596,13 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const nsTArray<layers::ScrollableLayerGuid>& aTargets) const;
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvHandleTap(
-      const layers::GeckoContentController::TapType& aType,
+      const layers::GeckoContentController_TapType& aType,
       const LayoutDevicePoint& aPoint, const Modifiers& aModifiers,
       const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvNormalPriorityHandleTap(
-      const layers::GeckoContentController::TapType& aType,
+      const layers::GeckoContentController_TapType& aType,
       const LayoutDevicePoint& aPoint, const Modifiers& aModifiers,
       const ScrollableLayerGuid& aGuid, const uint64_t& aInputBlockId);
 
@@ -605,7 +612,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   bool UpdateFrame(const layers::RepaintRequest& aRequest);
   bool NotifyAPZStateChange(
       const ViewID& aViewId,
-      const layers::GeckoContentController::APZStateChange& aChange,
+      const layers::GeckoContentController_APZStateChange& aChange,
       const int& aArg);
   void StartScrollbarDrag(const layers::AsyncDragMetrics& aDragMetrics);
   void ZoomToRect(const uint32_t& aPresShellId,
@@ -627,11 +634,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   uintptr_t GetNativeWindowHandle() const { return mNativeWindowHandle; }
 #endif
 
-  // These methods return `true` if this BrowserChild is currently awaiting a
-  // Large-Allocation header.
-  bool StopAwaitingLargeAlloc();
-  bool IsAwaitingLargeAlloc();
-
   BrowsingContext* GetBrowsingContext() const { return mBrowsingContext; }
 
 #if defined(ACCESSIBILITY)
@@ -643,9 +645,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
     return mTopLevelDocAccessibleChild;
   }
 #endif
-
-  void AddPendingDocShellBlocker();
-  void RemovePendingDocShellBlocker();
 
   // The HANDLE object for the widget this BrowserChild in.
   WindowsHandle WidgetNativeData() { return mWidgetNativeData; }
@@ -680,20 +679,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
     mCancelContentJSEpoch = aEpoch;
   }
 
-  static bool HasVisibleTabs() {
-    return sVisibleTabs && !sVisibleTabs->IsEmpty();
-  }
-
-  // Returns the set of BrowserChilds that are currently rendering layers. There
-  // can be multiple BrowserChilds in this state if Firefox has multiple windows
-  // open or is warming tabs up. There can also be zero BrowserChilds in this
-  // state. Note that this function should only be called if HasVisibleTabs()
-  // returns true.
-  static const nsTHashtable<nsPtrHashKey<BrowserChild>>& GetVisibleTabs() {
-    MOZ_ASSERT(HasVisibleTabs());
-    return *sVisibleTabs;
-  }
-
   bool UpdateSessionStore(uint32_t aFlushId, bool aIsFinal = false);
 
 #ifdef XP_WIN
@@ -715,15 +700,14 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       uint32_t aEvent, nsIChannel* aChannel, bool aBlocked,
       const nsACString& aTrackingOrigin,
       const nsTArray<nsCString>& aTrackingFullHashes,
-      const Maybe<ContentBlockingNotifier::StorageAccessGrantedReason>&
+      const Maybe<
+          ContentBlockingNotifier::StorageAccessPermissionGrantedReason>&
           aReason);
 
  protected:
   virtual ~BrowserChild();
 
   mozilla::ipc::IPCResult RecvDestroy();
-
-  mozilla::ipc::IPCResult RecvSetDocShellIsActive(const bool& aIsActive);
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   mozilla::ipc::IPCResult RecvRenderLayers(
@@ -736,8 +720,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   mozilla::ipc::IPCResult RecvSuppressDisplayport(const bool& aEnabled);
 
-  mozilla::ipc::IPCResult RecvParentActivated(const bool& aActivated);
-
   mozilla::ipc::IPCResult RecvScrollbarPreferenceChanged(ScrollbarPreference);
 
   mozilla::ipc::IPCResult RecvSetKeyboardIndicators(
@@ -745,26 +727,14 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   mozilla::ipc::IPCResult RecvStopIMEStateManagement();
 
-  mozilla::ipc::IPCResult RecvAwaitLargeAlloc();
-
   mozilla::ipc::IPCResult RecvAllowScriptsToClose();
 
   mozilla::ipc::IPCResult RecvSetWidgetNativeData(
       const WindowsHandle& aWidgetNativeData);
 
+  mozilla::ipc::IPCResult RecvReleaseAllPointerCapture();
+
  private:
-  // Wraps up a JSON object as a structured clone and sends it to the browser
-  // chrome script.
-  //
-  // XXX/bug 780335: Do the work the browser chrome script does in C++ instead
-  // so we don't need things like this.
-  void DispatchMessageManagerMessage(const nsAString& aMessageName,
-                                     const nsAString& aJSONData);
-
-  void ProcessUpdateFrame(const mozilla::layers::RepaintRequest& aRequest);
-
-  bool UpdateFrameHandler(const mozilla::layers::RepaintRequest& aRequest);
-
   void HandleDoubleTap(const CSSPoint& aPoint, const Modifiers& aModifiers,
                        const ScrollableLayerGuid& aGuid);
 
@@ -773,9 +743,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   // You should call this after calling TabContext::SetTabContext().  We also
   // call this during Init().
   void NotifyTabContextUpdated();
-
-  // Update the frameType on our docshell.
-  void UpdateFrameType();
 
   void ActorDestroy(ActorDestroyReason why) override;
 
@@ -786,6 +753,8 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
       const layers::LayersId& aLayersId,
       const mozilla::layers::CompositorOptions& aCompositorOptions);
   void InitAPZState();
+
+  void InitVsyncChild();
 
   void DestroyWindow();
 
@@ -851,9 +820,10 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   Maybe<bool> mLayersConnected;
   EffectsInfo mEffectsInfo;
   bool mDidFakeShow;
-  bool mNotified;
   bool mTriedBrowserInit;
   hal::ScreenOrientation mOrientation;
+
+  RefPtr<VsyncChild> mVsyncChild;
 
   bool mIgnoreKeyPressEvent;
   RefPtr<APZEventState> mAPZEventState;
@@ -864,6 +834,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   // Position of client area relative to the outer window
   LayoutDeviceIntPoint mClientOffset;
   // Position of tab, relative to parent widget (typically the window)
+  // NOTE: This value is valuable only for the top level browser.
   LayoutDeviceIntPoint mChromeOffset;
   ScreenIntCoord mDynamicToolbarMaxHeight;
   TabId mUniqueId;
@@ -886,11 +857,9 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   bool mIsTransparent;
 
   bool mIPCOpen;
-  bool mParentIsActive;
   CSSSize mUnscaledInnerSize;
   bool mDidSetRealShowInfo;
   bool mDidLoadURLInit;
-  bool mAwaitingLA;
 
   bool mSkipKeyPress;
 
@@ -908,7 +877,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   // Hash table to track coalesced mousemove events for different pointers.
   nsClassHashtable<nsUint32HashKey, CoalescedMouseData> mCoalescedMouseData;
 
-  nsDeque mToBeDispatchedMouseData;
+  nsDeque<CoalescedMouseData> mToBeDispatchedMouseData;
 
   CoalescedWheelData mCoalescedWheelData;
   RefPtr<CoalescedMouseMoveFlusher> mCoalescedMouseEventFlusher;
@@ -960,12 +929,6 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   // Should only be accessed on main thread.
   Maybe<bool> mWindowSupportsProtectedMedia;
 #endif
-
-  // This state is used to keep track of the current visible tabs (the ones
-  // rendering layers). There may be more than one if there are multiple browser
-  // windows open, or tabs are being warmed up. There may be none if this
-  // process does not host any visible or warming tabs.
-  static nsTHashtable<nsPtrHashKey<BrowserChild>>* sVisibleTabs;
 
   DISALLOW_EVIL_CONSTRUCTORS(BrowserChild);
 };

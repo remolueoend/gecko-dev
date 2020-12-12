@@ -8,12 +8,12 @@
 
 #include "mozilla/Unused.h"
 #include "mozilla/dom/CancelContentJSOptionsBinding.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/WindowGlobalParent.h"
 
 #include "nsIObserverService.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(BrowserHost)
   NS_INTERFACE_MAP_ENTRY(nsIRemoteTab)
@@ -56,7 +56,10 @@ a11y::DocAccessibleParent* BrowserHost::GetTopLevelDocAccessible() const {
   return mRoot->GetTopLevelDocAccessible();
 }
 
-void BrowserHost::LoadURL(nsIURI* aURI) { mRoot->LoadURL(aURI); }
+void BrowserHost::LoadURL(nsDocShellLoadState* aLoadState) {
+  MOZ_ASSERT(aLoadState);
+  mRoot->LoadURL(aLoadState);
+}
 
 void BrowserHost::ResumeLoad(uint64_t aPendingSwitchId) {
   mRoot->ResumeLoad(aPendingSwitchId);
@@ -95,28 +98,6 @@ void BrowserHost::UpdateEffects(EffectsInfo aEffects) {
   }
   mEffectsInfo = aEffects;
   Unused << mRoot->SendUpdateEffects(mEffectsInfo);
-}
-
-/* attribute boolean docShellIsActive; */
-NS_IMETHODIMP
-BrowserHost::GetDocShellIsActive(bool* aDocShellIsActive) {
-  if (!mRoot) {
-    *aDocShellIsActive = false;
-    return NS_OK;
-  }
-  *aDocShellIsActive = mRoot->GetDocShellIsActive();
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-BrowserHost::SetDocShellIsActive(bool aDocShellIsActive) {
-  if (!mRoot) {
-    return NS_OK;
-  }
-  VisitAll([&](BrowserParent* aBrowserParent) {
-    aBrowserParent->SetDocShellIsActive(aDocShellIsActive);
-  });
-  return NS_OK;
 }
 
 /* attribute boolean renderLayers; */
@@ -159,16 +140,6 @@ BrowserHost::NotifyResolutionChanged(void) {
   VisitAll([](BrowserParent* aBrowserParent) {
     aBrowserParent->NotifyResolutionChanged();
   });
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-BrowserHost::NotifyThemeChanged(void) {
-  if (!mRoot) {
-    return NS_OK;
-  }
-  VisitAll(
-      [](BrowserParent* aBrowserParent) { aBrowserParent->ThemeChanged(); });
   return NS_OK;
 }
 
@@ -244,30 +215,6 @@ BrowserHost::TransmitPermissionsForPrincipal(nsIPrincipal* aPrincipal) {
   return GetContentParent()->TransmitPermissionsForPrincipal(aPrincipal);
 }
 
-/* readonly attribute boolean hasBeforeUnload; */
-NS_IMETHODIMP
-BrowserHost::GetHasBeforeUnload(bool* aHasBeforeUnload) {
-  if (!mRoot || !GetBrowsingContext()) {
-    *aHasBeforeUnload = false;
-    return NS_OK;
-  }
-
-  bool result = false;
-
-  GetBrowsingContext()->PreOrderWalk(
-      [&result](BrowsingContext* aBrowsingContext) {
-        WindowGlobalParent* windowGlobal =
-            aBrowsingContext->Canonical()->GetCurrentWindowGlobal();
-
-        if (windowGlobal) {
-          result |= windowGlobal->HasBeforeUnload();
-        }
-      });
-
-  *aHasBeforeUnload = result;
-  return NS_OK;
-}
-
 /* boolean startApzAutoscroll (in float aAnchorX, in float aAnchorY, in nsViewID
  * aScrollId, in uint32_t aPresShellId); */
 NS_IMETHODIMP
@@ -313,5 +260,4 @@ BrowserHost::MaybeCancelContentJSExecutionFromScript(
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

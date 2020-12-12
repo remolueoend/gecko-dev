@@ -5,6 +5,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "Hal.h"
+#include "base/process_util.h"
 #include "mozilla/HalWakeLock.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
@@ -12,6 +13,7 @@
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsIPropertyBag2.h"
+#include "nsIObserver.h"
 #include "nsIObserverService.h"
 
 using namespace mozilla;
@@ -23,7 +25,7 @@ struct LockCount {
   LockCount() : numLocks(0), numHidden(0) {}
   uint32_t numLocks;
   uint32_t numHidden;
-  nsTArray<uint64_t> processes;
+  CopyableTArray<uint64_t> processes;
 };
 
 typedef nsDataHashtable<nsUint64HashKey, LockCount> ProcessLockTable;
@@ -104,8 +106,7 @@ CleanupOnContentShutdown::Observe(nsISupports* aSubject, const char* aTopic,
   }
 
   uint64_t childID = 0;
-  nsresult rv =
-      props->GetPropertyAsUint64(NS_LITERAL_STRING("childID"), &childID);
+  nsresult rv = props->GetPropertyAsUint64(u"childID"_ns, &childID);
   if (NS_SUCCEEDED(rv)) {
     for (auto iter = sLockTable->Iter(); !iter.Done(); iter.Next()) {
       auto table = iter.UserData();

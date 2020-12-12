@@ -20,19 +20,22 @@
 
 using namespace mozilla::dom;
 
-#define ANCHOR_LOG(...)
+static mozilla::LazyLogModule sAnchorLog("scrollanchor");
 
-/*
-#define ANCHOR_LOG(fmt, ...)                            \
-  printf_stderr("ANCHOR(%p, %s, root: %d): " fmt, this, \
-                Frame()                                 \
-                    ->PresContext()                     \
-                    ->Document()                        \
-                    ->GetDocumentURI()                  \
-                    ->GetSpecOrDefault()                \
-                    .get(),                             \
-                mScrollFrame->mIsRoot, ##__VA_ARGS__)
-*/
+#ifdef DEBUG
+#  define ANCHOR_LOG(fmt, ...)                       \
+    MOZ_LOG(sAnchorLog, LogLevel::Debug,             \
+            ("ANCHOR(%p, %s, root: %d): " fmt, this, \
+             Frame()                                 \
+                 ->PresContext()                     \
+                 ->Document()                        \
+                 ->GetDocumentURI()                  \
+                 ->GetSpecOrDefault()                \
+                 .get(),                             \
+             mScrollFrame->mIsRoot, ##__VA_ARGS__));
+#else
+#  define ANCHOR_LOG(...)
+#endif
 
 namespace mozilla {
 namespace layout {
@@ -148,7 +151,7 @@ static nsRect FindScrollAnchoringBoundingRect(const nsIFrame* aScrollFrame,
     for (nsIFrame* continuation = aCandidate->FirstContinuation(); continuation;
          continuation = continuation->GetNextContinuation()) {
       nsRect overflowRect =
-          continuation->GetScrollableOverflowRectRelativeToSelf();
+          continuation->ScrollableOverflowRectRelativeToSelf();
       overflowRect += continuation->GetOffsetTo(blockAncestor);
       bounding = bounding.Union(overflowRect);
     }
@@ -157,7 +160,7 @@ static nsRect FindScrollAnchoringBoundingRect(const nsIFrame* aScrollFrame,
   }
 
   nsRect borderRect = aCandidate->GetRectRelativeToSelf();
-  nsRect overflowRect = aCandidate->GetScrollableOverflowRectRelativeToSelf();
+  nsRect overflowRect = aCandidate->ScrollableOverflowRectRelativeToSelf();
 
   NS_ASSERTION(overflowRect.Contains(borderRect),
                "overflow rect must include border rect, and the clamping logic "
@@ -257,7 +260,7 @@ void ScrollAnchorContainer::SelectAnchor() {
     ANCHOR_LOG("Beginning selection.\n");
     mAnchorNode = FindAnchorIn(mScrollFrame->mScrolledFrame);
   } else {
-    ANCHOR_LOG("Skipping selection, doesn't maintain a scroll anchor");
+    ANCHOR_LOG("Skipping selection, doesn't maintain a scroll anchor.\n");
     mAnchorNode = nullptr;
   }
 
@@ -358,7 +361,7 @@ void ScrollAnchorContainer::AdjustmentMade(nscoord aAdjustment) {
   arguments.AppendElement()->AppendFloat(cssPixels);
 
   nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Layout"),
+      nsIScriptError::warningFlag, "Layout"_ns,
       Frame()->PresContext()->Document(), nsContentUtils::eLAYOUT_PROPERTIES,
       "ScrollAnchoringDisabledInContainer", arguments);
 }
@@ -366,6 +369,20 @@ void ScrollAnchorContainer::AdjustmentMade(nscoord aAdjustment) {
 void ScrollAnchorContainer::SuppressAdjustments() {
   ANCHOR_LOG("Received a scroll anchor suppression for %p.\n", this);
   mSuppressAnchorAdjustment = true;
+
+  // Forward to our parent if appropriate, that is, if we don't maintain an
+  // anchor, and we can't maintain one.
+  //
+  // Note that we need to check !CanMaintainAnchor(), instead of just whether
+  // our frame is in the anchor chain of our ancestor as InvalidateAnchor()
+  // does, given some suppression triggers apply even for nodes that are not in
+  // the anchor chain.
+  if (!mAnchorNode && !CanMaintainAnchor()) {
+    if (ScrollAnchorContainer* container = FindFor(Frame())) {
+      ANCHOR_LOG(" > Forwarding to parent anchor\n");
+      container->SuppressAdjustments();
+    }
+  }
 }
 
 void ScrollAnchorContainer::InvalidateAnchor(ScheduleSelection aSchedule) {
@@ -374,6 +391,7 @@ void ScrollAnchorContainer::InvalidateAnchor(ScheduleSelection aSchedule) {
   if (mAnchorNode) {
     SetAnchorFlags(mScrollFrame->mScrolledFrame, mAnchorNode, false);
   } else if (mScrollFrame->mScrolledFrame->IsInScrollAnchorChain()) {
+    ANCHOR_LOG(" > Forwarding to parent anchor\n");
     // We don't maintain an anchor, and our scrolled frame is in the anchor
     // chain of an ancestor. Invalidate that anchor.
     //
@@ -400,19 +418,17 @@ void ScrollAnchorContainer::ApplyAdjustments() {
   if (!mAnchorNode || mAnchorNodeIsDirty || mDisabled ||
       mScrollFrame->HasPendingScrollRestoration() ||
       mScrollFrame->IsProcessingScrollEvent() ||
-      mScrollFrame->IsProcessingAsyncScroll() ||
-      mScrollFrame->mApzSmoothScrollDestination.isSome() ||
+      mScrollFrame->IsScrollAnimating() ||
       mScrollFrame->GetScrollPosition() == nsPoint()) {
     ANCHOR_LOG(
         "Ignoring post-reflow (anchor=%p, dirty=%d, disabled=%d, "
-        "pendingRestoration=%d, scrollevent=%d, asyncScroll=%d, "
-        "apzSmoothDestination=%d, zeroScrollPos=%d pendingSuppression=%d, "
+        "pendingRestoration=%d, scrollevent=%d, animating=%d, "
+        "zeroScrollPos=%d pendingSuppression=%d, "
         "container=%p).\n",
         mAnchorNode, mAnchorNodeIsDirty, mDisabled,
         mScrollFrame->HasPendingScrollRestoration(),
         mScrollFrame->IsProcessingScrollEvent(),
-        mScrollFrame->IsProcessingAsyncScroll(),
-        mScrollFrame->mApzSmoothScrollDestination.isSome(),
+        mScrollFrame->IsScrollAnimating(),
         mScrollFrame->GetScrollPosition() == nsPoint(),
         mSuppressAnchorAdjustment, this);
     if (mSuppressAnchorAdjustment) {
@@ -467,14 +483,13 @@ void ScrollAnchorContainer::ApplyAdjustments() {
   // We should use AutoRestore here, but that doesn't work with bitfields
   mApplyingAnchorAdjustment = true;
   mScrollFrame->ScrollTo(mScrollFrame->GetScrollPosition() + physicalAdjustment,
-                         ScrollMode::Instant, nsGkAtoms::relative);
+                         ScrollMode::Instant, ScrollOrigin::Relative);
   mApplyingAnchorAdjustment = false;
 
   nsPresContext* pc = Frame()->PresContext();
   if (mScrollFrame->mIsRoot) {
     pc->PresShell()->RootScrollFrameAdjusted(physicalAdjustment.y);
   }
-  pc->Document()->UpdateForScrollAnchorAdjustment(logicalAdjustment);
 
   // The anchor position may not be in the same relative position after
   // adjustment. Update ourselves so we have consistent state.
@@ -636,21 +651,20 @@ ScrollAnchorContainer::ExamineAnchorCandidate(nsIFrame* aFrame) const {
 
 nsIFrame* ScrollAnchorContainer::FindAnchorIn(nsIFrame* aFrame) const {
   // Visit the child lists of this frame
-  for (nsIFrame::ChildListIterator lists(aFrame); !lists.IsDone();
-       lists.Next()) {
+  for (const auto& [list, listID] : aFrame->ChildLists()) {
     // Skip child lists that contain out-of-flow frames, we'll visit them by
     // following placeholders in the in-flow lists so that we visit these
     // frames in DOM order.
     // XXX do we actually need to exclude kOverflowOutOfFlowList too?
-    if (lists.CurrentID() == FrameChildListID::kAbsoluteList ||
-        lists.CurrentID() == FrameChildListID::kFixedList ||
-        lists.CurrentID() == FrameChildListID::kFloatList ||
-        lists.CurrentID() == FrameChildListID::kOverflowOutOfFlowList) {
+    if (listID == FrameChildListID::kAbsoluteList ||
+        listID == FrameChildListID::kFixedList ||
+        listID == FrameChildListID::kFloatList ||
+        listID == FrameChildListID::kOverflowOutOfFlowList) {
       continue;
     }
 
     // Search the child list, and return if we selected an anchor
-    if (nsIFrame* anchor = FindAnchorInList(lists.CurrentList())) {
+    if (nsIFrame* anchor = FindAnchorInList(list)) {
       return anchor;
     }
   }

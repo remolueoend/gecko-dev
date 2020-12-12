@@ -28,66 +28,6 @@ function getMostRecentBrowserWindow() {
   return Services.wm.getMostRecentWindow("navigator:browser");
 }
 
-let gmm = window.getGroupMessageManager("browsers");
-
-const frameScript =
-  "data:," +
-  encodeURIComponent(
-    `(${function() {
-      addEventListener(
-        "load",
-        function(event) {
-          let subframe = event.target != content.document;
-          sendAsyncMessage("browser-test-utils:loadEvent", {
-            subframe,
-            url: event.target.documentURI,
-          });
-        },
-        true
-      );
-    }})()`
-  );
-
-gmm.loadFrameScript(frameScript, true);
-
-// This is duplicated from BrowserTestUtils.jsm
-function awaitBrowserLoaded(
-  browser,
-  includeSubFrames = false,
-  wantLoad = null
-) {
-  // If browser belongs to tabbrowser-tab, ensure it has been
-  // inserted into the document.
-  let tabbrowser = browser.ownerGlobal.gBrowser;
-  if (tabbrowser && tabbrowser.getTabForBrowser) {
-    tabbrowser._insertBrowser(tabbrowser.getTabForBrowser(browser));
-  }
-
-  function isWanted(url) {
-    if (!wantLoad) {
-      return true;
-    } else if (typeof wantLoad == "function") {
-      return wantLoad(url);
-    }
-    // It's a string.
-    return wantLoad == url;
-  }
-
-  return new Promise(resolve => {
-    let mm = browser.ownerGlobal.messageManager;
-    mm.addMessageListener("browser-test-utils:loadEvent", function onLoad(msg) {
-      if (
-        msg.target == browser &&
-        (!msg.data.subframe || includeSubFrames) &&
-        isWanted(msg.data.url)
-      ) {
-        mm.removeMessageListener("browser-test-utils:loadEvent", onLoad);
-        resolve(msg.data.url);
-      }
-    });
-  });
-}
-
 /* globals res:true */
 
 function Damp() {}
@@ -95,6 +35,7 @@ function Damp() {}
 Damp.prototype = {
   async garbageCollect() {
     dump("Garbage collect\n");
+    let start = performance.now();
 
     // Minimize memory usage
     // mimic miminizeMemoryUsage, by only flushing JS objects via GC.
@@ -111,6 +52,7 @@ Damp.prototype = {
       Cu.forceGC();
       await new Promise(done => setTimeout(done, 0));
     }
+    ChromeUtils.addProfilerMarker("DAMP", start, "GC");
   },
 
   async ensureTalosParentProfiler() {
@@ -182,15 +124,13 @@ Damp.prototype = {
       this.allocationTracker.flushAllocations();
     }
 
-    let startLabel = label + ".start";
-    performance.mark(startLabel);
     let start = performance.now();
 
     return {
       done: () => {
         let end = performance.now();
         let duration = end - start;
-        performance.measure(label, startLabel);
+        ChromeUtils.addProfilerMarker("DAMP", start, label);
         if (record) {
           this._results.push({
             name: label,
@@ -223,26 +163,26 @@ Damp.prototype = {
       { skipAnimation: true }
     ));
     let browser = tab.linkedBrowser;
-    await awaitBrowserLoaded(browser);
+    await this._awaitBrowserLoaded(browser);
     return tab;
   },
 
   async waitForPendingPaints(window) {
     let utils = window.windowUtils;
-    window.performance.mark("pending paints.start");
+    let startTime = performance.now();
     while (utils.isMozAfterPaintPending) {
       await new Promise(done => {
         window.addEventListener(
           "MozAfterPaint",
           function listener() {
-            window.performance.mark("pending paint");
+            ChromeUtils.addProfilerMarker("DAMP", undefined, "pending paint");
             done();
           },
           { once: true }
         );
       });
     }
-    window.performance.measure("pending paints", "pending paints.start");
+    ChromeUtils.addProfilerMarker("DAMP", startTime, "pending paints");
   },
 
   reloadPage(onReload) {
@@ -251,7 +191,7 @@ Damp.prototype = {
       if (typeof onReload == "function") {
         onReload().then(resolve);
       } else {
-        resolve(awaitBrowserLoaded(browser));
+        resolve(this._awaitBrowserLoaded(browser));
       }
       browser.reload();
     });
@@ -406,7 +346,10 @@ Damp.prototype = {
       this._reportAllResults();
     }
 
-    this.TalosParentProfiler.pause("DAMP - end");
+    ChromeUtils.addProfilerMarker("DAMP", this._startTimestamp);
+    this.TalosParentProfiler.pause();
+
+    this._unregisterDampLoadActors();
   },
 
   startAllocationTracker() {
@@ -479,11 +422,14 @@ Damp.prototype = {
     let promise = new Promise(resolve => {
       this.testDone = resolve;
     });
+
     this.rootURI = rootURI;
     try {
       dump("Initialize the head file with a reference to this DAMP instance\n");
       let head = require(rootURI.resolve("content/tests/head.js"));
       head.initialize(this);
+
+      this._registerDampLoadActors();
 
       this._win = Services.wm.getMostRecentWindow("navigator:browser");
       this._dampTab = this._win.gBrowser.selectedTab;
@@ -517,7 +463,8 @@ Damp.prototype = {
 
       this.waitBeforeRunningTests()
         .then(() => {
-          this.TalosParentProfiler.resume("DAMP - start");
+          this._startTimestamp = performance.now();
+          this.TalosParentProfiler.resume();
           this._doSequence(sequenceArray, this._doneInternal);
         })
         .catch(e => {
@@ -528,5 +475,65 @@ Damp.prototype = {
     }
 
     return promise;
+  },
+
+  /**
+   * Wait for a page-show/load event on the provided browser element, using the
+   * JSWindowActor pair at content/actors/DampLoad.
+   */
+  _awaitBrowserLoaded(browser) {
+    dump(
+      `Wait for a pageshow event for browsing context ${browser.browsingContext.id}\n`
+    );
+    return new Promise(resolve => {
+      const eventDispatcher = this._getDampLoadEventDispatcher();
+      const onPageShow = (eventName, data) => {
+        dump(`Received pageshow event for ${data.browsingContext.id}\n`);
+        if (data.browsingContext !== browser.browsingContext) {
+          return;
+        }
+
+        eventDispatcher.off("DampLoadParent:PageShow", onPageShow);
+        resolve();
+      };
+
+      eventDispatcher.on("DampLoadParent:PageShow", onPageShow);
+    });
+  },
+
+  _registerDampLoadActors() {
+    dump(`[DampLoad helper] Register DampLoad actors\n`);
+    ChromeUtils.registerWindowActor("DampLoad", {
+      kind: "JSWindowActor",
+      parent: {
+        moduleURI: this.rootURI.resolve("content/actors/DampLoadParent.jsm"),
+      },
+      child: {
+        moduleURI: this.rootURI.resolve("content/actors/DampLoadChild.jsm"),
+        events: {
+          pageshow: { mozSystemGroup: true },
+        },
+      },
+
+      // Only listen to top level content frame load.
+      allFrames: false,
+      includeChrome: false,
+    });
+  },
+
+  _unregisterDampLoadActors() {
+    dump(`[DampLoad helper] Unregister DampLoad actors\n`);
+    ChromeUtils.unregisterWindowActor("DampLoad");
+  },
+
+  _getDampLoadEventDispatcher() {
+    if (!this._dampLoadEventDispatcher) {
+      const DampLoadParentModule = ChromeUtils.import(
+        this.rootURI.resolve("content/actors/DampLoadParent.jsm")
+      );
+      this._dampLoadEventDispatcher = DampLoadParentModule.EventDispatcher;
+    }
+
+    return this._dampLoadEventDispatcher;
   },
 };

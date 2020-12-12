@@ -18,8 +18,11 @@ const { AddonTestUtils } = ChromeUtils.import(
 
 AddonTestUtils.initMochitest(this);
 
-const MAIN_URL = `https://example.com/${RELATIVE_DIR}discovery.html`;
 const DISCOAPI_URL = `http://example.com/${RELATIVE_DIR}/discovery/api_response_empty.json`;
+
+SpecialPowers.pushPrefEnv({
+  set: [["browser.navigation.requireUserInteraction", false]],
+});
 
 var gProvider = new MockProvider();
 gProvider.createAddons([
@@ -72,11 +75,6 @@ function is_in_list(aManager, view, canGoBack, canGoForward) {
     "Should be on the right category"
   );
 
-  is(
-    get_current_view(aManager).id,
-    "html-view",
-    "the current view should be set to the HTML about:addons browser"
-  );
   doc = aManager.getHtmlBrowser().contentDocument;
   ok(
     doc.querySelector("addon-list"),
@@ -96,11 +94,6 @@ function is_in_detail(aManager, view, canGoBack, canGoForward) {
     "Should be on the right category"
   );
 
-  is(
-    get_current_view(aManager).id,
-    "html-view",
-    "the current view should be set to the HTML about:addons browser"
-  );
   doc = aManager.getHtmlBrowser().contentDocument;
   is(
     doc.querySelectorAll("addon-card").length,
@@ -111,12 +104,7 @@ function is_in_detail(aManager, view, canGoBack, canGoForward) {
   check_state(canGoBack, canGoForward);
 }
 
-function is_in_discovery(aManager, url, canGoBack, canGoForward) {
-  is(
-    get_current_view(aManager).id,
-    "html-view",
-    "the current view should be set to the HTML about:addons browser"
-  );
+function is_in_discovery(aManager, canGoBack, canGoForward) {
   const doc = aManager.getHtmlBrowser().contentDocument;
   ok(
     doc.querySelector("discovery-pane"),
@@ -196,7 +184,7 @@ add_task(async function test_navigate_between_webpage_and_aboutaddons() {
   ok(!gBrowser.canGoBack, "Should not be able to go back");
   ok(!gBrowser.canGoForward, "Should not be able to go forward");
 
-  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, "about:addons");
+  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, "about:addons");
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 
   let manager = await wait_for_manager_load(gBrowser.contentWindow);
@@ -546,7 +534,7 @@ add_task(async function test_discopane_first_history_entry() {
   let aManager = await open_manager("addons://discover/");
   let categoryUtils = new CategoryUtilities(aManager);
   info("1");
-  is_in_discovery(aManager, MAIN_URL, false, false);
+  is_in_discovery(aManager, false, false);
 
   EventUtils.synthesizeMouseAtCenter(categoryUtils.get("plugin"), {}, aManager);
 
@@ -556,7 +544,7 @@ add_task(async function test_discopane_first_history_entry() {
   go_back();
   aManager = await wait_for_view_load(aManager);
 
-  is_in_discovery(aManager, MAIN_URL, false, true);
+  is_in_discovery(aManager, false, true);
 
   await close_manager(aManager);
 });
@@ -574,7 +562,7 @@ add_task(async function test_discopane_second_history_entry() {
   );
 
   aManager = await wait_for_view_load(aManager);
-  is_in_discovery(aManager, MAIN_URL, true, false);
+  is_in_discovery(aManager, true, false);
 
   EventUtils.synthesizeMouseAtCenter(categoryUtils.get("plugin"), {}, aManager);
 
@@ -584,7 +572,7 @@ add_task(async function test_discopane_second_history_entry() {
   go_back();
 
   aManager = await wait_for_view_load(aManager);
-  is_in_discovery(aManager, MAIN_URL, true, true);
+  is_in_discovery(aManager, true, true);
 
   go_back();
 

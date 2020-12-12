@@ -27,7 +27,6 @@ const {
 } = require("devtools/client/aboutdebugging/src/modules/runtimes-state-helper");
 
 const {
-  DEBUG_TARGETS,
   DEBUG_TARGET_PANE,
   REQUEST_EXTENSIONS_FAILURE,
   REQUEST_EXTENSIONS_START,
@@ -52,17 +51,6 @@ const {
 
 const Actions = require("devtools/client/aboutdebugging/src/actions/index");
 
-function isCachedActorNeeded(runtime, type, id) {
-  // Unique ids for workers were introduced in Firefox 68 (Bug 1539328). When debugging
-  // older browsers, the id falls back to the actor ID. Check if the target id is a worker
-  // actorID (which means getFrontByID() should return an actor with id).
-  // Can be removed when Firefox 68 is in Release channel.
-  return (
-    type === DEBUG_TARGETS.WORKER &&
-    runtime.runtimeDetails.clientWrapper.client.getFrontByID(id)
-  );
-}
-
 function getTabForUrl(url) {
   for (const navigator of Services.wm.getEnumerator("navigator:browser")) {
     for (const browser of navigator.gBrowser.browsers) {
@@ -79,32 +67,24 @@ function getTabForUrl(url) {
 }
 
 function inspectDebugTarget(type, id) {
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     const runtime = getCurrentRuntime(getState().runtimes);
-    id = encodeURIComponent(id);
 
-    let url;
-    if (
-      runtime.id === RUNTIMES.THIS_FIREFOX &&
-      !isCachedActorNeeded(runtime, type, id)
-    ) {
-      // Even when debugging on This Firefox we need to re-use the client since the worker
-      // actor is cached in the client instance. Instead we should pass an id that does
-      // not depend on the client (such as the worker url). This will be fixed in
-      // Bug 1539328.
-      // Once the target is destroyed after closing the toolbox, the front will be gone
-      // and can no longer be used. When debugging This Firefox, workers are regularly
-      // updated so this is not an issue. On remote runtimes however, trying to inspect a
-      // worker a second time after closing the corresponding about:devtools-toolbox tab
-      // will fail. See Bug 1534201.
-      url = `about:devtools-toolbox?type=${type}&id=${id}`;
-    } else {
-      const remoteId = remoteClientManager.getRemoteId(
+    const urlParams = {
+      id,
+      type,
+    };
+
+    if (runtime.id !== RUNTIMES.THIS_FIREFOX) {
+      urlParams.remoteId = remoteClientManager.getRemoteId(
         runtime.id,
         runtime.type
       );
-      url = `about:devtools-toolbox?type=${type}&id=${id}&remoteId=${remoteId}`;
     }
+
+    const url = `about:devtools-toolbox?${new window.URLSearchParams(
+      urlParams
+    )}`;
 
     const existingTab = getTabForUrl(url);
     if (existingTab) {
@@ -128,7 +108,7 @@ function installTemporaryExtension() {
   const message = l10n.getString(
     "about-debugging-tmp-extension-install-message"
   );
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     dispatch({ type: TEMPORARY_EXTENSION_INSTALL_START });
     const file = await openTemporaryExtension(window, message);
     try {
@@ -141,26 +121,13 @@ function installTemporaryExtension() {
 }
 
 function pushServiceWorker(id, registrationFront) {
-  return async (_, getState) => {
+  return async ({ dispatch, getState }) => {
     try {
-      /**
-       * Older servers will not define `ServiceWorkerRegistrationFront.push`,
-       * and `ServiceWorkerRegistrationFront.push` will only work if the
-       * underlying ServiceWorkerRegistration is "connected" to the
-       * corresponding running Service Worker - this is only guaranteed with
-       * parent-intercept mode. The `else` statement is for backward
-       * compatibility and can be removed when the release channel is >= FF69
-       * _and_ parent-intercept is stable (which definitely won't happen when
-       * the release channel is < FF69).
-       */
-      const { isParentInterceptEnabled } = registrationFront.traits;
-      if (registrationFront.push && isParentInterceptEnabled) {
-        await registrationFront.push();
-      } else {
-        const clientWrapper = getCurrentClient(getState().runtimes);
-        const workerActor = await clientWrapper.getServiceWorkerFront({ id });
-        await workerActor.push();
-      }
+      // The push button is only available if canDebugServiceWorkers is true,
+      // which is only true if dom.serviceWorkers.parent_intercept is true.
+      // With this configuration, `push` should always be called on the
+      // registration front, and not on the (service) WorkerTargetActor.
+      await registrationFront.push();
     } catch (e) {
       console.error(e);
     }
@@ -168,7 +135,7 @@ function pushServiceWorker(id, registrationFront) {
 }
 
 function reloadTemporaryExtension(id) {
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     dispatch({ type: TEMPORARY_EXTENSION_RELOAD_START, id });
     const clientWrapper = getCurrentClient(getState().runtimes);
 
@@ -194,7 +161,7 @@ function removeTemporaryExtension(id) {
 }
 
 function requestTabs() {
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     dispatch({ type: REQUEST_TABS_START });
 
     const runtime = getCurrentRuntime(getState().runtimes);
@@ -205,17 +172,11 @@ function requestTabs() {
         runtime.runtimeDetails.info.type,
         DEBUG_TARGET_PANE.TAB
       );
-      const tabs = isSupported
-        ? await clientWrapper.listTabs({
-            // Backward compatibility: this is only used for FF75 or older.
-            // The argument can be dropped when FF76 hits the release channel.
-            favicons: true,
-          })
-        : [];
+      const tabs = isSupported ? await clientWrapper.listTabs() : [];
 
-      // Fetch the missing information for all tabs.
+      // Fetch the favicon for all tabs.
       await Promise.all(
-        tabs.map(descriptorFront => descriptorFront.retrieveAsyncFormData())
+        tabs.map(descriptorFront => descriptorFront.retrieveFavicon())
       );
 
       dispatch({ type: REQUEST_TABS_SUCCESS, tabs });
@@ -226,7 +187,7 @@ function requestTabs() {
 }
 
 function requestExtensions() {
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     dispatch({ type: REQUEST_EXTENSIONS_START });
 
     const runtime = getCurrentRuntime(getState().runtimes);
@@ -237,23 +198,14 @@ function requestExtensions() {
       const addons = await clientWrapper.listAddons({
         iconDataURL: isIconDataURLRequired,
       });
-      let extensions = addons.filter(a => a.debuggable);
 
-      // Filter out hidden & system addons unless the dedicated preference is set to true.
-      if (!getState().ui.showHiddenAddons) {
-        // System addons should normally also have the hidden flag. However on DevTools
-        // side, `hidden` is not available on FF67 servers or older. Check both flags for
-        // backward compatibility.
-        extensions = extensions.filter(e => !e.isSystem && !e.hidden);
-      }
+      const showHiddenAddons = getState().ui.showHiddenAddons;
 
-      if (runtime.type !== RUNTIMES.THIS_FIREFOX) {
-        // manifestURL can only be used when debugging local addons, remove this
-        // information for the extension data.
-        extensions.forEach(extension => {
-          extension.manifestURL = null;
-        });
-      }
+      // Filter out non-debuggable addons as well as hidden ones, unless the dedicated
+      // preference is set to true.
+      const extensions = addons.filter(
+        a => a.debuggable && (!a.hidden || showHiddenAddons)
+      );
 
       const installedExtensions = extensions.filter(
         e => !e.temporarilyInstalled
@@ -274,19 +226,18 @@ function requestExtensions() {
 }
 
 function requestProcesses() {
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     dispatch({ type: REQUEST_PROCESSES_START });
 
     const clientWrapper = getCurrentClient(getState().runtimes);
 
     try {
       const mainProcessDescriptorFront = await clientWrapper.getMainProcess();
-      const mainProcessFront = await mainProcessDescriptorFront.getTarget();
       dispatch({
         type: REQUEST_PROCESSES_SUCCESS,
         mainProcess: {
           id: 0,
-          processFront: mainProcessFront,
+          processFront: mainProcessDescriptorFront,
         },
       });
     } catch (e) {
@@ -296,7 +247,7 @@ function requestProcesses() {
 }
 
 function requestWorkers() {
-  return async (dispatch, getState) => {
+  return async ({ dispatch, getState }) => {
     dispatch({ type: REQUEST_WORKERS_START });
 
     const clientWrapper = getCurrentClient(getState().runtimes);
@@ -331,7 +282,7 @@ function requestWorkers() {
 }
 
 function startServiceWorker(registrationFront) {
-  return async (_, getState) => {
+  return async () => {
     try {
       await registrationFront.start();
     } catch (e) {
@@ -341,7 +292,7 @@ function startServiceWorker(registrationFront) {
 }
 
 function unregisterServiceWorker(registrationFront) {
-  return async (_, getState) => {
+  return async () => {
     try {
       await registrationFront.unregister();
     } catch (e) {

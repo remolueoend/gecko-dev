@@ -7,6 +7,7 @@
 #ifndef GFX_FONT_FEATURES_H
 #define GFX_FONT_FEATURES_H
 
+#include "nsAtom.h"
 #include "nsTHashtable.h"
 #include "nsTArray.h"
 #include "nsString.h"
@@ -37,7 +38,7 @@ class gfxFontFeatureValueSet final {
 
   struct ValueList {
     ValueList(const nsAString& aName, const nsTArray<uint32_t>& aSelectors)
-        : name(aName), featureSelectors(aSelectors) {}
+        : name(aName), featureSelectors(aSelectors.Clone()) {}
     nsString name;
     nsTArray<uint32_t> featureSelectors;
   };

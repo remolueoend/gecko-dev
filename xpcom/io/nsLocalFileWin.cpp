@@ -57,8 +57,10 @@
 #include "nsIWidget.h"
 #include "mozilla/ShellHeaderOnlyUtils.h"
 #include "mozilla/WidgetUtils.h"
+#include "WinUtils.h"
 
 using namespace mozilla;
+using mozilla::FilePreferences::kDevicePathSpecifier;
 using mozilla::FilePreferences::kPathSeparator;
 
 #define CHECK_mWorkingPath()                                     \
@@ -79,24 +81,12 @@ using mozilla::FilePreferences::kPathSeparator;
 #  define DRIVE_REMOTE 4
 #endif
 
-constexpr auto kDevicePathSpecifier = NS_LITERAL_STRING("\\\\?\\");
-
 namespace {
 
-bool StartsWithDiskDesignatorAndBackslash(const nsAString& aAbsolutePath) {
-  // aAbsolutePath can only be (in regular expression):
-  // UNC path: ^\\\\.*
-  // A single backslash: ^\\.*
-  // A disk designator with a backslash: ^[A-Za-z]:\\.*
-  return aAbsolutePath.Length() >= 3 && aAbsolutePath.CharAt(1) == L':' &&
-         aAbsolutePath.CharAt(2) == kPathSeparator;
-}
-
-nsresult NewLocalFile(const nsAString& aPath, bool aFollowLinks,
-                      bool aUseDOSDevicePathSyntax, nsIFile** aResult) {
+nsresult NewLocalFile(const nsAString& aPath, bool aUseDOSDevicePathSyntax,
+                      nsIFile** aResult) {
   RefPtr<nsLocalFile> file = new nsLocalFile();
 
-  file->SetFollowLinks(aFollowLinks);
   file->SetUseDOSDevicePathSyntax(aUseDOSDevicePathSyntax);
 
   if (!aPath.IsEmpty()) {
@@ -241,25 +231,13 @@ class nsDriveEnumerator : public nsSimpleEnumerator,
 // static helper functions
 //-----------------------------------------------------------------------------
 
-// |out| must be an allocated buffer of size MAX_PATH
-static nsresult ResolveShellLink(const WCHAR* aIn, WCHAR* aOut) {
-  RefPtr<IPersistFile> persistFile;
-  RefPtr<IShellLinkW> shellLink;
-  // Get a pointer to the IPersistFile interface.
-  if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER,
-                              IID_IShellLinkW, getter_AddRefs(shellLink))) ||
-      FAILED(shellLink->QueryInterface(IID_IPersistFile,
-                                       getter_AddRefs(persistFile))) ||
-      FAILED(persistFile->Load(aIn, STGM_READ)) ||
-      FAILED(shellLink->Resolve(nullptr, SLR_NO_UI)) ||
-      FAILED(shellLink->GetPath(aOut, MAX_PATH, nullptr, SLGP_UNCPRIORITY))) {
-    return NS_ERROR_FAILURE;
-  }
-  return NS_OK;
-}
-
-// certainly not all the error that can be
-// encountered, but many of them common ones
+/**
+ * While not comprehensive, this will map many common Windows error codes to a
+ * corresponding nsresult. If an unmapped error is encountered, the hex error
+ * code will be logged to stderr. Error codes, names, and descriptions can be
+ * found at the following MSDN page:
+ * https://docs.microsoft.com/en-us/windows/win32/debug/system-error-codes
+ */
 static nsresult ConvertWinError(DWORD aWinErr) {
   nsresult rv;
 
@@ -284,6 +262,7 @@ static nsresult ConvertWinError(DWORD aWinErr) {
     case ERROR_ARENA_TRASHED:
       rv = NS_ERROR_OUT_OF_MEMORY;
       break;
+    case ERROR_DIR_NOT_EMPTY:
     case ERROR_CURRENT_DIRECTORY:
       rv = NS_ERROR_FILE_DIR_NOT_EMPTY;
       break;
@@ -308,6 +287,9 @@ static nsresult ConvertWinError(DWORD aWinErr) {
       rv = NS_OK;
       break;
     default:
+      printf_stderr(
+          "ConvertWinError received an unrecognized WinError: 0x%" PRIx32 "\n",
+          static_cast<uint32_t>(aWinErr));
       rv = NS_ERROR_FAILURE;
       break;
   }
@@ -326,15 +308,6 @@ static __int64 MyFileSeek64(HANDLE aHandle, __int64 aDistance,
   }
 
   return li.QuadPart;
-}
-
-static bool IsShortcutPath(const nsAString& aPath) {
-  // Under Windows, the shortcuts are just files with a ".lnk" extension.
-  // Note also that we don't resolve links in the middle of paths.
-  // i.e. "c:\foo.lnk\bar.txt" is invalid.
-  MOZ_ASSERT(!aPath.IsEmpty(), "don't pass an empty string");
-  int32_t len = aPath.Length();
-  return len >= 4 && (StringTail(aPath, 4).LowerCaseEqualsASCII(".lnk"));
 }
 
 //-----------------------------------------------------------------------------
@@ -499,7 +472,9 @@ static nsresult GetFileInfo(const nsString& aName, PRFileInfo64* aInfo) {
     return ConvertWinError(GetLastError());
   }
 
-  if (fileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+  if (fileData.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+    aInfo->type = PR_FILE_OTHER;
+  } else if (fileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
     aInfo->type = PR_FILE_DIRECTORY;
   } else {
     aInfo->type = PR_FILE_FILE;
@@ -745,13 +720,10 @@ NS_IMPL_ISUPPORTS_INHERITED(nsDirEnumerator, nsSimpleEnumerator,
 //-----------------------------------------------------------------------------
 
 nsLocalFile::nsLocalFile()
-    : mDirty(true),
-      mResolveDirty(true),
-      mFollowSymlinks(false),
-      mUseDOSDevicePathSyntax(false) {}
+    : mDirty(true), mResolveDirty(true), mUseDOSDevicePathSyntax(false) {}
 
 nsLocalFile::nsLocalFile(const nsAString& aFilePath)
-    : mFollowSymlinks(false), mUseDOSDevicePathSyntax(false) {
+    : mUseDOSDevicePathSyntax(false) {
   InitWithPath(aFilePath);
 }
 
@@ -787,27 +759,16 @@ NS_IMPL_ISUPPORTS(nsLocalFile, nsIFile, nsILocalFileWin)
 nsLocalFile::nsLocalFile(const nsLocalFile& aOther)
     : mDirty(true),
       mResolveDirty(true),
-      mFollowSymlinks(aOther.mFollowSymlinks),
       mUseDOSDevicePathSyntax(aOther.mUseDOSDevicePathSyntax),
       mWorkingPath(aOther.mWorkingPath) {}
 
-// Resolve the shortcut file from mWorkingPath and write the path
-// it points to into mResolvedPath.
-nsresult nsLocalFile::ResolveShortcut() {
-  mResolvedPath.SetLength(MAX_PATH);
-  if (mResolvedPath.Length() != MAX_PATH) {
-    return NS_ERROR_OUT_OF_MEMORY;
+nsresult nsLocalFile::ResolveSymlink() {
+  std::wstring workingPath(mWorkingPath.Data());
+  if (!widget::WinUtils::ResolveJunctionPointsAndSymLinks(workingPath)) {
+    return NS_ERROR_FAILURE;
   }
-
-  wchar_t* resolvedPath = mResolvedPath.get();
-
-  // resolve this shortcut
-  nsresult rv = ResolveShellLink(mWorkingPath.get(), resolvedPath);
-
-  size_t len = NS_FAILED(rv) ? 0 : wcslen(resolvedPath);
-  mResolvedPath.SetLength(len);
-
-  return rv;
+  mResolvedPath.Assign(workingPath.c_str(), workingPath.length());
+  return NS_OK;
 }
 
 // Resolve any shortcuts and stat the resolved path. After a successful return
@@ -840,26 +801,22 @@ nsresult nsLocalFile::ResolveAndStat() {
     return rv;
   }
 
-  // if this isn't a shortcut file or we aren't following symlinks then we're
-  // done
-  if (!mFollowSymlinks || mFileInfo64.type != PR_FILE_FILE ||
-      !IsShortcutPath(mWorkingPath)) {
-    mDirty = false;
+  if (mFileInfo64.type != PR_FILE_OTHER) {
     mResolveDirty = false;
+    mDirty = false;
     return NS_OK;
   }
 
-  // we need to resolve this shortcut to what it points to, this will
-  // set mResolvedPath. Even if it fails we need to have the resolved
-  // path equal to working path for those functions that always use
-  // the resolved path.
-  rv = ResolveShortcut();
+  // OTHER from GetFileInfo currently means a symlink
+  rv = ResolveSymlink();
+  // Even if it fails we need to have the resolved path equal to working path
+  // for those functions that always use the resolved path.
   if (NS_FAILED(rv)) {
     mResolvedPath.Assign(mWorkingPath);
     return rv;
   }
-  mResolveDirty = false;
 
+  mResolveDirty = false;
   // get the details of the resolved path
   rv = GetFileInfo(mResolvedPath, &mFileInfo64);
   if (NS_FAILED(rv)) {
@@ -891,22 +848,7 @@ nsresult nsLocalFile::Resolve() {
   // this is usually correct
   mResolvedPath.Assign(mWorkingPath);
 
-  // if this isn't a shortcut file or we aren't following symlinks then
-  // we're done.
-  if (!mFollowSymlinks || !IsShortcutPath(mWorkingPath)) {
-    mResolveDirty = false;
-    return NS_OK;
-  }
-
-  // we need to resolve this shortcut to what it points to, this will
-  // set mResolvedPath. Even if it fails we need to have the resolved
-  // path equal to working path for those functions that always use
-  // the resolved path.
-  nsresult rv = ResolveShortcut();
-  if (NS_FAILED(rv)) {
-    mResolvedPath.Assign(mWorkingPath);
-    return rv;
-  }
+  // TODO: Implement symlink support
 
   mResolveDirty = false;
   return NS_OK;
@@ -988,7 +930,7 @@ nsLocalFile::InitWithPath(const nsAString& aFilePath) {
   // Prepend the "\\?\" prefix if the useDOSDevicePathSyntax is set and the path
   // starts with a disk designator and backslash.
   if (mUseDOSDevicePathSyntax &&
-      StartsWithDiskDesignatorAndBackslash(mWorkingPath)) {
+      FilePreferences::StartsWithDiskDesignatorAndBackslash(mWorkingPath)) {
     mWorkingPath = kDevicePathSpecifier + mWorkingPath;
   }
 
@@ -1027,8 +969,8 @@ static void StripRundll32(nsString& aCommandString) {
   // C:\Windows\System32\rundll32.exe "path to dll", var var
   // rundll32.exe "path to dll", var var
 
-  NS_NAMED_LITERAL_STRING(rundllSegment, "rundll32.exe ");
-  NS_NAMED_LITERAL_STRING(rundllSegmentShort, "rundll32 ");
+  constexpr auto rundllSegment = u"rundll32.exe "_ns;
+  constexpr auto rundllSegmentShort = u"rundll32 "_ns;
 
   // case insensitive
   int32_t strLen = rundllSegment.Length();
@@ -1118,12 +1060,7 @@ nsLocalFile::OpenNSPRFileDesc(int32_t aFlags, int32_t aMode,
 
 NS_IMETHODIMP
 nsLocalFile::OpenANSIFileDesc(const char* aMode, FILE** aResult) {
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv) && rv != NS_ERROR_FILE_NOT_FOUND) {
-    return rv;
-  }
-
-  *aResult = _wfopen(mResolvedPath.get(), NS_ConvertASCIItoUTF16(aMode).get());
+  *aResult = _wfopen(mWorkingPath.get(), NS_ConvertASCIItoUTF16(aMode).get());
   if (*aResult) {
     return NS_OK;
   }
@@ -1164,14 +1101,9 @@ nsLocalFile::Create(uint32_t aType, uint32_t aAttributes) {
     return NS_ERROR_FILE_UNKNOWN_TYPE;
   }
 
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv) && rv != NS_ERROR_FILE_NOT_FOUND) {
-    return rv;
-  }
-
   auto* createFunc = (aType == NORMAL_FILE_TYPE ? do_create : do_mkdir);
 
-  rv = createFunc(this, mResolvedPath, aAttributes);
+  nsresult rv = createFunc(this, mWorkingPath, aAttributes);
 
   if (NS_SUCCEEDED(rv) || NS_ERROR_FILE_ALREADY_EXISTS == rv) {
     return rv;
@@ -1190,7 +1122,7 @@ nsLocalFile::Create(uint32_t aType, uint32_t aAttributes) {
   // Skip the first 'X:\' for the first form, and skip the first full
   // '\\machine\volume\' segment for the second form.
 
-  wchar_t* path = char16ptr_t(mResolvedPath.BeginWriting());
+  wchar_t* path = char16ptr_t(mWorkingPath.BeginWriting());
 
   if (path[0] == L'\\' && path[1] == L'\\') {
     // dealing with a UNC path here; skip past '\\machine\'
@@ -1213,7 +1145,7 @@ nsLocalFile::Create(uint32_t aType, uint32_t aAttributes) {
     while (slash) {
       *slash = L'\0';
 
-      if (!::CreateDirectoryW(mResolvedPath.get(), nullptr)) {
+      if (!::CreateDirectoryW(mWorkingPath.get(), nullptr)) {
         rv = ConvertWinError(GetLastError());
         if (NS_ERROR_FILE_NOT_FOUND == rv &&
             NS_ERROR_FILE_ACCESS_DENIED == directoryCreateError) {
@@ -1241,7 +1173,7 @@ nsLocalFile::Create(uint32_t aType, uint32_t aAttributes) {
     return directoryCreateError;
   }
 
-  return createFunc(this, mResolvedPath, aAttributes);
+  return createFunc(this, mWorkingPath, aAttributes);
 }
 
 NS_IMETHODIMP
@@ -1274,7 +1206,7 @@ nsresult nsLocalFile::AppendInternal(const nsString& aNode,
     // "foo..foo", "..foo", and "foo.." are not falsely detected,
     // but the invalid paths "..\", "foo\..", "foo\..\foo",
     // "..\foo", etc are.
-    NS_NAMED_LITERAL_STRING(doubleDot, "\\..");
+    constexpr auto doubleDot = u"\\.."_ns;
     nsAString::const_iterator start, end, offset;
     aNode.BeginReading(start);
     aNode.EndReading(end);
@@ -1288,7 +1220,7 @@ nsresult nsLocalFile::AppendInternal(const nsString& aNode,
     }
 
     // catches the remaining cases of prefixes
-    if (StringBeginsWith(aNode, NS_LITERAL_STRING("..\\"))) {
+    if (StringBeginsWith(aNode, u"..\\"_ns)) {
       return NS_ERROR_FILE_UNRECOGNIZED_PATH;
     }
   }
@@ -1309,12 +1241,7 @@ nsresult nsLocalFile::OpenNSPRFileDescMaybeShareDelete(int32_t aFlags,
                                                        int32_t aMode,
                                                        bool aShareDelete,
                                                        PRFileDesc** aResult) {
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  return OpenFile(mResolvedPath, aFlags, aMode, aShareDelete, aResult);
+  return OpenFile(mWorkingPath, aFlags, aMode, aShareDelete, aResult);
 }
 
 #define TOUPPER(u) (((u) >= L'a' && (u) <= L'z') ? (u) - (L'a' - L'A') : (u))
@@ -1386,7 +1313,7 @@ nsLocalFile::Normalize() {
     if (currentDir.Last() == '\\') {
       path.Replace(0, 2, currentDir);
     } else {
-      path.Replace(0, 2, currentDir + NS_LITERAL_STRING("\\"));
+      path.Replace(0, 2, currentDir + u"\\"_ns);
     }
   }
 
@@ -1523,8 +1450,9 @@ nsLocalFile::SetLeafName(const nsAString& aLeafName) {
 
 NS_IMETHODIMP
 nsLocalFile::GetPath(nsAString& aResult) {
-  MOZ_ASSERT_IF(mUseDOSDevicePathSyntax,
-                !StartsWithDiskDesignatorAndBackslash(mWorkingPath));
+  MOZ_ASSERT_IF(
+      mUseDOSDevicePathSyntax,
+      !FilePreferences::StartsWithDiskDesignatorAndBackslash(mWorkingPath));
   aResult = mWorkingPath;
   return NS_OK;
 }
@@ -1543,15 +1471,9 @@ typedef struct {
 
 NS_IMETHODIMP
 nsLocalFile::GetVersionInfoField(const char* aField, nsAString& aResult) {
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
+  nsresult rv = NS_ERROR_FAILURE;
 
-  rv = NS_ERROR_FAILURE;
-
-  const WCHAR* path =
-      mFollowSymlinks ? mResolvedPath.get() : mWorkingPath.get();
+  const WCHAR* path = mWorkingPath.get();
 
   DWORD dummy;
   DWORD size = ::GetFileVersionInfoSizeW(path, &dummy);
@@ -1985,15 +1907,15 @@ nsresult nsLocalFile::CopyMove(nsIFile* aParentDir, const nsAString& aNewName,
           return NS_ERROR_FAILURE;
         }
 
-        rv = file->MoveTo(target, EmptyString());
+        rv = file->MoveTo(target, u""_ns);
         if (NS_FAILED(rv)) {
           return rv;
         }
       } else {
         if (followSymlinks) {
-          rv = file->CopyToFollowingLinks(target, EmptyString());
+          rv = file->CopyToFollowingLinks(target, u""_ns);
         } else {
-          rv = file->CopyTo(target, EmptyString());
+          rv = file->CopyTo(target, u""_ns);
         }
         if (NS_FAILED(rv)) {
           return rv;
@@ -2054,6 +1976,12 @@ nsLocalFile::CopyToFollowingLinks(nsIFile* aNewParentDir,
 NS_IMETHODIMP
 nsLocalFile::MoveTo(nsIFile* aNewParentDir, const nsAString& aNewName) {
   return CopyMove(aNewParentDir, aNewName, Move);
+}
+
+NS_IMETHODIMP
+nsLocalFile::MoveToFollowingLinks(nsIFile* aNewParentDir,
+                                  const nsAString& aNewName) {
+  return CopyMove(aNewParentDir, aNewName, Move | FollowSymlinks);
 }
 
 NS_IMETHODIMP
@@ -2137,16 +2065,8 @@ NS_IMETHODIMP
 nsLocalFile::Load(PRLibrary** aResult) {
   // Check we are correctly initialized.
   CHECK_mWorkingPath();
-
-  bool isFile;
-  nsresult rv = IsFile(&isFile);
-
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  if (!isFile) {
-    return NS_ERROR_FILE_IS_DIRECTORY;
+  if (NS_WARN_IF(!aResult)) {
+    return NS_ERROR_INVALID_ARG;
   }
 
 #ifdef NS_BUILD_REFCNT_LOGGING
@@ -2154,7 +2074,7 @@ nsLocalFile::Load(PRLibrary** aResult) {
 #endif
 
   PRLibSpec libSpec;
-  libSpec.value.pathname_u = mResolvedPath.get();
+  libSpec.value.pathname_u = mWorkingPath.get();
   libSpec.type = PR_LibSpec_PathnameU;
   *aResult = PR_LoadLibraryWithFlags(libSpec, 0);
 
@@ -2292,17 +2212,7 @@ nsLocalFile::SetLastModifiedTime(PRTime aLastModifiedTime) {
   // Check we are correctly initialized.
   CHECK_mWorkingPath();
 
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  // set the modified time of the target as determined by mFollowSymlinks
-  // If true, then this will be for the target of the shortcut file,
-  // otherwise it will be for the shortcut file itself (i.e. the same
-  // results as SetLastModifiedTimeOfLink)
-
-  rv = SetModDate(aLastModifiedTime, mResolvedPath.get());
+  nsresult rv = SetModDate(aLastModifiedTime, mWorkingPath.get());
   if (NS_SUCCEEDED(rv)) {
     MakeDirty();
   }
@@ -2312,15 +2222,40 @@ nsLocalFile::SetLastModifiedTime(PRTime aLastModifiedTime) {
 
 NS_IMETHODIMP
 nsLocalFile::SetLastModifiedTimeOfLink(PRTime aLastModifiedTime) {
-  // The caller is assumed to have already called IsSymlink
-  // and to have found that this file is a link.
+  return SetLastModifiedTime(aLastModifiedTime);
+}
 
-  nsresult rv = SetModDate(aLastModifiedTime, mWorkingPath.get());
-  if (NS_SUCCEEDED(rv)) {
-    MakeDirty();
+NS_IMETHODIMP
+nsLocalFile::GetCreationTime(PRTime* aCreationTime) {
+  CHECK_mWorkingPath();
+
+  if (NS_WARN_IF(!aCreationTime)) {
+    return NS_ERROR_INVALID_ARG;
   }
 
-  return rv;
+  nsresult rv = ResolveAndStat();
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  *aCreationTime = mFileInfo64.creationTime / PR_USEC_PER_MSEC;
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsLocalFile::GetCreationTimeOfLink(PRTime* aCreationTime) {
+  CHECK_mWorkingPath();
+
+  if (NS_WARN_IF(!aCreationTime)) {
+    return NS_ERROR_INVALID_ARG;
+  }
+
+  PRFileInfo64 info;
+  nsresult rv = GetFileInfo(mWorkingPath, &info);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  *aCreationTime = info.creationTime / PR_USEC_PER_MSEC;
+
+  return NS_OK;
 }
 
 nsresult nsLocalFile::SetModDate(PRTime aLastModifiedTime,
@@ -2523,13 +2458,8 @@ nsLocalFile::SetFileSize(int64_t aFileSize) {
   // Check we are correctly initialized.
   CHECK_mWorkingPath();
 
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
   HANDLE hFile =
-      ::CreateFileW(mResolvedPath.get(),    // pointer to name of the file
+      ::CreateFileW(mWorkingPath.get(),     // pointer to name of the file
                     GENERIC_WRITE,          // access (write) mode
                     FILE_SHARE_READ,        // share mode
                     nullptr,                // pointer to security attributes
@@ -2542,7 +2472,7 @@ nsLocalFile::SetFileSize(int64_t aFileSize) {
 
   // seek the file pointer to the new, desired end of file
   // and then truncate the file at that position
-  rv = NS_ERROR_FAILURE;
+  nsresult rv = NS_ERROR_FAILURE;
   aFileSize = MyFileSeek64(hFile, aFileSize, FILE_BEGIN);
   if (aFileSize != -1 && SetEndOfFile(hFile)) {
     MakeDirty();
@@ -2621,9 +2551,8 @@ nsLocalFile::GetParent(nsIFile** aParent) {
   }
 
   nsCOMPtr<nsIFile> localFile;
-  nsresult rv =
-      NewLocalFile(parentPath, mFollowSymlinks, mUseDOSDevicePathSyntax,
-                   getter_AddRefs(localFile));
+  nsresult rv = NewLocalFile(parentPath, mUseDOSDevicePathSyntax,
+                             getter_AddRefs(localFile));
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -2840,23 +2769,8 @@ nsLocalFile::IsSymlink(bool* aResult) {
     return NS_ERROR_INVALID_ARG;
   }
 
-  // unless it is a valid shortcut path it's not a symlink
-  if (!IsShortcutPath(mWorkingPath)) {
-    *aResult = false;
-    return NS_OK;
-  }
-
-  // we need to know if this is a file or directory
-  nsresult rv = ResolveAndStat();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  // We should not check mFileInfo64.type here for PR_FILE_FILE because lnk
-  // files can point to directories or files.  Important security checks
-  // depend on correctly identifying lnk files.  mFileInfo64 now holds info
-  // about the target of the lnk file, not the actual lnk file!
-  *aResult = true;
+  // TODO: Implement symlink support
+  *aResult = false;
   return NS_OK;
 }
 
@@ -2950,22 +2864,11 @@ nsLocalFile::GetTarget(nsAString& aResult) {
   aResult.Truncate();
   Resolve();
 
-  MOZ_ASSERT_IF(mUseDOSDevicePathSyntax,
-                !StartsWithDiskDesignatorAndBackslash(mResolvedPath));
+  MOZ_ASSERT_IF(
+      mUseDOSDevicePathSyntax,
+      !FilePreferences::StartsWithDiskDesignatorAndBackslash(mResolvedPath));
 
   aResult = mResolvedPath;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsLocalFile::GetFollowLinks(bool* aFollowLinks) {
-  *aFollowLinks = mFollowSymlinks;
-  return NS_OK;
-}
-NS_IMETHODIMP
-nsLocalFile::SetFollowLinks(bool aFollowLinks) {
-  MakeDirty();
-  mFollowSymlinks = aFollowLinks;
   return NS_OK;
 }
 
@@ -3073,7 +2976,7 @@ nsLocalFile::SetUseDOSDevicePathSyntax(bool aUseDOSDevicePathSyntax) {
       mWorkingPath = Substring(mWorkingPath, kDevicePathSpecifier.Length());
     }
   } else {
-    if (StartsWithDiskDesignatorAndBackslash(mWorkingPath)) {
+    if (FilePreferences::StartsWithDiskDesignatorAndBackslash(mWorkingPath)) {
       MakeDirty();
       // Prepend the prefix
       mWorkingPath = kDevicePathSpecifier + mWorkingPath;
@@ -3116,14 +3019,8 @@ nsLocalFile::Launch() {
   // This API should be main thread only
   MOZ_ASSERT(NS_IsMainThread());
 
-  // make sure mResolvedPath is set
-  nsresult rv = Resolve();
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
   // use the app registry name to launch a shell execute....
-  _bstr_t execPath(mResolvedPath.get());
+  _bstr_t execPath(mWorkingPath.get());
 
   _variant_t args;
   // Pass VT_ERROR/DISP_E_PARAMNOTFOUND to omit an optional RPC parameter
@@ -3136,7 +3033,7 @@ nsLocalFile::Launch() {
   // suggest to extract to the install directory.
   wchar_t* workingDirectoryPtr = nullptr;
   WCHAR workingDirectory[MAX_PATH + 1] = {L'\0'};
-  wcsncpy(workingDirectory, mResolvedPath.get(), MAX_PATH);
+  wcsncpy(workingDirectory, mWorkingPath.get(), MAX_PATH);
   if (PathRemoveFileSpecW(workingDirectory)) {
     workingDirectoryPtr = workingDirectory;
   } else {
@@ -3178,7 +3075,8 @@ nsLocalFile::Launch() {
 
   static const char* const onlyExeExt[] = {".exe"};
   bool isExecutable;
-  rv = LookupExtensionIn(onlyExeExt, ArrayLength(onlyExeExt), &isExecutable);
+  nsresult rv =
+      LookupExtensionIn(onlyExeExt, ArrayLength(onlyExeExt), &isExecutable);
   if (NS_FAILED(rv)) {
     isExecutable = false;
   }
@@ -3199,7 +3097,7 @@ nsLocalFile::Launch() {
   seinfo.fMask = SEE_MASK_ASYNCOK;
   seinfo.hwnd = GetMostRecentNavigatorHWND();
   seinfo.lpVerb = nullptr;
-  seinfo.lpFile = mResolvedPath.get();
+  seinfo.lpFile = mWorkingPath.get();
   seinfo.lpParameters = nullptr;
   seinfo.lpDirectory = workingDirectoryPtr;
   seinfo.nShow = SW_SHOWNORMAL;
@@ -3214,8 +3112,6 @@ nsLocalFile::Launch() {
 nsresult NS_NewLocalFile(const nsAString& aPath, bool aFollowLinks,
                          nsIFile** aResult) {
   RefPtr<nsLocalFile> file = new nsLocalFile();
-
-  file->SetFollowLinks(aFollowLinks);
 
   if (!aPath.IsEmpty()) {
     nsresult rv = file->InitWithPath(aPath);
@@ -3310,7 +3206,7 @@ nsLocalFile::CopyToNative(nsIFile* aNewParentDir, const nsACString& aNewName) {
   CHECK_mWorkingPath();
 
   if (aNewName.IsEmpty()) {
-    return CopyTo(aNewParentDir, EmptyString());
+    return CopyTo(aNewParentDir, u""_ns);
   }
 
   nsAutoString tmp;
@@ -3326,7 +3222,7 @@ NS_IMETHODIMP
 nsLocalFile::CopyToFollowingLinksNative(nsIFile* aNewParentDir,
                                         const nsACString& aNewName) {
   if (aNewName.IsEmpty()) {
-    return CopyToFollowingLinks(aNewParentDir, EmptyString());
+    return CopyToFollowingLinks(aNewParentDir, u""_ns);
   }
 
   nsAutoString tmp;
@@ -3344,13 +3240,32 @@ nsLocalFile::MoveToNative(nsIFile* aNewParentDir, const nsACString& aNewName) {
   CHECK_mWorkingPath();
 
   if (aNewName.IsEmpty()) {
-    return MoveTo(aNewParentDir, EmptyString());
+    return MoveTo(aNewParentDir, u""_ns);
   }
 
   nsAutoString tmp;
   nsresult rv = NS_CopyNativeToUnicode(aNewName, tmp);
   if (NS_SUCCEEDED(rv)) {
     return MoveTo(aNewParentDir, tmp);
+  }
+
+  return rv;
+}
+
+NS_IMETHODIMP
+nsLocalFile::MoveToFollowingLinksNative(nsIFile* aNewParentDir,
+                                        const nsACString& aNewName) {
+  // Check we are correctly initialized.
+  CHECK_mWorkingPath();
+
+  if (aNewName.IsEmpty()) {
+    return MoveToFollowingLinks(aNewParentDir, u""_ns);
+  }
+
+  nsAutoString tmp;
+  nsresult rv = NS_CopyNativeToUnicode(aNewName, tmp);
+  if (NS_SUCCEEDED(rv)) {
+    return MoveToFollowingLinks(aNewParentDir, tmp);
   }
 
   return rv;
@@ -3448,7 +3363,7 @@ nsDriveEnumerator::GetNext(nsISupports** aNext) {
   mStartOfCurrentDrive = ++driveEnd;
 
   nsIFile* file;
-  nsresult rv = NewLocalFile(drive, false, mUseDOSDevicePathSyntax, &file);
+  nsresult rv = NewLocalFile(drive, mUseDOSDevicePathSyntax, &file);
 
   *aNext = file;
   return rv;

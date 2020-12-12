@@ -5,38 +5,39 @@
 #ifndef CanvasRenderingContext2D_h
 #define CanvasRenderingContext2D_h
 
-#include "mozilla/Attributes.h"
 #include <vector>
-#include "nsICanvasRenderingContextInternal.h"
-#include "mozilla/RefPtr.h"
-#include "nsColor.h"
-#include "mozilla/dom/HTMLCanvasElement.h"
-#include "mozilla/dom/HTMLVideoElement.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BasicRenderingContext2D.h"
-#include "mozilla/dom/CanvasGradient.h"
 #include "mozilla/dom/CanvasRenderingContext2DBinding.h"
-#include "mozilla/dom/CanvasPattern.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/gfx/Rect.h"
 #include "mozilla/gfx/2D.h"
-#include "mozilla/PresShell.h"
-#include "mozilla/UniquePtr.h"
-#include "gfx2DGlue.h"
-#include "nsLayoutUtils.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/EnumeratedArray.h"
-#include "FilterSupport.h"
-#include "SVGObserverUtils.h"
-#include "Layers.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/SurfaceFromElementResult.h"
+#include "mozilla/UniquePtr.h"
+#include "FilterDescription.h"
+#include "gfx2DGlue.h"
+#include "nsICanvasRenderingContextInternal.h"
 #include "nsBidi.h"
+#include "nsColor.h"
 
 class gfxFontGroup;
 class nsGlobalWindowInner;
 class nsXULElement;
 
 namespace mozilla {
+class ErrorResult;
+class PresShell;
+
 namespace gl {
 class SourceSurface;
 }  // namespace gl
+
+namespace layers {
+class PersistentBufferProvider;
+enum class LayersBackend : int8_t;
+}  // namespace layers
 
 namespace dom {
 class
@@ -48,7 +49,9 @@ class ImageData;
 class StringOrCanvasGradientOrCanvasPattern;
 class OwningStringOrCanvasGradientOrCanvasPattern;
 class TextMetrics;
+class CanvasGradient;
 class CanvasPath;
+class CanvasPattern;
 
 extern const mozilla::gfx::Float SIGMA_MAX;
 
@@ -56,7 +59,6 @@ template <typename T>
 class Optional;
 
 struct CanvasBidiProcessor;
-class CanvasRenderingContext2DUserData;
 class CanvasDrawObserver;
 class CanvasShutdownObserver;
 
@@ -85,6 +87,12 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
 
     // corresponds to changes to the old bindings made in bug 745025
     return mCanvasElement->GetOriginalCanvas();
+  }
+
+  void OnBeforePaintTransaction() override;
+  void OnDidPaintTransaction() override;
+  layers::PersistentBufferProvider* GetBufferProvider() override {
+    return mBufferProvider;
   }
 
   void Save() override;
@@ -398,15 +406,7 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
   /**
    * Gets the pres shell from either the canvas element or the doc shell
    */
-  PresShell* GetPresShell() final {
-    if (mCanvasElement) {
-      return mCanvasElement->OwnerDoc()->GetPresShell();
-    }
-    if (mDocShell) {
-      return mDocShell->GetPresShell();
-    }
-    return nullptr;
-  }
+  PresShell* GetPresShell() final;
   NS_IMETHOD SetDimensions(int32_t aWidth, int32_t aHeight) override;
   NS_IMETHOD InitializeWithDrawTarget(
       nsIDocShell* aShell, NotNull<gfx::DrawTarget*> aTarget) override;
@@ -491,8 +491,6 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
     }
   }
 
-  friend class CanvasRenderingContext2DUserData;
-
   virtual UniquePtr<uint8_t[]> GetImageBuffer(int32_t* aFormat) override;
 
   // Given a point, return hit region ID if it exists
@@ -516,11 +514,11 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
                              nsIPrincipal& aSubjectPrincipal,
                              JSObject** aRetval);
 
-  nsresult PutImageData_explicit(int32_t aX, int32_t aY, uint32_t aW,
-                                 uint32_t aH, dom::Uint8ClampedArray* aArray,
-                                 bool aHasDirtyRect, int32_t aDirtyX,
-                                 int32_t aDirtyY, int32_t aDirtyWidth,
-                                 int32_t aDirtyHeight);
+  void PutImageData_explicit(int32_t aX, int32_t aY, uint32_t aW, uint32_t aH,
+                             dom::Uint8ClampedArray* aArray, bool aHasDirtyRect,
+                             int32_t aDirtyX, int32_t aDirtyY,
+                             int32_t aDirtyWidth, int32_t aDirtyHeight,
+                             ErrorResult&);
 
   bool CopyBufferProvider(layers::PersistentBufferProvider& aOld,
                           gfx::DrawTarget& aTarget, gfx::IntRect aCopyRect);
@@ -672,15 +670,14 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
    */
   bool PatternIsOpaque(Style aStyle, bool* aIsColor = nullptr) const;
 
-  nsLayoutUtils::SurfaceFromElementResult CachedSurfaceFromElement(
-      Element* aElement);
+  SurfaceFromElementResult CachedSurfaceFromElement(Element* aElement);
 
   void DrawImage(const CanvasImageSource& aImgElt, double aSx, double aSy,
                  double aSw, double aSh, double aDx, double aDy, double aDw,
                  double aDh, uint8_t aOptional_argc,
                  mozilla::ErrorResult& aError);
 
-  void DrawDirectlyToCanvas(const nsLayoutUtils::DirectDrawInfo& aImage,
+  void DrawDirectlyToCanvas(const DirectDrawInfo& aImage,
                             mozilla::gfx::Rect* aBounds,
                             mozilla::gfx::Rect aDest, mozilla::gfx::Rect aSrc,
                             gfx::IntSize aImgSize);
@@ -719,8 +716,6 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
   bool mIPC;
 
   bool mHasPendingStableStateCallback;
-
-  nsTArray<CanvasRenderingContext2DUserData*> mUserDatas;
 
   // If mCanvasElement is not provided, then a docshell is
   nsCOMPtr<nsIDocShell> mDocShell;
@@ -905,21 +900,9 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
     ContextState(const ContextState& aOther);
     ~ContextState();
 
-    void SetColorStyle(Style aWhichStyle, nscolor aColor) {
-      colorStyles[aWhichStyle] = aColor;
-      gradientStyles[aWhichStyle] = nullptr;
-      patternStyles[aWhichStyle] = nullptr;
-    }
-
-    void SetPatternStyle(Style aWhichStyle, CanvasPattern* aPat) {
-      gradientStyles[aWhichStyle] = nullptr;
-      patternStyles[aWhichStyle] = aPat;
-    }
-
-    void SetGradientStyle(Style aWhichStyle, CanvasGradient* aGrad) {
-      gradientStyles[aWhichStyle] = aGrad;
-      patternStyles[aWhichStyle] = nullptr;
-    }
+    void SetColorStyle(Style aWhichStyle, nscolor aColor);
+    void SetPatternStyle(Style aWhichStyle, CanvasPattern* aPat);
+    void SetGradientStyle(Style aWhichStyle, CanvasGradient* aGrad);
 
     /**
      * returns true iff the given style is a solid color.
@@ -1010,29 +993,7 @@ class CanvasRenderingContext2D final : public nsICanvasRenderingContextInternal,
   friend class AdjustedTargetForFilter;
 
   // other helpers
-  void GetAppUnitsValues(int32_t* aPerDevPixel, int32_t* aPerCSSPixel) {
-    // If we don't have a canvas element, we just return something generic.
-    if (aPerDevPixel) {
-      *aPerDevPixel = 60;
-    }
-    if (aPerCSSPixel) {
-      *aPerCSSPixel = 60;
-    }
-    PresShell* presShell = GetPresShell();
-    if (!presShell) {
-      return;
-    }
-    nsPresContext* presContext = presShell->GetPresContext();
-    if (!presContext) {
-      return;
-    }
-    if (aPerDevPixel) {
-      *aPerDevPixel = presContext->AppUnitsPerDevPixel();
-    }
-    if (aPerCSSPixel) {
-      *aPerCSSPixel = AppUnitsPerCSSPixel();
-    }
-  }
+  void GetAppUnitsValues(int32_t* aPerDevPixel, int32_t* aPerCSSPixel);
 
   friend struct CanvasBidiProcessor;
   friend class CanvasDrawObserver;

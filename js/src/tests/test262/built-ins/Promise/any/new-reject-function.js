@@ -1,4 +1,3 @@
-// |reftest| skip-if(release_or_beta) -- Promise.any is not released yet
 // Copyright (C) 2019 Leo Balter, 2020 Rick Waldron. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -21,7 +20,7 @@ features: [Promise.any]
 function rejectFunction() {}
 
 function Constructor(executor) {
-  executor(rejectFunction, $ERROR);
+  executor(rejectFunction, Test262Error.thrower);
 }
 Constructor.resolve = function(v) {
   return v;

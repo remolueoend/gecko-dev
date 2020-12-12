@@ -11,6 +11,7 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
+#include "nsCOMPtr.h"
 #include "nsICloneableInputStream.h"
 #include "nsIInputStream.h"
 #include "nsIIPCSerializableInputStream.h"
@@ -58,7 +59,7 @@ class MemoryBlobImpl final : public BaseBlobImpl {
   }
 
   void GetBlobImplType(nsAString& aBlobImplType) const override {
-    aBlobImplType = NS_LITERAL_STRING("MemoryBlobImpl");
+    aBlobImplType = u"MemoryBlobImpl"_ns;
   }
 
   class DataOwner final : public mozilla::LinkedListElement<DataOwner> {

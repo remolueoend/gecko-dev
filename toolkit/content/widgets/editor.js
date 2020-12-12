@@ -108,19 +108,19 @@
     }
 
     set fullZoom(val) {
-      this.markupDocumentViewer.fullZoom = val;
+      this.browsingContext.fullZoom = val;
     }
 
     get fullZoom() {
-      return this.markupDocumentViewer.fullZoom;
+      return this.browsingContext.fullZoom;
     }
 
     set textZoom(val) {
-      this.markupDocumentViewer.textZoom = val;
+      this.browsingContext.textZoom = val;
     }
 
     get textZoom() {
-      return this.markupDocumentViewer.textZoom;
+      return this.browsingContext.textZoom;
     }
 
     get isSyntheticDocument() {
@@ -172,22 +172,17 @@
     }
 
     get outerWindowID() {
-      return this.contentWindow.windowUtils.outerWindowID;
+      return this.docShell.outerWindowID;
     }
 
     makeEditable(editortype, waitForUrlLoad) {
       let win = this.contentWindow;
-      let winUtils = win.windowUtils;
       this.editingSession.makeWindowEditable(
         win,
         editortype,
         waitForUrlLoad,
         true,
         false
-      );
-      winUtils.loadSheetUsingURIString(
-        "resource://gre/res/EditorOverride.css",
-        winUtils.AGENT_SHEET
       );
       this.setAttribute("editortype", editortype);
 
@@ -205,6 +200,14 @@
     getHTMLEditor(containingWindow) {
       var editor = this.editingSession.getEditorForWindow(containingWindow);
       return editor.QueryInterface(Ci.nsIHTMLEditor);
+    }
+
+    print(aOuterWindowID, aPrintSettings) {
+      if (!this.frameLoader) {
+        throw Components.Exception("No frame loader.", Cr.NS_ERROR_FAILURE);
+      }
+
+      return this.frameLoader.print(aOuterWindowID, aPrintSettings);
     }
   }
 

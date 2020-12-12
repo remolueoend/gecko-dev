@@ -55,6 +55,7 @@ describe("Personality Provider", () => {
 
     sinon.spy(global, "BasePromiseWorker");
     sinon.spy(global.BasePromiseWorker.prototype, "post");
+
     baseURLStub = "https://baseattachmentsurl";
     global.fetch = async server => ({
       ok: true,
@@ -70,7 +71,8 @@ describe("Personality Provider", () => {
       .callsFake(pref => pref);
     globals.set("RemoteSettings", RemoteSettingsStub);
 
-    instance = new PersonalityProvider(TIME_SEGMENTS, PARAMETER_SETS);
+    instance = new PersonalityProvider();
+    instance.setAffinities(TIME_SEGMENTS, PARAMETER_SETS);
     instance.interestConfig = {
       history_item_builder: "history_item_builder",
       history_required_fields: ["a", "b", "c"],
@@ -128,6 +130,14 @@ describe("Personality Provider", () => {
       sinon.spy(instance, "teardownSyncAttachment");
       instance.teardown();
       assert.calledTwice(instance.teardownSyncAttachment);
+    });
+    it("should terminate worker", () => {
+      const terminateStub = sandbox.stub().returns();
+      instance._personalityProviderWorker = {
+        terminate: terminateStub,
+      };
+      instance.teardown();
+      assert.calledOnce(terminateStub);
     });
   });
   describe("#setupSyncAttachment", () => {
@@ -263,19 +273,13 @@ describe("Personality Provider", () => {
     });
   });
   describe("#init", () => {
-    beforeEach(() => {
-      sandbox.stub(instance, "dispatch").returns();
-    });
     it("should return early if setInterestConfig fails", async () => {
       sandbox.stub(instance, "setBaseAttachmentsURL").returns();
       sandbox.stub(instance, "setInterestConfig").returns();
       instance.interestConfig = null;
-      await instance.init();
-      assert.calledWithMatch(instance.dispatch, {
-        data: {
-          event: "PERSONALIZATION_V2_GET_RECIPE_ERROR",
-        },
-      });
+      const callback = globals.sandbox.stub();
+      await instance.init(callback);
+      assert.notCalled(callback);
     });
     it("should return early if fetchModels fails", async () => {
       sandbox.stub(instance, "setBaseAttachmentsURL").returns();
@@ -283,12 +287,9 @@ describe("Personality Provider", () => {
       sandbox.stub(instance, "fetchModels").resolves({
         ok: false,
       });
-      await instance.init();
-      assert.calledWithMatch(instance.dispatch, {
-        data: {
-          event: "PERSONALIZATION_V2_FETCH_MODELS_ERROR",
-        },
-      });
+      const callback = globals.sandbox.stub();
+      await instance.init(callback);
+      assert.notCalled(callback);
     });
     it("should return early if createInterestVector fails", async () => {
       sandbox.stub(instance, "setBaseAttachmentsURL").returns();
@@ -302,12 +303,9 @@ describe("Personality Provider", () => {
       sandbox.stub(instance, "createInterestVector").resolves({
         ok: false,
       });
-      await instance.init();
-      assert.calledWithMatch(instance.dispatch, {
-        data: {
-          event: "PERSONALIZATION_V2_CREATE_INTEREST_VECTOR_ERROR",
-        },
-      });
+      const callback = globals.sandbox.stub();
+      await instance.init(callback);
+      assert.notCalled(callback);
     });
     it("should call callback on successful init", async () => {
       sandbox.stub(instance, "setBaseAttachmentsURL").returns();
@@ -350,34 +348,27 @@ describe("Personality Provider", () => {
       assert.calledOnce(instance.setInterestVector);
     });
   });
-  describe("#dispatchRelevanceScoreDuration", () => {
-    beforeEach(() => {
-      sandbox.stub(instance, "dispatch").returns();
-    });
-    it("should dispatch PERSONALIZATION_V2_ITEM_RELEVANCE_SCORE_DURATION only if initialized", () => {
-      let dispatch = globals.sandbox.stub();
-      instance.dispatch = dispatch;
-
+  describe("#calculateItemRelevanceScore", () => {
+    it("should return score for uninitialized provider", async () => {
       instance.initialized = false;
-      instance.dispatchRelevanceScoreDuration(1000);
-
-      assert.notCalled(dispatch);
-
-      instance.initialized = true;
-      instance.dispatchRelevanceScoreDuration(1000);
-
-      assert.calledOnce(dispatch);
-
       assert.equal(
-        dispatch.firstCall.args[0].data.event,
-        "PERSONALIZATION_V2_ITEM_RELEVANCE_SCORE_DURATION"
+        await instance.calculateItemRelevanceScore({ item_score: 2 }),
+        2
       );
     });
-  });
-  describe("#calculateItemRelevanceScore", () => {
-    it("should return score for uninitialized provider", () => {
-      instance.initialized = false;
-      assert.equal(instance.calculateItemRelevanceScore({ item_score: 2 }), 2);
+    it("should return score for initialized provider", async () => {
+      instance.initialized = true;
+
+      instance._personalityProviderWorker = {
+        post: (postName, [item]) => ({
+          rankingVector: { score: item.item_score },
+        }),
+      };
+
+      assert.equal(
+        await instance.calculateItemRelevanceScore({ item_score: 2 }),
+        2
+      );
     });
     it("should post calculateItemRelevanceScore to PersonalityProviderWorker", async () => {
       instance.initialized = true;

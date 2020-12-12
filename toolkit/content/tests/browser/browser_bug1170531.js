@@ -54,13 +54,13 @@ add_task(async function() {
     async function(browser) {
       let menu_cut_disabled, menu_copy_disabled;
 
-      await BrowserTestUtils.loadURI(
-        browser,
-        "data:text/html,<div>hello!</div>"
-      );
+      BrowserTestUtils.loadURI(browser, "data:text/html,<div>hello!</div>");
       await BrowserTestUtils.browserLoaded(browser);
       browser.focus();
       await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
       await new Promise(openMenu);
       menu_cut_disabled =
         menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";
@@ -71,13 +71,16 @@ add_task(async function() {
       is(menu_copy_disabled, false, "menu_copy should be enabled");
       await new Promise(closeMenu);
 
-      await BrowserTestUtils.loadURI(
+      BrowserTestUtils.loadURI(
         browser,
         "data:text/html,<div contentEditable='true'>hello!</div>"
       );
       await BrowserTestUtils.browserLoaded(browser);
       browser.focus();
       await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
       await new Promise(openMenu);
       menu_cut_disabled =
         menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";
@@ -88,10 +91,13 @@ add_task(async function() {
       is(menu_copy_disabled, false, "menu_copy should be enabled");
       await new Promise(closeMenu);
 
-      await BrowserTestUtils.loadURI(browser, "about:preferences");
+      BrowserTestUtils.loadURI(browser, "about:preferences");
       await BrowserTestUtils.browserLoaded(browser);
       browser.focus();
       await new Promise(resolve => waitForFocus(resolve, window));
+      await new Promise(resolve =>
+        window.requestAnimationFrame(() => executeSoon(resolve))
+      );
       await new Promise(openMenu);
       menu_cut_disabled =
         menuPopup.querySelector("#menu_cut").getAttribute("disabled") == "true";

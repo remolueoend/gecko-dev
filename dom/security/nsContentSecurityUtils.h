@@ -9,8 +9,15 @@
 #ifndef nsContentSecurityUtils_h___
 #define nsContentSecurityUtils_h___
 
+#include <utility>
+#include "mozilla/Maybe.h"
+#include "nsStringFwd.h"
+
+struct JSContext;
 class nsIChannel;
 class nsIHttpChannel;
+class nsIPrincipal;
+class NS_ConvertUTF8toUTF16;
 
 namespace mozilla {
 namespace dom {
@@ -22,6 +29,14 @@ typedef std::pair<nsCString, mozilla::Maybe<nsString>> FilenameTypeAndDetails;
 
 class nsContentSecurityUtils {
  public:
+  // CSPs upgrade-insecure-requests directive applies to same origin top level
+  // navigations. Using the SOP would return false for the case when an https
+  // page triggers and http page to load, even though that http page would be
+  // upgraded to https later. Hence we have to use that custom function instead
+  // of simply calling aTriggeringPrincipal->Equals(aResultPrincipal).
+  static bool IsConsideredSameOriginForUIR(nsIPrincipal* aTriggeringPrincipal,
+                                           nsIPrincipal* aResultPrincipal);
+
   static FilenameTypeAndDetails FilenameToFilenameType(
       const nsString& fileName, bool collectAdditionalExtensionData);
   static bool IsEvalAllowed(JSContext* cx, bool aIsSystemPrincipal,
@@ -42,12 +57,18 @@ class nsContentSecurityUtils {
   // If any of the two disallows framing, the channel will be cancelled.
   static void PerformCSPFrameAncestorAndXFOCheck(nsIChannel* aChannel);
 
+  // Helper function to Check if a Download is allowed;
+  static long ClassifyDownload(nsIChannel* aChannel,
+                               const nsAutoCString& aMimeTypeGuess);
+
 #if defined(DEBUG)
   static void AssertAboutPageHasCSP(mozilla::dom::Document* aDocument);
 #endif
 
   static bool ValidateScriptFilename(const char* aFilename,
                                      bool aIsSystemRealm);
+  // Helper Function to Post a message to the corresponding JS-Console
+  static void LogMessageToConsole(nsIHttpChannel* aChannel, const char* aMsg);
 };
 
 #endif /* nsContentSecurityUtils_h___ */

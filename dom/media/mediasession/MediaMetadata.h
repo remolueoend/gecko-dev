@@ -11,13 +11,14 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/MediaSessionBinding.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 
 class nsIGlobalObject;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class MediaMetadataBase {
@@ -27,10 +28,12 @@ class MediaMetadataBase {
                     const nsString& aAlbum)
       : mTitle(aTitle), mArtist(aArtist), mAlbum(aAlbum) {}
 
+  static MediaMetadataBase EmptyData() { return MediaMetadataBase(); }
+
   nsString mTitle;
   nsString mArtist;
   nsString mAlbum;
-  nsTArray<MediaImage> mArtwork;
+  CopyableTArray<MediaImage> mArtwork;
 };
 
 class MediaMetadata final : public nsISupports,

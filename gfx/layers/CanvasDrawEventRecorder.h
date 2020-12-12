@@ -89,7 +89,12 @@ class CanvasEventRingBuffer final : public gfx::EventRingBuffer {
 
   bool good() const final { return mGood; }
 
-  void SetIsBad() final { mGood = false; }
+  bool WriterFailed() const { return mWrite->state == State::Failed; }
+
+  void SetIsBad() final {
+    mGood = false;
+    mRead->state = State::Failed;
+  }
 
   void write(const char* const aData, const size_t aSize) final;
 
@@ -178,7 +183,8 @@ class CanvasEventRingBuffer final : public gfx::EventRingBuffer {
      */
     AboutToWait,
     Waiting,
-    Stopped
+    Stopped,
+    Failed,
   };
 
   struct ReadFooter {
@@ -247,7 +253,7 @@ class CanvasDrawEventRecorder final : public gfx::DrawEventRecorderPrivate {
     aEvent.RecordToStream(mOutputStream);
   }
 
-  void RecordSourceSurfaceDestruction(gfx::SourceSurface* aSurface) final;
+  void RecordSourceSurfaceDestruction(void* aSurface) final;
 
   void Flush() final {}
 

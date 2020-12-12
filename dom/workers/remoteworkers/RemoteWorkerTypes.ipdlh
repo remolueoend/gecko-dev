@@ -8,10 +8,14 @@ include IPCServiceWorkerRegistrationDescriptor;
 include PBackgroundSharedTypes;
 include URIParams;
 include DOMTypes;
+include NeckoChannelParams;
 include ProtocolTypes;
 
-using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
-using mozilla::StorageAccess from "mozilla/dom/ClientIPCUtils.h";
+include "mozilla/dom/ClientIPCUtils.h";
+include "mozilla/dom/ReferrerInfoUtils.h";
+
+using struct mozilla::void_t from "mozilla/ipc/IPCCore.h";
+using mozilla::StorageAccess from "mozilla/StorageAccess.h";
 
 namespace mozilla {
 namespace dom {
@@ -49,7 +53,12 @@ struct RemoteWorkerData
 
   PrincipalInfo loadingPrincipalInfo;
   PrincipalInfo principalInfo;
-  PrincipalInfo storagePrincipalInfo;
+  PrincipalInfo partitionedPrincipalInfo;
+
+  bool useRegularPrincipal;
+  bool hasStorageAccessPermissionGranted;
+
+  CookieJarSettingsArgs cookieJarSettings;
 
   nsCString domain;
 
@@ -64,6 +73,9 @@ struct RemoteWorkerData
   OptionalServiceWorkerData serviceWorkerData;
 
   nsID agentClusterId;
+
+  // Child process remote type where the worker should only run on.
+  nsCString remoteType;
 };
 
 // ErrorData/ErrorDataNote correspond to WorkerErrorReport/WorkerErrorNote

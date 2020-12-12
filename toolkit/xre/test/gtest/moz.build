@@ -4,15 +4,28 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, you can obtain one at http://mozilla.org/MPL/2.0/.
 
-Library('xretest')
+Library("xretest")
 
 UNIFIED_SOURCES = [
-    'TestCompatVersionCompare.cpp',
+    "TestCompatVersionCompare.cpp",
 ]
 
-if CONFIG['OS_TARGET'] == 'WINNT':
+include("/ipc/chromium/chromium-config.mozbuild")
+
+LOCAL_INCLUDES += [
+    "/toolkit/components/remote",
+    "/toolkit/components/telemetry/other",
+    "/toolkit/components/telemetry/tests/gtest",
+]
+
+if CONFIG["OS_TARGET"] == "WINNT":
     UNIFIED_SOURCES += [
-        'TestAssembleCommandLineWin.cpp',
+        "TestAssembleCommandLineWin.cpp",
+        "TestUntrustedModules.cpp",
+    ]
+    TEST_DIRS += [
+        "TestUntrustedModules_Dll1",
+        "TestUntrustedModules_Dll2",
     ]
 
-FINAL_LIBRARY = 'xul-gtest'
+FINAL_LIBRARY = "xul-gtest"

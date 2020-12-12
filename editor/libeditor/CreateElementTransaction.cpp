@@ -83,7 +83,7 @@ NS_IMETHODIMP CreateElementTransaction::DoTransaction() {
     return NS_ERROR_FAILURE;
   }
 
-  // Try to insert formatting whitespace for the new node:
+  // Try to insert formatting white-space for the new node:
   OwningNonNull<Element> newElement = *mNewElement;
   nsresult rv = editorBase->MarkElementDirty(newElement);
   if (NS_WARN_IF(rv == NS_ERROR_EDITOR_DESTROYED)) {
@@ -119,9 +119,9 @@ NS_IMETHODIMP CreateElementTransaction::DoTransaction() {
     return NS_ERROR_FAILURE;
   }
   IgnoredErrorResult ignoredError;
-  selection->Collapse(afterNewNode, ignoredError);
+  selection->CollapseInLimiter(afterNewNode, ignoredError);
   NS_WARNING_ASSERTION(!ignoredError.Failed(),
-                       "Selection::Collapse() failed, but ignored");
+                       "Selection::CollapseInLimiter() failed, but ignored");
   return NS_OK;
 }
 
@@ -145,11 +145,20 @@ void CreateElementTransaction::InsertNewNode(ErrorResult& aError) {
     container->InsertBefore(newElement, child, aError);
     NS_WARNING_ASSERTION(!aError.Failed(),
                          "nsINode::InsertBefore() failed, but ignored");
+    // InsertBefore() may call MightThrowJSException() even if there is no
+    // error. We don't need the flag here.
+    aError.WouldReportJSException();
     return;
   }
 
-  if (NS_WARN_IF(mPointToInsert.GetContainer() !=
-                 mPointToInsert.GetChild()->GetParentNode())) {
+  // We still know a child, but the child is different element's child,
+  // we should just return error.
+  if (NS_WARN_IF(mPointToInsert.GetChild() &&
+                 mPointToInsert.GetContainer() !=
+                     mPointToInsert.GetChild()->GetParentNode())) {
+    // XXX Is NS_ERROR_EDITOR_UNEXPECTED_DOM_TREE better? Since it won't
+    //     cause throwing exception even if editor user throws an error
+    //     returned from editor's public method.
     aError.Throw(NS_ERROR_FAILURE);
     return;
   }

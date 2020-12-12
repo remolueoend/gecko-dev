@@ -218,7 +218,7 @@ async function promiseNewEngine(basename) {
   let url = getRootDirectory(gTestPath) + basename;
   let engine;
   try {
-    engine = await Services.search.addEngine(url, "", false);
+    engine = await Services.search.addOpenSearchEngine(url, "");
   } catch (errCode) {
     ok(false, "addEngine failed with error code " + errCode);
     throw errCode;
@@ -234,4 +234,45 @@ async function promiseNewEngine(basename) {
   });
 
   return engine;
+}
+
+async function waitForBookmarksToolbarVisibility({
+  win = window,
+  visible,
+  message,
+}) {
+  let result = await TestUtils.waitForCondition(() => {
+    let toolbar = win.document.getElementById("PersonalToolbar");
+    return toolbar && (visible ? !toolbar.collapsed : toolbar.collapsed);
+  }, message || "waiting for toolbar to become " + (visible ? "visible" : "hidden"));
+  ok(result, message);
+  return result;
+}
+
+function isBookmarksToolbarVisible(win = window) {
+  let toolbar = win.document.getElementById("PersonalToolbar");
+  return !toolbar.collapsed;
+}
+
+async function waitForBookmarksToolbarVisibilityWithExitConditions({
+  win = window,
+  exitConditions,
+  message,
+}) {
+  let result = await TestUtils.waitForCondition(() => {
+    if (exitConditions.earlyExit) {
+      return exitConditions.earlyExit;
+    }
+    let toolbar = win.document.getElementById("PersonalToolbar");
+    return (
+      toolbar &&
+      (exitConditions.visible ? !toolbar.collapsed : toolbar.collapsed)
+    );
+  }, message || "waiting for toolbar to become " + (exitConditions.visible ? "visible" : "hidden"));
+  if (exitConditions.earlyExit) {
+    ok(true, "Early exit condition met");
+  } else {
+    ok(false, message);
+  }
+  return exitConditions.earlyExit || result;
 }

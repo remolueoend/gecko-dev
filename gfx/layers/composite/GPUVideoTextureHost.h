@@ -40,9 +40,12 @@ class GPUVideoTextureHost : public TextureHost {
   }
 
   gfx::YUVColorSpace GetYUVColorSpace() const override;
+  gfx::ColorDepth GetColorDepth() const override;
   gfx::ColorRange GetColorRange() const override;
 
   gfx::IntSize GetSize() const override;
+
+  bool IsValid() override;
 
 #ifdef MOZ_LAYERS_HAVE_LOG
   const char* Name() override { return "GPUVideoTextureHost"; }
@@ -52,6 +55,8 @@ class GPUVideoTextureHost : public TextureHost {
 
   void CreateRenderTexture(
       const wr::ExternalImageId& aExternalImageId) override;
+
+  void MaybeDestroyRenderTexture() override;
 
   uint32_t NumSubTextures() override;
 
@@ -64,7 +69,10 @@ class GPUVideoTextureHost : public TextureHost {
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
                         const Range<wr::ImageKey>& aImageKeys,
-                        const bool aPreferCompositorSurface) override;
+                        PushDisplayItemFlagSet aFlags) override;
+
+  void UnbindTextureSource() override;
+  void NotifyNotUsed() override;
 
  protected:
   GPUVideoTextureHost(TextureFlags aFlags,
@@ -75,8 +83,11 @@ class GPUVideoTextureHost : public TextureHost {
   void UpdatedInternal(const nsIntRegion* Region) override;
 
   RefPtr<TextureHost> mWrappedTextureHost;
+  RefPtr<TextureSourceProvider> mPendingSourceProvider;
+  bool mPendingUpdatedInternal = false;
+  Maybe<nsIntRegion> mPendingIntRegion;
+  Maybe<CompositableTextureSourceRef> mPendingPrepareTextureSource;
   SurfaceDescriptorGPUVideo mDescriptor;
-  wr::MaybeExternalImageId mExternalImageId;
 };
 
 }  // namespace layers

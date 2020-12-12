@@ -8,6 +8,8 @@
 #include "js/Array.h"        // JS::NewArrayObject
 #include "js/ArrayBuffer.h"  // JS::{GetArrayBuffer{ByteLength,Data},IsArrayBufferObject,NewArrayBuffer{,WithContents},StealArrayBufferContents}
 #include "js/Exception.h"
+#include "js/experimental/TypedData.h"  // JS_New{Int32,Uint8}ArrayWithBuffer
+#include "js/friend/ErrorMessages.h"    // JSMSG_*
 #include "js/MemoryFunctions.h"
 #include "jsapi-tests/tests.h"
 
@@ -265,7 +267,7 @@ BEGIN_TEST(testArrayBuffer_serializeExternal) {
                                JS::NewArrayObject(cx, JS::HandleValueArray(v)));
   CHECK(transferMap);
 
-  JS::AutoValueArray<2> args(cx);
+  JS::RootedValueArray<2> args(cx);
   args[0].setObject(*externalBuffer);
   args[1].setObject(*transferMap);
 
@@ -277,8 +279,8 @@ BEGIN_TEST(testArrayBuffer_serializeExternal) {
   JS::ExceptionStack exnStack(cx);
   CHECK(JS::StealPendingExceptionStack(cx, &exnStack));
 
-  js::ErrorReport report(cx);
-  CHECK(report.init(cx, exnStack, js::ErrorReport::NoSideEffects));
+  JS::ErrorReportBuilder report(cx);
+  CHECK(report.init(cx, exnStack, JS::ErrorReportBuilder::NoSideEffects));
 
   CHECK_EQUAL(report.report()->errorNumber,
               static_cast<unsigned int>(JSMSG_SC_NOT_TRANSFERABLE));

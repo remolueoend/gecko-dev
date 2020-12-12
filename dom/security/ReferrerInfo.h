@@ -9,7 +9,6 @@
 
 #include "nsCOMPtr.h"
 #include "nsIReferrerInfo.h"
-#include "nsIHttpChannel.h"
 #include "nsReadableUtils.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/HashFunctions.h"
@@ -24,6 +23,7 @@
     }                                                \
   }
 
+class nsIHttpChannel;
 class nsIURI;
 class nsIChannel;
 class nsILoadInfo;
@@ -70,19 +70,23 @@ class ReferrerInfo : public nsIReferrerInfo {
       bool aSendReferrer = true,
       const Maybe<nsCString>& aComputedReferrer = Maybe<nsCString>());
 
+  // Creates already initialized ReferrerInfo from an element or a document.
+  explicit ReferrerInfo(const Element&);
+  explicit ReferrerInfo(const Document&);
+
   // create an exact copy of the ReferrerInfo
-  already_AddRefed<nsIReferrerInfo> Clone() const;
+  already_AddRefed<ReferrerInfo> Clone() const;
 
   // create an copy of the ReferrerInfo with new referrer policy
-  already_AddRefed<nsIReferrerInfo> CloneWithNewPolicy(
+  already_AddRefed<ReferrerInfo> CloneWithNewPolicy(
       ReferrerPolicyEnum aPolicy) const;
 
   // create an copy of the ReferrerInfo with new send referrer
-  already_AddRefed<nsIReferrerInfo> CloneWithNewSendReferrer(
+  already_AddRefed<ReferrerInfo> CloneWithNewSendReferrer(
       bool aSendReferrer) const;
 
   // create an copy of the ReferrerInfo with new original referrer
-  already_AddRefed<nsIReferrerInfo> CloneWithNewOriginalReferrer(
+  already_AddRefed<ReferrerInfo> CloneWithNewOriginalReferrer(
       nsIURI* aOriginalReferrer) const;
 
   /*
@@ -150,7 +154,7 @@ class ReferrerInfo : public nsIReferrerInfo {
 
   /**
    * Check whether the given referrer's scheme is allowed to be computed and
-   * sent. The whitelist schemes are: http, https, ftp.
+   * sent. The allowlist schemes are: http, https, ftp.
    */
   static bool IsReferrerSchemeAllowed(nsIURI* aReferrer);
 
@@ -215,7 +219,16 @@ class ReferrerInfo : public nsIReferrerInfo {
    */
   static ReferrerPolicyEnum GetDefaultReferrerPolicy(
       nsIHttpChannel* aChannel = nullptr, nsIURI* aURI = nullptr,
-      bool privateBrowsing = false);
+      bool aPrivateBrowsing = false);
+
+  /**
+   * Return default referrer policy for third party which is controlled by user
+   * prefs:
+   * network.http.referer.defaultPolicy.trackers for regular mode
+   * network.http.referer.defaultPolicy.trackers.pbmode for private mode
+   */
+  static ReferrerPolicyEnum GetDefaultThirdPartyReferrerPolicy(
+      bool aPrivateBrowsing = false);
 
   /*
    * Helper function to parse ReferrerPolicy from meta tag referrer content.
@@ -272,16 +285,6 @@ class ReferrerInfo : public nsIReferrerInfo {
   ReferrerInfo(const ReferrerInfo& rhs);
 
   /*
-   * Default referrer policy to use
-   */
-  enum DefaultReferrerPolicy : uint32_t {
-    eDefaultPolicyNoReferrer = 0,
-    eDefaultPolicySameOrgin = 1,
-    eDefaultPolicyStrictWhenXorigin = 2,
-    eDefaultPolicyNoReferrerWhenDownGrade = 3,
-  };
-
-  /*
    * Trimming policy when compute referrer, indicate how much information in the
    * referrer will be sent. Order matters here.
    */
@@ -312,20 +315,6 @@ class ReferrerInfo : public nsIReferrerInfo {
     ePolicySendWhenSameDomain = 1,
     ePolicySendWhenSameHost = 2,
   };
-
-  /**
-   * Check whether the given node has referrerpolicy attribute and parse
-   * referrer policy from the attribute.
-   * Currently, referrerpolicy attribute is supported in a, area, img, iframe,
-   * script, or link element.
-   */
-  void GetReferrerPolicyFromAtribute(nsINode* aNode,
-                                     ReferrerPolicyEnum& aPolicy) const;
-
-  /**
-   * Return true if node has a rel="noreferrer" attribute.
-   */
-  bool HasRelNoReferrer(nsINode* aNode) const;
 
   /*
    * Handle user controlled pref network.http.referer.XOriginPolicy

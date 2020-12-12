@@ -42,7 +42,6 @@
 
 var EXPORTED_SYMBOLS = ["ExtensionSettingsStore"];
 
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 ChromeUtils.defineModuleGetter(
@@ -69,7 +68,7 @@ const SETTING_PRECEDENCE_ORDER = undefined;
 
 const JSON_FILE_NAME = "extension-settings.json";
 const JSON_FILE_VERSION = 2;
-const STORE_PATH = OS.Path.join(
+const STORE_PATH = PathUtils.join(
   Services.dirsvc.get("ProfD", Ci.nsIFile).path,
   JSON_FILE_NAME
 );
@@ -181,6 +180,36 @@ function getItem(type, key, id) {
   // Nothing found in the precedenceList or the setting is user-set,
   // return the initialValue.
   return { key, initialValue: keyInfo.initialValue };
+}
+
+/**
+ * Return an array of objects with properties for key, value, id, and enabled
+ * or an empty array if no settings have been stored for that key.
+ *
+ * @param {string} type
+ *        The type of setting to be retrieved.
+ * @param {string} key
+ *        A string that uniquely identifies the setting.
+ *
+ * @returns {array} an array of objects with properties for key, value, id, and enabled
+ */
+function getAllItems(type, key) {
+  ensureType(type);
+
+  let keyInfo = _store.data[type][key];
+  if (!keyInfo) {
+    return [];
+  }
+
+  let items = keyInfo.precedenceList;
+  return items
+    ? items.map(item => ({
+        key,
+        value: item.value,
+        id: item.id,
+        enabled: item.enabled,
+      }))
+    : [];
 }
 
 // Comparator used when sorting the precedence list.
@@ -537,6 +566,21 @@ var ExtensionSettingsStore = {
   },
 
   /**
+   * Retrieves an array of objects representing extensions attempting to control the specified setting
+   * or an empty array if no settings have been stored for that key.
+   *
+   * @param {string} type
+   *        The type of setting to be retrieved.
+   * @param {string} key
+   *        A string that uniquely identifies the setting.
+   *
+   * @returns {array} an array of objects with properties for key, value, id, and enabled
+   */
+  getAllSettings(type, key) {
+    return getAllItems(type, key);
+  },
+
+  /**
    * Returns whether an extension currently has a stored setting for a given
    * key.
    *
@@ -588,7 +632,7 @@ var ExtensionSettingsStore = {
       // When user set, the setting is never "controllable" unless the installDate
       // is later than the user date.
       let addon = await AddonManager.getAddonByID(id);
-      return keyInfo.selectedDate > addon.installDate.valueOf()
+      return !addon || keyInfo.selectedDate > addon.installDate.valueOf()
         ? "not_controllable"
         : "controllable_by_this_extension";
     }
@@ -604,7 +648,7 @@ var ExtensionSettingsStore = {
     }
 
     let addon = await AddonManager.getAddonByID(id);
-    return topItem.installDate > addon.installDate.valueOf()
+    return !addon || topItem.installDate > addon.installDate.valueOf()
       ? "controlled_by_other_extensions"
       : "controllable_by_this_extension";
   },

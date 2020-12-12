@@ -17,6 +17,7 @@ namespace dom {
 
 class PaymentAddress;
 class PaymentRequest;
+struct PaymentValidationErrors;
 class Promise;
 
 class GeneralData final {
@@ -30,7 +31,7 @@ class BasicCardData final {
  public:
   struct Address {
     nsString country;
-    nsTArray<nsString> addressLine;
+    CopyableTArray<nsString> addressLine;
     nsString region;
     nsString regionCode;
     nsString city;

@@ -26,17 +26,19 @@ import {
   type MemoizedAction,
 } from "../../utils/memoizableAction";
 
-import { Telemetry } from "devtools-modules";
+// $FlowIgnore
+const Telemetry = require("devtools/client/shared/telemetry");
 
 import type { ThunkArgs } from "../types";
 import type { Source, Context, SourceId } from "../../types";
+import type { State } from "../../reducers/types";
 
 // Measures the time it takes for a source to load
 const loadSourceHistogram = "DEVTOOLS_DEBUGGER_LOAD_SOURCE_MS";
 const telemetry = new Telemetry();
 
 async function loadSource(
-  state,
+  state: State,
   source: Source,
   { sourceMaps, client, getState }
 ): Promise<?{

@@ -1722,6 +1722,16 @@ bool gfxFontUtils::GetColorGlyphLayers(
   return true;
 }
 
+bool gfxFontUtils::HasColorLayersForGlyph(hb_blob_t* aCOLR, uint32_t aGlyphId) {
+  unsigned int blobLength;
+  const COLRHeader* colr =
+      reinterpret_cast<const COLRHeader*>(hb_blob_get_data(aCOLR, &blobLength));
+  MOZ_ASSERT(colr, "Cannot get COLR raw data");
+  MOZ_ASSERT(blobLength, "Found COLR data, but length is 0");
+
+  return LookForBaseGlyphRecord(colr, aGlyphId);
+}
+
 void gfxFontUtils::GetVariationData(
     gfxFontEntry* aFontEntry, nsTArray<gfxFontVariationAxis>* aAxes,
     nsTArray<gfxFontVariationInstance>* aInstances) {
@@ -1853,7 +1863,7 @@ void gfxFontUtils::GetVariationData(
                                        int32_t(coords[j]) / 65536.0f};
         instance.mValues.AppendElement(value);
       }
-      aInstances->AppendElement(instance);
+      aInstances->AppendElement(std::move(instance));
     }
   }
   if (aAxes) {

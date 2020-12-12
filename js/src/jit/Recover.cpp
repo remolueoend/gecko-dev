@@ -11,7 +11,7 @@
 
 #include "builtin/RegExp.h"
 #include "builtin/String.h"
-#include "builtin/TypedObject.h"
+#include "jit/CompileInfo.h"
 #include "jit/Ion.h"
 #include "jit/JitSpewer.h"
 #include "jit/JSJitFrameIter.h"
@@ -892,22 +892,23 @@ bool RSign::recover(JSContext* cx, SnapshotIterator& iter) const {
 bool MMathFunction::writeRecoverData(CompactBufferWriter& writer) const {
   MOZ_ASSERT(canRecoverOnBailout());
   switch (function_) {
-    case Ceil:
+    case UnaryMathFunction::Ceil:
       writer.writeUnsigned(uint32_t(RInstruction::Recover_Ceil));
       return true;
-    case Floor:
+    case UnaryMathFunction::Floor:
       writer.writeUnsigned(uint32_t(RInstruction::Recover_Floor));
       return true;
-    case Round:
+    case UnaryMathFunction::Round:
       writer.writeUnsigned(uint32_t(RInstruction::Recover_Round));
       return true;
-    case Trunc:
+    case UnaryMathFunction::Trunc:
       writer.writeUnsigned(uint32_t(RInstruction::Recover_Trunc));
       return true;
-    case Sin:
-    case Log:
+    case UnaryMathFunction::Sin:
+    case UnaryMathFunction::Log:
+      static_assert(sizeof(UnaryMathFunction) == sizeof(uint8_t));
       writer.writeUnsigned(uint32_t(RInstruction::Recover_MathFunction));
-      writer.writeByte(function_);
+      writer.writeByte(uint8_t(function_));
       return true;
     default:
       MOZ_CRASH("Unknown math function.");
@@ -915,12 +916,12 @@ bool MMathFunction::writeRecoverData(CompactBufferWriter& writer) const {
 }
 
 RMathFunction::RMathFunction(CompactBufferReader& reader) {
-  function_ = reader.readByte();
+  function_ = UnaryMathFunction(reader.readByte());
 }
 
 bool RMathFunction::recover(JSContext* cx, SnapshotIterator& iter) const {
   switch (function_) {
-    case MMathFunction::Sin: {
+    case UnaryMathFunction::Sin: {
       RootedValue arg(cx, iter.read());
       RootedValue result(cx);
 
@@ -931,7 +932,7 @@ bool RMathFunction::recover(JSContext* cx, SnapshotIterator& iter) const {
       iter.storeInstructionResult(result);
       return true;
     }
-    case MMathFunction::Log: {
+    case UnaryMathFunction::Log: {
       RootedValue arg(cx, iter.read());
       RootedValue result(cx);
 
@@ -1214,7 +1215,8 @@ bool RNewTypedArray::recover(JSContext* cx, SnapshotIterator& iter) const {
   RootedObject templateObject(cx, &iter.read().toObject());
   RootedValue result(cx);
 
-  uint32_t length = templateObject.as<TypedArrayObject>()->length();
+  uint32_t length =
+      templateObject.as<TypedArrayObject>()->length().deprecatedGetUint32();
   JSObject* resultObject =
       NewTypedArrayWithTemplateAndLength(cx, templateObject, length);
   if (!resultObject) {
@@ -1230,13 +1232,11 @@ bool MNewArray::writeRecoverData(CompactBufferWriter& writer) const {
   MOZ_ASSERT(canRecoverOnBailout());
   writer.writeUnsigned(uint32_t(RInstruction::Recover_NewArray));
   writer.writeUnsigned(length());
-  writer.writeByte(uint8_t(convertDoubleElements()));
   return true;
 }
 
 RNewArray::RNewArray(CompactBufferReader& reader) {
   count_ = reader.readUnsigned();
-  convertDoubleElements_ = reader.readByte();
 }
 
 bool RNewArray::recover(JSContext* cx, SnapshotIterator& iter) const {
@@ -1244,32 +1244,7 @@ bool RNewArray::recover(JSContext* cx, SnapshotIterator& iter) const {
   RootedValue result(cx);
   RootedObjectGroup group(cx, templateObject->group());
 
-  ArrayObject* resultObject =
-      NewArrayWithGroup(cx, count_, group, convertDoubleElements_);
-  if (!resultObject) {
-    return false;
-  }
-
-  result.setObject(*resultObject);
-  iter.storeInstructionResult(result);
-  return true;
-}
-
-bool MNewArrayCopyOnWrite::writeRecoverData(CompactBufferWriter& writer) const {
-  MOZ_ASSERT(canRecoverOnBailout());
-  writer.writeUnsigned(uint32_t(RInstruction::Recover_NewArrayCopyOnWrite));
-  return true;
-}
-
-RNewArrayCopyOnWrite::RNewArrayCopyOnWrite(CompactBufferReader& reader) {}
-
-bool RNewArrayCopyOnWrite::recover(JSContext* cx,
-                                   SnapshotIterator& iter) const {
-  RootedArrayObject templateObject(cx,
-                                   &iter.read().toObject().as<ArrayObject>());
-  RootedValue result(cx);
-
-  ArrayObject* resultObject = NewDenseCopyOnWriteArray(cx, templateObject);
+  ArrayObject* resultObject = NewArrayWithGroup(cx, count_, group);
   if (!resultObject) {
     return false;
   }
@@ -1480,35 +1455,19 @@ bool RArrayState::recover(JSContext* cx, SnapshotIterator& iter) const {
   ArrayObject* object = &iter.read().toObject().as<ArrayObject>();
   uint32_t initLength = iter.read().toInt32();
 
-  if (!object->denseElementsAreCopyOnWrite()) {
-    MOZ_ASSERT(object->getDenseInitializedLength() == 0,
-               "initDenseElement call below relies on this");
-    object->setDenseInitializedLength(initLength);
+  MOZ_ASSERT(object->getDenseInitializedLength() == 0,
+             "initDenseElement call below relies on this");
+  object->setDenseInitializedLength(initLength);
 
-    for (size_t index = 0; index < numElements(); index++) {
-      Value val = iter.read();
+  for (size_t index = 0; index < numElements(); index++) {
+    Value val = iter.read();
 
-      if (index >= initLength) {
-        MOZ_ASSERT(val.isUndefined());
-        continue;
-      }
-
-      object->initDenseElement(index, val);
+    if (index >= initLength) {
+      MOZ_ASSERT(val.isUndefined());
+      continue;
     }
-  } else {
-    MOZ_RELEASE_ASSERT(object->getDenseInitializedLength() == numElements());
-    MOZ_RELEASE_ASSERT(initLength == numElements());
 
-    for (size_t index = 0; index < numElements(); index++) {
-      Value val = iter.read();
-      if (object->getDenseElement(index) == val) {
-        continue;
-      }
-      if (!object->maybeCopyElementsForWrite(cx)) {
-        return false;
-      }
-      object->setDenseElement(index, val);
-    }
+    object->initDenseElement(index, val);
   }
 
   result.setObject(*object);

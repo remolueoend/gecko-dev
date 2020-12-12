@@ -8,6 +8,7 @@
 #define nsWrapperCacheInline_h___
 
 #include "nsWrapperCache.h"
+#include "js/RootingAPI.h"
 #include "js/TracingAPI.h"
 
 inline JSObject* nsWrapperCache::GetWrapperPreserveColor() const {
@@ -66,6 +67,32 @@ inline void nsWrapperCache::MarkWrapperLive() {
   // Just call GetWrapper and ignore the return value.  It will do the
   // gray-unmarking for us.
   GetWrapper();
+}
+
+template <typename T>
+inline void nsWrapperCache::UpdateWrapperForNewGlobal(T* aScriptObjectHolder,
+                                                      JSObject* aNewWrapper) {
+  // If the new wrapper is in a different zone we must ensure the
+  // DropJSObjects/HoldJSObjects are called to move the holder to the new zone.
+
+  bool preserving = PreservingWrapper();
+  bool zoneChanged =
+      preserving && (JS::GetObjectZone(GetWrapperPreserveColor()) !=
+                     JS::GetObjectZone(aNewWrapper));
+
+  if (zoneChanged) {
+    ReleaseWrapper(aScriptObjectHolder);
+  } else if (preserving) {
+    SetPreservingWrapper(false);
+  }
+
+  SetWrapper(aNewWrapper);
+
+  if (zoneChanged) {
+    PreserveWrapper(aScriptObjectHolder);
+  } else if (preserving) {
+    SetPreservingWrapper(true);
+  }
 }
 
 #endif /* nsWrapperCache_h___ */

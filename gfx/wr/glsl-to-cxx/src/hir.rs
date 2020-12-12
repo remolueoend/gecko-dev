@@ -45,6 +45,7 @@ pub enum SamplerFormat {
     RGBA32F,
     RGBA32I,
     R8,
+    RG8,
 }
 
 impl SamplerFormat {
@@ -55,6 +56,7 @@ impl SamplerFormat {
             SamplerFormat::RGBA32F => Some("RGBA32F"),
             SamplerFormat::RGBA32I => Some("RGBA32I"),
             SamplerFormat::R8 => Some("R8"),
+            SamplerFormat::RG8 => Some("RG8"),
         }
     }
 }
@@ -86,7 +88,7 @@ impl LiftFrom<&ArraySpecifier> for ArraySizes {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TypeKind {
     Void,
     Bool,
@@ -285,6 +287,48 @@ impl TypeKind {
             | USamplerCubeArray
             | UImageCubeArray => true,
             _ => false,
+        }
+    }
+
+    pub fn is_bool(&self) -> bool {
+        use TypeKind::*;
+        match self {
+            Bool | BVec2 | BVec3 | BVec4 => true,
+            _ => false,
+        }
+    }
+
+    pub fn to_bool(&self) -> Self {
+        use TypeKind::*;
+        match self {
+            Int | UInt | Float | Double => Bool,
+            IVec2 | UVec2 | Vec2 | DVec2 => BVec2,
+            IVec3 | UVec3 | Vec3 | DVec3 => BVec3,
+            IVec4 | UVec4 | Vec4 | DVec4 => BVec4,
+            _ => *self,
+        }
+    }
+
+    pub fn to_int(&self) -> Self {
+        use TypeKind::*;
+        match self {
+            Bool | UInt | Float | Double => Int,
+            BVec2 | UVec2 | Vec2 | DVec2 => IVec2,
+            BVec3 | UVec3 | Vec3 | DVec3 => IVec3,
+            BVec4 | UVec4 | Vec4 | DVec4 => IVec4,
+            _ => *self,
+        }
+    }
+
+    pub fn to_scalar(&self) -> Self {
+        use TypeKind::*;
+        match self {
+            IVec2 | IVec3 | IVec4 => Int,
+            UVec2 | UVec3 | UVec4 => UInt,
+            Vec2 | Vec3 | Vec4 => Float,
+            DVec2 | DVec3 | DVec4 => Double,
+            BVec2 | BVec3 | BVec4 => Bool,
+            _ => *self,
         }
     }
 
@@ -818,7 +862,7 @@ impl RunClass {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SymDecl {
-    NativeFunction(FunctionType, Option<&'static str>),
+    NativeFunction(FunctionType, Option<&'static str>, RunClass),
     UserFunction(Rc<FunctionDefinition>, RunClass),
     Local(StorageClass, Type, RunClass),
     Global(
@@ -883,7 +927,6 @@ pub struct State {
     branch_run_class: RunClass,
     branch_declaration: SymRef,
     modified_globals: RefCell<Vec<SymRef>>,
-    pub used_fragcoord: i32,
     pub used_globals: RefCell<Vec<SymRef>>,
     pub texel_fetches: HashMap<(SymRef, SymRef), TexelFetchOffsets>,
 }
@@ -899,7 +942,6 @@ impl State {
             branch_run_class: RunClass::Unknown,
             branch_declaration: SymRef(0),
             modified_globals: RefCell::new(Vec::new()),
-            used_fragcoord: 0,
             used_globals: RefCell::new(Vec::new()),
             texel_fetches: HashMap::new(),
         }
@@ -1709,6 +1751,9 @@ fn translate_variable_declaration(
                                         "r8" => {
                                             storage = StorageClass::Sampler(SamplerFormat::R8);
                                         }
+                                        "rg8" => {
+                                            storage = StorageClass::Sampler(SamplerFormat::RG8);
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1948,7 +1993,7 @@ pub fn is_output(expr: &Expr, state: &State) -> Option<SymRef> {
     match &expr.kind {
         ExprKind::Variable(i) => match state.sym(*i).decl {
             SymDecl::Global(storage, ..) => match storage {
-                StorageClass::Out => return Some(*i),
+                StorageClass::In | StorageClass::Out => return Some(*i),
                 _ => {}
             },
             SymDecl::Local(..) => {}
@@ -1992,6 +2037,64 @@ pub fn get_texel_fetch_offset(
         //}
     }
     None
+}
+
+fn make_const(t: TypeKind, v: i32) -> Expr {
+    Expr {
+        kind: match t {
+            TypeKind::Int => ExprKind::IntConst(v as _),
+            TypeKind::UInt => ExprKind::UIntConst(v as _),
+            TypeKind::Bool => ExprKind::BoolConst(v != 0),
+            TypeKind::Float => ExprKind::FloatConst(v as _),
+            TypeKind::Double => ExprKind::DoubleConst(v as _),
+            _ => panic!("bad constant type"),
+        },
+        ty: Type::new(t),
+    }
+}
+
+// Any parameters needing to convert to bool should just compare via != 0.
+// This ensures they get the proper all-1s pattern for C++ OpenCL vectors.
+fn force_params_to_bool(_state: &mut State, params: &mut Vec<Expr>) {
+    for e in params {
+        if !e.ty.kind.is_bool() {
+            let k = e.ty.kind;
+            *e = Expr {
+                kind: ExprKind::Binary(
+                    BinaryOp::NonEqual,
+                    Box::new(e.clone()),
+                    Box::new(make_const(k.to_scalar(), 0)),
+                ),
+                ty: Type::new(k.to_bool()),
+            };
+        }
+    }
+}
+
+// Transform bool params to int, then mask off the low bit so they become 0 or 1.
+// C++ OpenCL vectors represent bool as all-1s patterns, which will erroneously
+// convert to -1 otherwise.
+fn force_params_from_bool(state: &mut State, params: &mut Vec<Expr>) {
+    for e in params {
+        if e.ty.kind.is_bool() {
+            let k = e.ty.kind.to_int();
+            let sym = state.lookup(k.glsl_primitive_type_name().unwrap()).unwrap();
+            *e = Expr {
+                kind: ExprKind::Binary(
+                    BinaryOp::BitAnd,
+                    Box::new(Expr {
+                        kind: ExprKind::FunCall(
+                            FunIdentifier::Identifier(sym),
+                            vec![e.clone()],
+                        ),
+                        ty: Type::new(k),
+                    }),
+                    Box::new(make_const(TypeKind::Int, 1)),
+                ),
+                ty: Type::new(k),
+            };
+        }
+    }
 }
 
 fn translate_expression(state: &mut State, e: &syntax::Expr) -> Expr {
@@ -2043,28 +2146,23 @@ fn translate_expression(state: &mut State, e: &syntax::Expr) -> Expr {
         syntax::Expr::Binary(op, lhs, rhs) => {
             let lhs = Box::new(translate_expression(state, lhs));
             let rhs = Box::new(translate_expression(state, rhs));
-            let ty = if op == &BinaryOp::Mult {
-                if lhs.ty.kind == TypeKind::Mat3 && rhs.ty.kind == TypeKind::Vec3 {
-                    rhs.ty.clone()
-                } else if lhs.ty.kind == TypeKind::Mat4 && rhs.ty.kind == TypeKind::Vec4 {
-                    rhs.ty.clone()
-                } else if lhs.ty.kind == TypeKind::Mat2 && rhs.ty.kind == TypeKind::Vec2 {
-                    rhs.ty.clone()
-                } else if lhs.ty.kind == TypeKind::Mat2 && rhs.ty.kind == TypeKind::Float {
-                    lhs.ty.clone()
-                } else {
-                    promoted_type(&lhs.ty, &rhs.ty)
-                }
-            } else {
-                promoted_type(&lhs.ty, &rhs.ty)
-            };
-
-            // comparison operators have a bool result
             let ty = match op {
-                BinaryOp::Equal | BinaryOp::GT | BinaryOp::GTE | BinaryOp::LT | BinaryOp::LTE => {
+                BinaryOp::Equal | BinaryOp::NonEqual | BinaryOp::GT | BinaryOp::GTE | BinaryOp::LT | BinaryOp::LTE => {
+                    // comparison operators have a bool result
                     Type::new(TypeKind::Bool)
                 }
-                _ => ty,
+                BinaryOp::Mult => {
+                    match (lhs.ty.kind, rhs.ty.kind) {
+                        (TypeKind::Mat2, TypeKind::Vec2) |
+                        (TypeKind::Mat3, TypeKind::Vec3) |
+                        (TypeKind::Mat4, TypeKind::Vec4) => rhs.ty.clone(),
+                        (TypeKind::Mat2, TypeKind::Float) |
+                        (TypeKind::Mat3, TypeKind::Float) |
+                        (TypeKind::Mat4, TypeKind::Float) => lhs.ty.clone(),
+                        _ => promoted_type(&lhs.ty, &rhs.ty),
+                    }
+                }
+                _ => promoted_type(&lhs.ty, &rhs.ty),
             };
 
             Expr {
@@ -2104,7 +2202,7 @@ fn translate_expression(state: &mut State, e: &syntax::Expr) -> Expr {
         },
         syntax::Expr::FunCall(fun, params) => {
             let ret_ty: Type;
-            let params: Vec<Expr> = params
+            let mut params: Vec<Expr> = params
                 .iter()
                 .map(|x| translate_expression(state, x))
                 .collect();
@@ -2132,8 +2230,17 @@ fn translate_expression(state: &mut State, e: &syntax::Expr) -> Expr {
                                 Some(s) => s,
                                 None => panic!("missing symbol {}", name),
                             };
+                            // Force any boolean basic type constructors to generate correct
+                            // bit patterns.
+                            if let Some(t) = TypeKind::from_glsl_primitive_type_name(name) {
+                                if t.is_bool() {
+                                    force_params_to_bool(state, &mut params);
+                                } else {
+                                    force_params_from_bool(state, &mut params);
+                                }
+                            }
                             match &state.sym(sym).decl {
-                                SymDecl::NativeFunction(fn_ty, _) => {
+                                SymDecl::NativeFunction(fn_ty, _, _) => {
                                     let mut ret = None;
                                     for sig in &fn_ty.signatures {
                                         let mut matching = true;
@@ -2259,7 +2366,7 @@ fn translate_expression(state: &mut State, e: &syntax::Expr) -> Expr {
             }
         }
         syntax::Expr::Dot(e, i) => {
-            let mut e = Box::new(translate_expression(state, e));
+            let e = Box::new(translate_expression(state, e));
             let ty = e.ty.clone();
             let ivec = is_ivec(&ty);
             if is_vector(&ty) {
@@ -2296,14 +2403,6 @@ fn translate_expression(state: &mut State, e: &syntax::Expr) -> Expr {
                 });
 
                 let sel = SwizzleSelector::parse(i.as_str());
-
-                if let ExprKind::Variable(ref sym) = &mut e.kind {
-                    if state.sym(*sym).name == "gl_FragCoord" {
-                        for c in &sel.components {
-                            state.used_fragcoord |= 1 << c;
-                        }
-                    }
-                }
 
                 Expr {
                     kind: ExprKind::SwizzleSelector(e, sel),
@@ -2665,12 +2764,13 @@ fn translate_external_declaration(
     }
 }
 
-fn declare_function(
+fn declare_function_ext(
     state: &mut State,
     name: &str,
     cxx_name: Option<&'static str>,
     ret: Type,
     params: Vec<Type>,
+    run_class: RunClass,
 ) {
     let sig = FunctionSignature { ret, params };
     match state.lookup_sym_mut(name) {
@@ -2686,12 +2786,23 @@ fn declare_function(
                         signatures: NonEmpty::new(sig),
                     },
                     cxx_name,
+                    run_class,
                 ),
             );
         }
         _ => panic!("overloaded function name {}", name),
     }
     //state.declare(name, Type::Function(FunctionType{ v}))
+}
+
+fn declare_function(
+    state: &mut State,
+    name: &str,
+    cxx_name: Option<&'static str>,
+    ret: Type,
+    params: Vec<Type>,
+) {
+    declare_function_ext(state, name, cxx_name, ret, params, RunClass::Unknown)
 }
 
 pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> TranslationUnit {
@@ -2704,6 +2815,13 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
         Some("make_vec2"),
         Type::new(Vec2),
         vec![Type::new(Float)],
+    );
+    declare_function(
+        state,
+        "vec2",
+        Some("make_vec2"),
+        Type::new(Vec2),
+        vec![Type::new(Float), Type::new(Float)],
     );
     declare_function(
         state,
@@ -2739,6 +2857,13 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
         Some("make_vec3"),
         Type::new(Vec3),
         vec![Type::new(Vec2), Type::new(Float)],
+    );
+    declare_function(
+        state,
+        "vec4",
+        Some("make_vec4"),
+        Type::new(Vec4),
+        vec![Type::new(Float)],
     );
     declare_function(
         state,
@@ -2793,7 +2918,14 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
         "bvec2",
         Some("make_bvec2"),
         Type::new(BVec2),
-        vec![Type::new(UInt)],
+        vec![Type::new(Bool)],
+    );
+    declare_function(
+        state,
+        "bvec3",
+        Some("make_bvec3"),
+        Type::new(BVec3),
+        vec![Type::new(Bool)],
     );
     declare_function(
         state,
@@ -2822,7 +2954,7 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
         "float",
         Some("make_float"),
         Type::new(Float),
-        vec![Type::new(Bool)],
+        vec![Type::new(Int)],
     );
     declare_function(
         state,
@@ -2884,6 +3016,13 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
             Type::new(Int),
             Type::new(Int),
         ],
+    );
+    declare_function(
+        state,
+        "ivec4",
+        Some("make_ivec4"),
+        Type::new(IVec4),
+        vec![Type::new(Vec4)],
     );
     declare_function(
         state,
@@ -3205,6 +3344,9 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
     declare_function(state, "pow", None, Type::new(Vec3), vec![Type::new(Vec3)]);
     declare_function(state, "pow", None, Type::new(Float), vec![Type::new(Float)]);
     declare_function(state, "exp", None, Type::new(Float), vec![Type::new(Float)]);
+    declare_function(state, "exp2", None, Type::new(Float), vec![Type::new(Float)]);
+    declare_function(state, "log", None, Type::new(Float), vec![Type::new(Float)]);
+    declare_function(state, "log2", None, Type::new(Float), vec![Type::new(Float)]);
     declare_function(
         state,
         "inversesqrt",
@@ -3316,6 +3458,13 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
         None,
         Type::new(Float),
         vec![Type::new(Float)],
+    );
+    declare_function(
+        state,
+        "fract",
+        None,
+        Type::new(Vec2),
+        vec![Type::new(Vec2)],
     );
     declare_function(state, "mod", None, Type::new(Vec2), vec![Type::new(Vec2)]);
     declare_function(state, "mod", None, Type::new(Float), vec![Type::new(Float)]);
@@ -3449,6 +3598,224 @@ pub fn ast_to_hir(state: &mut State, tu: &syntax::TranslationUnit) -> Translatio
         SymDecl::Global(StorageClass::Out, None, Type::new(Vec4), RunClass::Vector),
     );
 
+    state.declare(
+        "swgl_SpanLength",
+        SymDecl::Global(StorageClass::In, None, Type::new(Int), RunClass::Scalar),
+    );
+    state.declare(
+        "swgl_StepSize",
+        SymDecl::Global(StorageClass::Const, None, Type::new(Int), RunClass::Scalar),
+    );
+
+    for t in &[Float, Vec2, Vec3, Vec4, Int, IVec2, IVec3, IVec4, Mat3, Mat4] {
+        declare_function_ext(
+            state,
+            "swgl_forceScalar",
+            None,
+            Type::new(*t),
+            vec![Type::new(*t)],
+            RunClass::Scalar,
+        );
+    }
+
+    declare_function(
+        state,
+        "swgl_stepInterp",
+        None,
+        Type::new(Void),
+        vec![],
+    );
+
+    for t in &[Float, Vec2, Vec3, Vec4] {
+        declare_function_ext(
+            state,
+            "swgl_interpStep",
+            None,
+            Type::new(*t),
+            vec![Type::new(*t)],
+            RunClass::Scalar,
+        );
+    }
+
+    declare_function(
+        state,
+        "swgl_commitSolidRGBA8",
+        None,
+        Type::new(Void),
+        vec![Type::new(Vec4)],
+    );
+    declare_function(
+        state,
+        "swgl_commitSolidR8",
+        None,
+        Type::new(Void),
+        vec![Type::new(Float)],
+    );
+    declare_function(
+        state,
+        "swgl_commitColorRGBA8",
+        None,
+        Type::new(Void),
+        vec![Type::new(Vec4), Type::new(Float)],
+    );
+    declare_function(
+        state,
+        "swgl_commitColorR8",
+        None,
+        Type::new(Void),
+        vec![Type::new(Float), Type::new(Float)],
+    );
+
+    for s in &[Sampler2D, Sampler2DRect, Sampler2DArray] {
+        declare_function(
+            state,
+            "swgl_isTextureLinear",
+            None,
+            Type::new(Bool),
+            vec![Type::new(*s)],
+        );
+        declare_function(
+            state,
+            "swgl_isTextureRGBA8",
+            None,
+            Type::new(Bool),
+            vec![Type::new(*s)],
+        );
+        declare_function(
+            state,
+            "swgl_isTextureR8",
+            None,
+            Type::new(Bool),
+            vec![Type::new(*s)],
+        );
+        declare_function(
+            state,
+            "swgl_textureLayerOffset",
+            None,
+            Type::new(Int),
+            vec![Type::new(*s), Type::new(Float)],
+        );
+        declare_function(
+            state,
+            "swgl_linearQuantize",
+            None,
+            Type::new(Vec2),
+            vec![Type::new(*s), Type::new(Vec2)],
+        );
+        declare_function(
+            state,
+            "swgl_linearQuantizeStep",
+            None,
+            Type::new(Vec2),
+            vec![Type::new(*s), Type::new(Vec2)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearRGBA8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearR8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearColorRGBA8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Vec4), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearColorRGBA8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Float), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearColorR8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Float), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitGaussianBlurRGBA8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Vec4), Type::new(Bool),
+                 Type::new(Int), Type::new(Vec2), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitGaussianBlurR8",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Vec4), Type::new(Bool),
+                 Type::new(Int), Type::new(Vec2), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearYUV",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(Int), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearYUV",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(Int), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearYUV",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(Int), Type::new(Int)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearColorYUV",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(Int), Type::new(Int), Type::new(Float)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearColorYUV",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(Int), Type::new(Int), Type::new(Float)],
+        );
+        declare_function(
+            state,
+            "swgl_commitTextureLinearColorYUV",
+            None,
+            Type::new(Void),
+            vec![Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(*s), Type::new(Vec2), Type::new(Int),
+                 Type::new(Int), Type::new(Int), Type::new(Float)],
+        );
+    }
+
     TranslationUnit(tu.0.map(state, translate_external_declaration))
 }
 
@@ -3499,7 +3866,13 @@ fn infer_expr_inner(state: &mut State, expr: &Expr, assign: &mut SymRef) -> RunC
             };
             match fun {
                 FunIdentifier::Identifier(ref sym) => match &state.sym(*sym).decl {
-                    SymDecl::NativeFunction(..) => run_class,
+                    SymDecl::NativeFunction(_, _, ref ret_class) => {
+                        if *ret_class != RunClass::Unknown {
+                            *ret_class
+                        } else {
+                            run_class
+                        }
+                    }
                     SymDecl::UserFunction(ref fd, ref run_class) => {
                         for (&(mut arg_class, assign), param) in
                             arg_classes.iter().zip(fd.prototype.parameters.iter())

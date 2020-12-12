@@ -5,9 +5,12 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XRSystem.h"
+
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/XRPermissionRequest.h"
 #include "mozilla/dom/XRSession.h"
 #include "mozilla/dom/BindingCallContext.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/FeaturePolicyUtils.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
@@ -131,23 +134,23 @@ already_AddRefed<Promise> XRSystem::RequestSession(
   bool immersive = (aMode == XRSessionMode::Immersive_vr ||
                     aMode == XRSessionMode::Immersive_ar);
 
-  if (immersive || aOptions.mRequiredFeatures.WasPassed() ||
-      aOptions.mOptionalFeatures.WasPassed()) {
-    if (!UserActivation::IsHandlingUserInput() &&
-        aCallerType != CallerType::System &&
-        StaticPrefs::dom_vr_require_gesture()) {
-      // A user gesture is required.
-      promise->MaybeRejectWithSecurityError("A user gesture is required.");
-      return promise.forget();
-    }
-  }
-
   // The document must be a responsible document, active and focused.
   nsCOMPtr<Document> responsibleDocument = GetDocumentIfCurrent();
   if (!responsibleDocument) {
     // The document is not trustworthy
     promise->MaybeRejectWithSecurityError("This document is not responsible.");
     return promise.forget();
+  }
+
+  if (immersive || aOptions.mRequiredFeatures.WasPassed() ||
+      aOptions.mOptionalFeatures.WasPassed()) {
+    if (!responsibleDocument->HasValidTransientUserGestureActivation() &&
+        aCallerType != CallerType::System &&
+        StaticPrefs::dom_vr_require_gesture()) {
+      // A user gesture is required.
+      promise->MaybeRejectWithSecurityError("A user gesture is required.");
+      return promise.forget();
+    }
   }
 
   nsTArray<XRReferenceSpaceType> requiredReferenceSpaceTypes;
@@ -283,8 +286,7 @@ bool XRSystem::OnXRPermissionRequestAllow() {
 
 void XRSystem::OnXRPermissionRequestCancel() {
   nsTArray<RefPtr<RequestSessionRequest>> requestSessionRequests(
-      mRequestSessionRequestsWaitingForEnumeration);
-  mRequestSessionRequestsWaitingForEnumeration.Clear();
+      std::move(mRequestSessionRequestsWaitingForEnumeration));
   for (RefPtr<RequestSessionRequest>& request : requestSessionRequests) {
     if (CancelHardwareRequest(request)) {
       request->mPromise->MaybeRejectWithSecurityError(
@@ -315,8 +317,7 @@ void XRSystem::ResolveSessionRequestsWithoutHardware() {
   displays.AppendElement(nullptr);
 
   nsTArray<RefPtr<RequestSessionRequest>> requestSessionRequests(
-      mRequestSessionRequestsWithoutHardware);
-  mRequestSessionRequestsWithoutHardware.Clear();
+      std::move(mRequestSessionRequestsWithoutHardware));
 
   ResolveSessionRequests(requestSessionRequests, displays);
 }
@@ -337,8 +338,7 @@ void XRSystem::NotifyEnumerationCompleted() {
   vm->GetVRDisplays(displays);
 
   nsTArray<RefPtr<RequestSessionRequest>> requestSessionRequests(
-      mRequestSessionRequestsWaitingForEnumeration);
-  mRequestSessionRequestsWaitingForEnumeration.Clear();
+      std::move(mRequestSessionRequestsWaitingForEnumeration));
 
   ResolveSessionRequests(requestSessionRequests, displays);
 }
@@ -388,8 +388,7 @@ void XRSystem::ResolveIsSessionSupportedRequests() {
   // Resolve promises returned by IsSessionSupported
   gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
   nsTArray<RefPtr<IsSessionSupportedRequest>> isSessionSupportedRequests(
-      mIsSessionSupportedRequests);
-  mIsSessionSupportedRequests.Clear();
+      std::move(mIsSessionSupportedRequests));
   bool featurePolicyBlocked = FeaturePolicyBlocked();
 
   for (RefPtr<IsSessionSupportedRequest>& request :
@@ -422,8 +421,7 @@ void XRSystem::ProcessSessionRequestsWaitingForRuntimeDetection() {
   gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
 
   nsTArray<RefPtr<RequestSessionRequest>> sessionRequests(
-      mRequestSessionRequestsWaitingForRuntimeDetection);
-  mRequestSessionRequestsWaitingForRuntimeDetection.Clear();
+      std::move(mRequestSessionRequestsWaitingForRuntimeDetection));
 
   for (RefPtr<RequestSessionRequest>& request : sessionRequests) {
     bool compatibleRuntime = false;
@@ -481,11 +479,11 @@ void XRSystem::NotifyVRDisplayMounted(uint32_t aDisplayID) {}
 void XRSystem::NotifyVRDisplayUnmounted(uint32_t aDisplayID) {}
 
 void XRSystem::NotifyVRDisplayConnect(uint32_t aDisplayID) {
-  DispatchTrustedEvent(NS_LITERAL_STRING("devicechange"));
+  DispatchTrustedEvent(u"devicechange"_ns);
 }
 
 void XRSystem::NotifyVRDisplayDisconnect(uint32_t aDisplayID) {
-  DispatchTrustedEvent(NS_LITERAL_STRING("devicechange"));
+  DispatchTrustedEvent(u"devicechange"_ns);
 }
 
 void XRSystem::NotifyVRDisplayPresentChange(uint32_t aDisplayID) {}
@@ -503,8 +501,8 @@ RequestSessionRequest::RequestSessionRequest(
     : mPromise(aPromise),
       mSessionMode(aSessionMode),
       mPresentationGroup(aPresentationGroup),
-      mRequiredReferenceSpaceTypes(aRequiredReferenceSpaceTypes),
-      mOptionalReferenceSpaceTypes(aOptionalReferenceSpaceTypes) {}
+      mRequiredReferenceSpaceTypes(aRequiredReferenceSpaceTypes.Clone()),
+      mOptionalReferenceSpaceTypes(aOptionalReferenceSpaceTypes.Clone()) {}
 
 bool RequestSessionRequest::ResolveSupport(
     const gfx::VRDisplayClient* aDisplay,
@@ -636,9 +634,8 @@ XRRequestSessionPermissionRequest::XRRequestSessionPermissionRequest(
     AllowCallback&& aAllowCallback,
     AllowAnySiteCallback&& aAllowAnySiteCallback,
     CancelCallback&& aCancelCallback)
-    : ContentPermissionRequestBase(aNodePrincipal, aWindow,
-                                   NS_LITERAL_CSTRING("dom.xr"),
-                                   NS_LITERAL_CSTRING("xr")),
+    : ContentPermissionRequestBase(aNodePrincipal, aWindow, "dom.xr"_ns,
+                                   "xr"_ns),
       mAllowCallback(std::move(aAllowCallback)),
       mAllowAnySiteCallback(std::move(aAllowAnySiteCallback)),
       mCancelCallback(std::move(aCancelCallback)),

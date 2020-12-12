@@ -13,6 +13,7 @@
 #include "js/CharacterEncoding.h"
 #include "js/CompilationAndEvaluation.h"  // JS::Compile
 #include "js/Exception.h"
+#include "js/friend/ErrorMessages.h"  // JSMSG_*
 #include "js/SourceText.h"
 #include "jsapi-tests/tests.h"
 #include "vm/ErrorReporting.h"
@@ -113,8 +114,8 @@ bool testOmittedWindow(const CharT (&chars)[N], unsigned expectedErrorNumber,
   JS::ExceptionStack exnStack(cx);
   CHECK(JS::StealPendingExceptionStack(cx, &exnStack));
 
-  js::ErrorReport report(cx);
-  CHECK(report.init(cx, exnStack, js::ErrorReport::WithSideEffects));
+  JS::ErrorReportBuilder report(cx);
+  CHECK(report.init(cx, exnStack, JS::ErrorReportBuilder::WithSideEffects));
 
   const auto* errorReport = report.report();
 

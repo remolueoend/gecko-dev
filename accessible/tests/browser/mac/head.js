@@ -4,7 +4,8 @@
 
 "use strict";
 
-/* exported getNativeInterface, waitForMacEvent */
+/* exported getNativeInterface, waitForMacEventWithInfo, waitForMacEvent,
+   NSRange, NSDictionary, stringForRange */
 
 // Load the shared-head file first.
 /* import-globals-from ../shared-head.js */
@@ -26,17 +27,63 @@ function getNativeInterface(accDoc, id) {
   );
 }
 
-function waitForMacEvent(notificationType, filter) {
+function waitForMacEventWithInfo(notificationType, filter) {
+  let filterFunc = (macIface, data) => {
+    if (!filter) {
+      return true;
+    }
+
+    if (typeof filter == "function") {
+      return filter(macIface, data);
+    }
+
+    return macIface.getAttributeValue("AXDOMIdentifier") == filter;
+  };
+
   return new Promise(resolve => {
     let eventObserver = {
       observe(subject, topic, data) {
-        let macIface = subject.QueryInterface(Ci.nsIAccessibleMacInterface);
-        if (data === notificationType && (!filter || filter(macIface))) {
+        let macEvent = subject.QueryInterface(Ci.nsIAccessibleMacEvent);
+        if (
+          data === notificationType &&
+          filterFunc(macEvent.macIface, macEvent.data)
+        ) {
           Services.obs.removeObserver(this, "accessible-mac-event");
-          resolve(macIface);
+          resolve(macEvent);
         }
       },
     };
     Services.obs.addObserver(eventObserver, "accessible-mac-event");
   });
+}
+
+function waitForMacEvent(notificationType, filter) {
+  return waitForMacEventWithInfo(notificationType, filter).then(
+    e => e.macIface
+  );
+}
+
+function NSRange(location, length) {
+  return {
+    valueType: "NSRange",
+    value: [location, length],
+  };
+}
+
+function NSDictionary(dict) {
+  return {
+    objectType: "NSDictionary",
+    object: dict,
+  };
+}
+
+function stringForRange(macDoc, range) {
+  if (!range) {
+    return "";
+  }
+
+  return macDoc.getParameterizedAttributeValue(
+    "AXStringForTextMarkerRange",
+    range
+  );
 }

@@ -15,6 +15,11 @@ const {
 } = require("devtools/client/shared/redux/visibility-handler-connect");
 
 // Components
+loader.lazyGetter(this, "AppErrorBoundary", function() {
+  return createFactory(
+    require("devtools/client/netmonitor/src/components/AppErrorBoundary")
+  );
+});
 loader.lazyGetter(this, "MonitorPanel", function() {
   return createFactory(
     require("devtools/client/netmonitor/src/components/MonitorPanel")
@@ -49,12 +54,15 @@ class App extends Component {
       // Callback for opening split console.
       openSplitConsole: PropTypes.func,
       // Service to enable the source map feature.
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       // True if the stats panel is opened.
       statisticsOpen: PropTypes.bool.isRequired,
+      // Document which settings menu will be injected to
+      toolboxDoc: PropTypes.object.isRequired,
+      // Syncing blocked requests
+      addBlockedUrl: PropTypes.func,
     };
   }
-
   // Rendering
 
   render() {
@@ -63,29 +71,34 @@ class App extends Component {
       connector,
       openLink,
       openSplitConsole,
-      sourceMapService,
+      sourceMapURLService,
       statisticsOpen,
+      toolboxDoc,
     } = this.props;
 
     return div(
       { className: "network-monitor" },
-      !statisticsOpen
-        ? DropHarHandler(
-            {
-              actions,
-              openSplitConsole,
-            },
-            MonitorPanel({
-              actions,
+      AppErrorBoundary(
+        { className: "app-error-boundary" },
+        !statisticsOpen
+          ? DropHarHandler(
+              {
+                actions,
+                openSplitConsole,
+              },
+              MonitorPanel({
+                actions,
+                connector,
+                openSplitConsole,
+                sourceMapURLService,
+                openLink,
+                toolboxDoc,
+              })
+            )
+          : StatisticsPanel({
               connector,
-              openSplitConsole,
-              sourceMapService,
-              openLink,
             })
-          )
-        : StatisticsPanel({
-            connector,
-          })
+      )
     );
   }
 }

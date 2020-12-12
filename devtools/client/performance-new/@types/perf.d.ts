@@ -50,20 +50,22 @@ type MaybePromise<T> = Promise<T> | T;
  * ActorReadyGeckoProfilerInterface and the PerfFront return promises.
  */
 export interface PerfFront {
-  startProfiler: (options: RecordingStateFromPreferences) => MaybePromise<boolean>;
+  startProfiler: (
+    options: RecordingStateFromPreferences
+  ) => MaybePromise<boolean>;
   getProfileAndStopProfiler: () => Promise<any>;
   stopProfilerAndDiscardProfile: () => MaybePromise<void>;
-  getSymbolTable: (path: string, breakpadId: string) => Promise<[number[], number[], number[]]>;
+  getSymbolTable: (
+    path: string,
+    breakpadId: string
+  ) => Promise<[number[], number[], number[]]>;
   isActive: () => MaybePromise<boolean>;
   isSupportedPlatform: () => MaybePromise<boolean>;
   isLockedForPrivateBrowsing: () => MaybePromise<boolean>;
   on: (type: string, listener: () => void) => void;
   off: (type: string, listener: () => void) => void;
-  destroy: () => void,
-  /**
-   * This method was was added in Firefox 72.
-   */
-  getSupportedFeatures: () => MaybePromise<string[]>
+  destroy: () => void;
+  getSupportedFeatures: () => MaybePromise<string[]>;
 }
 
 /**
@@ -115,8 +117,9 @@ export interface State {
   threads: string[];
   objdirs: string[];
   presetName: string;
+  profilerViewMode: ProfilerViewMode | undefined;
   initializedValues: InitializedValues | null;
-  promptEnvRestart: null | string
+  promptEnvRestart: null | string;
 }
 
 export type Selector<T> = (state: State) => T;
@@ -133,10 +136,10 @@ export type SymbolTableAsTuple = [Uint32Array, Uint32Array, Uint8Array];
  */
 export type Dispatch = PlainDispatch & ThunkDispatch;
 
-export type ThunkAction<Returns> = (
-  dispatch: Dispatch,
-  getState: GetState
-) => Returns;
+export type ThunkAction<Returns> = ({ dispatch, getState }: {
+  dispatch: Dispatch;
+  getState: GetState;
+}) => Returns;
 
 export interface Library {
   start: number;
@@ -150,8 +153,13 @@ export interface Library {
   arch: string;
 }
 
-export interface GeckoProfile {
-  // Only type properties that we rely on.
+/**
+ * Only provide types for the GeckoProfile as much as we need it. There is no
+ * reason to maintain a full type definition here.
+ */
+export interface MinimallyTypedGeckoProfile {
+  libs: Array<{ debugName: string; breakpadId: string }>;
+  processes: Array<MinimallyTypedGeckoProfile>;
 }
 
 export type GetSymbolTableCallback = (
@@ -160,18 +168,23 @@ export type GetSymbolTableCallback = (
 ) => Promise<SymbolTableAsTuple>;
 
 export type ReceiveProfile = (
-  geckoProfile: GeckoProfile,
+  geckoProfile: MinimallyTypedGeckoProfile,
+  profilerViewMode: ProfilerViewMode | undefined,
   getSymbolTableCallback: GetSymbolTableCallback
 ) => void;
 
-export type SetRecordingPreferences = (settings: RecordingStateFromPreferences) => void;
+export type SetRecordingPreferences = (
+  settings: RecordingStateFromPreferences
+) => void;
 
 /**
  * This is the type signature for a function to restart the browser with a given
  * environment variable. Currently only implemented for the popup.
  */
-export type RestartBrowserWithEnvironmentVariable =
-    (envName: string, value: string) => void;
+export type RestartBrowserWithEnvironmentVariable = (
+  envName: string,
+  value: string
+) => void;
 
 /**
  * This is the type signature for a function to query the browser for an
@@ -189,7 +202,7 @@ export type GetActiveBrowsingContextID = () => number;
  * This interface is injected into profiler.firefox.com
  */
 interface GeckoProfilerFrameScriptInterface {
-  getProfile: () => Promise<object>;
+  getProfile: () => Promise<MinimallyTypedGeckoProfile>;
   getSymbolTable: GetSymbolTableCallback;
 }
 
@@ -221,17 +234,16 @@ export interface InitializedValues {
   // Determine the current page context.
   pageContext: PageContext;
   // The popup and devtools panel use different codepaths for getting symbol tables.
-  getSymbolTableGetter: (profile: object) => GetSymbolTableCallback;
-  // The list of profiler features that the current target supports. Note that
-  // this value is only null to support older Firefox browsers that are targeted
-  // by the actor system. This compatibility can be required when the ESR version
-  // is running at least Firefox 72.
-  supportedFeatures: string[] | null
+  getSymbolTableGetter: (
+    profile: MinimallyTypedGeckoProfile
+  ) => GetSymbolTableCallback;
+  // The list of profiler features that the current target supports.
+  supportedFeatures: string[];
   // Allow different devtools contexts to open about:profiling with different methods.
   // e.g. via a new tab, or page navigation.
-  openAboutProfiling?: () => void,
+  openAboutProfiling?: () => void;
   // Allow about:profiling to switch back to the remote devtools panel.
-  openRemoteDevTools?: () => void,
+  openRemoteDevTools?: () => void;
 }
 
 /**
@@ -262,7 +274,7 @@ export type Action =
   | {
       type: "CHANGE_FEATURES";
       features: string[];
-      promptEnvRestart: string | null
+      promptEnvRestart: string | null;
     }
   | {
       type: "CHANGE_THREADS";
@@ -279,11 +291,13 @@ export type Action =
       setRecordingPreferences: SetRecordingPreferences;
       presets: Presets;
       pageContext: PageContext;
-      openAboutProfiling?: () => void,
-      openRemoteDevTools?: () => void,
+      openAboutProfiling?: () => void;
+      openRemoteDevTools?: () => void;
       recordingSettingsFromPreferences: RecordingStateFromPreferences;
-      getSymbolTableGetter: (profile: object) => GetSymbolTableCallback;
-      supportedFeatures: string[] | null;
+      getSymbolTableGetter: (
+        profile: MinimallyTypedGeckoProfile
+      ) => GetSymbolTableCallback;
+      supportedFeatures: string[];
     }
   | {
       type: "CHANGE_PRESET";
@@ -298,8 +312,10 @@ export interface InitializeStoreValues {
   presets: Presets;
   pageContext: PageContext;
   recordingPreferences: RecordingStateFromPreferences;
-  supportedFeatures: string[] | null;
-  getSymbolTableGetter: (profile: object) => GetSymbolTableCallback;
+  supportedFeatures: string[];
+  getSymbolTableGetter: (
+    profile: MinimallyTypedGeckoProfile
+  ) => GetSymbolTableCallback;
   openAboutProfiling?: () => void;
   openRemoteDevTools?: () => void;
 }
@@ -407,10 +423,16 @@ export type NumberScaler = (value: number) => number;
  * A collection of functions to scale numbers.
  */
 export interface ScaleFunctions {
-  fromFractionToValue: NumberScaler,
-  fromValueToFraction: NumberScaler,
-  fromFractionToSingleDigitValue: NumberScaler,
+  fromFractionToValue: NumberScaler;
+  fromValueToFraction: NumberScaler;
+  fromFractionToSingleDigitValue: NumberScaler;
 }
+
+/**
+ * View mode for the Firefox Profiler front-end timeline.
+ * `undefined` is defaulted to full automatically.
+ */
+export type ProfilerViewMode = "full" | "active-tab" | "origins";
 
 export interface PresetDefinition {
   label: string;
@@ -420,6 +442,7 @@ export interface PresetDefinition {
   features: string[];
   threads: string[];
   duration: number;
+  profilerViewMode?: ProfilerViewMode;
 }
 
 export interface Presets {
@@ -445,7 +468,7 @@ export type MessageToFrontend =
   | {
       type: "ENABLE_MENU_BUTTON_DONE";
       requestId: number;
-    }
+    };
 
 /**
  * This represents an event channel that can talk to a content page on the web.
@@ -457,9 +480,16 @@ export type MessageToFrontend =
  */
 export class ProfilerWebChannel {
   constructor(id: string, url: MockedExports.nsIURI);
-  send: (message: MessageToFrontend, target: MockedExports.WebChannelTarget) => void;
+  send: (
+    message: MessageToFrontend,
+    target: MockedExports.WebChannelTarget
+  ) => void;
   listen: (
-    handler: (idle: string, message: MessageFromFrontend, target: MockedExports.WebChannelTarget) => void
+    handler: (
+      idle: string,
+      message: MessageFromFrontend,
+      target: MockedExports.WebChannelTarget
+    ) => void
   ) => void;
 }
 
@@ -469,14 +499,16 @@ export class ProfilerWebChannel {
  */
 export interface FeatureDescription {
   // The name of the feature as shown in the UI.
-  name: string,
+  name: string;
   // The key value of the feature, this will be stored in prefs, and used in the
   // nsiProfiler interface.
-  value: string,
+  value: string;
   // The full description of the preset, this will need to be localized.
-  title: string,
+  title: string;
   // This will give the user a hint that it's recommended on.
-  recommended?: boolean,
+  recommended?: boolean;
+  // This will give the user a hint that it's an experimental feature.
+  experimental?: boolean;
   // This will give a reason if the feature is disabled.
-  disabledReason?: string,
+  disabledReason?: string;
 }

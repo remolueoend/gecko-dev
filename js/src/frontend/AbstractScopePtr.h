@@ -7,6 +7,7 @@
 #ifndef frontend_AbstractScopePtr_h
 #define frontend_AbstractScopePtr_h
 
+#include "mozilla/Maybe.h"
 #include "mozilla/Variant.h"
 
 #include "frontend/TypedIndex.h"
@@ -20,12 +21,13 @@ namespace js {
 class Scope;
 class GlobalScope;
 class EvalScope;
+struct MemberInitializers;
 class GCMarker;
 
 namespace frontend {
 struct CompilationInfo;
-class FunctionBox;
-class ScopeCreationData;
+struct CompilationGCOutput;
+class ScopeStencil;
 }  // namespace frontend
 
 using ScopeIndex = frontend::TypedIndex<Scope>;
@@ -34,8 +36,8 @@ using HeapPtrScope = HeapPtr<Scope*>;
 // An interface class to support Scope queries in the frontend without requiring
 // a GC Allocated scope to necessarily exist.
 //
-// This abstracts Scope* (and a future ScopeCreationData type used within the
-// frontend before the Scope is allocated)
+// This abstracts Scope* and a ScopeStencil type used within the frontend before
+// the Scope is allocated.
 //
 // Because a AbstractScopePtr may hold onto a Scope, it must be rooted if a GC
 // may occur to ensure that the scope is traced.
@@ -55,16 +57,10 @@ class AbstractScopePtr {
  private:
   ScopeType scope_ = ScopeType(HeapPtrScope());
 
-  // Extract the Scope* represented by this; may be nullptr, and will
-  // forward through to the ScopeCreationData if it has a Scope*
-  //
-  // Should only be used after getOrCreate() has been used to reify this into a
-  // Scope.
-  Scope* getExistingScope() const;
+  Scope* scope() const { return scope_.as<HeapPtrScope>(); }
 
  public:
   friend class js::Scope;
-  friend class js::frontend::FunctionBox;
 
   AbstractScopePtr() = default;
 
@@ -74,7 +70,7 @@ class AbstractScopePtr {
       : scope_(Deferred{scope, compilationInfo}) {}
 
   bool isNullptr() const {
-    if (isScopeCreationData()) {
+    if (isScopeStencil()) {
       return false;
     }
     return scope_.as<HeapPtrScope>() == nullptr;
@@ -86,17 +82,11 @@ class AbstractScopePtr {
   // indicates the end of the scope chain.
   explicit operator bool() const { return !isNullptr(); }
 
-  bool isScopeCreationData() const { return scope_.is<Deferred>(); }
+  bool isScopeStencil() const { return scope_.is<Deferred>(); }
 
   // Note: this handle is rooted in the CompilationInfo.
-  MutableHandle<frontend::ScopeCreationData> scopeCreationData() const;
-
-  Scope* scope() const { return scope_.as<HeapPtrScope>(); }
-
-  // Get a Scope*, creating it from a ScopeCreationData if required.
-  // Used to allow us to ensure that Scopes are always allocated with
-  // real GC allocated Enclosing scopes.
-  bool getOrCreateScope(JSContext* cx, MutableHandleScope scope);
+  frontend::ScopeStencil& scopeData() const;
+  frontend::CompilationInfo& compilationInfo() const;
 
   // This allows us to check whether or not this provider wraps
   // or otherwise would reify to a particular scope type.
@@ -116,7 +106,6 @@ class AbstractScopePtr {
   uint32_t nextFrameSlot() const;
   // Valid iff is<FunctionScope>
   bool isArrow() const;
-  JSFunction* canonicalFunction() const;
 
   bool hasOnChain(ScopeKind kind) const {
     for (AbstractScopePtr it = *this; it; it = it.enclosing()) {

@@ -5,13 +5,13 @@
 from __future__ import absolute_import, print_function, unicode_literals
 
 import os
+import shlex
 import subprocess
 
 import yaml
 
 
 class PresetHandler(object):
-
     def __init__(self, path):
         self.path = path
         self._presets = {}
@@ -19,7 +19,7 @@ class PresetHandler(object):
     @property
     def presets(self):
         if not self._presets and os.path.isfile(self.path):
-            with open(self.path, 'r') as fh:
+            with open(self.path, "r") as fh:
                 self._presets = yaml.safe_load(fh) or {}
 
         return self._presets
@@ -35,7 +35,7 @@ class PresetHandler(object):
 
     def __str__(self):
         if not self.presets:
-            return ''
+            return ""
         return yaml.safe_dump(self.presets, default_flow_style=False)
 
     def list(self):
@@ -45,11 +45,13 @@ class PresetHandler(object):
             print(self)
 
     def edit(self):
-        if 'EDITOR' not in os.environ:
-            print("error: must set the $EDITOR environment variable to use --edit-presets")
+        if "EDITOR" not in os.environ:
+            print(
+                "error: must set the $EDITOR environment variable to use --edit-presets"
+            )
             return
 
-        subprocess.call([os.environ['EDITOR'], self.path])
+        subprocess.call(shlex.split(os.environ["EDITOR"]) + [self.path])
 
     def save(self, name, **data):
         self.presets[name] = data
@@ -77,9 +79,7 @@ class MergedHandler(object):
 
     def __str__(self):
         all_presets = {
-            k: v
-            for handler in self.handlers
-            for k, v in handler.presets.items()
+            k: v for handler in self.handlers for k, v in handler.presets.items()
         }
         return yaml.safe_dump(all_presets, default_flow_style=False)
 
@@ -91,6 +91,8 @@ class MergedHandler(object):
         for handler in self.handlers:
             val = str(handler)
             if val:
-                val = '\n  '.join([''] + val.splitlines() + [''])  # indent all lines by 2 spaces
+                val = "\n  ".join(
+                    [""] + val.splitlines() + [""]
+                )  # indent all lines by 2 spaces
                 print("Presets from {}:".format(handler.path))
                 print(val)

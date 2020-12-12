@@ -31,8 +31,7 @@ nsGenericHTMLElement* NS_NewHTMLAudioElement(
   return element;
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 nsresult HTMLAudioElement::Clone(mozilla::dom::NodeInfo* aNodeInfo,
                                  nsINode** aResult) const {
@@ -58,9 +57,9 @@ HTMLAudioElement::~HTMLAudioElement() {
   DecoderDoctorLogger::LogDestruction(this);
 }
 
-bool HTMLAudioElement::IsInteractiveHTMLContent(bool aIgnoreTabindex) const {
+bool HTMLAudioElement::IsInteractiveHTMLContent() const {
   return HasAttr(kNameSpaceID_None, nsGkAtoms::controls) ||
-         HTMLMediaElement::IsInteractiveHTMLContent(aIgnoreTabindex);
+         HTMLMediaElement::IsInteractiveHTMLContent();
 }
 
 already_AddRefed<HTMLAudioElement> HTMLAudioElement::Audio(
@@ -78,7 +77,7 @@ already_AddRefed<HTMLAudioElement> HTMLAudioElement::Audio(
 
   RefPtr<HTMLAudioElement> audio =
       static_cast<HTMLAudioElement*>(NS_NewHTMLAudioElement(nodeInfo.forget()));
-  audio->SetHTMLAttr(nsGkAtoms::preload, NS_LITERAL_STRING("auto"), aRv);
+  audio->SetHTMLAttr(nsGkAtoms::preload, u"auto"_ns, aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -99,7 +98,7 @@ nsresult HTMLAudioElement::SetAcceptHeader(nsIHttpChannel* aChannel) {
       "application/ogg;q=0.7,"
       "video/*;q=0.6,*/*;q=0.5");
 
-  return aChannel->SetRequestHeader(NS_LITERAL_CSTRING("Accept"), value, false);
+  return aChannel->SetRequestHeader("Accept"_ns, value, false);
 }
 
 JSObject* HTMLAudioElement::WrapNode(JSContext* aCx,
@@ -107,5 +106,4 @@ JSObject* HTMLAudioElement::WrapNode(JSContext* aCx,
   return HTMLAudioElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

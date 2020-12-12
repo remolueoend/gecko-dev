@@ -13,14 +13,25 @@ info: |
   9. Return ? Invoke(promise, "then", « thrower »).
 
   The "length" property of a Catch Finally function is 1.
-features: [Promise.prototype.finally, Reflect.construct]
+features: [Promise.prototype.finally, Reflect.construct, class, arrow-function]
 includes: [isConstructor.js]
 flags: [async]
 ---*/
 
-Promise.reject(new Test262Error())
+class MyError extends Error {}
+
+var myError = new MyError();
+Promise.reject(myError)
   .finally(function() {})
-  .then($DONE, () => $DONE());
+  .then(function(value) {
+    $DONE('Expected promise to be rejected, got fulfilled with ' + value);
+  }, function(reason) {
+    if (reason === myError) {
+      $DONE();
+    } else {
+      $DONE(reason);
+    }
+  });
 
 var calls = 0;
 var expected = [
@@ -30,11 +41,23 @@ var expected = [
 
 var then = Promise.prototype.then;
 Promise.prototype.then = function(resolve, reject) {
-  assert(!isConstructor(resolve));
-  assert.sameValue(resolve.length, expected[calls].length);
-  assert.sameValue(resolve.name, expected[calls].name);
+  assert.sameValue(isConstructor(reject), false, 'isConstructor(reject) must return false');
+  assert.throws(TypeError, () => {
+    new reject();
+  }, '`new reject()` throws TypeError');
+
+  assert.sameValue(
+    resolve.length,
+    expected[calls].length,
+    'The value of resolve.length is expected to equal the value of expected[calls].length'
+  );
+  assert.sameValue(
+    resolve.name,
+    expected[calls].name,
+    'The value of resolve.name is expected to equal the value of expected[calls].name'
+  );
   if (calls === 0) {
-    assert.throws(Test262Error, resolve);
+    assert.throws(MyError, resolve, '`resolve()` throws `MyError`');
   }
 
   calls += 1;

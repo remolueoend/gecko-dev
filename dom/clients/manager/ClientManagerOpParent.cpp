@@ -9,8 +9,7 @@
 #include "ClientManagerService.h"
 #include "mozilla/ipc/BackgroundParent.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::BackgroundParent;
 
@@ -25,7 +24,7 @@ void ClientManagerOpParent::DoServiceOp(Method aMethod, Args&&... aArgs) {
   // ActorDestroy() which ensures neither lambda is called if the actor
   // is destroyed before the source operation completes.
   p->Then(
-       GetCurrentThreadSerialEventTarget(), __func__,
+       GetCurrentSerialEventTarget(), __func__,
        [this](const mozilla::dom::ClientOpResult& aResult) {
          mPromiseRequestHolder.Complete();
          Unused << PClientManagerOpParent::Send__delete__(this, aResult);
@@ -79,5 +78,4 @@ void ClientManagerOpParent::Init(const ClientOpConstructorArgs& aArgs) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

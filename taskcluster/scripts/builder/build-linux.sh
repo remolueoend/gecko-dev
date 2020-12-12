@@ -27,6 +27,7 @@ echo "running as" $(id)
 : MH_BUILD_POOL                 ${MH_BUILD_POOL:=staging}
 
 : WORKSPACE                     ${WORKSPACE:=/builds/worker/workspace}
+: MOZ_OBJDIR                    ${MOZ_OBJDIR:=$WORKSPACE/obj-build}
 
 set -v
 
@@ -81,6 +82,8 @@ fi
 # entirely effective.
 export TOOLTOOL_CACHE
 
+export MOZ_OBJDIR
+
 config_path_cmds=""
 for path in ${MOZHARNESS_CONFIG_PATHS}; do
     config_path_cmds="${config_path_cmds} --extra-config-path ${GECKO_PATH}/${path}"
@@ -111,7 +114,10 @@ fi
 
 cd /builds/worker
 
-$GECKO_PATH/mach python $GECKO_PATH/testing/${MOZHARNESS_SCRIPT} \
+$GECKO_PATH/mach python \
+  --requirements $GECKO_PATH/taskcluster/scripts/builder/requirements.txt \
+  -- \
+  $GECKO_PATH/testing/${MOZHARNESS_SCRIPT} \
   ${config_path_cmds} \
   ${config_cmds} \
   $debug_flag \

@@ -15,9 +15,11 @@ add_task(async function init() {
 
   registerCleanupFunction(async function() {
     await PlacesUtils.history.clear();
+    await UrlbarTestUtils.formHistory.clear();
   });
 
   await PlacesUtils.history.clear();
+  await UrlbarTestUtils.formHistory.clear();
 
   let visits = [];
   for (let i = 0; i < gMaxResults; i++) {
@@ -37,7 +39,6 @@ async function selectSettings(activateFn) {
     async browser => {
       await UrlbarTestUtils.promiseAutocompleteResultPopup({
         window,
-        waitForFocus: SimpleTest.waitForFocus,
         value: "example.com",
       });
       await UrlbarTestUtils.waitForAutocompleteResultAt(

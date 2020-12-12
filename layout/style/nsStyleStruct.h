@@ -14,8 +14,8 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/StaticPtr.h"
-#include "mozilla/StyleColorInlines.h"
+#include "mozilla/ServoStyleConstsInlines.h"
+#include "mozilla/StaticPrefs_layout.h"
 #include "mozilla/UniquePtr.h"
 #include "nsColor.h"
 #include "nsCoord.h"
@@ -25,28 +25,21 @@
 #include "nsStyleConsts.h"
 #include "nsChangeHint.h"
 #include "nsTimingFunction.h"
-#include "nsCOMPtr.h"
 #include "nsTArray.h"
-#include "nsCSSValue.h"
 #include "imgIContainer.h"
 #include "imgRequestProxy.h"
-#include "Orientation.h"
 #include "CounterStyleManager.h"
 #include <cstddef>  // offsetof()
-#include <utility>
 #include "X11UndefineNone.h"
 
 class nsIFrame;
 class nsIURI;
 class nsTextFrame;
-class nsPresContext;
 struct nsStyleDisplay;
 struct nsStyleVisibility;
 namespace mozilla {
 class ComputedStyle;
-namespace dom {
-class ImageTracker;
-}  // namespace dom
+
 }  // namespace mozilla
 
 namespace mozilla {
@@ -84,36 +77,37 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleFont {
   nsChangeHint CalcDifference(const nsStyleFont& aNewData) const;
 
   /**
-   * Return aSize multiplied by the current text zoom factor (in aPresContext).
-   * aSize is allowed to be negative, but the caller is expected to deal with
-   * negative results.  The result is clamped to nscoord_MIN .. nscoord_MAX.
+   * Return a given size multiplied by the current text zoom factor (in
+   * aPresContext).
+   *
+   * The size is allowed to be negative, but the caller is expected to deal with
+   * negative results.
    */
-  static nscoord ZoomText(const mozilla::dom::Document&, nscoord aSize);
+  static mozilla::Length ZoomText(const mozilla::dom::Document&,
+                                  mozilla::Length);
 
   nsFont mFont;
-  nscoord mSize;  // Our "computed size". Can be different
-                  // from mFont.size which is our "actual size" and is
-                  // enforced to be >= the user's preferred min-size.
-                  // mFont.size should be used for display purposes
-                  // while mSize is the value to return in
-                  // getComputedStyle() for example.
+
+  // Our "computed size". Can be different from mFont.size which is our "actual
+  // size" and is enforced to be >= the user's preferred min-size.  mFont.size
+  // should be used for display purposes while mSize is the value to return in
+  // getComputedStyle() for example.
+  mozilla::NonNegativeLength mSize;
 
   // In stylo these three track whether the size is keyword-derived
   // and if so if it has been modified by a factor/offset
   float mFontSizeFactor;
-  nscoord mFontSizeOffset;
-  uint8_t mFontSizeKeyword;  // NS_STYLE_FONT_SIZE_*, is
-                             // NS_STYLE_FONT_SIZE_NO_KEYWORD when not
-                             // keyword-derived
+  mozilla::Length mFontSizeOffset;
+  mozilla::StyleFontSizeKeyword mFontSizeKeyword;
 
   mozilla::StyleGenericFontFamily mGenericID;
 
-  // MathML scriptlevel support
-  int8_t mScriptLevel;
+  // math-depth support (used for MathML scriptlevel)
+  int8_t mMathDepth;
   // MathML  mathvariant support
   uint8_t mMathVariant;
-  // MathML displaystyle support
-  uint8_t mMathDisplay;
+  // math-style support (used for MathML displaystyle)
+  uint8_t mMathStyle;
 
   // allow different min font-size for certain cases
   uint8_t mMinFontSizeRatio;  // percent * 100
@@ -122,12 +116,13 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleFont {
   bool mExplicitLanguage;
 
   // should calls to ZoomText() and UnZoomText() be made to the font
-  // size on this nsStyleFont?
-  bool mAllowZoom;
+  // size on this nsStyleFont? Also used to prevent SVG text from being
+  // affected by minimum font size pref.
+  bool mAllowZoomAndMinSize;
 
   // The value mSize would have had if scriptminsize had never been applied
-  nscoord mScriptUnconstrainedSize;
-  nscoord mScriptMinSize;  // length
+  mozilla::NonNegativeLength mScriptUnconstrainedSize;
+  mozilla::Length mScriptMinSize;
   float mScriptSizeMultiplier;
   RefPtr<nsAtom> mLanguage;
 };
@@ -313,7 +308,7 @@ struct nsStyleImageLayers {
                               nsStyleImageLayers::LayerType aType) const;
 
   nsStyleImageLayers& operator=(const nsStyleImageLayers& aOther);
-  nsStyleImageLayers& operator=(nsStyleImageLayers&& aOther);
+  nsStyleImageLayers& operator=(nsStyleImageLayers&& aOther) = default;
   bool operator==(const nsStyleImageLayers& aOther) const;
 
   static const nsCSSPropertyID kBackgroundLayerTable[];
@@ -404,6 +399,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleMargin {
   // (defined in WritingModes.h since we need the full WritingMode type)
   inline bool HasBlockAxisAuto(mozilla::WritingMode aWM) const;
   inline bool HasInlineAxisAuto(mozilla::WritingMode aWM) const;
+  inline bool HasAuto(mozilla::LogicalAxis, mozilla::WritingMode) const;
 
   mozilla::StyleRect<mozilla::LengthPercentageOrAuto> mMargin;
   mozilla::StyleRect<mozilla::StyleLength> mScrollMargin;
@@ -711,6 +707,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePosition {
   using StyleMaxSize = mozilla::StyleMaxSize;
   using StyleFlexBasis = mozilla::StyleFlexBasis;
   using WritingMode = mozilla::WritingMode;
+  using LogicalAxis = mozilla::LogicalAxis;
   using StyleImplicitGridTracks = mozilla::StyleImplicitGridTracks;
   using ComputedStyle = mozilla::ComputedStyle;
   using StyleAlignSelf = mozilla::StyleAlignSelf;
@@ -746,6 +743,33 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePosition {
    */
   StyleJustifySelf UsedJustifySelf(const ComputedStyle*) const;
 
+  /**
+   * Return the used value for 'justify/align-self' in aAxis given our parent
+   * ComputedStyle aParent (or null for the root).
+   * (defined in WritingModes.h since we need the full WritingMode type)
+   */
+  inline mozilla::StyleAlignFlags UsedSelfAlignment(
+      LogicalAxis aAxis, const mozilla::ComputedStyle* aParent) const;
+
+  /**
+   * Return the used value for 'justify/align-content' in aAxis.
+   * (defined in WritingModes.h since we need the full WritingMode type)
+   */
+  inline mozilla::StyleContentDistribution UsedContentAlignment(
+      LogicalAxis aAxis) const;
+
+  /**
+   * Return the used value for 'align-tracks'/'justify-tracks' for a track
+   * in the given axis.
+   * (defined in WritingModes.h since we need the full LogicalAxis type)
+   */
+  inline mozilla::StyleContentDistribution UsedTracksAlignment(
+      LogicalAxis aAxis, uint32_t aIndex) const;
+
+  // Each entry has the same encoding as *-content, see below.
+  mozilla::StyleAlignTracks mAlignTracks;
+  mozilla::StyleJustifyTracks mJustifyTracks;
+
   Position mObjectPosition;
   StyleRect<LengthPercentageOrAuto> mOffset;
   StyleSize mWidth;
@@ -757,9 +781,9 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePosition {
   StyleFlexBasis mFlexBasis;
   StyleImplicitGridTracks mGridAutoColumns;
   StyleImplicitGridTracks mGridAutoRows;
-  float mAspectRatio;
+  mozilla::StyleAspectRatio mAspectRatio;
   mozilla::StyleGridAutoFlow mGridAutoFlow;
-  mozilla::StyleBoxSizing mBoxSizing;
+  uint8_t mMasonryAutoFlow;  // NS_STYLE_MASONRY_*
 
   mozilla::StyleAlignContent mAlignContent;
   mozilla::StyleAlignItems mAlignItems;
@@ -770,6 +794,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePosition {
   mozilla::StyleFlexDirection mFlexDirection;
   mozilla::StyleFlexWrap mFlexWrap;
   mozilla::StyleObjectFit mObjectFit;
+  mozilla::StyleBoxSizing mBoxSizing;
   int32_t mOrder;
   float mFlexGrow;
   float mFlexShrink;
@@ -786,10 +811,6 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePosition {
   mozilla::NonNegativeLengthPercentageOrNormal mColumnGap;
   mozilla::NonNegativeLengthPercentageOrNormal mRowGap;
 
-  bool OffsetHasPercent(mozilla::Side aSide) const {
-    return mOffset.Get(aSide).HasPercent();
-  }
-
   // Logical-coordinate accessors for width and height properties,
   // given a WritingMode value. The definitions of these methods are
   // found in WritingModes.h (after the WritingMode class is fully
@@ -800,6 +821,9 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePosition {
   inline const StyleSize& BSize(WritingMode) const;
   inline const StyleSize& MinBSize(WritingMode) const;
   inline const StyleMaxSize& MaxBSize(WritingMode) const;
+  inline const StyleSize& Size(LogicalAxis, WritingMode) const;
+  inline const StyleSize& MinSize(LogicalAxis, WritingMode) const;
+  inline const StyleMaxSize& MaxSize(LogicalAxis, WritingMode) const;
   inline bool ISizeDependsOnContainer(WritingMode) const;
   inline bool MinISizeDependsOnContainer(WritingMode) const;
   inline bool MaxISizeDependsOnContainer(WritingMode) const;
@@ -926,6 +950,15 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleText {
            mWhiteSpace == mozilla::StyleWhiteSpace::PreSpace;
   }
 
+  bool WhiteSpaceCanHangOrVisuallyCollapse() const {
+    // This was originally expressed in nsTextFrame in terms of:
+    //   mWhiteSpace != StyleWhiteSpace::BreakSpaces &&
+    //       WhiteSpaceCanWrapStyle() &&
+    //       WhiteSpaceIsSignificant()
+    // which simplifies to:
+    return mWhiteSpace == mozilla::StyleWhiteSpace::PreWrap;
+  }
+
   bool NewlineIsSignificantStyle() const {
     return mWhiteSpace == mozilla::StyleWhiteSpace::Pre ||
            mWhiteSpace == mozilla::StyleWhiteSpace::PreWrap ||
@@ -1031,7 +1064,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleVisibility {
   mozilla::StyleDirection mDirection;
   mozilla::StyleVisibility mVisible;
   mozilla::StyleImageRendering mImageRendering;
-  uint8_t mWritingMode;  // NS_STYLE_WRITING_MODE_*
+  mozilla::StyleWritingModeProperty mWritingMode;
   mozilla::StyleTextOrientation mTextOrientation;
   mozilla::StyleColorAdjust mColorAdjust;
 
@@ -1182,7 +1215,12 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay {
                                            //         otherwise equal to
                                            //         mDisplay
   mozilla::StyleContain mContain;
+
+ private:
   mozilla::StyleAppearance mAppearance;
+
+ public:
+  mozilla::StyleAppearance mDefaultAppearance;
   mozilla::StylePositionProperty mPosition;
 
   mozilla::StyleFloat mFloat;
@@ -1286,7 +1324,48 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay {
   mozilla::StyleShapeOutside mShapeOutside;
 
   bool HasAppearance() const {
-    return mAppearance != mozilla::StyleAppearance::None;
+    return EffectiveAppearance() != mozilla::StyleAppearance::None;
+  }
+
+  mozilla::StyleAppearance EffectiveAppearance() const {
+    switch (mAppearance) {
+      case mozilla::StyleAppearance::Auto:
+      case mozilla::StyleAppearance::Button:
+      case mozilla::StyleAppearance::Searchfield:
+      case mozilla::StyleAppearance::Textarea:
+      case mozilla::StyleAppearance::Checkbox:
+      case mozilla::StyleAppearance::Radio:
+      case mozilla::StyleAppearance::Menulist:
+      case mozilla::StyleAppearance::Listbox:
+      case mozilla::StyleAppearance::Meter:
+      case mozilla::StyleAppearance::ProgressBar:
+        // These are all the values that behave like `auto`.
+        return mDefaultAppearance;
+      case mozilla::StyleAppearance::Textfield:
+        // `appearance: textfield` should behave like `auto` on all elements
+        // except <input type=search> elements, which we identify using the
+        // internal -moz-default-appearance property.  (In the browser chrome
+        // we have some other elements that set `-moz-default-appearance:
+        // searchfield`, but not in content documents.)
+        if (mDefaultAppearance == mozilla::StyleAppearance::Searchfield) {
+          return mAppearance;
+        }
+        // We also need to support `appearance: textfield` on <input
+        // type=number>, since that is the only way in Gecko to disable the
+        // spinners.
+        if (mDefaultAppearance == mozilla::StyleAppearance::NumberInput) {
+          return mAppearance;
+        }
+        return mDefaultAppearance;
+      case mozilla::StyleAppearance::MenulistButton:
+        // `appearance: menulist-button` should behave like `auto` on all
+        // elements except for drop down selects, but since we have very little
+        // difference between menulist and menulist-button handling, we don't
+        // bother.
+        return mDefaultAppearance;
+      default:
+        return mAppearance;
+    }
   }
 
   static mozilla::StyleDisplayOutside DisplayOutside(
@@ -1367,7 +1446,26 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay {
     return IsInnerTableStyle() && mozilla::StyleDisplay::TableCell != mDisplay;
   }
 
+  bool IsXULDisplayStyle() const {
+    // -moz-{inline-}box is XUL, unless we're emulating it with flexbox.
+    if (!mozilla::StaticPrefs::layout_css_emulate_moz_box_with_flex() &&
+        DisplayInside() == mozilla::StyleDisplayInside::MozBox) {
+      return true;
+    }
+
+#ifdef MOZ_XUL
+    return DisplayOutside() == mozilla::StyleDisplayOutside::XUL;
+#else
+    return false;
+#endif
+  }
+
   bool IsFloatingStyle() const { return mozilla::StyleFloat::None != mFloat; }
+
+  bool IsPositionedStyle() const {
+    return mPosition != mozilla::StylePositionProperty::Static ||
+           (mWillChange.bits & mozilla::StyleWillChangeBits::ABSPOS_CB);
+  }
 
   bool IsAbsolutelyPositionedStyle() const {
     return mozilla::StylePositionProperty::Absolute == mPosition ||
@@ -1409,10 +1507,15 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay {
   }
 
   bool IsScrollableOverflow() const {
-    // mOverflowX and mOverflowY always match when one of them is
-    // Visible or MozHiddenUnscrollable.
+    // Visible and Clip can be combined but not with other values,
+    // so checking mOverflowX is enough.
     return mOverflowX != mozilla::StyleOverflow::Visible &&
-           mOverflowX != mozilla::StyleOverflow::MozHiddenUnscrollable;
+           mOverflowX != mozilla::StyleOverflow::Clip;
+  }
+
+  bool OverflowIsVisibleInBothAxis() const {
+    return mOverflowX == mozilla::StyleOverflow::Visible &&
+           mOverflowY == mozilla::StyleOverflow::Visible;
   }
 
   bool IsContainPaint() const {
@@ -1527,18 +1630,6 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleDisplay {
   inline bool IsAbsPosContainingBlock(const nsIFrame* aContextFrame) const;
 
   /**
-   * Tests for only the sub-parts of IsAbsPosContainingBlock that apply
-   * to nearly all frames, except those that are SVG text frames.
-   *
-   * This should be used only when the caller has the style but not the
-   * frame (i.e., when calculating style changes).
-   *
-   * NOTE: This (unlike IsAbsPosContainingBlock) does not include
-   * IsFixPosContainingBlockForNonSVGTextFrames.
-   */
-  inline bool IsAbsPosContainingBlockForNonSVGTextFrames() const;
-
-  /**
    * Returns true when the element is a containing block for its fixed-pos
    * descendants.
    * aContextFrame is the frame for which this is the nsStyleDisplay.
@@ -1647,6 +1738,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleUI {
 
   nsChangeHint CalcDifference(const nsStyleUI& aNewData) const;
 
+  mozilla::StyleInert mInert;
   mozilla::StyleUserInput mUserInput;
   mozilla::StyleUserModify mUserModify;  // (modify-content)
   mozilla::StyleUserFocus mUserFocus;    // (auto-select)
@@ -1948,6 +2040,7 @@ STATIC_ASSERT_TYPE_LAYOUTS_MATCH(mozilla::UniquePtr<int>,
  */
 template <typename T>
 class nsTArray_Simple {
+ protected:
   T* mBuffer;
 
  public:
@@ -1957,6 +2050,12 @@ class nsTArray_Simple {
     // copy.
   }
 };
+
+/**
+ * <div rustbindgen replaces="CopyableTArray"></div>
+ */
+template <typename T>
+class CopyableTArray_Simple : public nsTArray_Simple<T> {};
 
 STATIC_ASSERT_TYPE_LAYOUTS_MATCH(nsTArray<nsStyleImageLayers::Layer>,
                                  nsTArray_Simple<nsStyleImageLayers::Layer>);

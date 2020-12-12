@@ -699,6 +699,21 @@ var DownloadIntegration = {
   },
 
   /**
+   * Decide whether a download of this type, opened from the downloads
+   * list, should open internally.
+   *
+   * @param aMimeType
+   *        The MIME type of the file, as a string
+   * @param [optional] aExtension
+   *        The file extension, which can match instead of the MIME type.
+   */
+  shouldViewDownloadInternally(aMimeType, aExtension) {
+    // Refuse all files by default, this is meant to be replaced with a check
+    // for specific types via Integration.downloads.register().
+    return false;
+  },
+
+  /**
    * Launches a file represented by the target of a download. This can
    * open the file with the default application for the target MIME type
    * or file extension, or with a custom application if
@@ -709,6 +724,12 @@ var DownloadIntegration = {
    *           to launch the file. The relevant properties are: the target
    *           file, the contentType and the custom application chosen
    *           to launch it.
+   * @param options.openWhere     Optional string indicating how to open when handling
+   *                              download by opening the target file URI.
+   *                              One of "window", "tab", "tabshifted"
+   * @param options.useSystemDefault
+   *                              Optional value indicating how to handle launching this download,
+   *                              this time only. Will override the associated mimeInfo.preferredAction
    *
    * @return {Promise}
    * @resolves When the instruction to launch the file has been
@@ -718,7 +739,7 @@ var DownloadIntegration = {
    * @rejects  JavaScript exception if there was an error trying to launch
    *           the file.
    */
-  async launchDownload(aDownload) {
+  async launchDownload(aDownload, { openWhere, useSystemDefault = null }) {
     let file = new FileUtils.File(aDownload.target.path);
 
     // In case of a double extension, like ".tar.gz", we only
@@ -781,6 +802,52 @@ var DownloadIntegration = {
       mimeInfo.preferredAction = Ci.nsIMIMEInfo.useHelperApp;
 
       this.launchFile(file, mimeInfo);
+      // After an attempt has been made to launch the download, clear the
+      // launchWhenSucceeded bit so future attempts to open the download can go
+      // through Firefox when possible.
+      aDownload.launchWhenSucceeded = false;
+      return;
+    }
+
+    if (!useSystemDefault && mimeInfo) {
+      useSystemDefault = mimeInfo.preferredAction == mimeInfo.useSystemDefault;
+    }
+    if (!useSystemDefault) {
+      // No explicit instruction was passed to launch this download using the default system viewer.
+      if (
+        aDownload.handleInternally ||
+        (mimeInfo &&
+          this.shouldViewDownloadInternally(mimeInfo.type, fileExtension) &&
+          !mimeInfo.alwaysAskBeforeHandling &&
+          mimeInfo.preferredAction === Ci.nsIHandlerInfo.handleInternally &&
+          !aDownload.launchWhenSucceeded)
+      ) {
+        DownloadUIHelper.loadFileIn(file, {
+          browsingContextId: aDownload.source.browsingContextId,
+          isPrivate: aDownload.source.isPrivate,
+          openWhere,
+          userContextId: aDownload.source.userContextId,
+        });
+        return;
+      }
+    }
+
+    // An attempt will now be made to launch the download, clear the
+    // launchWhenSucceeded bit so future attempts to open the download can go
+    // through Firefox when possible.
+    aDownload.launchWhenSucceeded = false;
+
+    // When a file has no extension, and there's an executable file with the
+    // same name in the same folder, Windows shell can get confused.
+    // For this reason we show the file in the containing folder instead of
+    // trying to open it.
+    // We also don't trust mimeinfo, it could be a type we can forward to a
+    // system handler, but it could also be an executable type, and we
+    // don't have an exhaustive list with all of them.
+    if (!fileExtension && AppConstants.platform == "win") {
+      // We can't check for the existance of a same-name file with every
+      // possible executable extension, so this is a catch-all.
+      this.showContainingDirectory(aDownload.target.path);
       return;
     }
 
@@ -788,7 +855,6 @@ var DownloadIntegration = {
     // handler. First, let's try to launch it through the MIME service.
     if (mimeInfo) {
       mimeInfo.preferredAction = Ci.nsIMIMEInfo.useSystemDefault;
-
       try {
         this.launchFile(file, mimeInfo);
         return;
@@ -804,7 +870,10 @@ var DownloadIntegration = {
 
     // If our previous attempts failed, try sending it through
     // the system's external "file:" URL handler.
-    gExternalProtocolService.loadURI(NetUtil.newURI(file));
+    gExternalProtocolService.loadURI(
+      NetUtil.newURI(file),
+      Services.scriptSecurityManager.getSystemPrincipal()
+    );
   },
 
   /**
@@ -821,6 +890,8 @@ var DownloadIntegration = {
 
   /**
    * Launches the specified file, unless overridden by regression tests.
+   * @note Always use launchDownload() from the outside of this module, it is
+   *       both more powerful and safer.
    */
   launchFile(file, mimeInfo) {
     if (mimeInfo) {
@@ -870,7 +941,10 @@ var DownloadIntegration = {
 
     // If launch also fails (probably because it's not implemented), let
     // the OS handler try to open the parent.
-    gExternalProtocolService.loadURI(NetUtil.newURI(parent));
+    gExternalProtocolService.loadURI(
+      NetUtil.newURI(parent),
+      Services.scriptSecurityManager.getSystemPrincipal()
+    );
   },
 
   /**
@@ -1155,7 +1229,7 @@ var DownloadObserver = {
     }
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 };
 
 /**
@@ -1179,7 +1253,7 @@ DownloadHistoryObserver.prototype = {
    */
   _list: null,
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsINavHistoryObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsINavHistoryObserver"]),
 
   // nsINavHistoryObserver
   onDeleteURI: function DL_onDeleteURI(aURI, aGUID) {
@@ -1196,7 +1270,6 @@ DownloadHistoryObserver.prototype = {
   onTitleChanged() {},
   onBeginUpdateBatch() {},
   onEndUpdateBatch() {},
-  onPageChanged() {},
   onDeleteVisits() {},
 };
 

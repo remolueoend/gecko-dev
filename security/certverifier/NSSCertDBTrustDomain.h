@@ -164,15 +164,15 @@ class NSSCertDBTrustDomain : public mozilla::pkix::TrustDomain {
       CertVerifier::PinningMode pinningMode, unsigned int minRSABits,
       ValidityCheckingMode validityCheckingMode,
       CertVerifier::SHA1Mode sha1Mode,
-      NetscapeStepUpPolicy netscapeStepUpPolicy,
-      DistrustedCAPolicy distrustedCAPolicy, CRLiteMode crliteMode,
+      NetscapeStepUpPolicy netscapeStepUpPolicy, CRLiteMode crliteMode,
+      uint64_t crliteCTMergeDelaySeconds,
       const OriginAttributes& originAttributes,
       const Vector<mozilla::pkix::Input>& thirdPartyRootInputs,
       const Vector<mozilla::pkix::Input>& thirdPartyIntermediateInputs,
       const Maybe<nsTArray<nsTArray<uint8_t>>>& extraCertificates,
       /*out*/ UniqueCERTCertList& builtChain,
       /*optional*/ PinningTelemetryInfo* pinningTelemetryInfo = nullptr,
-      /*optional*/ CRLiteTelemetryInfo* crliteTelemetryInfo = nullptr,
+      /*optional*/ CRLiteLookupResult* crliteLookupResult = nullptr,
       /*optional*/ const char* hostname = nullptr);
 
   virtual Result FindIssuer(mozilla::pkix::Input encodedIssuerName,
@@ -223,10 +223,10 @@ class NSSCertDBTrustDomain : public mozilla::pkix::TrustDomain {
   virtual Result CheckRevocation(
       mozilla::pkix::EndEntityOrCA endEntityOrCA,
       const mozilla::pkix::CertID& certID, mozilla::pkix::Time time,
-      mozilla::pkix::Time validityPeriodBeginning,
       mozilla::pkix::Duration validityDuration,
       /*optional*/ const mozilla::pkix::Input* stapledOCSPResponse,
-      /*optional*/ const mozilla::pkix::Input* aiaExtension) override;
+      /*optional*/ const mozilla::pkix::Input* aiaExtension,
+      /*optional*/ const mozilla::pkix::Input* sctExtension) override;
 
   virtual Result IsChainValid(
       const mozilla::pkix::DERArray& certChain, mozilla::pkix::Time time,
@@ -268,8 +268,8 @@ class NSSCertDBTrustDomain : public mozilla::pkix::TrustDomain {
   Result SynchronousCheckRevocationWithServer(
       const mozilla::pkix::CertID& certID, const nsCString& aiaLocation,
       mozilla::pkix::Time time, uint16_t maxOCSPLifetimeInDays,
-      const Result cachedResponseResult, const Result stapledOCSPResponseResult,
-      const Maybe<TimeDuration>& crliteLookupDuration);
+      const Result cachedResponseResult,
+      const Result stapledOCSPResponseResult);
   Result HandleOCSPFailure(const Result cachedResponseResult,
                            const Result stapledOCSPResponseResult,
                            const Result error);
@@ -286,8 +286,8 @@ class NSSCertDBTrustDomain : public mozilla::pkix::TrustDomain {
   ValidityCheckingMode mValidityCheckingMode;
   CertVerifier::SHA1Mode mSHA1Mode;
   NetscapeStepUpPolicy mNetscapeStepUpPolicy;
-  DistrustedCAPolicy mDistrustedCAPolicy;
   CRLiteMode mCRLiteMode;
+  uint64_t mCRLiteCTMergeDelaySeconds;
   bool mSawDistrustedCAByPolicyError;
   const OriginAttributes& mOriginAttributes;
   const Vector<mozilla::pkix::Input>& mThirdPartyRootInputs;  // non-owning
@@ -296,7 +296,7 @@ class NSSCertDBTrustDomain : public mozilla::pkix::TrustDomain {
   const Maybe<nsTArray<nsTArray<uint8_t>>>& mExtraCertificates;  // non-owning
   UniqueCERTCertList& mBuiltChain;                               // non-owning
   PinningTelemetryInfo* mPinningTelemetryInfo;
-  CRLiteTelemetryInfo* mCRLiteTelemetryInfo;
+  CRLiteLookupResult* mCRLiteLookupResult;
   const char* mHostname;  // non-owning - only used for pinning checks
 #ifdef MOZ_NEW_CERT_STORAGE
   nsCOMPtr<nsICertStorage> mCertStorage;

@@ -43,7 +43,11 @@ static const nsRoleMapEntry sWAIRoleMaps[] = {
     kUseMapRole,
     eNoValue,
     eNoAction,
+#if defined(XP_MACOSX)
+    eAssertiveLiveAttr,
+#else
     eNoLiveAttr,
+#endif
     eAlert,
     kNoReqStates
   },
@@ -1462,6 +1466,11 @@ bool aria::HasDefinedARIAHidden(nsIContent* aContent) {
 ////////////////////////////////////////////////////////////////////////////////
 // AttrIterator class
 
+AttrIterator::AttrIterator(nsIContent* aContent)
+    : mElement(dom::Element::FromNode(aContent)), mAttrIdx(0) {
+  mAttrCount = mElement ? mElement->GetAttrCount() : 0;
+}
+
 bool AttrIterator::Next(nsAString& aAttrName, nsAString& aAttrValue) {
   while (mAttrIdx < mAttrCount) {
     const nsAttrName* attr = mElement->GetAttrNameAt(mAttrIdx);
@@ -1469,8 +1478,7 @@ bool AttrIterator::Next(nsAString& aAttrName, nsAString& aAttrValue) {
     if (attr->NamespaceEquals(kNameSpaceID_None)) {
       nsAtom* attrAtom = attr->Atom();
       nsDependentAtomString attrStr(attrAtom);
-      if (!StringBeginsWith(attrStr, NS_LITERAL_STRING("aria-")))
-        continue;  // Not ARIA
+      if (!StringBeginsWith(attrStr, u"aria-"_ns)) continue;  // Not ARIA
 
       uint8_t attrFlags = aria::AttrCharacteristicsFor(attrAtom);
       if (attrFlags & ATTR_BYPASSOBJ)

@@ -8,14 +8,17 @@
 #include <gtk/gtk.h>
 #include "WidgetStyleCache.h"
 #include "gtkdrawing.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/PodOperations.h"
+#include "nsDebug.h"
+#include "nsPrintfCString.h"
+#include "nsString.h"
 
 #define STATE_FLAG_DIR_LTR (1U << 7)
 #define STATE_FLAG_DIR_RTL (1U << 8)
-#if GTK_CHECK_VERSION(3, 8, 0)
 static_assert(GTK_STATE_FLAG_DIR_LTR == STATE_FLAG_DIR_LTR &&
                   GTK_STATE_FLAG_DIR_RTL == STATE_FLAG_DIR_RTL,
               "incorrect direction state flags");
-#endif
 
 static GtkWidget* sWidgetStorage[MOZ_GTK_WIDGET_NODE_COUNT];
 static GtkStyleContext* sStyleStorage[MOZ_GTK_WIDGET_NODE_COUNT];
@@ -434,27 +437,37 @@ static GtkWidget* CreateNotebookWidget() {
   return widget;
 }
 
-static void CreateHeaderBarWidget(WidgetNodeType aAppearance) {
-  MOZ_ASSERT(gtk_check_version(3, 10, 0) == nullptr,
-             "GtkHeaderBar is only available on GTK 3.10+.");
-  MOZ_ASSERT(sWidgetStorage[aAppearance] == nullptr,
-             "Header bar widget is already created!");
-
-  static auto sGtkHeaderBarNewPtr =
-      (GtkWidget * (*)()) dlsym(RTLD_DEFAULT, "gtk_header_bar_new");
-
-  GtkWidget* headerbar = sGtkHeaderBarNewPtr();
-  sWidgetStorage[aAppearance] = headerbar;
-
-  GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+void GtkWindowSetTitlebar(GtkWindow* aWindow, GtkWidget* aWidget) {
   static auto sGtkWindowSetTitlebar = (void (*)(GtkWindow*, GtkWidget*))dlsym(
       RTLD_DEFAULT, "gtk_window_set_titlebar");
-  MOZ_ASSERT(sGtkWindowSetTitlebar,
-             "Missing gtk_window_set_titlebar(), old Gtk+ library?");
-  sGtkWindowSetTitlebar(GTK_WINDOW(window), headerbar);
-  gtk_widget_realize(window);
+  sGtkWindowSetTitlebar(aWindow, aWidget);
+}
 
+GtkWidget* GtkHeaderBarNew() {
+  static auto sGtkHeaderBarNewPtr =
+      (GtkWidget * (*)()) dlsym(RTLD_DEFAULT, "gtk_header_bar_new");
+  return sGtkHeaderBarNewPtr();
+}
+
+bool IsSolidCSDStyleUsed() {
+  static bool isSolidCSDStyleUsed = []() {
+    GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    GtkWindowSetTitlebar(GTK_WINDOW(window), GtkHeaderBarNew());
+    gtk_widget_realize(window);
+    GtkStyleContext* windowStyle = gtk_widget_get_style_context(window);
+    bool ret = gtk_style_context_has_class(windowStyle, "solid-csd");
+    gtk_widget_destroy(window);
+    return ret;
+  }();
+  return isSolidCSDStyleUsed;
+}
+
+static void CreateHeaderBarWidget(WidgetNodeType aAppearance) {
+  sWidgetStorage[aAppearance] = GtkHeaderBarNew();
+
+  GtkWidget* window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   GtkStyleContext* style = gtk_widget_get_style_context(window);
+
   if (aAppearance == MOZ_GTK_HEADER_BAR_MAXIMIZED) {
     gtk_style_context_add_class(style, "maximized");
     MOZ_ASSERT(sWidgetStorage[MOZ_GTK_HEADERBAR_WINDOW_MAXIMIZED] == nullptr,
@@ -466,8 +479,17 @@ static void CreateHeaderBarWidget(WidgetNodeType aAppearance) {
     sWidgetStorage[MOZ_GTK_HEADERBAR_WINDOW] = window;
   }
 
+  // Headerbar has to be placed to window with csd or solid-csd style
+  // to properly draw the decorated.
+  gtk_style_context_add_class(style,
+                              IsSolidCSDStyleUsed() ? "solid-csd" : "csd");
+
+  GtkWidget* fixed = gtk_fixed_new();
+  gtk_container_add(GTK_CONTAINER(window), fixed);
+  gtk_container_add(GTK_CONTAINER(fixed), sWidgetStorage[aAppearance]);
+
   // Emulate what create_titlebar() at gtkwindow.c does.
-  style = gtk_widget_get_style_context(headerbar);
+  style = gtk_widget_get_style_context(sWidgetStorage[aAppearance]);
   gtk_style_context_add_class(style, "titlebar");
 
   // TODO: Define default-decoration titlebar style as workaround
@@ -602,11 +624,11 @@ static void CreateHeaderBarButton(GtkWidget* aParentWidget,
   LoadWidgetIconPixbuf(image);
 }
 
-static bool IsToolbarButtonEnabled(WidgetNodeType* aButtonLayout,
-                                   int aButtonNums,
+static bool IsToolbarButtonEnabled(ButtonLayout* aButtonLayout,
+                                   size_t aButtonNums,
                                    WidgetNodeType aAppearance) {
-  for (int i = 0; i < aButtonNums; i++) {
-    if (aButtonLayout[i] == aAppearance) {
+  for (size_t i = 0; i < aButtonNums; i++) {
+    if (aButtonLayout[i].mType == aAppearance) {
       return true;
     }
   }
@@ -614,9 +636,6 @@ static bool IsToolbarButtonEnabled(WidgetNodeType* aButtonLayout,
 }
 
 static void CreateHeaderBarButtons() {
-  MOZ_ASSERT(gtk_check_version(3, 10, 0) == nullptr,
-             "GtkHeaderBar is only available on GTK 3.10+.");
-
   GtkWidget* headerBar = sWidgetStorage[MOZ_GTK_HEADER_BAR];
   MOZ_ASSERT(headerBar != nullptr, "We're missing header bar widget!");
 
@@ -629,10 +648,10 @@ static void CreateHeaderBarButtons() {
   gtk_style_context_add_class(gtk_widget_get_style_context(buttonBox),
                               GTK_STYLE_CLASS_LEFT);
 
-  WidgetNodeType buttonLayout[TOOLBAR_BUTTONS];
+  ButtonLayout buttonLayout[TOOLBAR_BUTTONS];
 
-  int activeButtons =
-      GetGtkHeaderBarButtonLayout(buttonLayout, TOOLBAR_BUTTONS, nullptr);
+  size_t activeButtons =
+      GetGtkHeaderBarButtonLayout(mozilla::Span(buttonLayout), nullptr);
 
   if (IsToolbarButtonEnabled(buttonLayout, activeButtons,
                              MOZ_GTK_HEADER_BAR_BUTTON_MINIMIZE)) {
@@ -737,6 +756,8 @@ static GtkWidget* CreateWidget(WidgetNodeType aAppearance) {
       return CreateComboBoxEntryButtonWidget();
     case MOZ_GTK_COMBOBOX_ENTRY_ARROW:
       return CreateComboBoxEntryArrowWidget();
+    case MOZ_GTK_HEADERBAR_WINDOW:
+    case MOZ_GTK_HEADERBAR_WINDOW_MAXIMIZED:
     case MOZ_GTK_HEADER_BAR:
     case MOZ_GTK_HEADER_BAR_MAXIMIZED:
     case MOZ_GTK_HEADER_BAR_BUTTON_CLOSE:
@@ -1072,6 +1093,9 @@ static GtkStyleContext* GetCssNodeStyleInternal(WidgetNodeType aNodeType) {
       // TODO - create from CSS node
       style = CreateSubStyleWithClass(MOZ_GTK_SCROLLED_WINDOW,
                                       GTK_STYLE_CLASS_FRAME);
+      break;
+    case MOZ_GTK_TEXT_VIEW_TEXT_SELECTION:
+      style = CreateChildCSSNode("selection", MOZ_GTK_TEXT_VIEW_TEXT);
       break;
     case MOZ_GTK_TEXT_VIEW_TEXT:
     case MOZ_GTK_RESIZER:
@@ -1409,19 +1433,17 @@ GtkStyleContext* CreateStyleContextWithStates(WidgetNodeType aNodeType,
       GetStyleContext(aNodeType, aScale, aDirection, aStateFlags);
   GtkWidgetPath* path = gtk_widget_path_copy(gtk_style_context_get_path(style));
 
-  if (gtk_check_version(3, 14, 0) == nullptr) {
-    static auto sGtkWidgetPathIterGetState =
-        (GtkStateFlags(*)(const GtkWidgetPath*, gint))dlsym(
-            RTLD_DEFAULT, "gtk_widget_path_iter_get_state");
-    static auto sGtkWidgetPathIterSetState =
-        (void (*)(GtkWidgetPath*, gint, GtkStateFlags))dlsym(
-            RTLD_DEFAULT, "gtk_widget_path_iter_set_state");
+  static auto sGtkWidgetPathIterGetState =
+      (GtkStateFlags(*)(const GtkWidgetPath*, gint))dlsym(
+          RTLD_DEFAULT, "gtk_widget_path_iter_get_state");
+  static auto sGtkWidgetPathIterSetState =
+      (void (*)(GtkWidgetPath*, gint, GtkStateFlags))dlsym(
+          RTLD_DEFAULT, "gtk_widget_path_iter_set_state");
 
-    int pathLength = gtk_widget_path_length(path);
-    for (int i = 0; i < pathLength; i++) {
-      unsigned state = aStateFlags | sGtkWidgetPathIterGetState(path, i);
-      sGtkWidgetPathIterSetState(path, i, GtkStateFlags(state));
-    }
+  int pathLength = gtk_widget_path_length(path);
+  for (int i = 0; i < pathLength; i++) {
+    unsigned state = aStateFlags | sGtkWidgetPathIterGetState(path, i);
+    sGtkWidgetPathIterSetState(path, i, GtkStateFlags(state));
   }
 
   style = gtk_style_context_new();

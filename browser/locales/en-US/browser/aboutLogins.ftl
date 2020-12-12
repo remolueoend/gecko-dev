@@ -1,17 +1,9 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+# NOTE: New strings should use the about-logins- prefix.
 
 about-logins-page-title = Logins & Passwords
-
-# "Google Play" and "App Store" are both branding and should not be translated
-
-login-app-promo-title = Take your passwords everywhere
-login-app-promo-subtitle = Get the free { -lockwise-brand-name } app
-login-app-promo-android =
-  .alt = Get it on Google Play
-login-app-promo-apple =
-  .alt = Download on the App Store
 
 login-filter =
   .placeholder = Search Logins
@@ -29,14 +21,15 @@ menu =
   .title = Open menu
 # This menuitem is only visible on Windows and macOS
 about-logins-menu-menuitem-import-from-another-browser = Import from Another Browser…
+about-logins-menu-menuitem-import-from-a-file = Import from a File…
+about-logins-menu-menuitem-export-logins = Export Logins…
+about-logins-menu-menuitem-remove-all-logins = Remove All Logins…
 menu-menuitem-preferences =
   { PLATFORM() ->
       [windows] Options
      *[other] Preferences
   }
 about-logins-menu-menuitem-help = Help
-menu-menuitem-android-app = { -lockwise-brand-short-name } for Android
-menu-menuitem-iphone-app = { -lockwise-brand-short-name } for iPhone and iPad
 
 ## Login List
 
@@ -67,13 +60,14 @@ about-logins-list-item-vulnerable-password-icon =
 
 ## Introduction screen
 
-login-intro-heading = Looking for your saved logins? Set up { -sync-brand-short-name }.
+about-logins-login-intro-heading-logged-out = Looking for your saved logins? Set up { -sync-brand-short-name } or Import Them.
 about-logins-login-intro-heading-logged-in = No synced logins found.
 login-intro-description = If you saved your logins to { -brand-product-name } on a different device, here’s how to get them here:
 login-intro-instruction-fxa = Create or sign in to your { -fxaccount-brand-name } on the device where your logins are saved
 login-intro-instruction-fxa-settings = Make sure you’ve selected the Logins checkbox in { -sync-brand-short-name } Settings
 about-logins-intro-instruction-help = Visit <a data-l10n-name="help-link">{ -lockwise-brand-short-name } Support</a> for more help
 about-logins-intro-import = If your logins are saved in another browser, you can <a data-l10n-name="import-link">import them into { -lockwise-brand-short-name }</a>
+about-logins-intro-import2 = If your logins are saved outside of { -brand-product-name }, you can <a data-l10n-name="import-browser-link">import them from another browser</a> or <a data-l10n-name="import-file-link">from a file</a>
 
 ## Login
 
@@ -108,27 +102,33 @@ about-logins-os-auth-dialog-caption = { -brand-full-name }
 ## and includes subtitle of "Enter password for the user "xxx" to allow this." These
 ## notes are only valid for English. Please test in your respected locale.
 
-# This message can be seen by attempting to edit a login in about:logins
-about-logins-edit-login-os-auth-dialog-message = Verify your identity to edit the saved login.
-# This message can be seen by attempting to edit a login in about:logins
+# This message can be seen when attempting to edit a login in about:logins on Windows.
+about-logins-edit-login-os-auth-dialog-message-win = To edit your login, enter your Windows login credentials. This helps protect the security of your accounts.
+# This message can be seen when attempting to edit a login in about:logins
 # On MacOS, only provide the reason that account verification is needed. Do not put a complete sentence here.
 about-logins-edit-login-os-auth-dialog-message-macosx = edit the saved login
 
-# This message can be seen by attempting to reveal a password in about:logins
-about-logins-reveal-password-os-auth-dialog-message = Verify your identity to reveal the saved password.
-# This message can be seen by attempting to reveal a password in about:logins
+# This message can be seen when attempting to reveal a password in about:logins on Windows.
+about-logins-reveal-password-os-auth-dialog-message-win = To view your password, enter your Windows login credentials. This helps protect the security of your accounts.
+# This message can be seen when attempting to reveal a password in about:logins
 # On MacOS, only provide the reason that account verification is needed. Do not put a complete sentence here.
 about-logins-reveal-password-os-auth-dialog-message-macosx = reveal the saved password
 
-# This message can be seen by attempting to copy a password in about:logins
-about-logins-copy-password-os-auth-dialog-message = Verify your identity to copy the saved password.
-# This message can be seen by attempting to copy a password in about:logins
+# This message can be seen when attempting to copy a password in about:logins on Windows.
+about-logins-copy-password-os-auth-dialog-message-win = To copy your password, enter your Windows login credentials. This helps protect the security of your accounts.
+# This message can be seen when attempting to copy a password in about:logins
 # On MacOS, only provide the reason that account verification is needed. Do not put a complete sentence here.
 about-logins-copy-password-os-auth-dialog-message-macosx = copy the saved password
 
-## Master Password notification
+# This message can be seen when attempting to export a password in about:logins on Windows.
+about-logins-export-password-os-auth-dialog-message-win = To export your logins, enter your Windows login credentials. This helps protect the security of your accounts.
+# This message can be seen when attempting to export a password in about:logins
+# On MacOS, only provide the reason that account verification is needed. Do not put a complete sentence here.
+about-logins-export-password-os-auth-dialog-message-macosx = export saved logins and passwords
 
-master-password-notification-message = Please enter your master password to view saved logins & passwords
+## Primary Password notification
+
+about-logins-primary-password-notification-message = Please enter your Primary Password to view saved logins & passwords
 master-password-reload-button =
   .label = Log in
   .accesskey = L
@@ -160,6 +160,44 @@ confirmation-dialog-dismiss-button =
 about-logins-confirm-remove-dialog-title = Remove this login?
 confirm-delete-dialog-message = This action cannot be undone.
 about-logins-confirm-remove-dialog-confirm-button = Remove
+
+about-logins-confirm-remove-all-dialog-confirm-button-label =
+  { $count ->
+     [1] Remove
+    *[other] Remove All
+  }
+
+about-logins-confirm-remove-all-dialog-checkbox-label =
+  { $count ->
+     [1] Yes, remove this login
+    *[other] Yes, remove these logins
+  }
+
+about-logins-confirm-remove-all-dialog-title =
+  { $count ->
+     [one] Remove { $count } login?
+    *[other] Remove all { $count } logins?
+  }
+about-logins-confirm-remove-all-dialog-message =
+  { $count ->
+     [1] This will remove the login you’ve saved to { -brand-short-name } and any breach alerts that appear here. You won’t be able to undo this action.
+    *[other] This will remove the logins you’ve saved to { -brand-short-name } and any breach alerts that appear here. You won’t be able to undo this action.
+  }
+
+about-logins-confirm-remove-all-sync-dialog-title =
+  { $count ->
+     [one] Remove { $count } login from all devices?
+    *[other] Remove all { $count } logins from all devices?
+  }
+about-logins-confirm-remove-all-sync-dialog-message=
+  { $count ->
+     [1] This will remove the login you’ve saved to { -brand-short-name } on all devices synced to your { -fxaccount-brand-name }. This will also remove breach alerts that appear here. You won’t be able to undo this action.
+    *[other] This will remove all logins you’ve saved to { -brand-short-name } on all devices synced to your { -fxaccount-brand-name }. This will also remove breach alerts that appear here. You won’t be able to undo this action.
+  }
+
+about-logins-confirm-export-dialog-title = Export logins and passwords
+about-logins-confirm-export-dialog-message = Your passwords will be saved as readable text (e.g., BadP@ssw0rd) so anyone who can open the exported file can view them.
+about-logins-confirm-export-dialog-confirm-button = Export…
 
 confirm-discard-changes-dialog-title = Discard unsaved changes?
 confirm-discard-changes-dialog-message = All unsaved changes will be lost.
@@ -194,3 +232,33 @@ about-logins-error-message-duplicate-login-with-link = An entry for { $loginTitl
 
 # This is a generic error message.
 about-logins-error-message-default = An error occurred while trying to save this password.
+
+
+## Login Export Dialog
+
+# Title of the file picker dialog
+about-logins-export-file-picker-title = Export Logins File
+# The default file name shown in the file picker when exporting saved logins.
+# This must end in .csv
+about-logins-export-file-picker-default-filename = logins.csv
+about-logins-export-file-picker-export-button = Export
+# A description for the .csv file format that may be shown as the file type
+# filter by the operating system.
+about-logins-export-file-picker-csv-filter-title =
+  { PLATFORM() ->
+      [macos] CSV Document
+     *[other] CSV File
+  }
+
+## Login Import Dialog
+
+# Title of the file picker dialog
+about-logins-import-file-picker-title = Import Logins File
+about-logins-import-file-picker-import-button = Import
+# A description for the .csv file format that may be shown as the file type
+# filter by the operating system.
+about-logins-import-file-picker-csv-filter-title =
+  { PLATFORM() ->
+      [macos] CSV Document
+     *[other] CSV File
+  }

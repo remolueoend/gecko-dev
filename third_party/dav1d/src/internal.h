@@ -54,7 +54,7 @@ typedef struct Dav1dTileContext Dav1dTileContext;
 #include "src/msac.h"
 #include "src/picture.h"
 #include "src/recon.h"
-#include "src/ref_mvs.h"
+#include "src/refmvs.h"
 #include "src/thread.h"
 
 typedef struct Dav1dDSPContext {
@@ -82,8 +82,10 @@ struct Dav1dContext {
     int n_tile_data_alloc;
     int n_tile_data;
     int n_tiles;
+    Dav1dMemPool seq_hdr_pool;
     Dav1dRef *seq_hdr_ref;
     Dav1dSequenceHeader *seq_hdr;
+    Dav1dMemPool frame_hdr_pool;
     Dav1dRef *frame_hdr_ref;
     Dav1dFrameHeader *frame_hdr;
 
@@ -107,12 +109,15 @@ struct Dav1dContext {
     } frame_thread;
 
     // reference/entropy state
+    Dav1dMemPool segmap_pool;
+    Dav1dMemPool refmvs_pool;
     struct {
         Dav1dThreadPicture p;
         Dav1dRef *segmap;
         Dav1dRef *refmvs;
         unsigned refpoc[7];
     } refs[8];
+    Dav1dMemPool cdf_pool;
     CdfThreadContext cdf[8];
 
     Dav1dDSPContext dsp[3 /* 8, 10, 12 bits/component */];
@@ -135,6 +140,9 @@ struct Dav1dContext {
     int drain;
 
     Dav1dLogger logger;
+
+    Dav1dMemPool picture_pool;
+    int mem_pools_inited;
 };
 
 struct Dav1dFrameContext {
@@ -146,7 +154,7 @@ struct Dav1dFrameContext {
     Dav1dPicture cur; // during block coding / reconstruction
     Dav1dThreadPicture sr_cur; // after super-resolution upscaling
     Dav1dRef *mvs_ref;
-    refmvs *mvs, *ref_mvs[7];
+    refmvs_temporal_block *mvs, *ref_mvs[7];
     Dav1dRef *ref_mvs_ref[7];
     Dav1dRef *cur_segmap_ref, *prev_segmap_ref;
     uint8_t *cur_segmap;
@@ -187,7 +195,7 @@ struct Dav1dFrameContext {
     const uint8_t *qm[2 /* is_1d */][N_RECT_TX_SIZES][3 /* plane */];
     BlockContext *a;
     int a_sz /* w*tile_rows */;
-    AV1_COMMON *libaom_cm; // FIXME
+    refmvs_frame rf;
     uint8_t jnt_weights[7][7];
     int bitdepth_max;
 
@@ -290,6 +298,7 @@ struct Dav1dTileContext {
     uint16_t al_pal[2 /* a/l */][32 /* bx/y4 */][3 /* plane */][8 /* palette_idx */];
     uint8_t pal_sz_uv[2 /* a/l */][32 /* bx4/by4 */];
     uint8_t txtp_map[32 * 32]; // inter-only
+    refmvs_tile rt;
     ALIGN(union, 64) {
         struct {
             union {

@@ -35,7 +35,7 @@ add_task(async function awaitPromiseResolve({ client }) {
   });
 
   is(result.type, "number", "The type is correct");
-  is(result.subtype, null, "The subtype is null for numbers");
+  is(result.subtype, undefined, "The subtype is undefined for numbers");
   is(result.value, 42, "The result is the promise's resolution");
 });
 
@@ -66,7 +66,7 @@ add_task(async function awaitPromiseDelayedResolve({ client }) {
     awaitPromise: true,
   });
   is(result.type, "number", "The type is correct");
-  is(result.subtype, null, "The subtype is null for numbers");
+  is(result.subtype, undefined, "The subtype is undefined for numbers");
   is(result.value, 42, "The result is the promise's resolution");
 });
 
@@ -178,7 +178,7 @@ add_task(async function contextIdSpecified({ client }) {
   const { Runtime } = client;
 
   await loadURL(TEST_DOC);
-  const contextId = await enableRuntime(client);
+  const { id: contextId } = await enableRuntime(client);
 
   const { result } = await Runtime.evaluate({
     expression: "location.href",
@@ -193,8 +193,8 @@ add_task(async function returnAsObjectTypes({ client }) {
   await enableRuntime(client);
 
   const expressions = [
-    { expression: "({foo:true})", type: "object", subtype: null },
-    { expression: "Symbol('foo')", type: "symbol", subtype: null },
+    { expression: "({foo:true})", type: "object", subtype: undefined },
+    { expression: "Symbol('foo')", type: "symbol", subtype: undefined },
     { expression: "new Promise(()=>{})", type: "object", subtype: "promise" },
     { expression: "new Int8Array(8)", type: "object", subtype: "typedarray" },
     { expression: "new WeakMap()", type: "object", subtype: "weakmap" },
@@ -205,24 +205,40 @@ add_task(async function returnAsObjectTypes({ client }) {
     { expression: "[1, 2]", type: "object", subtype: "array" },
     { expression: "new Proxy({}, {})", type: "object", subtype: "proxy" },
     { expression: "new Date()", type: "object", subtype: "date" },
-    { expression: "document", type: "object", subtype: "node" },
-    { expression: "document.documentElement", type: "object", subtype: "node" },
     {
-      expression: "document.createElement('div')",
+      expression: "document",
       type: "object",
       subtype: "node",
+      className: "HTMLDocument",
+      description: "#document",
+    },
+    {
+      expression: `(() => {{
+        const div = document.createElement('div');
+        div.id = "foo";
+        return div;
+      }})()`,
+      type: "object",
+      subtype: "node",
+      className: "HTMLDivElement",
+      description: "div#foo",
     },
   ];
 
-  for (const { expression, type, subtype } of expressions) {
+  for (const entry of expressions) {
+    const { expression, type, subtype, className, description } = entry;
+
     const { result } = await Runtime.evaluate({ expression });
-    is(
-      result.subtype,
-      subtype,
-      `Evaluating '${expression}' has the expected subtype`
-    );
+
     is(result.type, type, "The type is correct");
+    is(result.subtype, subtype, "The subtype is correct");
     ok(!!result.objectId, "Got an object id");
+    if (className) {
+      is(result.className, className, "The className is correct");
+    }
+    if (description) {
+      is(result.description, description, "The description is correct");
+    }
   }
 });
 

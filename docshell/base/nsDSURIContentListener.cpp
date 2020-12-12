@@ -12,6 +12,7 @@
 #include "nsIWebNavigationInfo.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/Unused.h"
 #include "nsError.h"
 #include "nsContentSecurityManager.h"
@@ -71,24 +72,20 @@ BrowsingContext* MaybeCloseWindowHelper::MaybeCloseWindow() {
 
 already_AddRefed<BrowsingContext>
 MaybeCloseWindowHelper::ChooseNewBrowsingContext(BrowsingContext* aBC) {
-  RefPtr<BrowsingContext> bc = aBC;
-
-  RefPtr<BrowsingContext> opener = bc->GetOpener();
+  RefPtr<BrowsingContext> opener = aBC->GetOpener();
   if (opener && !opener->IsDiscarded()) {
     return opener.forget();
   }
 
   if (!XRE_IsParentProcess()) {
-    return bc.forget();
+    return nullptr;
   }
 
-  CanonicalBrowsingContext* cbc = CanonicalBrowsingContext::Cast(aBC);
-  RefPtr<WindowGlobalParent> wgp = cbc->GetEmbedderWindowGlobal();
-  if (!wgp) {
-    return bc.forget();
+  opener = BrowsingContext::Get(aBC->Canonical()->GetCrossGroupOpenerId());
+  if (!opener || opener->IsDiscarded()) {
+    return nullptr;
   }
-
-  return do_AddRef(wgp->BrowsingContext());
+  return opener.forget();
 }
 
 NS_IMETHODIMP
@@ -195,6 +192,7 @@ nsDSURIContentListener::DoContent(const nsACString& aContentType,
 
   if (NS_FAILED(rv)) {
     // we don't know how to handle the content
+    nsCOMPtr<nsIStreamListener> forget = dont_AddRef(*aContentHandler);
     *aContentHandler = nullptr;
     return rv;
   }

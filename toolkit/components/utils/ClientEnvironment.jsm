@@ -15,6 +15,7 @@ ChromeUtils.defineModuleGetter(this, "UpdateUtils", "resource://gre/modules/Upda
 ChromeUtils.defineModuleGetter(this, "AppConstants", "resource://gre/modules/AppConstants.jsm");
 ChromeUtils.defineModuleGetter(this, "AttributionCode", "resource:///modules/AttributionCode.jsm");
 ChromeUtils.defineModuleGetter(this, "WindowsVersionInfo", "resource://gre/modules/components-utils/WindowsVersionInfo.jsm");
+ChromeUtils.defineModuleGetter(this, "NormandyUtils", "resource://normandy/lib/NormandyUtils.jsm");
 /* eslint-enable prettier/prettier */
 
 var EXPORTED_SYMBOLS = ["ClientEnvironmentBase"];
@@ -80,6 +81,10 @@ class ClientEnvironmentBase {
         if (prop == "main") {
           return target.main;
         }
+        if (prop == "then") {
+          // this isn't a Promise, but it's not a problem to check
+          return undefined;
+        }
         throw new Error(
           `Live telemetry only includes the main ping, not the ${prop} ping`
         );
@@ -88,6 +93,16 @@ class ClientEnvironmentBase {
         return prop == "main";
       },
     });
+  }
+
+  // Note that we intend to replace usages of this with client_id in https://bugzilla.mozilla.org/show_bug.cgi?id=1542955
+  static get randomizationId() {
+    let id = Services.prefs.getCharPref("app.normandy.user_id", "");
+    if (!id) {
+      id = NormandyUtils.generateUuid();
+      Services.prefs.setCharPref("app.normandy.user_id", id);
+    }
+    return id;
   }
 
   static get version() {

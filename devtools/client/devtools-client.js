@@ -27,7 +27,7 @@ loader.lazyRequireGetter(this, "EventEmitter", "devtools/shared/event-emitter");
 
 loader.lazyRequireGetter(
   this,
-  "createRootFront",
+  ["createRootFront", "Front"],
   "devtools/shared/protocol",
   true
 );
@@ -38,7 +38,6 @@ loader.lazyRequireGetter(
   "devtools/client/fronts/object",
   true
 );
-loader.lazyRequireGetter(this, "Front", "devtools/shared/protocol", true);
 
 /**
  * Creates a client for the remote debugging protocol server. This client
@@ -345,9 +344,6 @@ DevToolsClient.prototype = {
    *                     that is copied.  See stream-utils.js.
    */
   startBulkRequest(request) {
-    if (!this.traits.bulk) {
-      throw Error("Server doesn't support bulk transfers");
-    }
     if (!this.mainRoot) {
       throw Error("Have not yet received a hello packet from the server.");
     }
@@ -614,19 +610,19 @@ DevToolsClient.prototype = {
     //
     // In the normal case where we shutdown cleanly, the toolbox tells each tool
     // to close, and they each call |destroy| on any fronts they were using.
-    // When |destroy| or |cleanup| is called on a protocol.js front, it also
+    // When |destroy| is called on a protocol.js front, it also
     // removes itself from the |_pools| array.  Once the toolbox has shutdown,
     // the connection is closed, and we reach here.  All fronts (should have
     // been) |destroy|ed, so |_pools| should empty.
     //
     // If the connection instead aborts unexpectedly, we may end up here with
-    // all fronts used during the life of the connection.  So, we call |cleanup|
+    // all fronts used during the life of the connection.  So, we call |destroy|
     // on them clear their state, reject pending requests, and remove themselves
     // from |_pools|.  This saves the toolbox from hanging indefinitely, in case
     // it waits for some server response before shutdown that will now never
     // arrive.
     for (const pool of this._pools) {
-      pool.cleanup();
+      pool.destroy();
     }
   },
 
@@ -681,6 +677,19 @@ DevToolsClient.prototype = {
       activeRequestsToReject = activeRequestsToReject.concat(request);
     });
     activeRequestsToReject.forEach(request => reject("active", request));
+
+    // Also purge protocol.js requests
+    const fronts = this.getAllFronts();
+
+    for (const front of fronts) {
+      if (!front.isDestroyed() && front.actorID.startsWith(prefix)) {
+        // Call Front.baseFrontClassDestroy nstead of Front.destroy in order to flush requests
+        // and nullify front.actorID immediately, even if Front.destroy is overloaded
+        // by an async function which would otherwise be able to try emitting new request
+        // after the purge.
+        front.baseFrontClassDestroy();
+      }
+    }
   },
 
   /**
@@ -709,23 +718,7 @@ DevToolsClient.prototype = {
     });
 
     // protocol.js
-    // Use a Set because some fronts (like domwalker) seem to have multiple parents.
-    const fronts = new Set();
-    const poolsToVisit = [...this._pools];
-
-    // With protocol.js, each front can potentially have it's own pools containing child
-    // fronts, forming a tree.  Descend through all the pools to locate all child fronts.
-    while (poolsToVisit.length) {
-      const pool = poolsToVisit.shift();
-      // `_pools` contains either Front's or Pool's, we only want to collect Fronts here.
-      // Front inherits from Pool which exposes `poolChildren`.
-      if (pool instanceof Front) {
-        fronts.add(pool);
-      }
-      for (const child of pool.poolChildren()) {
-        poolsToVisit.push(child);
-      }
-    }
+    const fronts = this.getAllFronts();
 
     // For each front, wait for its requests to settle
     for (const front of fronts) {
@@ -749,6 +742,27 @@ DevToolsClient.prototype = {
         // Repeat, more requests may have started in response to those we just waited for
         return this.waitForRequestsToSettle();
       });
+  },
+
+  getAllFronts() {
+    // Use a Set because some fronts (like domwalker) seem to have multiple parents.
+    const fronts = new Set();
+    const poolsToVisit = [...this._pools];
+
+    // With protocol.js, each front can potentially have its own pools containing child
+    // fronts, forming a tree.  Descend through all the pools to locate all child fronts.
+    while (poolsToVisit.length) {
+      const pool = poolsToVisit.shift();
+      // `_pools` contains either Fronts or Pools, we only want to collect Fronts here.
+      // Front inherits from Pool which exposes `poolChildren`.
+      if (pool instanceof Front) {
+        fronts.add(pool);
+      }
+      for (const child of pool.poolChildren()) {
+        poolsToVisit.push(child);
+      }
+    }
+    return fronts;
   },
 
   /**
@@ -777,7 +791,7 @@ DevToolsClient.prototype = {
    */
   getFrontByID(actorID) {
     const pool = this.poolFor(actorID);
-    return pool ? pool.get(actorID) : null;
+    return pool ? pool.getActorByID(actorID) : null;
   },
 
   poolFor(actorID) {

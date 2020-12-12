@@ -1,5 +1,5 @@
 use crate::capabilities::AndroidOptions;
-use mozdevice::{Device, Host};
+use mozdevice::{AndroidStorage, Device, Host};
 use mozprofile::profile::Profile;
 use serde::Serialize;
 use serde_yaml::{Mapping, Value};
@@ -7,6 +7,7 @@ use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::time;
+use webdriver::error::{ErrorStatus, WebDriverError};
 
 // TODO: avoid port clashes across GeckoView-vehicles.
 // For now, we always use target port 2829, leading to issues like bug 1533704.
@@ -25,7 +26,7 @@ pub enum AndroidError {
     ActivityNotFound(String),
     Device(mozdevice::DeviceError),
     IO(io::Error),
-    NotConnected,
+    PackageNotFound(String),
     Serde(serde_yaml::Error),
 }
 
@@ -33,11 +34,13 @@ impl fmt::Display for AndroidError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             AndroidError::ActivityNotFound(ref package) => {
-                write!(f, "Activity not found for package '{}'", package)
+                write!(f, "Activity for package '{}' not found", package)
             }
             AndroidError::Device(ref message) => message.fmt(f),
             AndroidError::IO(ref message) => message.fmt(f),
-            AndroidError::NotConnected => write!(f, "Not connected to any Android device"),
+            AndroidError::PackageNotFound(ref package) => {
+                write!(f, "Package '{}' not found", package)
+            }
             AndroidError::Serde(ref message) => message.fmt(f),
         }
     }
@@ -58,6 +61,12 @@ impl From<mozdevice::DeviceError> for AndroidError {
 impl From<serde_yaml::Error> for AndroidError {
     fn from(value: serde_yaml::Error) -> AndroidError {
         AndroidError::Serde(value)
+    }
+}
+
+impl From<AndroidError> for WebDriverError {
+    fn from(value: AndroidError) -> WebDriverError {
+        WebDriverError::new(ErrorStatus::UnknownError, value.to_string())
     }
 }
 
@@ -86,11 +95,13 @@ impl AndroidProcess {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AndroidHandler {
+    pub config: PathBuf,
     pub options: AndroidOptions,
-    pub process: Option<AndroidProcess>,
+    pub process: AndroidProcess,
     pub profile: PathBuf,
+    pub test_root: PathBuf,
 
     // For port forwarding host => target
     pub host_port: u16,
@@ -100,47 +111,41 @@ pub struct AndroidHandler {
 impl Drop for AndroidHandler {
     fn drop(&mut self) {
         // Try to clean up various settings
-        if let Some(ref process) = self.process {
-            let clear_command = format!("am clear-debug-app {}", process.package);
-            match process.device.execute_host_shell_command(&clear_command) {
-                Ok(_) => debug!("Disabled reading from configuration file"),
-                Err(e) => error!("Failed disabling from configuration file: {}", e),
-            }
+        let clear_command = format!("am clear-debug-app {}", self.process.package);
+        match self
+            .process
+            .device
+            .execute_host_shell_command(&clear_command)
+        {
+            Ok(_) => debug!("Disabled reading from configuration file"),
+            Err(e) => error!("Failed disabling from configuration file: {}", e),
+        }
 
-            match process.device.kill_forward_port(self.host_port) {
-                Ok(_) => debug!(
-                    "Android port forward ({} -> {}) stopped",
-                    &self.host_port, &self.target_port
-                ),
-                Err(e) => error!(
-                    "Android port forward ({} -> {}) failed to stop: {}",
-                    &self.host_port, &self.target_port, e
-                ),
-            }
+        match self.process.device.remove(&self.config) {
+            Ok(_) => debug!("Deleted GeckoView configuration file"),
+            Err(e) => error!("Failed deleting GeckoView configuration file: {}", e),
+        }
+
+        match self.process.device.kill_forward_port(self.host_port) {
+            Ok(_) => debug!(
+                "Android port forward ({} -> {}) stopped",
+                &self.host_port, &self.target_port
+            ),
+            Err(e) => error!(
+                "Android port forward ({} -> {}) failed to stop: {}",
+                &self.host_port, &self.target_port, e
+            ),
         }
     }
 }
 
 impl AndroidHandler {
-    pub fn new(options: &AndroidOptions) -> AndroidHandler {
+    pub fn new(options: &AndroidOptions, host_port: u16) -> Result<AndroidHandler> {
         // We need to push profile.pathbuf to a safe space on the device.
         // Make it per-Android package to avoid clashes and confusion.
         // This naming scheme follows GeckoView's configuration file naming scheme,
         // see bug 1533385.
-        let profile = PathBuf::from(format!(
-            "/mnt/sdcard/{}-geckodriver-profile",
-            &options.package
-        ));
 
-        AndroidHandler {
-            options: options.clone(),
-            profile,
-            process: None,
-            ..Default::default()
-        }
-    }
-
-    pub fn connect(&mut self, host_port: u16) -> Result<()> {
         let host = Host {
             host: None,
             port: None,
@@ -148,43 +153,88 @@ impl AndroidHandler {
             write_timeout: Some(time::Duration::from_millis(5000)),
         };
 
-        let device = host.device_or_default(self.options.device_serial.as_ref())?;
-
-        self.host_port = host_port;
-        self.target_port = TARGET_PORT;
+        let mut device = host.device_or_default(options.device_serial.as_ref(), options.storage)?;
 
         // Set up port forward.  Port forwarding will be torn down, if possible,
-        device.forward_port(self.host_port, self.target_port)?;
+        device.forward_port(host_port, TARGET_PORT)?;
         debug!(
             "Android port forward ({} -> {}) started",
-            &self.host_port, &self.target_port
+            host_port, TARGET_PORT
         );
 
+        let test_root = match device.storage {
+            AndroidStorage::App => {
+                device.run_as_package = Some(options.package.to_owned());
+                let mut buf = PathBuf::from("/data/data");
+                buf.push(&options.package);
+                buf.push("test_root");
+                buf
+            }
+            AndroidStorage::Internal => PathBuf::from("/data/local/tmp/test_root"),
+            AndroidStorage::Sdcard => PathBuf::from("/mnt/sdcard/test_root"),
+        };
+
+        debug!(
+            "Connecting: options={:?}, storage={:?}) test_root={}, run_as_package={:?}",
+            options,
+            device.storage,
+            test_root.display(),
+            device.run_as_package
+        );
+
+        let mut profile = test_root.clone();
+        profile.push(format!("{}-geckodriver-profile", &options.package));
+
+        // Check if the specified package is installed
+        let response =
+            device.execute_host_shell_command(&format!("pm list packages {}", &options.package))?;
+        let packages = response
+            .trim()
+            .split_terminator('\n')
+            .filter(|line| line.starts_with("package:"))
+            .map(|line| line.rsplit(':').next().expect("Package name found"))
+            .collect::<Vec<&str>>();
+        if !packages.contains(&options.package.as_str()) {
+            return Err(AndroidError::PackageNotFound(options.package.clone()));
+        }
+
+        let config = PathBuf::from(format!(
+            "/data/local/tmp/{}-geckoview-config.yaml",
+            &options.package
+        ));
+
         // If activity hasn't been specified default to the main activity of the package
-        let activity = match self.options.activity {
+        let activity = match options.activity {
             Some(ref activity) => activity.clone(),
             None => {
                 let response = device.execute_host_shell_command(&format!(
-                    "cmd package resolve-activity --brief {} | tail -n 1",
-                    &self.options.package
+                    "cmd package resolve-activity --brief {}",
+                    &options.package
                 ))?;
-                let parts = response.trim_end().split('/').collect::<Vec<&str>>();
-
-                if parts.len() == 1 {
-                    return Err(AndroidError::ActivityNotFound(self.options.package.clone()));
+                let activities = response
+                    .split_terminator('\n')
+                    .filter(|line| line.starts_with(&options.package))
+                    .map(|line| line.rsplit('/').next().unwrap())
+                    .collect::<Vec<&str>>();
+                if activities.is_empty() {
+                    return Err(AndroidError::ActivityNotFound(options.package.clone()));
                 }
 
-                parts[1].to_owned()
+                activities[0].to_owned()
             }
         };
 
-        self.process = Some(AndroidProcess::new(
-            device,
-            self.options.package.clone(),
-            activity,
-        )?);
+        let process = AndroidProcess::new(device, options.package.clone(), activity)?;
 
-        Ok(())
+        Ok(AndroidHandler {
+            options: options.clone(),
+            config,
+            process,
+            profile,
+            test_root,
+            host_port,
+            target_port: TARGET_PORT,
+        })
     }
 
     pub fn generate_config_file<I, K, V>(&self, envs: I) -> Result<String>
@@ -204,8 +254,8 @@ impl AndroidHandler {
         // TODO: Allow to write custom arguments and preferences from moz:firefoxOptions
         let mut config = Config {
             args: Value::Sequence(vec![
-                Value::String("-marionette".into()),
-                Value::String("-profile".into()),
+                Value::String("--marionette".into()),
+                Value::String("--profile".into()),
                 Value::String(self.profile.display().to_string()),
             ]),
             env: Mapping::new(),
@@ -243,107 +293,178 @@ impl AndroidHandler {
         K: ToString,
         V: ToString,
     {
-        match self.process {
-            Some(ref process) => {
-                process.device.clear_app_data(&process.package)?;
+        self.process.device.clear_app_data(&self.process.package)?;
 
-                // These permissions, at least, are required to read profiles in /mnt/sdcard.
-                for perm in &["READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE"] {
-                    process.device.execute_host_shell_command(&format!(
-                        "pm grant {} android.permission.{}",
-                        &process.package, perm
-                    ))?;
-                }
-
-                debug!("Deleting {}", self.profile.display());
-                process
-                    .device
-                    .execute_host_shell_command(&format!("rm -rf {}", self.profile.display()))?;
-
-                debug!(
-                    "Pushing {} to {}",
-                    profile.path.display(),
-                    self.profile.display()
-                );
-                process
-                    .device
-                    .push_dir(&profile.path, &self.profile, 0o777)?;
-
-                let target_path = PathBuf::from(format!(
-                    "/data/local/tmp/{}-geckoview-config.yaml",
-                    process.package
-                ));
-
-                let contents = self.generate_config_file(env)?;
-                debug!("Content of generated GeckoView config file:\n{}", contents);
-                let reader = &mut io::BufReader::new(contents.as_bytes());
-
-                debug!(
-                    "Pushing GeckoView configuration file to {}",
-                    target_path.display()
-                );
-                process.device.push(reader, &target_path, 0o777)?;
-
-                // Bug 1584966: File permissions are not correctly set by push()
-                process
-                    .device
-                    .execute_host_shell_command(&format!("chmod a+rw {}", target_path.display()))?;
-
-                // Tell GeckoView to read configuration even when `android:debuggable="false"`.
-                process.device.execute_host_shell_command(&format!(
-                    "am set-debug-app --persistent {}",
-                    process.package
-                ))?;
-            }
-            None => return Err(AndroidError::NotConnected),
+        // These permissions, at least, are required to read profiles in /mnt/sdcard.
+        for perm in &["READ_EXTERNAL_STORAGE", "WRITE_EXTERNAL_STORAGE"] {
+            self.process.device.execute_host_shell_command(&format!(
+                "pm grant {} android.permission.{}",
+                &self.process.package, perm
+            ))?;
         }
+
+        // Make sure to create the test root.
+        self.process.device.create_dir(&self.test_root)?;
+        self.process.device.chmod(&self.test_root, "777", true)?;
+
+        // Replace the profile
+        self.process.device.remove(&self.profile)?;
+        self.process
+            .device
+            .push_dir(&profile.path, &self.profile, 0o777)?;
+
+        let contents = self.generate_config_file(env)?;
+        debug!("Content of generated GeckoView config file:\n{}", contents);
+        let reader = &mut io::BufReader::new(contents.as_bytes());
+
+        debug!(
+            "Pushing GeckoView configuration file to {}",
+            self.config.display()
+        );
+        self.process.device.push(reader, &self.config, 0o777)?;
+
+        // Tell GeckoView to read configuration even when `android:debuggable="false"`.
+        self.process.device.execute_host_shell_command(&format!(
+            "am set-debug-app --persistent {}",
+            self.process.package
+        ))?;
 
         Ok(())
     }
 
     pub fn launch(&self) -> Result<()> {
-        match self.process {
-            Some(ref process) => {
-                // TODO: Remove the usage of intent arguments once Fennec is no longer
-                // supported. Packages which are using GeckoView always read the arguments
-                // via the YAML configuration file.
-                let mut intent_arguments = self
-                    .options
-                    .intent_arguments
-                    .clone()
-                    .unwrap_or_else(|| Vec::with_capacity(3));
-                intent_arguments.push("--es".to_owned());
-                intent_arguments.push("args".to_owned());
-                intent_arguments
-                    .push(format!("-marionette -profile {}", self.profile.display()).to_owned());
+        // TODO: Remove the usage of intent arguments once Fennec is no longer
+        // supported. Packages which are using GeckoView always read the arguments
+        // via the YAML configuration file.
+        let mut intent_arguments = self
+            .options
+            .intent_arguments
+            .clone()
+            .unwrap_or_else(|| Vec::with_capacity(3));
+        intent_arguments.push("--es".to_owned());
+        intent_arguments.push("args".to_owned());
+        intent_arguments.push(format!("--marionette --profile {}", self.profile.display()));
 
-                debug!("Launching {}/{}", process.package, process.activity);
-                process
-                    .device
-                    .launch(&process.package, &process.activity, &intent_arguments)
-                    .map_err(|e| {
-                        let message = format!(
-                            "Could not launch Android {}/{}: {}",
-                            process.package, process.activity, e
-                        );
-                        mozdevice::DeviceError::Adb(message)
-                    })?;
-            }
-            None => return Err(AndroidError::NotConnected),
-        }
+        debug!(
+            "Launching {}/{}",
+            self.process.package, self.process.activity
+        );
+        self.process
+            .device
+            .launch(
+                &self.process.package,
+                &self.process.activity,
+                &intent_arguments,
+            )
+            .map_err(|e| {
+                let message = format!(
+                    "Could not launch Android {}/{}: {}",
+                    self.process.package, self.process.activity, e
+                );
+                mozdevice::DeviceError::Adb(message)
+            })?;
 
         Ok(())
     }
 
     pub fn force_stop(&self) -> Result<()> {
-        match &self.process {
-            Some(process) => {
-                debug!("Force stopping the Android package: {}", &process.package);
-                process.device.force_stop(&process.package)?;
-            }
-            None => return Err(AndroidError::NotConnected),
-        }
+        debug!(
+            "Force stopping the Android package: {}",
+            &self.process.package
+        );
+        self.process.device.force_stop(&self.process.package)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    // To successfully run those tests the geckoview_example package needs to
+    // be installed on the device or emulator. After setting up the build
+    // environment (https://mzl.la/3muLv5M), the following mach commands have to
+    // be executed:
+    //
+    //     $ ./mach build && ./mach install
+    //
+    // Currently the mozdevice API is not safe for multiple requests at the same
+    // time. It is recommended to run each of the unit tests on its own. Also adb
+    // specific tests cannot be run in CI yet. To check those locally, also run
+    // the ignored tests.
+    //
+    // Use the following command to accomplish that:
+    //
+    //     $ cargo test -- --ignored --test-threads=1
+
+    use crate::android::AndroidHandler;
+    use crate::capabilities::AndroidOptions;
+    use mozdevice::{AndroidStorage, AndroidStorageInput};
+    use std::path::PathBuf;
+
+    fn run_handler_storage_test(package: &str, storage: AndroidStorageInput) {
+        let options = AndroidOptions::new(package.to_owned(), storage);
+        let handler = AndroidHandler::new(&options, 4242).expect("has valid Android handler");
+
+        assert_eq!(handler.options, options);
+        assert_eq!(handler.process.package, package);
+
+        let expected_config_path = PathBuf::from(format!(
+            "/data/local/tmp/{}-geckoview-config.yaml",
+            &package
+        ));
+        assert_eq!(handler.config, expected_config_path);
+
+        if handler.process.device.storage == AndroidStorage::App {
+            assert_eq!(
+                handler.process.device.run_as_package,
+                Some(package.to_owned())
+            );
+        } else {
+            assert_eq!(handler.process.device.run_as_package, None);
+        }
+
+        let test_root = match handler.process.device.storage {
+            AndroidStorage::App => {
+                let mut buf = PathBuf::from("/data/data");
+                buf.push(&package);
+                buf.push("test_root");
+                buf
+            }
+            AndroidStorage::Internal => PathBuf::from("/data/local/tmp/test_root"),
+            AndroidStorage::Sdcard => PathBuf::from("/mnt/sdcard/test_root"),
+        };
+        assert_eq!(handler.test_root, test_root);
+
+        let mut profile = test_root.clone();
+        profile.push(format!("{}-geckodriver-profile", &package));
+        assert_eq!(handler.profile, profile);
+    }
+
+    #[test]
+    #[ignore]
+    fn android_handler_storage_as_app() {
+        let package = "org.mozilla.geckoview_example";
+        run_handler_storage_test(&package, AndroidStorageInput::App);
+    }
+
+    #[test]
+    #[ignore]
+    fn android_handler_storage_as_auto() {
+        let package = "org.mozilla.geckoview_example";
+        run_handler_storage_test(package, AndroidStorageInput::Auto);
+    }
+
+    #[test]
+    #[ignore]
+    fn android_handler_storage_as_internal() {
+        let package = "org.mozilla.geckoview_example";
+        run_handler_storage_test(package, AndroidStorageInput::Internal);
+    }
+
+    #[test]
+    #[ignore]
+    fn android_handler_storage_as_sdcard() {
+        let package = "org.mozilla.geckoview_example";
+        run_handler_storage_test(package, AndroidStorageInput::Sdcard);
     }
 }

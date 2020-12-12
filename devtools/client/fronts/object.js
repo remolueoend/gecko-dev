@@ -53,14 +53,6 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
     return this._grip.extensible;
   }
 
-  getDefinitionSite() {
-    if (this._grip.class != "Function") {
-      console.error("getDefinitionSite is only valid for function grips.");
-      return null;
-    }
-    return super.definitionSite();
-  }
-
   /**
    * Request the names of a function's formal parameters.
    */
@@ -248,14 +240,40 @@ class ObjectFront extends FrontClassWithSpec(objectSpec) {
   }
 
   /**
-   * Request the scope of the object.
+   * Request the state of a promise.
    */
-  getScope() {
-    if (this._grip.class !== "Function") {
-      console.error("scope is only valid for function grips.");
+  async getPromiseState() {
+    if (this._grip.class !== "Promise") {
+      console.error("getPromiseState is only valid for promise grips.");
       return null;
     }
-    return super.scope();
+
+    let response, promiseState;
+    try {
+      response = await super.promiseState();
+      promiseState = response.promiseState;
+    } catch (error) {
+      // @backward-compat { version 85 } On older server, the promiseState request didn't
+      // didn't exist (bug 1552648). The promise state was directly included in the grip.
+      if (error.message.includes("unrecognizedPacketType")) {
+        promiseState = this._grip.promiseState;
+        response = { promiseState };
+      } else {
+        throw error;
+      }
+    }
+
+    const { value, reason } = promiseState;
+
+    if (value) {
+      promiseState.value = getAdHocFrontOrPrimitiveGrip(value, this);
+    }
+
+    if (reason) {
+      promiseState.reason = getAdHocFrontOrPrimitiveGrip(reason, this);
+    }
+
+    return response;
   }
 
   /**
@@ -312,16 +330,23 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
   // actorID, unless:
   // - it's a Symbol (See Bug 1600299)
   // - it's a mapEntry (the preview.key and preview.value properties can hold actors)
+  // - or it is already a front (happens when we are using the legacy listeners in the ResourceWatcher)
   const isPacketAnObject = packet && typeof packet === "object";
+  const isFront = !!packet.typeName;
   if (
     !isPacketAnObject ||
     packet.type == "symbol" ||
-    (packet.type !== "mapEntry" && !packet.actor)
+    (packet.type !== "mapEntry" && !packet.actor) ||
+    isFront
   ) {
     return packet;
   }
 
-  const { conn, targetFront } = parentFront;
+  const { conn } = parentFront;
+  // If the parent front is a target, consider it as the target to use for all objects
+  const targetFront = parentFront.isTargetFront
+    ? parentFront
+    : parentFront.targetFront;
 
   // We may have already created a front for this object actor since some actor (e.g. the
   // thread actor) cache the object actors they create.
@@ -341,8 +366,16 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
 
   if (type === "mapEntry" && packet.preview) {
     const { key, value } = packet.preview;
-    packet.preview.key = getAdHocFrontOrPrimitiveGrip(key, parentFront);
-    packet.preview.value = getAdHocFrontOrPrimitiveGrip(value, parentFront);
+    packet.preview.key = getAdHocFrontOrPrimitiveGrip(
+      key,
+      parentFront,
+      targetFront
+    );
+    packet.preview.value = getAdHocFrontOrPrimitiveGrip(
+      value,
+      parentFront,
+      targetFront
+    );
     return packet;
   }
 
@@ -360,19 +393,6 @@ function getAdHocFrontOrPrimitiveGrip(packet, parentFront) {
  * @param {String|Number|Object} packet: The packet returned by the server
  */
 function createChildFronts(objectFront, packet) {
-  // Handle Promise fullfilled value
-  if (
-    packet.class == "Promise" &&
-    packet.promiseState &&
-    packet.promiseState.state == "fulfilled" &&
-    packet.promiseState.value
-  ) {
-    packet.promiseState.value = getAdHocFrontOrPrimitiveGrip(
-      packet.promiseState.value,
-      objectFront
-    );
-  }
-
   if (packet.preview) {
     const { message, entries } = packet.preview;
 

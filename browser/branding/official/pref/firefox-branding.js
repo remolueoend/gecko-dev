@@ -17,13 +17,15 @@ pref("app.update.promptWaitTime", 691200);
 // update" link supplied in the "An update is available" page of the update
 // wizard.
 #if MOZ_UPDATE_CHANNEL == beta
-  pref("app.update.url.manual", "https://www.mozilla.org/firefox/beta");
+  pref("app.update.url.manual", "https://www.mozilla.org/%LOCALE%/firefox/beta");
   pref("app.update.url.details", "https://www.mozilla.org/%LOCALE%/firefox/beta/notes");
   pref("app.releaseNotesURL", "https://www.mozilla.org/%LOCALE%/firefox/%VERSION%beta/releasenotes/?utm_source=firefox-browser&utm_medium=firefox-browser&utm_campaign=whatsnew");
+  pref("app.releaseNotesURL.aboutDialog", "https://www.mozilla.org/%LOCALE%/firefox/%VERSION%beta/releasenotes/?utm_source=firefox-browser&utm_medium=firefox-desktop&utm_campaign=about-dialog");
 #else
-  pref("app.update.url.manual", "https://www.mozilla.org/firefox/");
+  pref("app.update.url.manual", "https://www.mozilla.org/%LOCALE%/firefox/");
   pref("app.update.url.details", "https://www.mozilla.org/%LOCALE%/firefox/notes");
   pref("app.releaseNotesURL", "https://www.mozilla.org/%LOCALE%/firefox/%VERSION%/releasenotes/?utm_source=firefox-browser&utm_medium=firefox-browser&utm_campaign=whatsnew");
+  pref("app.releaseNotesURL.aboutDialog", "https://www.mozilla.org/%LOCALE%/firefox/%VERSION%/releasenotes/?utm_source=firefox-browser&utm_medium=firefox-desktop&utm_campaign=about-dialog");
 #endif
 
 // The number of days a binary is permitted to be old

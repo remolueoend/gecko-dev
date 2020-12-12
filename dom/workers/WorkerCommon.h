@@ -7,9 +7,7 @@
 #ifndef mozilla_dom_workers_WorkerCommon_h
 #define mozilla_dom_workers_WorkerCommon_h
 
-#include "jsapi.h"
-#include "mozilla/Attributes.h"
-#include "mozilla/dom/ServiceWorkerDescriptor.h"
+#include "js/TypeDecls.h"
 
 class nsPIDOMWindowInner;
 
@@ -34,18 +32,18 @@ JSObject* GetCurrentThreadWorkerGlobal();
 
 JSObject* GetCurrentThreadWorkerDebuggerGlobal();
 
-void CancelWorkersForWindow(nsPIDOMWindowInner* aWindow);
+void CancelWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-void FreezeWorkersForWindow(nsPIDOMWindowInner* aWindow);
+void FreezeWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-void ThawWorkersForWindow(nsPIDOMWindowInner* aWindow);
+void ThawWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-void SuspendWorkersForWindow(nsPIDOMWindowInner* aWindow);
+void SuspendWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-void ResumeWorkersForWindow(nsPIDOMWindowInner* aWindow);
+void ResumeWorkersForWindow(const nsPIDOMWindowInner& aWindow);
 
-void PropagateFirstPartyStorageAccessGrantedToWorkers(
-    nsPIDOMWindowInner* aWindow);
+void PropagateStorageAccessPermissionGrantedToWorkers(
+    const nsPIDOMWindowInner& aWindow);
 
 // All of these are implemented in WorkerScope.cpp
 

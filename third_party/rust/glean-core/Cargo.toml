@@ -13,14 +13,16 @@
 [package]
 edition = "2018"
 name = "glean-core"
-version = "25.1.0"
+version = "33.8.0"
 authors = ["Jan-Erik Rediger <jrediger@mozilla.com>", "The Glean Team <glean-team@mozilla.com>"]
-include = ["README.md", "LICENSE", "src/**/*", "examples/**/*", "tests/**/*", "Cargo.toml"]
+include = ["/README.md", "/LICENSE", "/src", "/examples", "/tests", "/Cargo.toml"]
 description = "A modern Telemetry library"
 readme = "README.md"
 keywords = ["telemetry"]
 license = "MPL-2.0"
 repository = "https://github.com/mozilla/glean"
+[package.metadata.glean]
+glean-parser = "1.29.0"
 [dependencies.bincode]
 version = "1.2.1"
 
@@ -31,22 +33,18 @@ features = ["serde"]
 [dependencies.ffi-support]
 version = "0.4.0"
 
-[dependencies.lazy_static]
-version = "1.4.0"
+[dependencies.flate2]
+version = "1.0.19"
 
 [dependencies.log]
 version = "0.4.8"
 
 [dependencies.once_cell]
-version = "1.2.0"
-
-[dependencies.regex]
-version = "1.3.3"
-features = ["std"]
-default-features = false
+version = "1.4.1"
 
 [dependencies.rkv]
-version = "0.10.2"
+version = "0.16.0"
+default-features = false
 
 [dependencies.serde]
 version = "1.0.104"
@@ -67,15 +65,15 @@ features = ["termcolor", "atty", "humantime"]
 default-features = false
 
 [dev-dependencies.iso8601]
-version = "0.3"
+version = "0.4"
 
 [dev-dependencies.tempfile]
 version = "3.1.0"
 
 [features]
-upload = []
+rkv-safe-mode = []
 [badges.circle-ci]
-branch = "master"
+branch = "main"
 repository = "mozilla/glean"
 
 [badges.maintenance]

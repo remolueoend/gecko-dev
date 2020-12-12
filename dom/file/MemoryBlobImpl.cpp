@@ -7,10 +7,14 @@
 #include "MemoryBlobImpl.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/SHA1.h"
+#include "nsIMemoryReporter.h"
+#include "nsMemory.h"
 #include "nsPrintfCString.h"
+#include "nsRFPService.h"
+#include "nsStringStream.h"
+#include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ADDREF(MemoryBlobImpl::DataOwnerAdapter)
 NS_IMPL_RELEASE(MemoryBlobImpl::DataOwnerAdapter)
@@ -56,7 +60,7 @@ nsresult MemoryBlobImpl::DataOwnerAdapter::Create(DataOwner* aDataOwner,
 
   rv = NS_NewByteInputStream(
       getter_AddRefs(stream),
-      MakeSpan(static_cast<const char*>(aDataOwner->mData) + aStart, aLength),
+      Span(static_cast<const char*>(aDataOwner->mData) + aStart, aLength),
       NS_ASSIGNMENT_DEPEND);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -133,7 +137,7 @@ class MemoryBlobImplDataOwnerMemoryReporter final : public nsIMemoryReporter {
         }
 
         aHandleReport->Callback(
-            /* process */ NS_LITERAL_CSTRING(""),
+            /* process */ ""_ns,
             nsPrintfCString(
                 "explicit/dom/memory-file-data/large/file(length=%" PRIu64
                 ", sha1=%s)",
@@ -156,9 +160,8 @@ class MemoryBlobImplDataOwnerMemoryReporter final : public nsIMemoryReporter {
 
     if (smallObjectsTotal > 0) {
       aHandleReport->Callback(
-          /* process */ NS_LITERAL_CSTRING(""),
-          NS_LITERAL_CSTRING("explicit/dom/memory-file-data/small"), KIND_HEAP,
-          UNITS_BYTES, smallObjectsTotal,
+          /* process */ ""_ns, "explicit/dom/memory-file-data/small"_ns,
+          KIND_HEAP, UNITS_BYTES, smallObjectsTotal,
           nsPrintfCString(
               "Memory used to back small memory files (i.e. those taking up "
               "less "
@@ -188,5 +191,4 @@ void MemoryBlobImpl::DataOwner::EnsureMemoryReporterRegistered() {
   sMemoryReporterRegistered = true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

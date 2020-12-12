@@ -14,6 +14,7 @@ const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const { l10n } = require("devtools/client/webconsole/utils/messages");
 const actions = require("devtools/client/webconsole/actions/index");
 const {
+  MESSAGE_LEVEL,
   MESSAGE_SOURCE,
   MESSAGE_TYPE,
 } = require("devtools/client/webconsole/constants");
@@ -58,6 +59,7 @@ class Message extends Component {
       level: PropTypes.string.isRequired,
       indent: PropTypes.number.isRequired,
       inWarningGroup: PropTypes.bool,
+      isBlockedNetworkMessage: PropTypes.bool,
       topLevelClasses: PropTypes.array.isRequired,
       messageBody: PropTypes.any.isRequired,
       repeat: PropTypes.any,
@@ -78,7 +80,7 @@ class Message extends Component {
         onViewSourceInStyleEditor: PropTypes.func,
         openContextMenu: PropTypes.func.isRequired,
         openLink: PropTypes.func.isRequired,
-        sourceMapService: PropTypes.any,
+        sourceMapURLService: PropTypes.any,
       }),
       notes: PropTypes.arrayOf(
         PropTypes.shape({
@@ -172,10 +174,17 @@ class Message extends Component {
   }
 
   renderIcon() {
-    const { level, inWarningGroup, type } = this.props;
+    const { level, inWarningGroup, isBlockedNetworkMessage, type } = this.props;
 
     if (inWarningGroup) {
       return undefined;
+    }
+
+    if (isBlockedNetworkMessage) {
+      return MessageIcon({
+        level: MESSAGE_LEVEL.ERROR,
+        type: "blockedReason",
+      });
     }
 
     return MessageIcon({
@@ -299,7 +308,7 @@ class Message extends Component {
             serviceContainer.onViewSource,
           onViewSource: serviceContainer.onViewSource,
           onReady: this.props.maybeScrollToBottom,
-          sourceMapService: serviceContainer.sourceMapService,
+          sourceMapURLService: serviceContainer.sourceMapURLService,
         })
       );
     }
@@ -333,8 +342,8 @@ class Message extends Component {
                       serviceContainer.onViewSource
                     : undefined,
                   showEmptyPathAsHost: true,
-                  sourceMapService: serviceContainer
-                    ? serviceContainer.sourceMapService
+                  sourceMapURLService: serviceContainer
+                    ? serviceContainer.sourceMapURLService
                     : undefined,
                 })
               : null
@@ -373,8 +382,8 @@ class Message extends Component {
             frame,
             onClick: onFrameClick,
             showEmptyPathAsHost: true,
-            sourceMapService: serviceContainer
-              ? serviceContainer.sourceMapService
+            sourceMapURLService: serviceContainer
+              ? serviceContainer.sourceMapURLService
               : undefined,
             messageSource: source,
           })
@@ -413,8 +422,8 @@ class Message extends Component {
         indent,
         inWarningGroup,
       }),
-      icon,
-      collapse,
+      this.props.isBlockedNetworkMessage ? collapse : icon,
+      this.props.isBlockedNetworkMessage ? icon : collapse,
       dom.span(
         { className: "message-body-wrapper" },
         dom.span(

@@ -15,6 +15,11 @@ use crate::Glean;
 
 use chrono::{DateTime, FixedOffset, TimeZone};
 
+/// A datetime type.
+///
+/// Used to feed data to the `DatetimeMetric`.
+pub type Datetime = DateTime<FixedOffset>;
+
 /// A datetime metric.
 ///
 /// Used to record an absolute date and time, such as the time the user first ran
@@ -35,16 +40,19 @@ impl MetricType for DatetimeMetric {
     }
 }
 
+// IMPORTANT:
+//
+// When changing this implementation, make sure all the operations are
+// also declared in the related trait in `../traits/`.
 impl DatetimeMetric {
-    /// Create a new datetime metric.
+    /// Creates a new datetime metric.
     pub fn new(meta: CommonMetricData, time_unit: TimeUnit) -> Self {
         Self { meta, time_unit }
     }
 
-    /// Public facing API for setting the metric to a date/time which
-    /// includes the timezone offset.
+    /// Sets the metric to a date/time including the timezone offset.
     ///
-    /// ## Arguments:
+    /// # Arguments
     ///
     /// * `glean` - the Glean instance this metric belongs to.
     /// * `year` - the year to set the metric to.
@@ -68,6 +76,10 @@ impl DatetimeMetric {
         nano: u32,
         offset_seconds: i32,
     ) {
+        if !self.should_record(glean) {
+            return;
+        }
+
         let timezone_offset = FixedOffset::east_opt(offset_seconds);
         if timezone_offset.is_none() {
             let msg = format!("Invalid timezone offset {}. Not recording.", offset_seconds);
@@ -93,15 +105,14 @@ impl DatetimeMetric {
         }
     }
 
-    /// Public facing API for setting the metric to a date/time which
-    /// includes the timezone offset.
+    /// Sets the metric to a date/time which including the timezone offset.
     ///
-    /// ## Arguments:
+    /// # Arguments
     ///
     /// * `glean` - the Glean instance this metric belongs to.
-    /// * `value` - Some date/time value, with offset, to set the metric to.
+    /// * `value` - Some [`DateTime`] value, with offset, to set the metric to.
     ///             If none, the current local time is used.
-    pub fn set(&self, glean: &Glean, value: Option<DateTime<FixedOffset>>) {
+    pub fn set(&self, glean: &Glean, value: Option<Datetime>) {
         if !self.should_record(glean) {
             return;
         }
@@ -111,21 +122,17 @@ impl DatetimeMetric {
         glean.storage().record(glean, &self.meta, &value)
     }
 
-    /// Get the stored datetime value.
+    /// Gets the stored datetime value.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `glean` - the Glean instance this metric belongs to.
     /// * `storage_name` - the storage name to look into.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns the stored value or `None` if nothing stored.
-    pub(crate) fn get_value(
-        &self,
-        glean: &Glean,
-        storage_name: &str,
-    ) -> Option<DateTime<FixedOffset>> {
+    /// The stored value or `None` if nothing stored.
+    pub(crate) fn get_value(&self, glean: &Glean, storage_name: &str) -> Option<Datetime> {
         match StorageManager.snapshot_metric(
             glean.storage(),
             storage_name,
@@ -138,9 +145,9 @@ impl DatetimeMetric {
 
     /// **Test-only API (exported for FFI purposes).**
     ///
-    /// Get the currently stored value as a String.
-    /// The precision of this value is truncated to the `time_unit`
-    /// precision.
+    /// Gets the currently stored value as a String.
+    ///
+    /// The precision of this value is truncated to the `time_unit` precision.
     ///
     /// This doesn't clear the stored value.
     pub fn test_get_value_as_string(&self, glean: &Glean, storage_name: &str) -> Option<String> {

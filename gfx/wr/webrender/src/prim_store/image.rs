@@ -14,7 +14,7 @@ use crate::gpu_cache::{GpuCache, GpuDataRequest};
 use crate::intern::{Internable, InternDebug, Handle as InternHandle};
 use crate::internal_types::{LayoutPrimitiveInfo};
 use crate::prim_store::{
-    EdgeAaSegmentMask, OpacityBindingIndex, PrimitiveInstanceKind,
+    EdgeAaSegmentMask, PrimitiveInstanceKind,
     PrimitiveOpacity, PrimKey,
     PrimTemplate, PrimTemplateCommonData, PrimitiveStore, SegmentInstanceIndex,
     SizeKey, InternablePrimitive,
@@ -62,7 +62,6 @@ pub struct ImageCacheKey {
 #[derive(Debug)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 pub struct ImageInstance {
-    pub opacity_binding_index: OpacityBindingIndex,
     pub segment_instance_index: SegmentInstanceIndex,
     pub tight_local_clip_rect: LayoutRect,
     pub visible_tiles: Vec<VisibleImageTile>,
@@ -76,7 +75,6 @@ pub struct Image {
     pub stretch_size: SizeKey,
     pub tile_spacing: SizeKey,
     pub color: ColorU,
-    pub sub_rect: Option<DeviceIntRect>,
     pub image_rendering: ImageRendering,
     pub alpha_type: AlphaType,
 }
@@ -122,7 +120,6 @@ pub struct ImageData {
     pub color: ColorF,
     pub source: ImageSource,
     pub image_rendering: ImageRendering,
-    pub sub_rect: Option<DeviceIntRect>,
     pub alpha_type: AlphaType,
 }
 
@@ -134,7 +131,6 @@ impl From<Image> for ImageData {
             stretch_size: image.stretch_size.into(),
             tile_spacing: image.tile_spacing.into(),
             source: ImageSource::Default,
-            sub_rect: image.sub_rect,
             image_rendering: image.image_rendering,
             alpha_type: image.alpha_type,
         }
@@ -172,18 +168,6 @@ impl ImageData {
                         };
                     }
 
-                    // Work out whether this image is a normal / simple type, or if
-                    // we need to pre-render it to the render task cache.
-                    if let Some(rect) = self.sub_rect {
-                        // We don't properly support this right now.
-                        debug_assert!(!is_tiled);
-                        self.source = ImageSource::Cache {
-                            // Size in device-pixels we need to allocate in render task cache.
-                            size: rect.size,
-                            handle: None,
-                        };
-                    }
-
                     let mut is_opaque = image_properties.descriptor.is_opaque();
                     let request = ImageRequest {
                         key: self.key,
@@ -211,7 +195,7 @@ impl ImageData {
 
                             let image_cache_key = ImageCacheKey {
                                 request,
-                                texel_rect: self.sub_rect,
+                                texel_rect: None,
                             };
                             let target_kind = if image_properties.descriptor.format.bytes_per_pixel() == 1 {
                                 RenderTargetKind::Alpha
@@ -304,6 +288,7 @@ impl Internable for Image {
     type Key = ImageKey;
     type StoreData = ImageTemplate;
     type InternData = ();
+    const PROFILE_COUNTER: usize = crate::profiler::INTERNED_IMAGES;
 }
 
 impl InternablePrimitive for Image {
@@ -323,7 +308,6 @@ impl InternablePrimitive for Image {
         // TODO(gw): Refactor this to not need a separate image
         //           instance (see ImageInstance struct).
         let image_instance_index = prim_store.images.push(ImageInstance {
-            opacity_binding_index: OpacityBindingIndex::INVALID,
             segment_instance_index: SegmentInstanceIndex::INVALID,
             tight_local_clip_rect: LayoutRect::zero(),
             visible_tiles: Vec::new(),
@@ -332,6 +316,7 @@ impl InternablePrimitive for Image {
         PrimitiveInstanceKind::Image {
             data_handle,
             image_instance_index,
+            is_compositor_surface: false,
         }
     }
 }
@@ -342,7 +327,6 @@ impl CreateShadow for Image {
             tile_spacing: self.tile_spacing,
             stretch_size: self.stretch_size,
             key: self.key,
-            sub_rect: self.sub_rect,
             image_rendering: self.image_rendering,
             alpha_type: self.alpha_type,
             color: shadow.color.into(),
@@ -477,6 +461,7 @@ impl Internable for YuvImage {
     type Key = YuvImageKey;
     type StoreData = YuvImageTemplate;
     type InternData = ();
+    const PROFILE_COUNTER: usize = crate::profiler::INTERNED_YUV_IMAGES;
 }
 
 impl InternablePrimitive for YuvImage {
@@ -517,9 +502,9 @@ fn test_struct_sizes() {
     //     test expectations and move on.
     // (b) You made a structure larger. This is not necessarily a problem, but should only
     //     be done with care, and after checking if talos performance regresses badly.
-    assert_eq!(mem::size_of::<Image>(), 52, "Image size changed");
-    assert_eq!(mem::size_of::<ImageTemplate>(), 112, "ImageTemplate size changed");
-    assert_eq!(mem::size_of::<ImageKey>(), 72, "ImageKey size changed");
+    assert_eq!(mem::size_of::<Image>(), 32, "Image size changed");
+    assert_eq!(mem::size_of::<ImageTemplate>(), 92, "ImageTemplate size changed");
+    assert_eq!(mem::size_of::<ImageKey>(), 52, "ImageKey size changed");
     assert_eq!(mem::size_of::<YuvImage>(), 32, "YuvImage size changed");
     assert_eq!(mem::size_of::<YuvImageTemplate>(), 60, "YuvImageTemplate size changed");
     assert_eq!(mem::size_of::<YuvImageKey>(), 52, "YuvImageKey size changed");

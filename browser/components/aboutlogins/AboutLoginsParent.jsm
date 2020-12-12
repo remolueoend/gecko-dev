@@ -16,6 +16,8 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   LoginBreaches: "resource:///modules/LoginBreaches.jsm",
   LoginHelper: "resource://gre/modules/LoginHelper.jsm",
+  LoginExport: "resource://gre/modules/LoginExport.jsm",
+  LoginCSVImport: "resource://gre/modules/LoginCSVImport.jsm",
   MigrationUtils: "resource:///modules/MigrationUtils.jsm",
   OSKeyStore: "resource://gre/modules/OSKeyStore.jsm",
   Services: "resource://gre/modules/Services.jsm",
@@ -58,130 +60,12 @@ const ABOUT_LOGINS_ORIGIN = "about:logins";
 const MASTER_PASSWORD_NOTIFICATION_ID = "master-password-login-required";
 const PASSWORD_SYNC_NOTIFICATION_ID = "enable-password-sync";
 
-const HIDE_MOBILE_FOOTER_PREF = "signon.management.page.hideMobileFooter";
 const SHOW_PASSWORD_SYNC_NOTIFICATION_PREF =
   "signon.management.page.showPasswordSyncNotification";
 
 // about:logins will always use the privileged content process,
 // even if it is disabled for other consumers such as about:newtab.
 const EXPECTED_ABOUTLOGINS_REMOTE_TYPE = E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE;
-
-// App store badges sourced from https://developer.apple.com/app-store/marketing/guidelines/#section-badges.
-// This array mirrors the file names from the App store directory (./content/third-party/app-store)
-const APP_STORE_LOCALES = [
-  "az",
-  "ar",
-  "bg",
-  "cs",
-  "da",
-  "de",
-  "el",
-  "en",
-  "es-mx",
-  "es",
-  "et",
-  "fi",
-  "fr",
-  "he",
-  "hu",
-  "id",
-  "it",
-  "ja",
-  "ko",
-  "lt",
-  "lv",
-  "my",
-  "nb",
-  "nl",
-  "nn",
-  "pl",
-  "pt-br",
-  "pt-pt",
-  "ro",
-  "ru",
-  "si",
-  "sk",
-  "sv",
-  "th",
-  "tl",
-  "tr",
-  "vi",
-  "zh-hans",
-  "zh-hant",
-];
-
-// Google play badges sourced from https://play.google.com/intl/en_us/badges/
-// This array mirrors the file names from the play store directory (./content/third-party/play-store)
-const PLAY_STORE_LOCALES = [
-  "af",
-  "ar",
-  "az",
-  "be",
-  "bg",
-  "bn",
-  "bs",
-  "ca",
-  "cs",
-  "da",
-  "de",
-  "el",
-  "en",
-  "es",
-  "et",
-  "eu",
-  "fa",
-  "fr",
-  "gl",
-  "gu",
-  "he",
-  "hi",
-  "hr",
-  "hu",
-  "hy",
-  "id",
-  "is",
-  "it",
-  "ja",
-  "ka",
-  "kk",
-  "km",
-  "kn",
-  "ko",
-  "lo",
-  "lt",
-  "lv",
-  "mk",
-  "mr",
-  "ms",
-  "my",
-  "nb",
-  "ne",
-  "nl",
-  "nn",
-  "pa",
-  "pl",
-  "pt-br",
-  "pt",
-  "ro",
-  "ru",
-  "si",
-  "sk",
-  "sl",
-  "sq",
-  "sr",
-  "sv",
-  "ta",
-  "te",
-  "th",
-  "tl",
-  "tr",
-  "uk",
-  "ur",
-  "uz",
-  "vi",
-  "zh-cn",
-  "zh-tw",
-];
 
 const convertSubjectToLogin = subject => {
   subject.QueryInterface(Ci.nsILoginMetaInfo).QueryInterface(Ci.nsILoginInfo);
@@ -223,6 +107,18 @@ class AboutLoginsParent extends JSWindowActorParent {
     let ownerGlobal = this.browsingContext.embedderElement.ownerGlobal;
     switch (message.name) {
       case "AboutLogins:CreateLogin": {
+        if (!Services.policies.isAllowed("removeMasterPassword")) {
+          if (!LoginHelper.isMasterPasswordSet()) {
+            ownerGlobal.openDialog(
+              "chrome://mozapps/content/preferences/changemp.xhtml",
+              "",
+              "centerscreen,chrome,modal,titlebar"
+            );
+            if (!LoginHelper.isMasterPasswordSet()) {
+              return;
+            }
+          }
+        }
         let newLogin = message.data.login;
         // Remove the path from the origin, if it was provided.
         let origin = LoginHelper.getLoginOrigin(newLogin.origin);
@@ -249,10 +145,6 @@ class AboutLoginsParent extends JSWindowActorParent {
       case "AboutLogins:DeleteLogin": {
         let login = LoginHelper.vanillaObjectToLogin(message.data.login);
         Services.logins.removeLogin(login);
-        break;
-      }
-      case "AboutLogins:HideFooter": {
-        Services.prefs.setBoolPref(HIDE_MOBILE_FOOTER_PREF, true);
         break;
       }
       case "AboutLogins:SortChanged": {
@@ -286,31 +178,6 @@ class AboutLoginsParent extends JSWindowActorParent {
         });
         break;
       }
-      case "AboutLogins:OpenMobileAndroid": {
-        const MOBILE_ANDROID_URL_PREF =
-          "signon.management.page.mobileAndroidURL";
-        const linkTrackingSource = message.data.source;
-        let MOBILE_ANDROID_URL = Services.prefs.getStringPref(
-          MOBILE_ANDROID_URL_PREF
-        );
-        // Append the `utm_creative` query parameter value:
-        MOBILE_ANDROID_URL += linkTrackingSource;
-        ownerGlobal.openWebLinkIn(MOBILE_ANDROID_URL, "tab", {
-          relatedToCurrent: true,
-        });
-        break;
-      }
-      case "AboutLogins:OpenMobileIos": {
-        const MOBILE_IOS_URL_PREF = "signon.management.page.mobileAppleURL";
-        const linkTrackingSource = message.data.source;
-        let MOBILE_IOS_URL = Services.prefs.getStringPref(MOBILE_IOS_URL_PREF);
-        // Append the `utm_creative` query parameter value:
-        MOBILE_IOS_URL += linkTrackingSource;
-        ownerGlobal.openWebLinkIn(MOBILE_IOS_URL, "tab", {
-          relatedToCurrent: true,
-        });
-        break;
-      }
       case "AboutLogins:OpenPreferences": {
         ownerGlobal.openPreferences("privacy-logins");
         break;
@@ -322,103 +189,40 @@ class AboutLoginsParent extends JSWindowActorParent {
             "AboutLogins:MasterPasswordRequest: Message ID required for MasterPasswordRequest."
           );
         }
+        let messageText = { value: "NOT SUPPORTED" };
+        let captionText = { value: "" };
 
-        let loggedIn = false;
-        let telemetryEvent;
-
-        try {
-          // This does no harm if master password isn't set.
-          let tokendb = Cc[
-            "@mozilla.org/security/pk11tokendb;1"
-          ].createInstance(Ci.nsIPK11TokenDB);
-          let token = tokendb.getInternalKeyToken();
-
-          if (Date.now() < AboutLogins._authExpirationTime) {
-            loggedIn = true;
-            telemetryEvent = {
-              object: token.hasPassword ? "master_password" : "os_auth",
-              method: "reauthenticate",
-              value: "success_no_prompt",
-            };
-            return;
-          }
-
-          // Use the OS auth dialog if there is no master password
-          if (!token.hasPassword && !OS_AUTH_ENABLED) {
-            loggedIn = true;
-            telemetryEvent = {
-              object: "os_auth",
-              method: "reauthenticate",
-              value: "success_disabled",
-            };
-            return;
-          }
-          if (!token.hasPassword && OS_AUTH_ENABLED) {
-            if (AppConstants.platform == "macosx") {
-              // OS Auth dialogs on macOS must only provide the "reason" that the prompt
-              // is being displayed.
-              messageId += "-macosx";
-            }
-            let [
-              messageText,
-              captionText,
-            ] = await AboutLoginsL10n.formatMessages([
-              {
-                id: messageId,
-              },
-              {
-                id: "about-logins-os-auth-dialog-caption",
-              },
-            ]);
-            let result = await OSKeyStore.ensureLoggedIn(
-              messageText.value,
-              captionText.value,
-              ownerGlobal,
-              false
-            );
-            loggedIn = result.authenticated;
-            telemetryEvent = {
-              object: "os_auth",
-              method: "reauthenticate",
-              value: result.auth_details,
-            };
-            return;
-          }
-          // Force a log-out of the Master Password.
-          token.checkPassword("");
-
-          // If a master password prompt is already open, just exit early and return false.
-          // The user can re-trigger it after responding to the already open dialog.
-          if (Services.logins.uiBusy) {
-            loggedIn = false;
-            return;
-          }
-
-          // So there's a master password. But since checkPassword didn't succeed, we're logged out (per nsIPK11Token.idl).
-          try {
-            // Relogin and ask for the master password.
-            token.login(true); // 'true' means always prompt for token password. User will be prompted until
-            // clicking 'Cancel' or entering the correct password.
-          } catch (e) {
-            // An exception will be thrown if the user cancels the login prompt dialog.
-            // User is also logged out of Software Security Device.
-          }
-          loggedIn = token.isLoggedIn();
-          telemetryEvent = {
-            object: "master_password",
-            method: "reauthenticate",
-            value: loggedIn ? "success" : "fail",
-          };
-        } finally {
-          if (loggedIn) {
-            const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-            AboutLogins._authExpirationTime = Date.now() + AUTH_TIMEOUT_MS;
-          }
-          this.sendAsyncMessage("AboutLogins:MasterPasswordResponse", {
-            result: loggedIn,
-            telemetryEvent,
-          });
+        // This feature is only supported on Windows and macOS
+        // but we still call in to OSKeyStore on Linux to get
+        // the proper auth_details for Telemetry.
+        // See bug 1614874 for Linux support.
+        if (OS_AUTH_ENABLED && OSKeyStore.canReauth()) {
+          messageId += "-" + AppConstants.platform;
+          [messageText, captionText] = await AboutLoginsL10n.formatMessages([
+            {
+              id: messageId,
+            },
+            {
+              id: "about-logins-os-auth-dialog-caption",
+            },
+          ]);
         }
+
+        let { isAuthorized, telemetryEvent } = await LoginHelper.requestReauth(
+          this.browsingContext.embedderElement,
+          OS_AUTH_ENABLED,
+          AboutLogins._authExpirationTime,
+          messageText.value,
+          captionText.value
+        );
+        if (isAuthorized) {
+          const AUTH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+          AboutLogins._authExpirationTime = Date.now() + AUTH_TIMEOUT_MS;
+        }
+        this.sendAsyncMessage("AboutLogins:MasterPasswordResponse", {
+          result: isAuthorized,
+          telemetryEvent,
+        });
         break;
       }
       case "AboutLogins:Subscribe": {
@@ -441,25 +245,6 @@ class AboutLoginsParent extends JSWindowActorParent {
             AboutLogins.updatePasswordSyncNotificationState(syncState);
           }
 
-          const playStoreBadgeLanguage = Services.locale.negotiateLanguages(
-            Services.locale.appLocalesAsBCP47,
-            PLAY_STORE_LOCALES,
-            "en-us",
-            Services.locale.langNegStrategyLookup
-          )[0];
-
-          const appStoreBadgeLanguage = Services.locale.negotiateLanguages(
-            Services.locale.appLocalesAsBCP47,
-            APP_STORE_LOCALES,
-            "en-us",
-            Services.locale.langNegStrategyLookup
-          )[0];
-
-          const selectedBadgeLanguages = {
-            appStoreBadgeLanguage,
-            playStoreBadgeLanguage,
-          };
-
           let selectedSort = Services.prefs.getCharPref(
             "signon.management.page.sort",
             "name"
@@ -473,7 +258,6 @@ class AboutLoginsParent extends JSWindowActorParent {
             logins,
             selectedSort,
             syncState,
-            selectedBadgeLanguages,
             masterPasswordEnabled: LoginHelper.isMasterPasswordSet(),
             passwordRevealVisible: Services.policies.isAllowed(
               "passwordReveal"
@@ -524,6 +308,126 @@ class AboutLoginsParent extends JSWindowActorParent {
         } catch (error) {
           this.handleLoginStorageErrors(modifiedLogin, error, message);
         }
+        break;
+      }
+      case "AboutLogins:ExportPasswords": {
+        let messageText = { value: "NOT SUPPORTED" };
+        let captionText = { value: "" };
+
+        // This feature is only supported on Windows and macOS
+        // but we still call in to OSKeyStore on Linux to get
+        // the proper auth_details for Telemetry.
+        // See bug 1614874 for Linux support.
+        if (OSKeyStore.canReauth()) {
+          let messageId =
+            "about-logins-export-password-os-auth-dialog-message-" +
+            AppConstants.platform;
+          [messageText, captionText] = await AboutLoginsL10n.formatMessages([
+            {
+              id: messageId,
+            },
+            {
+              id: "about-logins-os-auth-dialog-caption",
+            },
+          ]);
+        }
+
+        let { isAuthorized, telemetryEvent } = await LoginHelper.requestReauth(
+          this.browsingContext.embedderElement,
+          true,
+          null, // Prompt regardless of a recent prompt
+          messageText.value,
+          captionText.value
+        );
+
+        let { method, object, extra = {}, value = null } = telemetryEvent;
+        Services.telemetry.recordEvent("pwmgr", method, object, value, extra);
+
+        if (!isAuthorized) {
+          return;
+        }
+
+        let fp = Cc["@mozilla.org/filepicker;1"].createInstance(
+          Ci.nsIFilePicker
+        );
+        function fpCallback(aResult) {
+          if (aResult != Ci.nsIFilePicker.returnCancel) {
+            LoginExport.exportAsCSV(fp.file.path);
+            Services.telemetry.recordEvent(
+              "pwmgr",
+              "mgmt_menu_item_used",
+              "export_complete"
+            );
+          }
+        }
+        let [
+          title,
+          defaultFilename,
+          okButtonLabel,
+          csvFilterTitle,
+        ] = await AboutLoginsL10n.formatValues([
+          {
+            id: "about-logins-export-file-picker-title",
+          },
+          {
+            id: "about-logins-export-file-picker-default-filename",
+          },
+          {
+            id: "about-logins-export-file-picker-export-button",
+          },
+          {
+            id: "about-logins-export-file-picker-csv-filter-title",
+          },
+        ]);
+
+        fp.init(ownerGlobal, title, Ci.nsIFilePicker.modeSave);
+        fp.appendFilter(csvFilterTitle, "*.csv");
+        fp.appendFilters(Ci.nsIFilePicker.filterAll);
+        fp.defaultString = defaultFilename;
+        fp.defaultExtension = "csv";
+        fp.okButtonLabel = okButtonLabel;
+        fp.open(fpCallback);
+        break;
+      }
+      case "AboutLogins:ImportPasswords": {
+        let fp = Cc["@mozilla.org/filepicker;1"].createInstance(
+          Ci.nsIFilePicker
+        );
+        async function fpCallback(aResult) {
+          if (aResult != Ci.nsIFilePicker.returnCancel) {
+            await LoginCSVImport.importFromCSV(fp.file.path);
+            Services.telemetry.recordEvent(
+              "pwmgr",
+              "mgmt_menu_item_used",
+              "import_csv_complete"
+            );
+          }
+        }
+        let [
+          title,
+          okButtonLabel,
+          csvFilterTitle,
+        ] = await AboutLoginsL10n.formatValues([
+          {
+            id: "about-logins-import-file-picker-title",
+          },
+          {
+            id: "about-logins-import-file-picker-import-button",
+          },
+          {
+            id: "about-logins-import-file-picker-csv-filter-title",
+          },
+        ]);
+
+        fp.init(ownerGlobal, title, Ci.nsIFilePicker.modeOpen);
+        fp.appendFilter(csvFilterTitle, "*.csv");
+        fp.appendFilters(Ci.nsIFilePicker.filterAll);
+        fp.okButtonLabel = okButtonLabel;
+        fp.open(fpCallback);
+        break;
+      }
+      case "AboutLogins:RemoveAllLogins": {
+        Services.logins.removeAllUserFacingLogins();
         break;
       }
     }
@@ -688,7 +592,7 @@ var AboutLogins = {
       id: MASTER_PASSWORD_NOTIFICATION_ID,
       priority: "PRIORITY_WARNING_MEDIUM",
       iconURL: "chrome://browser/skin/login.svg",
-      messageId: "master-password-notification-message",
+      messageId: "about-logins-primary-password-notification-message",
       buttonIds: ["master-password-reload-button"],
       onClicks: [
         function onReloadClick(browser) {
@@ -890,18 +794,14 @@ var AboutLogins = {
     // authenticated. More diagnostics and error states can be handled
     // by other more Sync-specific pages.
     const loggedIn = state.status != UIState.STATUS_NOT_CONFIGURED;
-
-    // Pass the pref set if user has dismissed mobile promo footer
-    const dismissedMobileFooter = Services.prefs.getBoolPref(
-      HIDE_MOBILE_FOOTER_PREF
-    );
+    const passwordSyncEnabled = state.syncEnabled && PASSWORD_SYNC_ENABLED;
 
     return {
       loggedIn,
       email: state.email,
       avatarURL: state.avatarURL,
-      hideMobileFooter: !loggedIn || dismissedMobileFooter,
       fxAccountsEnabled: FXA_ENABLED,
+      passwordSyncEnabled,
     };
   },
 
@@ -921,6 +821,7 @@ var AboutLogins = {
   onPasswordSyncEnabledPreferenceChange(data, previous, latest) {
     Services.prefs.clearUserPref(SHOW_PASSWORD_SYNC_NOTIFICATION_PREF);
     this.updatePasswordSyncNotificationState(this.getSyncState(), latest);
+    this.messageSubscribers("AboutLogins:SyncState", this.getSyncState());
   },
 };
 var _AboutLogins = AboutLogins;

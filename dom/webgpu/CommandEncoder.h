@@ -7,24 +7,35 @@
 #define GPU_CommandEncoder_H_
 
 #include "mozilla/dom/TypedArray.h"
+#include "mozilla/WeakPtr.h"
 #include "mozilla/webgpu/WebGPUTypes.h"
 #include "nsWrapperCache.h"
 #include "ObjectModel.h"
 
 namespace mozilla {
 namespace dom {
+struct GPUComputePassDescriptor;
+struct GPUTextureDataLayout;
+class HTMLCanvasElement;
 template <typename T>
 class Sequence;
 class GPUComputePipelineOrGPURenderPipeline;
-class UnsignedLongSequenceOrGPUExtent3DDict;
+class RangeEnforcedUnsignedLongSequenceOrGPUExtent3DDict;
 struct GPUBufferCopyView;
 struct GPUCommandBufferDescriptor;
 struct GPUImageBitmapCopyView;
 struct GPURenderPassDescriptor;
 struct GPUTextureCopyView;
-typedef UnsignedLongSequenceOrGPUExtent3DDict GPUExtent3D;
+typedef RangeEnforcedUnsignedLongSequenceOrGPUExtent3DDict GPUExtent3D;
 }  // namespace dom
 namespace webgpu {
+namespace ffi {
+struct WGPUComputePass;
+struct WGPURenderPass;
+struct WGPUTextureDataLayout;
+struct WGPUTextureCopyView_TextureId;
+struct WGPUExtent3d;
+}  // namespace ffi
 
 class BindGroup;
 class Buffer;
@@ -42,15 +53,26 @@ class CommandEncoder final : public ObjectBase, public ChildOf<Device> {
 
   const RawId mId;
 
+  static void ConvertTextureDataLayoutToFFI(
+      const dom::GPUTextureDataLayout& aLayout,
+      ffi::WGPUTextureDataLayout* aLayoutFFI);
+  static void ConvertTextureCopyViewToFFI(
+      const dom::GPUTextureCopyView& aView,
+      ffi::WGPUTextureCopyView_TextureId* aViewFFI);
+  static void ConvertExtent3DToFFI(const dom::GPUExtent3D& aExtent,
+                                   ffi::WGPUExtent3d* aExtentFFI);
+
  private:
   ~CommandEncoder();
   void Cleanup();
 
   RefPtr<WebGPUChild> mBridge;
+  // TODO: support multiple target canvases per command encoder
+  WeakPtr<dom::HTMLCanvasElement> mTargetCanvasElement;
 
  public:
-  void EndComputePass(Span<const uint8_t> aData, ErrorResult& aRv);
-  void EndRenderPass(Span<const uint8_t> aData, ErrorResult& aRv);
+  void EndComputePass(ffi::WGPUComputePass& aPass, ErrorResult& aRv);
+  void EndRenderPass(ffi::WGPURenderPass& aPass, ErrorResult& aRv);
 
   void CopyBufferToBuffer(const Buffer& aSource, BufferAddress aSourceOffset,
                           const Buffer& aDestination,

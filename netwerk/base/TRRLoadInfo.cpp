@@ -6,6 +6,7 @@
 
 #include "TRRLoadInfo.h"
 #include "mozilla/dom/ClientSource.h"
+#include "nsContentUtils.h"
 #include "nsIRedirectHistoryEntry.h"
 
 using namespace mozilla::dom;
@@ -92,6 +93,14 @@ NS_IMETHODIMP
 TRRLoadInfo::GetSandboxFlags(uint32_t* aResult) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
+NS_IMETHODIMP
+TRRLoadInfo::GetTriggeringSandboxFlags(uint32_t* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+NS_IMETHODIMP
+TRRLoadInfo::SetTriggeringSandboxFlags(uint32_t aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
 
 NS_IMETHODIMP
 TRRLoadInfo::GetSecurityMode(uint32_t* aFlags) {
@@ -100,6 +109,23 @@ TRRLoadInfo::GetSecurityMode(uint32_t* aFlags) {
 
 NS_IMETHODIMP
 TRRLoadInfo::GetIsInThirdPartyContext(bool* aIsInThirdPartyContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsInThirdPartyContext(bool aIsInThirdPartyContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetIsThirdPartyContextToTopWindow(
+    bool* aIsThirdPartyContextToTopWindow) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsThirdPartyContextToTopWindow(
+    bool aIsThirdPartyContextToTopWindow) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -213,6 +239,17 @@ TRRLoadInfo::GetBrowserUpgradeInsecureRequests(bool* aResult) {
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::GetBrowserDidUpgradeInsecureRequests(bool* aResult) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetBrowserDidUpgradeInsecureRequests(
+    bool aBrowserDidUpgradeInsecureRequests) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetBrowserWouldUpgradeInsecureRequests(bool* aResult) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -276,26 +313,6 @@ TRRLoadInfo::GetForceInheritPrincipalDropped(bool* aResult) {
 
 NS_IMETHODIMP
 TRRLoadInfo::GetInnerWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetParentOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetTopOuterWindowID(uint64_t* aResult) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetFrameOuterWindowID(uint64_t* aResult) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -400,8 +417,8 @@ const nsTArray<nsCOMPtr<nsIPrincipal>>& TRRLoadInfo::AncestorPrincipals() {
   return mEmptyPrincipals;
 }
 
-const nsTArray<uint64_t>& TRRLoadInfo::AncestorOuterWindowIDs() {
-  return mEmptyWindowIDs;
+const nsTArray<uint64_t>& TRRLoadInfo::AncestorBrowsingContextIDs() {
+  return mEmptyBrowsingContextIDs;
 }
 
 void TRRLoadInfo::SetCorsPreflightInfo(const nsTArray<nsCString>& aHeaders,
@@ -456,16 +473,6 @@ TRRLoadInfo::GetDocumentHasUserInteracted(bool* aDocumentHasUserInteracted) {
 
 NS_IMETHODIMP
 TRRLoadInfo::SetDocumentHasUserInteracted(bool aDocumentHasUserInteracted) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::GetDocumentHasLoaded(bool* aDocumentHasLoaded) {
-  return NS_ERROR_NOT_IMPLEMENTED;
-}
-
-NS_IMETHODIMP
-TRRLoadInfo::SetDocumentHasLoaded(bool aDocumentHasLoaded) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -637,12 +644,34 @@ TRRLoadInfo::SetAllowDeprecatedSystemRequests(
 }
 
 NS_IMETHODIMP
+TRRLoadInfo::GetIsInDevToolsContext(bool* aIsInDevToolsContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetIsInDevToolsContext(bool aIsInDevToolsContext) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 TRRLoadInfo::GetParserCreatedScript(bool* aParserCreatedScript) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
 TRRLoadInfo::SetParserCreatedScript(bool aParserCreatedScript) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::GetLoadingEmbedderPolicy(
+    nsILoadInfo::CrossOriginEmbedderPolicy* aOutPolicy) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+TRRLoadInfo::SetLoadingEmbedderPolicy(
+    nsILoadInfo::CrossOriginEmbedderPolicy aPolicy) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 

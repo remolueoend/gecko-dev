@@ -2,76 +2,284 @@
 
 exports[`IssueItem component renders a deprecated issue of CSS property 1`] = `
 <li
-  className="compatibility-issue-item"
+  className="compatibility-issue-item compatibility-issue-item--deprecated"
   key="test-property"
 >
   <div
-    className="compatibility-issue-item__description compatibility-issue-item__description--deprecated"
+    className="compatibility-issue-item__description"
   >
     <a
       className="compatibility-issue-item__mdn-link devtools-monospace"
-      href="test-url?utm_source=devtools&utm_medium=inspector-compatibility&utm_campaign=default"
+      href="test-url"
       onClick={[Function]}
       title="test-url"
     >
       test-property
     </a>
-    <span
-      className="compatibility-issue-item__causes"
+    <Localized
+      id="compatibility-issue-deprecated"
     >
-      (deprecated)
-    </span>
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-deprecated
+      </span>
+    </Localized>
   </div>
+</li>
+`;
+
+exports[`IssueItem component renders a prefixNeeded issue of CSS property 1`] = `
+<li
+  className="compatibility-issue-item"
+  key="test-property"
+>
+  <div
+    className="compatibility-issue-item__description"
+  >
+    <a
+      className="compatibility-issue-item__mdn-link devtools-monospace"
+      href="test-url"
+      onClick={[Function]}
+      title="test-url"
+    >
+      test-property
+    </a>
+    <Localized
+      id="compatibility-issue-prefixneeded"
+    >
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-prefixneeded
+      </span>
+    </Localized>
+  </div>
+  <ul
+    className="compatibility-issue-item__aliases"
+  >
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-1"
+    >
+      test-alias-1
+    </li>
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-2"
+    >
+      test-alias-2
+    </li>
+  </ul>
 </li>
 `;
 
 exports[`IssueItem component renders an experimental issue of CSS property 1`] = `
 <li
-  className="compatibility-issue-item"
+  className="compatibility-issue-item compatibility-issue-item--experimental"
   key="test-property"
 >
   <div
-    className="compatibility-issue-item__description compatibility-issue-item__description--experimental"
+    className="compatibility-issue-item__description"
   >
     <a
       className="compatibility-issue-item__mdn-link devtools-monospace"
-      href="test-url?utm_source=devtools&utm_medium=inspector-compatibility&utm_campaign=default"
+      href="test-url"
       onClick={[Function]}
       title="test-url"
     >
       test-property
     </a>
-    <span
-      className="compatibility-issue-item__causes"
+    <Localized
+      id="compatibility-issue-experimental"
     >
-      (experimental)
-    </span>
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-experimental
+      </span>
+    </Localized>
   </div>
 </li>
 `;
 
-exports[`IssueItem component renders an issue which has both deprecated and experimental 1`] = `
+exports[`IssueItem component renders an issue which has deprecated and experimental 1`] = `
 <li
-  className="compatibility-issue-item"
+  className="compatibility-issue-item compatibility-issue-item--deprecated compatibility-issue-item--experimental"
   key="test-property"
 >
   <div
-    className="compatibility-issue-item__description compatibility-issue-item__description--deprecated compatibility-issue-item__description--experimental"
+    className="compatibility-issue-item__description"
   >
     <a
       className="compatibility-issue-item__mdn-link devtools-monospace"
-      href="test-url?utm_source=devtools&utm_medium=inspector-compatibility&utm_campaign=default"
+      href="test-url"
       onClick={[Function]}
       title="test-url"
     >
       test-property
     </a>
-    <span
-      className="compatibility-issue-item__causes"
+    <Localized
+      id="compatibility-issue-deprecated-experimental"
     >
-      (deprecated,experimental)
-    </span>
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-deprecated-experimental
+      </span>
+    </Localized>
   </div>
+  <ul
+    className="compatibility-issue-item__aliases"
+  >
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-1"
+    >
+      test-alias-1
+    </li>
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-2"
+    >
+      test-alias-2
+    </li>
+  </ul>
+</li>
+`;
+
+exports[`IssueItem component renders an issue which has deprecated and prefixNeeded 1`] = `
+<li
+  className="compatibility-issue-item compatibility-issue-item--deprecated"
+  key="test-property"
+>
+  <div
+    className="compatibility-issue-item__description"
+  >
+    <a
+      className="compatibility-issue-item__mdn-link devtools-monospace"
+      href="test-url"
+      onClick={[Function]}
+      title="test-url"
+    >
+      test-property
+    </a>
+    <Localized
+      id="compatibility-issue-deprecated-prefixneeded"
+    >
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-deprecated-prefixneeded
+      </span>
+    </Localized>
+  </div>
+  <ul
+    className="compatibility-issue-item__aliases"
+  >
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-1"
+    >
+      test-alias-1
+    </li>
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-2"
+    >
+      test-alias-2
+    </li>
+  </ul>
+</li>
+`;
+
+exports[`IssueItem component renders an issue which has deprecated, experimental and prefixNeeded 1`] = `
+<li
+  className="compatibility-issue-item compatibility-issue-item--deprecated compatibility-issue-item--experimental"
+  key="test-property"
+>
+  <div
+    className="compatibility-issue-item__description"
+  >
+    <a
+      className="compatibility-issue-item__mdn-link devtools-monospace"
+      href="test-url"
+      onClick={[Function]}
+      title="test-url"
+    >
+      test-property
+    </a>
+    <Localized
+      id="compatibility-issue-deprecated-experimental-prefixneeded"
+    >
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-deprecated-experimental-prefixneeded
+      </span>
+    </Localized>
+  </div>
+  <ul
+    className="compatibility-issue-item__aliases"
+  >
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-1"
+    >
+      test-alias-1
+    </li>
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-2"
+    >
+      test-alias-2
+    </li>
+  </ul>
+</li>
+`;
+
+exports[`IssueItem component renders an issue which has experimental and prefixNeeded 1`] = `
+<li
+  className="compatibility-issue-item compatibility-issue-item--experimental"
+  key="test-property"
+>
+  <div
+    className="compatibility-issue-item__description"
+  >
+    <a
+      className="compatibility-issue-item__mdn-link devtools-monospace"
+      href="test-url"
+      onClick={[Function]}
+      title="test-url"
+    >
+      test-property
+    </a>
+    <Localized
+      id="compatibility-issue-experimental-prefixneeded"
+    >
+      <span
+        className="compatibility-issue-item__causes"
+      >
+        compatibility-issue-experimental-prefixneeded
+      </span>
+    </Localized>
+  </div>
+  <ul
+    className="compatibility-issue-item__aliases"
+  >
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-1"
+    >
+      test-alias-1
+    </li>
+    <li
+      className="compatibility-issue-item__alias"
+      key="test-alias-2"
+    >
+      test-alias-2
+    </li>
+  </ul>
 </li>
 `;
 
@@ -85,7 +293,7 @@ exports[`IssueItem component renders an issue which has nodes that caused this i
   >
     <a
       className="compatibility-issue-item__mdn-link devtools-monospace"
-      href="test-url?utm_source=devtools&utm_medium=inspector-compatibility&utm_campaign=default"
+      href="test-url"
       onClick={[Function]}
       title="test-url"
     >
@@ -109,15 +317,15 @@ exports[`IssueItem component renders an issue which has nodes that caused this i
 
 exports[`IssueItem component renders an unsupported issue of CSS property 1`] = `
 <li
-  className="compatibility-issue-item"
+  className="compatibility-issue-item compatibility-issue-item--unsupported"
   key="test-property"
 >
   <div
-    className="compatibility-issue-item__description compatibility-issue-item__description--unsupported"
+    className="compatibility-issue-item__description"
   >
     <a
       className="compatibility-issue-item__mdn-link devtools-monospace"
-      href="test-url?utm_source=devtools&utm_medium=inspector-compatibility&utm_campaign=default"
+      href="test-url"
       onClick={[Function]}
       title="test-url"
     >

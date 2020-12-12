@@ -300,7 +300,7 @@ void ExtensionStreamGetter::OnStream(already_AddRefed<nsIInputStream> aStream) {
     return;
   }
 
-  rv = pump->AsyncRead(listener, nullptr);
+  rv = pump->AsyncRead(listener);
   if (NS_FAILED(rv)) {
     CancelRequest(listener, mChannel, rv);
   }
@@ -745,7 +745,7 @@ Result<nsCOMPtr<nsIInputStream>, nsresult> ExtensionProtocolHandler::NewStream(
   nsCOMPtr<nsIChannel> channel;
   MOZ_TRY(NS_NewChannel(getter_AddRefs(channel), resolvedURI,
                         nsContentUtils::GetSystemPrincipal(),
-                        nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                        nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                         nsIContentPolicy::TYPE_OTHER));
 
   nsCOMPtr<nsIFileChannel> fileChannel = do_QueryInterface(channel, &rv);
@@ -781,9 +781,9 @@ Result<nsCOMPtr<nsIInputStream>, nsresult> ExtensionProtocolHandler::NewStream(
   }
 
   nsCOMPtr<nsIInputStream> inputStream;
-  MOZ_TRY(NS_NewLocalFileInputStream(getter_AddRefs(inputStream), requestedFile,
-                                     PR_RDONLY, -1,
-                                     nsIFileInputStream::DEFER_OPEN));
+  MOZ_TRY_VAR(inputStream,
+              NS_NewLocalFileInputStream(requestedFile, PR_RDONLY, -1,
+                                         nsIFileInputStream::DEFER_OPEN));
 
   return inputStream;
 }
@@ -828,9 +828,8 @@ Result<Ok, nsresult> ExtensionProtocolHandler::NewFD(
   MOZ_TRY(innerFileURL->GetFile(getter_AddRefs(jarFile)));
 
   if (!mFileOpenerThread) {
-    mFileOpenerThread =
-        new LazyIdleThread(DEFAULT_THREAD_TIMEOUT_MS,
-                           NS_LITERAL_CSTRING("ExtensionProtocolHandler"));
+    mFileOpenerThread = new LazyIdleThread(DEFAULT_THREAD_TIMEOUT_MS,
+                                           "ExtensionProtocolHandler"_ns);
   }
 
   RefPtr<ExtensionJARFileOpener> fileOpener =
@@ -892,7 +891,7 @@ void ExtensionProtocolHandler::NewSimpleChannel(nsIURI* aURI,
         nsresult rv = origChannel->AsyncOpen(listener);
         if (NS_FAILED(rv)) {
           simpleChannel->Cancel(NS_BINDING_ABORTED);
-          return RequestOrReason(rv);
+          return Err(rv);
         }
         return RequestOrReason(origChannel);
       });

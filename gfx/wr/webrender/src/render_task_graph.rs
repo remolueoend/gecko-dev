@@ -5,11 +5,11 @@
 
 use api::ImageFormat;
 use api::units::*;
-use crate::internal_types::{CacheTextureId, FastHashMap, SavedTargetIndex};
+use crate::internal_types::{CacheTextureId, FastHashMap};
 use crate::render_backend::FrameId;
-use crate::render_target::{RenderTarget, RenderTargetKind, RenderTargetList, ColorRenderTarget};
+use crate::render_target::{RenderTargetKind, RenderTargetList, ColorRenderTarget};
 use crate::render_target::{PictureCacheTarget, TextureCacheRenderTarget, AlphaRenderTarget};
-use crate::render_task::{BlitSource, RenderTask, RenderTaskKind, RenderTaskAddress, RenderTaskData};
+use crate::render_task::{BlitSource, RenderTask, RenderTaskKind, RenderTaskData};
 use crate::render_task::{RenderTaskLocation};
 use crate::util::{VecHelper, Allocation};
 use std::{cmp, usize, f32, i32, u32};
@@ -24,7 +24,6 @@ pub struct RenderTaskGraph {
     ///
     /// We render these unconditionally before-rendering the rest of the tree.
     pub cacheable_render_tasks: Vec<RenderTaskId>,
-    next_saved: SavedTargetIndex,
     frame_id: FrameId,
 }
 
@@ -35,8 +34,6 @@ pub struct RenderTaskGraph {
 /// render tasks.
 pub struct RenderTaskAllocation<'a> {
     alloc: Allocation<'a, RenderTask>,
-    #[cfg(debug_assertions)]
-    frame_id: FrameId,
 }
 
 impl<'l> RenderTaskAllocation<'l> {
@@ -44,8 +41,6 @@ impl<'l> RenderTaskAllocation<'l> {
     pub fn init(self, value: RenderTask) -> RenderTaskId {
         RenderTaskId {
             index: self.alloc.init(value) as u32,
-            #[cfg(debug_assertions)]
-            frame_id: self.frame_id,
         }
     }
 }
@@ -59,7 +54,6 @@ impl RenderTaskGraph {
             tasks: Vec::with_capacity(counters.tasks_len + extra_items),
             task_data: Vec::with_capacity(counters.task_data_len + extra_items),
             cacheable_render_tasks: Vec::with_capacity(counters.cacheable_render_tasks_len + extra_items),
-            next_saved: SavedTargetIndex(0),
             frame_id,
         }
     }
@@ -75,8 +69,6 @@ impl RenderTaskGraph {
     pub fn add(&mut self) -> RenderTaskAllocation {
         RenderTaskAllocation {
             alloc: self.tasks.alloc(),
-            #[cfg(debug_assertions)]
-            frame_id: self.frame_id,
         }
     }
 
@@ -95,10 +87,11 @@ impl RenderTaskGraph {
     /// earlier than the ones that depend on them.
     pub fn generate_passes(
         &mut self,
-        main_render_task: Option<RenderTaskId>,
+        render_task_roots: &[RenderTaskId],
         screen_size: DeviceIntSize,
         gpu_supports_fast_clears: bool,
     ) -> Vec<RenderPass> {
+        profile_scope!("generate_passes");
         let mut passes = Vec::new();
 
         if !self.cacheable_render_tasks.is_empty() {
@@ -106,21 +99,16 @@ impl RenderTaskGraph {
                 &self.cacheable_render_tasks[..],
                 screen_size,
                 gpu_supports_fast_clears,
-                false,
                 &mut passes,
             );
         }
 
-        if let Some(main_task) = main_render_task {
-            self.generate_passes_impl(
-                &[main_task],
-                screen_size,
-                gpu_supports_fast_clears,
-                true,
-                &mut passes,
-            );
-        }
-
+        self.generate_passes_impl(
+            render_task_roots,
+            screen_size,
+            gpu_supports_fast_clears,
+            &mut passes,
+        );
 
         self.resolve_target_conflicts(&mut passes);
 
@@ -135,7 +123,6 @@ impl RenderTaskGraph {
         root_tasks: &[RenderTaskId],
         screen_size: DeviceIntSize,
         gpu_supports_fast_clears: bool,
-        for_main_framebuffer: bool,
         passes: &mut Vec<RenderPass>,
     ) {
         // We recursively visit tasks from the roots (main and cached render tasks), to figure out
@@ -192,15 +179,10 @@ impl RenderTaskGraph {
         }
 
         let offset = passes.len();
+        let pass_count = max_depth as usize + 1;
 
-        passes.reserve(max_depth as usize + 1);
-        for _ in 0..max_depth {
-            passes.alloc().init(RenderPass::new_off_screen(screen_size, gpu_supports_fast_clears));
-        }
-
-        if for_main_framebuffer {
-            passes.alloc().init(RenderPass::new_main_framebuffer(screen_size, gpu_supports_fast_clears));
-        } else {
+        passes.reserve(pass_count);
+        for _ in 0 .. pass_count {
             passes.alloc().init(RenderPass::new_off_screen(screen_size, gpu_supports_fast_clears));
         }
 
@@ -213,8 +195,6 @@ impl RenderTaskGraph {
             let pass_index = offset + (max_depth - task_max_depths[task_index]) as usize;
             let task_id = RenderTaskId {
                 index: task_index as u32,
-                #[cfg(debug_assertions)]
-                frame_id: self.frame_id,
             };
             let task = &self.tasks[task_index];
             passes[pass_index as usize].add_render_task(
@@ -315,8 +295,6 @@ impl RenderTaskGraph {
 
                 let child_task_id = RenderTaskId {
                     index: child_task_index as u32,
-                    #[cfg(debug_assertions)]
-                    frame_id: self.frame_id,
                 };
 
                 let mut blit = RenderTask::new_blit(
@@ -332,8 +310,6 @@ impl RenderTaskGraph {
 
                 let blit_id = RenderTaskId {
                     index: self.tasks.len() as u32,
-                    #[cfg(debug_assertions)]
-                    frame_id: self.frame_id,
                 };
 
                 self.tasks.alloc().init(blit);
@@ -346,22 +322,17 @@ impl RenderTaskGraph {
         }
     }
 
-    pub fn get_task_address(&self, id: RenderTaskId) -> RenderTaskAddress {
-        #[cfg(all(debug_assertions, not(feature = "replay")))]
-        debug_assert_eq!(self.frame_id, id.frame_id);
-        RenderTaskAddress(id.index as u16)
-    }
-
     pub fn write_task_data(&mut self) {
+        profile_scope!("write_task_data");
         for task in &self.tasks {
-            self.task_data.push(task.write_task_data());
+            let (target_rect, target_index) = task.get_target_rect();
+            self.task_data.push(
+                task.kind.write_task_data(
+                    target_rect,
+                    target_index,
+                )
+            );
         }
-    }
-
-    pub fn save_target(&mut self) -> SavedTargetIndex {
-        let id = self.next_saved;
-        self.next_saved.0 += 1;
-        id
     }
 
     #[cfg(debug_assertions)]
@@ -373,16 +344,12 @@ impl RenderTaskGraph {
 impl std::ops::Index<RenderTaskId> for RenderTaskGraph {
     type Output = RenderTask;
     fn index(&self, id: RenderTaskId) -> &RenderTask {
-        #[cfg(all(debug_assertions, not(feature = "replay")))]
-        debug_assert_eq!(self.frame_id, id.frame_id);
         &self.tasks[id.index as usize]
     }
 }
 
 impl std::ops::IndexMut<RenderTaskId> for RenderTaskGraph {
     fn index_mut(&mut self, id: RenderTaskId) -> &mut RenderTask {
-        #[cfg(all(debug_assertions, not(feature = "replay")))]
-        debug_assert_eq!(self.frame_id, id.frame_id);
         &mut self.tasks[id.index as usize]
     }
 }
@@ -392,10 +359,6 @@ impl std::ops::IndexMut<RenderTaskId> for RenderTaskGraph {
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct RenderTaskId {
     pub index: u32,
-
-    #[cfg(debug_assertions)]
-    #[cfg_attr(feature = "replay", serde(default = "FrameId::first"))]
-    frame_id: FrameId,
 }
 
 #[derive(Debug)]
@@ -418,27 +381,7 @@ impl RenderTaskGraphCounters {
 impl RenderTaskId {
     pub const INVALID: RenderTaskId = RenderTaskId {
         index: u32::MAX,
-        #[cfg(debug_assertions)]
-        frame_id: FrameId::INVALID,
     };
-}
-
-/// Contains the set of `RenderTarget`s specific to the kind of pass.
-#[cfg_attr(feature = "capture", derive(Serialize))]
-#[cfg_attr(feature = "replay", derive(Deserialize))]
-pub enum RenderPassKind {
-    /// The final pass to the main frame buffer, where we have a single color
-    /// target for display to the user.
-    MainFramebuffer {
-        main_target: ColorRenderTarget,
-    },
-    /// An intermediate pass, where we may have multiple targets.
-    OffScreen {
-        alpha: RenderTargetList<AlphaRenderTarget>,
-        color: RenderTargetList<ColorRenderTarget>,
-        texture_cache: FastHashMap<(CacheTextureId, usize), TextureCacheRenderTarget>,
-        picture_cache: Vec<PictureCacheTarget>,
-    },
 }
 
 /// A render pass represents a set of rendering operations that don't depend on one
@@ -449,55 +392,38 @@ pub enum RenderPassKind {
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub struct RenderPass {
-    /// The kind of pass, as well as the set of targets associated with that
-    /// kind of pass.
-    pub kind: RenderPassKind,
+    /// The subpasses that describe targets being rendered to in this pass
+    pub alpha: RenderTargetList<AlphaRenderTarget>,
+    pub color: RenderTargetList<ColorRenderTarget>,
+    pub texture_cache: FastHashMap<(CacheTextureId, usize), TextureCacheRenderTarget>,
+    pub picture_cache: Vec<PictureCacheTarget>,
     /// The set of tasks to be performed in this pass, as indices into the
     /// `RenderTaskGraph`.
     pub tasks: Vec<RenderTaskId>,
-    /// Screen size in device pixels - used for opaque alpha batch break threshold.
-    pub screen_size: DeviceIntSize,
+    pub textures_to_invalidate: Vec<CacheTextureId>,
 }
 
 impl RenderPass {
-    /// Creates a pass for the main framebuffer. There is only one of these, and
-    /// it is always the last pass.
-    pub fn new_main_framebuffer(
-        screen_size: DeviceIntSize,
-        gpu_supports_fast_clears: bool,
-    ) -> Self {
-        let main_target = ColorRenderTarget::new(screen_size, gpu_supports_fast_clears);
-        RenderPass {
-            kind: RenderPassKind::MainFramebuffer {
-                main_target,
-            },
-            tasks: vec![],
-            screen_size,
-        }
-    }
-
     /// Creates an intermediate off-screen pass.
     pub fn new_off_screen(
         screen_size: DeviceIntSize,
         gpu_supports_fast_clears: bool,
     ) -> Self {
         RenderPass {
-            kind: RenderPassKind::OffScreen {
-                color: RenderTargetList::new(
-                    screen_size,
-                    ImageFormat::RGBA8,
-                    gpu_supports_fast_clears,
-                ),
-                alpha: RenderTargetList::new(
-                    screen_size,
-                    ImageFormat::R8,
-                    gpu_supports_fast_clears,
-                ),
-                texture_cache: FastHashMap::default(),
-                picture_cache: Vec::new(),
-            },
+            color: RenderTargetList::new(
+                screen_size,
+                ImageFormat::RGBA8,
+                gpu_supports_fast_clears,
+            ),
+            alpha: RenderTargetList::new(
+                screen_size,
+                ImageFormat::R8,
+                gpu_supports_fast_clears,
+            ),
+            texture_cache: FastHashMap::default(),
+            picture_cache: Vec::new(),
             tasks: vec![],
-            screen_size,
+            textures_to_invalidate: Vec::new(),
         }
     }
 
@@ -509,19 +435,17 @@ impl RenderPass {
         target_kind: RenderTargetKind,
         location: &RenderTaskLocation,
     ) {
-        if let RenderPassKind::OffScreen { ref mut color, ref mut alpha, .. } = self.kind {
-            // If this will be rendered to a dynamically-allocated region on an
-            // off-screen render target, update the max-encountered size. We don't
-            // need to do this for things drawn to the texture cache, since those
-            // don't affect our render target allocation.
-            if location.is_dynamic() {
-                let max_size = match target_kind {
-                    RenderTargetKind::Color => &mut color.max_dynamic_size,
-                    RenderTargetKind::Alpha => &mut alpha.max_dynamic_size,
-                };
-                max_size.width = cmp::max(max_size.width, size.width);
-                max_size.height = cmp::max(max_size.height, size.height);
-            }
+        // If this will be rendered to a dynamically-allocated region on an
+        // off-screen render target, update the max-encountered size. We don't
+        // need to do this for things drawn to the texture cache, since those
+        // don't affect our render target allocation.
+        if location.is_dynamic() {
+            let max_size = match target_kind {
+                RenderTargetKind::Color => &mut self.color.max_dynamic_size,
+                RenderTargetKind::Alpha => &mut self.alpha.max_dynamic_size,
+            };
+            max_size.width = cmp::max(max_size.width, size.width);
+            max_size.height = cmp::max(max_size.height, size.height);
         }
 
         self.tasks.push(task_id);
@@ -569,9 +493,9 @@ pub fn dump_render_tasks_as_svg(
             let tx = rect.x + rect.w / 2.0;
             let ty = rect.y + 10.0;
 
-            let saved = if task.saved_index.is_some() { " (Saved)" } else { "" };
+            let saved = if task.save_target { " (Saved)" } else { "" };
             let label = text(tx, ty, format!("{}{}", task.kind.as_str(), saved));
-            let size = text(tx, ty + 12.0, format!("{}", task.location.size()));
+            let size = text(tx, ty + 12.0, format!("{:?}", task.location.size()));
 
             nodes[task_index] = Some(Node { rect, label, size });
 
@@ -712,13 +636,37 @@ fn dump_task_dependency_link(
 }
 
 #[cfg(test)]
-use euclid::{size2, rect};
+use euclid::size2;
 #[cfg(test)]
 use smallvec::SmallVec;
 
 #[cfg(test)]
 fn dyn_location(w: i32, h: i32) -> RenderTaskLocation {
     RenderTaskLocation::Dynamic(None, size2(w, h))
+}
+
+#[cfg(test)]
+fn pic_cache_location(
+    surface_id: u64,
+    x: i32,
+    y: i32,
+) -> RenderTaskLocation {
+    use crate::picture::ResolvedSurfaceTexture;
+    use crate::composite::{NativeSurfaceId, NativeTileId};
+
+    let size = DeviceIntSize::new(512, 512);
+
+    RenderTaskLocation::PictureCache {
+        size,
+        surface: ResolvedSurfaceTexture::Native {
+            id: NativeTileId {
+                surface_id: NativeSurfaceId(surface_id),
+                x,
+                y,
+            },
+            size,
+        },
+    }
 }
 
 #[test]
@@ -742,13 +690,13 @@ fn diamond_task_graph() {
 
     let main_pic = tasks.add().init(RenderTask::new_test(
         color,
-        RenderTaskLocation::Fixed(rect(0, 0, 3200, 1800)),
+        pic_cache_location(0, 0, 0),
         smallvec![b1, b2],
     ));
 
     let initial_number_of_tasks = tasks.tasks.len();
 
-    let passes = tasks.generate_passes(Some(main_pic), size2(3200, 1800), true);
+    let passes = tasks.generate_passes(&[main_pic], size2(3200, 1800), true);
 
     // We should not have added any blits.
     assert_eq!(tasks.tasks.len(), initial_number_of_tasks);
@@ -799,13 +747,13 @@ fn blur_task_graph() {
 
     let main_pic = tasks.add().init(RenderTask::new_test(
         color,
-        RenderTaskLocation::Fixed(rect(0, 0, 3200, 1800)),
+        pic_cache_location(0, 0, 0),
         smallvec![hblur1, hblur2, hblur3, hblur4],
     ));
 
     let initial_number_of_tasks = tasks.tasks.len();
 
-    let passes = tasks.generate_passes(Some(main_pic), size2(3200, 1800), true);
+    let passes = tasks.generate_passes(&[main_pic], size2(3200, 1800), true);
 
     // We should have added a single blit task.
     assert_eq!(tasks.tasks.len(), initial_number_of_tasks + 1);
@@ -845,7 +793,7 @@ fn blur_task_graph() {
     assert_eq!(passes[7].tasks, vec![main_pic]);
 
     // See vblur4's comment above.
-    assert!(tasks[scale2].saved_index.is_some());
+    assert!(tasks[scale2].save_target);
 }
 
 #[test]
@@ -867,13 +815,13 @@ fn culled_tasks() {
 
     let main_pic = tasks.add().init(RenderTask::new_test(
         color,
-        RenderTaskLocation::Fixed(rect(0, 0, 3200, 1800)),
+        pic_cache_location(0, 0, 0),
         smallvec![b2],
     ));
 
     let initial_number_of_tasks = tasks.tasks.len();
 
-    let passes = tasks.generate_passes(Some(main_pic), size2(3200, 1800), true);
+    let passes = tasks.generate_passes(&[main_pic], size2(3200, 1800), true);
 
     // We should not have added any blits.
     assert_eq!(tasks.tasks.len(), initial_number_of_tasks);

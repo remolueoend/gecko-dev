@@ -15,15 +15,19 @@ loader.lazyRequireGetter(
   "devtools/client/inspector/shared/node-reps"
 );
 
+const {
+  highlightNode,
+  unhighlightNode,
+} = require("devtools/client/inspector/boxmodel/actions/box-model-highlighter");
+
 const BOXMODEL_STRINGS_URI = "devtools/client/locales/boxmodel.properties";
 const BOXMODEL_L10N = new LocalizationHelper(BOXMODEL_STRINGS_URI);
 
 class ComputedProperty extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       name: PropTypes.string.isRequired,
-      onHideBoxModelHighlighter: PropTypes.func,
-      onShowBoxModelHighlighterForNode: PropTypes.func,
       referenceElement: PropTypes.object,
       referenceElementType: PropTypes.string,
       setSelectedNode: PropTypes.func,
@@ -34,20 +38,14 @@ class ComputedProperty extends PureComponent {
   constructor(props) {
     super(props);
 
-    this.onFocus = this.onFocus.bind(this);
     this.renderReferenceElementPreview = this.renderReferenceElementPreview.bind(
       this
     );
   }
 
-  onFocus() {
-    this.container.focus();
-  }
-
   renderReferenceElementPreview() {
     const {
-      onShowBoxModelHighlighterForNode,
-      onHideBoxModelHighlighter,
+      dispatch,
       referenceElement,
       referenceElementType,
       setSelectedNode,
@@ -62,6 +60,7 @@ class ComputedProperty extends PureComponent {
       dom.span(
         {
           className: "reference-element-type",
+          role: "button",
           title: BOXMODEL_L10N.getStr("boxmodel.offsetParent.title"),
         },
         referenceElementType
@@ -69,9 +68,8 @@ class ComputedProperty extends PureComponent {
       getNodeRep(referenceElement, {
         onInspectIconClick: () =>
           setSelectedNode(referenceElement, { reason: "box-model" }),
-        onDOMNodeMouseOver: () =>
-          onShowBoxModelHighlighterForNode(referenceElement),
-        onDOMNodeMouseOut: () => onHideBoxModelHighlighter(),
+        onDOMNodeMouseOver: () => dispatch(highlightNode(referenceElement)),
+        onDOMNodeMouseOut: () => dispatch(unhighlightNode()),
       })
     );
   }
@@ -82,32 +80,36 @@ class ComputedProperty extends PureComponent {
     return dom.div(
       {
         className: "computed-property-view",
+        role: "row",
         "data-property-name": name,
-        tabIndex: "0",
         ref: container => {
           this.container = container;
         },
       },
       dom.div(
-        { className: "computed-property-name-container" },
+        {
+          className: "computed-property-name-container",
+          role: "presentation",
+        },
         dom.div(
           {
             className: "computed-property-name theme-fg-color3",
-            tabIndex: "",
+            role: "cell",
             title: name,
-            onClick: this.onFocus,
           },
           name
         )
       ),
       dom.div(
-        { className: "computed-property-value-container" },
+        {
+          className: "computed-property-value-container",
+          role: "presentation",
+        },
         dom.div(
           {
             className: "computed-property-value theme-fg-color1",
             dir: "ltr",
-            tabIndex: "",
-            onClick: this.onFocus,
+            role: "cell",
           },
           value
         ),

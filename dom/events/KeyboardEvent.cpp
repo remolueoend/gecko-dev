@@ -5,12 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/KeyboardEvent.h"
+
 #include "mozilla/TextEvents.h"
+#include "mozilla/dom/Document.h"
 #include "nsContentUtils.h"
+#include "nsRFPService.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 KeyboardEvent::KeyboardEvent(EventTarget* aOwner, nsPresContext* aPresContext,
                              WidgetKeyboardEvent* aEvent)
@@ -378,8 +380,7 @@ bool KeyboardEvent::GetSpoofedModifierStates(const Modifiers aModifierKey,
   return aRawModifierState;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

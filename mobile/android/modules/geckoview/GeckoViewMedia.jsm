@@ -57,7 +57,7 @@ class GeckoViewMedia extends GeckoViewModule {
 }
 
 const GeckoViewRecordingMedia = {
-  // The event listener for this is hooked up in GeckoViewStartup.js
+  // The event listener for this is hooked up in GeckoViewStartup.jsm
   observe(aSubject, aTopic, aData) {
     debug`observe: aTopic=${aTopic}`;
     switch (aTopic) {
@@ -93,6 +93,7 @@ const GeckoViewRecordingMedia = {
         const screen = {};
         const window = {};
         const browser = {};
+        const mediaDevices = {};
         MediaManagerService.mediaCaptureWindowState(
           win,
           hasCamera,
@@ -100,7 +101,7 @@ const GeckoViewRecordingMedia = {
           screen,
           window,
           browser,
-          true
+          mediaDevices
         );
         var cameraStatus = getStatusString(hasCamera.value);
         var microphoneStatus = getStatusString(hasMicrophone.value);
@@ -127,4 +128,4 @@ const GeckoViewRecordingMedia = {
   },
 };
 
-const { debug, warn } = GeckoViewMedia.initLogging("GeckoViewMedia"); // eslint-disable-line no-unused-vars
+const { debug, warn } = GeckoViewMedia.initLogging("GeckoViewMedia");

@@ -12,6 +12,9 @@
 #include "mozilla/dom/FragmentOrElement.h"
 #include "nsStringFwd.h"
 
+// XXX Avoid including this here by moving function bodies to the cpp file.
+#include "mozilla/dom/Element.h"
+
 class nsAtom;
 class nsIContent;
 
@@ -73,6 +76,11 @@ class DocumentFragment : public FragmentOrElement {
   Element* GetHost() const { return mHost; }
 
   void SetHost(Element* aHost) { mHost = aHost; }
+
+  void GetInnerHTML(nsAString& aInnerHTML) { GetMarkup(false, aInnerHTML); }
+  void SetInnerHTML(const nsAString& aInnerHTML, ErrorResult& aError) {
+    SetInnerHTMLInternal(aInnerHTML, aError);
+  }
 
   static already_AddRefed<DocumentFragment> Constructor(
       const GlobalObject& aGlobal, ErrorResult& aRv);

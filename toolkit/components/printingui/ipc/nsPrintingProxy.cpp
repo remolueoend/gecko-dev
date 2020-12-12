@@ -10,6 +10,7 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/BrowserChild.h"
 #include "mozilla/layout/RemotePrintJobChild.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/Unused.h"
 #include "nsIDocShell.h"
 #include "nsIPrintingPromptService.h"
@@ -218,15 +219,8 @@ bool nsPrintingProxy::DeallocPPrintSettingsDialogChild(
   return true;
 }
 
-PRemotePrintJobChild* nsPrintingProxy::AllocPRemotePrintJobChild() {
+already_AddRefed<PRemotePrintJobChild>
+nsPrintingProxy::AllocPRemotePrintJobChild() {
   RefPtr<RemotePrintJobChild> remotePrintJob = new RemotePrintJobChild();
-  return remotePrintJob.forget().take();
-}
-
-bool nsPrintingProxy::DeallocPRemotePrintJobChild(
-    PRemotePrintJobChild* aDoomed) {
-  RemotePrintJobChild* remotePrintJob =
-      static_cast<RemotePrintJobChild*>(aDoomed);
-  NS_RELEASE(remotePrintJob);
-  return true;
+  return remotePrintJob.forget();
 }

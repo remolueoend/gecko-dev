@@ -25,10 +25,10 @@ const TreeView = createFactory(TreeViewClass);
 const PropertiesViewContextMenu = require("devtools/client/netmonitor/src/widgets/PropertiesViewContextMenu");
 
 loader.lazyGetter(this, "Rep", function() {
-  return require("devtools/client/shared/components/reps/reps").REPS.Rep;
+  return require("devtools/client/shared/components/reps/index").REPS.Rep;
 });
 loader.lazyGetter(this, "MODE", function() {
-  return require("devtools/client/shared/components/reps/reps").MODE;
+  return require("devtools/client/shared/components/reps/index").MODE;
 });
 
 // Constants
@@ -62,6 +62,9 @@ class PropertiesView extends Component {
       selectPath: PropTypes.func,
       mode: PropTypes.symbol,
       defaultSelectFirstNode: PropTypes.bool,
+      useQuotes: PropTypes.bool,
+      onClickRow: PropTypes.func,
+      contextMenuFormatters: PropTypes.object,
     };
   }
 
@@ -71,6 +74,8 @@ class PropertiesView extends Component {
       enableFilter: true,
       expandableStrings: false,
       cropLimit: 1024,
+      useQuotes: true,
+      contextMenuFormatters: {},
     };
   }
 
@@ -154,9 +159,14 @@ class PropertiesView extends Component {
     // if data exists and can be copied, then show the contextmenu
     if (typeof object === "object") {
       if (!this.contextMenu) {
-        this.contextMenu = new PropertiesViewContextMenu({});
+        this.contextMenu = new PropertiesViewContextMenu({
+          customFormatters: this.props.contextMenuFormatters,
+        });
       }
-      this.contextMenu.open(evt, { member, object: this.props.object });
+      this.contextMenu.open(evt, window.getSelection(), {
+        member,
+        object: this.props.object,
+      });
     }
   }
 
@@ -184,18 +194,11 @@ class PropertiesView extends Component {
 
   render() {
     const {
-      decorator,
-      enableInput,
-      expandableStrings,
       expandedNodes,
       object,
-      renderRow,
       renderValue,
-      provider,
       targetSearchResult,
       selectPath,
-      cropLimit,
-      defaultSelectFirstNode,
     } = this.props;
 
     return div(
@@ -203,14 +206,9 @@ class PropertiesView extends Component {
       div(
         { className: "tree-container" },
         TreeView({
+          ...this.props,
           ref: () => this.scrollSelectedIntoView(),
-          object,
-          provider,
           columns: [{ id: "value", width: "100%" }],
-          decorator,
-          enableInput,
-          expandableStrings,
-          useQuotes: true,
           expandedNodes:
             expandedNodes ||
             TreeViewClass.getExpandedNodes(object, {
@@ -218,15 +216,12 @@ class PropertiesView extends Component {
               maxNodes: AUTO_EXPAND_MAX_NODES,
             }),
           onFilter: props => this.onFilter(props),
-          renderRow,
           renderValue: renderValue || this.renderValueWithRep,
           onContextMenuRow: this.onContextMenuRow,
           selected:
             typeof selectPath == "function"
               ? selectPath(targetSearchResult)
               : this.getSelectedPath(targetSearchResult),
-          defaultSelectFirstNode,
-          cropLimit,
         })
       )
     );

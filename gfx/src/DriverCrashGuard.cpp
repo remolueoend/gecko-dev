@@ -59,9 +59,9 @@ void DriverCrashGuard::InitializeIfNeeded() {
 }
 
 static inline bool AreCrashGuardsEnabled(CrashGuardType aType) {
-  // Crash guard isn't supported in the GPU process since the entire
+  // Crash guard isn't supported in the GPU or RDD process since the entire
   // process is basically a crash guard.
-  if (XRE_IsGPUProcess()) {
+  if (XRE_IsGPUProcess() || XRE_IsRDDProcess()) {
     return false;
   }
 #ifdef NIGHTLY_BUILD
@@ -283,8 +283,8 @@ bool DriverCrashGuard::UpdateBaseEnvironment() {
   }
 
   // Firefox properties.
-  changed |=
-      CheckAndUpdatePref("appVersion", NS_LITERAL_STRING(MOZ_APP_VERSION));
+  changed |= CheckAndUpdatePref(
+      "appVersion", NS_LITERAL_STRING_FROM_CSTRING(MOZ_APP_VERSION));
 
   return changed;
 }

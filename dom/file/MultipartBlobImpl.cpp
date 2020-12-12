@@ -9,6 +9,7 @@
 #include "mozilla/dom/BlobSet.h"
 #include "mozilla/dom/FileBinding.h"
 #include "mozilla/dom/UnionTypes.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIMultiplexInputStream.h"
 #include "nsRFPService.h"
 #include "nsStringStream.h"
@@ -55,7 +56,7 @@ void MultipartBlobImpl::CreateInputStream(nsIInputStream** aStream,
 
   uint32_t length = mBlobImpls.Length();
   if (length == 0 || mLength == 0) {
-    aRv = NS_NewCStringInputStream(aStream, EmptyCString());
+    aRv = NS_NewCStringInputStream(aStream, ""_ns);
     return;
   }
 

@@ -5,14 +5,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/MIDIInput.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/MIDIPortChild.h"
 #include "mozilla/dom/MIDIInputBinding.h"
 #include "mozilla/dom/MIDIMessageEvent.h"
 #include "mozilla/dom/MIDIMessageEventBinding.h"
 #include "nsDOMNavigationTiming.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 MIDIInput::MIDIInput(nsPIDOMWindowInner* aWindow, MIDIAccess* aMIDIAccessParent)
     : MIDIPort(aWindow, aMIDIAccessParent) {}
@@ -60,5 +60,4 @@ void MIDIInput::SetOnmidimessage(EventHandlerNonNull* aCallback) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -86,7 +86,7 @@ bool AtomMarkingRuntime::computeBitmapFromChunkMarkBits(JSRuntime* runtime,
   for (auto thingKind : AllAllocKinds()) {
     for (ArenaIter aiter(atomsZone, thingKind); !aiter.done(); aiter.next()) {
       Arena* arena = aiter.get();
-      uintptr_t* chunkWords = arena->chunk()->bitmap.arenaBits(arena);
+      MarkBitmapWord* chunkWords = arena->chunk()->bitmap.arenaBits(arena);
       bitmap.copyBitsFrom(arena->atomBitmapStart(), ArenaBitmapWords,
                           chunkWords);
     }
@@ -121,7 +121,7 @@ static void BitwiseOrIntoChunkMarkBits(JSRuntime* runtime, Bitmap& bitmap) {
   for (auto thingKind : AllAllocKinds()) {
     for (ArenaIter aiter(atomsZone, thingKind); !aiter.done(); aiter.next()) {
       Arena* arena = aiter.get();
-      uintptr_t* chunkWords = arena->chunk()->bitmap.arenaBits(arena);
+      MarkBitmapWord* chunkWords = arena->chunk()->bitmap.arenaBits(arena);
       bitmap.bitwiseOrRangeInto(arena->atomBitmapStart(), ArenaBitmapWords,
                                 chunkWords);
     }
@@ -172,7 +172,7 @@ void AtomMarkingRuntime::markId(JSContext* cx, jsid id) {
     markAtom(cx, JSID_TO_SYMBOL(id));
     return;
   }
-  MOZ_ASSERT(!JSID_IS_GCTHING(id));
+  MOZ_ASSERT(!id.isGCThing());
 }
 
 void AtomMarkingRuntime::markAtomValue(JSContext* cx, const Value& value) {
@@ -211,8 +211,15 @@ bool AtomMarkingRuntime::atomIsMarked(Zone* zone, T* thing) {
     return true;
   }
 
-  if (ThingIsPermanent(thing)) {
+  if (thing->isPermanentAndMayBeShared()) {
     return true;
+  }
+
+  if constexpr (std::is_same_v<T, JSAtom>) {
+    JSRuntime* rt = zone->runtimeFromAnyThread();
+    if (rt->atoms().atomIsPinned(rt, thing)) {
+      return true;
+    }
   }
 
   size_t bit = GetAtomBit(&thing->asTenured());
@@ -252,7 +259,7 @@ bool AtomMarkingRuntime::idIsMarked(Zone* zone, jsid id) {
     return atomIsMarked(zone, JSID_TO_SYMBOL(id));
   }
 
-  MOZ_ASSERT(!JSID_IS_GCTHING(id));
+  MOZ_ASSERT(!id.isGCThing());
   return true;
 }
 

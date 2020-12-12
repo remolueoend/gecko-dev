@@ -50,7 +50,7 @@ interface mixin NavigatorID {
   readonly attribute DOMString appName;
   [Constant, Cached, Throws, NeedsCallerType]
   readonly attribute DOMString appVersion;
-  [Constant, Cached, Throws, NeedsCallerType]
+  [Pure, Cached, Throws, NeedsCallerType]
   readonly attribute DOMString platform;
   [Pure, Cached, Throws, NeedsCallerType]
   readonly attribute DOMString userAgent;
@@ -84,7 +84,7 @@ interface mixin NavigatorContentUtils {
   [Throws, ChromeOnly]
   void checkProtocolHandlerAllowed(DOMString scheme, URI handlerURI, URI documentURI);
   [Throws, SecureContext]
-  void registerProtocolHandler(DOMString scheme, DOMString url, DOMString title);
+  void registerProtocolHandler(DOMString scheme, DOMString url);
   // NOT IMPLEMENTED
   //void unregisterProtocolHandler(DOMString scheme, DOMString url);
 };

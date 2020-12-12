@@ -7,12 +7,6 @@ var gConsoleErrors = 0;
 
 add_task(async function() {
   registerCleanupFunction(function() {
-    clearAllPluginPermissions();
-    setTestPluginEnabledState(Ci.nsIPluginTag.STATE_ENABLED, "Test Plug-in");
-    setTestPluginEnabledState(
-      Ci.nsIPluginTag.STATE_ENABLED,
-      "Second Test Plug-in"
-    );
     Services.console.unregisterListener(errorListener);
     gBrowser.removeCurrentTab();
     window.focus();
@@ -43,7 +37,6 @@ add_task(async function() {
     "plugin should not have been found."
   );
 
-  // simple cpows
   await SpecialPowers.spawn(gTestBrowser, [], function() {
     let plugin = content.document.getElementById("plugin");
     ok(plugin, "plugin should be in the page");

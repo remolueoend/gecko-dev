@@ -263,7 +263,9 @@ function normalizeFilter(filter) {
   return {
     urls: filter.urls || null,
     types: filter.types || null,
-    incognito: filter.incognito !== undefined ? filter.incognito : null,
+    tabId: filter.tabId ?? null,
+    windowId: filter.windowId ?? null,
+    incognito: filter.incognito ?? null,
   };
 }
 
@@ -285,22 +287,21 @@ class ProxyChannelFilter {
   // in sync with WebRequest.jsm as well as parent/ext-webRequest.js when
   // apropiate.
   getRequestData(channel, extraData) {
-    let originAttributes =
-      channel.loadInfo && channel.loadInfo.originAttributes;
+    let originAttributes = channel.loadInfo?.originAttributes;
     let data = {
       requestId: String(channel.id),
       url: channel.finalURL,
       method: channel.method,
       type: channel.type,
       fromCache: !!channel.fromCache,
-      incognito: originAttributes && originAttributes.privateBrowsingId > 0,
+      incognito: originAttributes?.privateBrowsingId > 0,
       thirdParty: channel.thirdParty,
 
       originUrl: channel.originURL || undefined,
       documentUrl: channel.documentURL || undefined,
 
-      frameId: channel.windowId,
-      parentFrameId: channel.parentWindowId,
+      frameId: channel.frameId,
+      parentFrameId: channel.parentFrameId,
 
       frameAncestors: channel.frameAncestors || undefined,
 
@@ -308,7 +309,7 @@ class ProxyChannelFilter {
 
       ...extraData,
     };
-    if (originAttributes && this.extension.hasPermission("cookies")) {
+    if (originAttributes) {
       data.cookieStoreId = getCookieStoreIdForOriginAttributes(
         originAttributes
       );

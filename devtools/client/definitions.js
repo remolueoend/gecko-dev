@@ -73,19 +73,8 @@ loader.lazyGetter(
   "ApplicationPanel",
   () => require("devtools/client/application/panel").ApplicationPanel
 );
-loader.lazyGetter(
-  this,
-  "WhatsNewPanel",
-  () => require("devtools/client/whats-new/panel").WhatsNewPanel
-);
 
 // Other dependencies
-loader.lazyRequireGetter(
-  this,
-  "AccessibilityStartup",
-  "devtools/client/accessibility/accessibility-startup",
-  true
-);
 loader.lazyRequireGetter(
   this,
   "ResponsiveUIManager",
@@ -330,11 +319,7 @@ Tools.memory = {
   tooltip: l10n("memory.tooltip"),
 
   isTargetSupported: function(target) {
-    return (
-      target.getTrait("heapSnapshots") &&
-      !target.isAddon &&
-      !target.isWorkerTarget
-    );
+    return !target.isAddon && !target.isWorkerTarget;
   },
 
   build: function(frame, target) {
@@ -388,10 +373,7 @@ Tools.storage = {
   inMenu: true,
 
   isTargetSupported: function(target) {
-    return (
-      target.isLocalTab ||
-      (target.hasActor("storage") && target.getTrait("storageInspector"))
-    );
+    return target.hasActor("storage");
   },
 
   build: function(iframeWindow, toolbox) {
@@ -418,7 +400,7 @@ Tools.dom = {
   inMenu: true,
 
   isTargetSupported: function(target) {
-    return target.getTrait("webConsoleCommands");
+    return true;
   },
 
   build: function(iframeWindow, toolbox) {
@@ -449,12 +431,7 @@ Tools.accessibility = {
   },
 
   build(iframeWindow, toolbox) {
-    const startup = toolbox.getToolStartup("accessibility");
-    return new AccessibilityPanel(iframeWindow, toolbox, startup);
-  },
-
-  buildToolStartup(toolbox) {
-    return new AccessibilityStartup(toolbox);
+    return new AccessibilityPanel(iframeWindow, toolbox);
   },
 };
 
@@ -467,8 +444,7 @@ Tools.application = {
   label: l10n("application.label"),
   panelLabel: l10n("application.panellabel"),
   tooltip: l10n("application.tooltip"),
-  inMenu: AppConstants.NIGHTLY_BUILD,
-  hiddenInOptions: !AppConstants.NIGHTLY_BUILD,
+  inMenu: true,
 
   isTargetSupported: function(target) {
     return target.hasActor("manifest");
@@ -476,44 +452,6 @@ Tools.application = {
 
   build: function(iframeWindow, toolbox) {
     return new ApplicationPanel(iframeWindow, toolbox);
-  },
-};
-
-Tools.whatsnew = {
-  id: "whatsnew",
-  ordinal: 12,
-  visibilityswitch: "devtools.whatsnew.enabled",
-  icon: "chrome://browser/skin/whatsnew.svg",
-  url: "chrome://devtools/content/whats-new/index.html",
-  // TODO: This panel is currently for english users only.
-  // This should be properly localized in Bug 1596038
-  label: "What’s New",
-  panelLabel: "What’s New",
-  tooltip: "What’s New",
-  inMenu: false,
-
-  isTargetSupported: function(target) {
-    // The panel is currently not localized and should only be displayed to
-    // english users. See Bug 1596038 for cleanup.
-    const isEnglishUser = Services.locale.negotiateLanguages(
-      ["en"],
-      [Services.locale.appLocaleAsBCP47]
-    ).length;
-
-    // In addition to the basic visibility switch preference, we also have a
-    // higher level preference to disable the whole panel regardless of other
-    // settings. Should be removed in Bug 1596037.
-    const isFeatureEnabled = Services.prefs.getBoolPref(
-      "devtools.whatsnew.feature-enabled",
-      false
-    );
-
-    // This panel should only be enabled for regular web toolboxes.
-    return target.isLocalTab && isEnglishUser && isFeatureEnabled;
-  },
-
-  build: function(iframeWindow, toolbox) {
-    return new WhatsNewPanel(iframeWindow, toolbox);
   },
 };
 
@@ -530,7 +468,6 @@ var defaultTools = [
   Tools.dom,
   Tools.accessibility,
   Tools.application,
-  Tools.whatsnew,
 ];
 
 exports.defaultTools = defaultTools;
@@ -553,7 +490,7 @@ Tools.lightTheme = {
 
 exports.defaultThemes = [Tools.darkTheme, Tools.lightTheme];
 
-// White-list buttons that can be toggled to prevent adding prefs for
+// List buttons that can be toggled to prevent adding prefs for
 // addons that have manually inserted toolbarbuttons into DOM.
 // (By default, supported target is only local tab)
 exports.ToolboxButtons = [
@@ -637,10 +574,8 @@ function createHighlightButton(highlighterName, id) {
       if (highlighter.isShown()) {
         return highlighter.hide();
       }
-      // Starting with FF63, higlighter's spec accept a null first argument.
-      // Still pass an empty object to fake a domnode front in order to support old
-      // servers.
-      return highlighter.show({});
+
+      return highlighter.show();
     },
     isChecked(toolbox) {
       // if the inspector doesn't exist, then the highlighter has not yet been connected

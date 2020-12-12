@@ -11,6 +11,7 @@
 #include "mozilla/layers/UiCompositorControllerMessageTypes.h"
 #include "mozilla/layers/UiCompositorControllerParent.h"
 #include "mozilla/gfx/GPUProcessManager.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/StaticPtr.h"
 #include "nsBaseWidget.h"
 #include "nsProxyRelease.h"
@@ -27,9 +28,7 @@ static RefPtr<nsThread> GetUiThread() {
 }
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
-static bool IsOnUiThread() {
-  return GetUiThread()->SerialEventTarget()->IsOnCurrentThread();
-}
+static bool IsOnUiThread() { return GetUiThread()->IsOnCurrentThread(); }
 
 namespace mozilla {
 namespace layers {
@@ -114,14 +113,6 @@ bool UiCompositorControllerChild::SetFixedBottomOffset(int32_t aOffset) {
   return SendFixedBottomOffset(aOffset);
 }
 
-bool UiCompositorControllerChild::SetPinned(const bool& aPinned,
-                                            const int32_t& aReason) {
-  if (!mIsOpen) {
-    return false;
-  }
-  return SendPinned(aPinned, aReason);
-}
-
 bool UiCompositorControllerChild::ToolbarAnimatorMessageFromUI(
     const int32_t& aMessage) {
   if (!mIsOpen) {
@@ -130,10 +121,9 @@ bool UiCompositorControllerChild::ToolbarAnimatorMessageFromUI(
 
   if (aMessage == IS_COMPOSITOR_CONTROLLER_OPEN) {
     RecvToolbarAnimatorMessageFromCompositor(COMPOSITOR_CONTROLLER_OPEN);
-    return true;
   }
 
-  return SendToolbarAnimatorMessageFromUI(aMessage);
+  return true;
 }
 
 bool UiCompositorControllerChild::SetDefaultClearColor(const uint32_t& aColor) {
@@ -165,15 +155,6 @@ bool UiCompositorControllerChild::EnableLayerUpdateNotifications(
   return SendEnableLayerUpdateNotifications(aEnable);
 }
 
-bool UiCompositorControllerChild::ToolbarPixelsToCompositor(
-    Shmem& aMem, const ScreenIntSize& aSize) {
-  if (!mIsOpen) {
-    return false;
-  }
-
-  return SendToolbarPixelsToCompositor(std::move(aMem), aSize);
-}
-
 void UiCompositorControllerChild::Destroy() {
   if (!IsOnUiThread()) {
     GetUiThread()->Dispatch(
@@ -200,12 +181,6 @@ void UiCompositorControllerChild::Destroy() {
 
 void UiCompositorControllerChild::SetBaseWidget(nsBaseWidget* aWidget) {
   mWidget = aWidget;
-}
-
-bool UiCompositorControllerChild::AllocPixelBuffer(const int32_t aSize,
-                                                   Shmem* aMem) {
-  MOZ_ASSERT(aSize > 0);
-  return AllocShmem(aSize, ipc::SharedMemory::TYPE_BASIC, aMem);
 }
 
 bool UiCompositorControllerChild::DeallocPixelBuffer(Shmem& aMem) {
@@ -266,10 +241,10 @@ mozilla::ipc::IPCResult UiCompositorControllerChild::RecvRootFrameMetrics(
 }
 
 mozilla::ipc::IPCResult UiCompositorControllerChild::RecvScreenPixels(
-    ipc::Shmem&& aMem, const ScreenIntSize& aSize) {
+    ipc::Shmem&& aMem, const ScreenIntSize& aSize, bool aNeedsYFlip) {
 #if defined(MOZ_WIDGET_ANDROID)
   if (mWidget) {
-    mWidget->RecvScreenPixels(std::move(aMem), aSize);
+    mWidget->RecvScreenPixels(std::move(aMem), aSize, aNeedsYFlip);
   }
 #endif  // defined(MOZ_WIDGET_ANDROID)
 
@@ -286,8 +261,7 @@ UiCompositorControllerChild::~UiCompositorControllerChild() = default;
 void UiCompositorControllerChild::OpenForSameProcess() {
   MOZ_ASSERT(IsOnUiThread());
 
-  mIsOpen = Open(mParent->GetIPCChannel(),
-                 mozilla::layers::CompositorThreadHolder::Loop(),
+  mIsOpen = Open(mParent->GetIPCChannel(), mozilla::layers::CompositorThread(),
                  mozilla::ipc::ChildSide);
 
   if (!mIsOpen) {

@@ -11,6 +11,7 @@
 
 #include "js/Array.h"  // JS::GetArrayLength, JS::NewArrayObject
 #include "mozilla/dom/BlobBinding.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Exceptions.h"
 #include "mozilla/dom/File.h"
@@ -27,8 +28,11 @@
 #include "mozilla/dom/WorkletImpl.h"
 #include "mozilla/dom/WorkletThread.h"
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/HoldDropJSObjects.h"
+#include "mozilla/JSObjectHolder.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/StaticPrefs_devtools.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDOMNavigationTiming.h"
 #include "nsGlobalWindow.h"
@@ -69,8 +73,7 @@
 
 using namespace mozilla::dom::exceptions;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 struct ConsoleStructuredCloneData {
   nsCOMPtr<nsIGlobalObject> mGlobal;
@@ -498,7 +501,9 @@ class ConsoleCallDataWorkletRunnable final : public ConsoleWorkletRunnable {
 
   NS_IMETHOD Run() override {
     AssertIsOnMainThread();
-    AutoSafeJSContext cx;
+    AutoJSAPI jsapi;
+    jsapi.Init();
+    JSContext* cx = jsapi.cx();
 
     JSObject* sandbox =
         mConsoleData->GetOrCreateSandbox(cx, mWorkletImpl->Principal());
@@ -678,14 +683,14 @@ class ConsoleCallDataWorkerRunnable final : public ConsoleWorkerRunnable {
       nsString id = frame.mFilename;
       nsString innerID;
       if (aWorkerPrivate->IsSharedWorker()) {
-        innerID = NS_LITERAL_STRING("SharedWorker");
+        innerID = u"SharedWorker"_ns;
       } else if (aWorkerPrivate->IsServiceWorker()) {
-        innerID = NS_LITERAL_STRING("ServiceWorker");
+        innerID = u"ServiceWorker"_ns;
         // Use scope as ID so the webconsole can decide if the message should
         // show up per tab
         CopyASCIItoUTF16(aWorkerPrivate->ServiceWorkerScope(), id);
       } else {
-        innerID = NS_LITERAL_STRING("Worker");
+        innerID = u"Worker"_ns;
       }
 
       mCallData->SetIDs(id, innerID);
@@ -729,7 +734,9 @@ class ConsoleProfileWorkletRunnable final : public ConsoleWorkletRunnable {
   NS_IMETHOD Run() override {
     AssertIsOnMainThread();
 
-    AutoSafeJSContext cx;
+    AutoJSAPI jsapi;
+    jsapi.Init();
+    JSContext* cx = jsapi.cx();
 
     JSObject* sandbox =
         mConsoleData->GetOrCreateSandbox(cx, mWorkletImpl->Principal());
@@ -976,56 +983,54 @@ void Console::ClearStorage() {
 #define METHOD(name, string)                                          \
   /* static */ void Console::name(const GlobalObject& aGlobal,        \
                                   const Sequence<JS::Value>& aData) { \
-    Method(aGlobal, Method##name, NS_LITERAL_STRING(string), aData);  \
+    Method(aGlobal, Method##name, nsLiteralString(string), aData);    \
   }
 
-METHOD(Log, "log")
-METHOD(Info, "info")
-METHOD(Warn, "warn")
-METHOD(Error, "error")
-METHOD(Exception, "exception")
-METHOD(Debug, "debug")
-METHOD(Table, "table")
-METHOD(Trace, "trace")
+METHOD(Log, u"log")
+METHOD(Info, u"info")
+METHOD(Warn, u"warn")
+METHOD(Error, u"error")
+METHOD(Exception, u"exception")
+METHOD(Debug, u"debug")
+METHOD(Table, u"table")
+METHOD(Trace, u"trace")
 
 // Displays an interactive listing of all the properties of an object.
-METHOD(Dir, "dir");
-METHOD(Dirxml, "dirxml");
+METHOD(Dir, u"dir");
+METHOD(Dirxml, u"dirxml");
 
-METHOD(Group, "group")
-METHOD(GroupCollapsed, "groupCollapsed")
+METHOD(Group, u"group")
+METHOD(GroupCollapsed, u"groupCollapsed")
 
 #undef METHOD
 
 /* static */
 void Console::Clear(const GlobalObject& aGlobal) {
   const Sequence<JS::Value> data;
-  Method(aGlobal, MethodClear, NS_LITERAL_STRING("clear"), data);
+  Method(aGlobal, MethodClear, u"clear"_ns, data);
 }
 
 /* static */
 void Console::GroupEnd(const GlobalObject& aGlobal) {
   const Sequence<JS::Value> data;
-  Method(aGlobal, MethodGroupEnd, NS_LITERAL_STRING("groupEnd"), data);
+  Method(aGlobal, MethodGroupEnd, u"groupEnd"_ns, data);
 }
 
 /* static */
 void Console::Time(const GlobalObject& aGlobal, const nsAString& aLabel) {
-  StringMethod(aGlobal, aLabel, Sequence<JS::Value>(), MethodTime,
-               NS_LITERAL_STRING("time"));
+  StringMethod(aGlobal, aLabel, Sequence<JS::Value>(), MethodTime, u"time"_ns);
 }
 
 /* static */
 void Console::TimeEnd(const GlobalObject& aGlobal, const nsAString& aLabel) {
   StringMethod(aGlobal, aLabel, Sequence<JS::Value>(), MethodTimeEnd,
-               NS_LITERAL_STRING("timeEnd"));
+               u"timeEnd"_ns);
 }
 
 /* static */
 void Console::TimeLog(const GlobalObject& aGlobal, const nsAString& aLabel,
                       const Sequence<JS::Value>& aData) {
-  StringMethod(aGlobal, aLabel, aData, MethodTimeLog,
-               NS_LITERAL_STRING("timeLog"));
+  StringMethod(aGlobal, aLabel, aData, MethodTimeLog, u"timeLog"_ns);
 }
 
 /* static */
@@ -1083,20 +1088,19 @@ void Console::TimeStamp(const GlobalObject& aGlobal,
     return;
   }
 
-  Method(aGlobal, MethodTimeStamp, NS_LITERAL_STRING("timeStamp"), data);
+  Method(aGlobal, MethodTimeStamp, u"timeStamp"_ns, data);
 }
 
 /* static */
 void Console::Profile(const GlobalObject& aGlobal,
                       const Sequence<JS::Value>& aData) {
-  ProfileMethod(aGlobal, MethodProfile, NS_LITERAL_STRING("profile"), aData);
+  ProfileMethod(aGlobal, MethodProfile, u"profile"_ns, aData);
 }
 
 /* static */
 void Console::ProfileEnd(const GlobalObject& aGlobal,
                          const Sequence<JS::Value>& aData) {
-  ProfileMethod(aGlobal, MethodProfileEnd, NS_LITERAL_STRING("profileEnd"),
-                aData);
+  ProfileMethod(aGlobal, MethodProfileEnd, u"profileEnd"_ns, aData);
 }
 
 /* static */
@@ -1209,20 +1213,20 @@ void Console::ProfileMethodMainthread(JSContext* aCx, const nsAString& aAction,
 void Console::Assert(const GlobalObject& aGlobal, bool aCondition,
                      const Sequence<JS::Value>& aData) {
   if (!aCondition) {
-    Method(aGlobal, MethodAssert, NS_LITERAL_STRING("assert"), aData);
+    Method(aGlobal, MethodAssert, u"assert"_ns, aData);
   }
 }
 
 /* static */
 void Console::Count(const GlobalObject& aGlobal, const nsAString& aLabel) {
   StringMethod(aGlobal, aLabel, Sequence<JS::Value>(), MethodCount,
-               NS_LITERAL_STRING("count"));
+               u"count"_ns);
 }
 
 /* static */
 void Console::CountReset(const GlobalObject& aGlobal, const nsAString& aLabel) {
   StringMethod(aGlobal, aLabel, Sequence<JS::Value>(), MethodCountReset,
-               NS_LITERAL_STRING("countReset"));
+               u"countReset"_ns);
 }
 
 namespace {
@@ -1422,14 +1426,14 @@ void Console::MethodInternal(JSContext* aCx, MethodName aMethodName,
     if (mInnerID) {
       callData->SetIDs(mOuterID, mInnerID);
     } else if (!mPassedInnerID.IsEmpty()) {
-      callData->SetIDs(NS_LITERAL_STRING("jsm"), mPassedInnerID);
+      callData->SetIDs(u"jsm"_ns, mPassedInnerID);
     } else {
       nsAutoString filename;
       if (callData->mTopStackFrame.isSome()) {
         filename = callData->mTopStackFrame->mFilename;
       }
 
-      callData->SetIDs(NS_LITERAL_STRING("jsm"), filename);
+      callData->SetIDs(u"jsm"_ns, filename);
     }
 
     GetOrCreateMainThreadData()->ProcessCallData(aCx, callData, aData);
@@ -1935,7 +1939,7 @@ static bool ProcessArguments(JSContext* aCx, const Sequence<JS::Value>& aData,
         // If there isn't any output but there's already a style, then
         // discard the previous style and use the next one instead.
         if (output.IsEmpty() && !aStyles.IsEmpty()) {
-          aStyles.TruncateLength(aStyles.Length() - 1);
+          aStyles.RemoveLastElement();
         }
 
         if (NS_WARN_IF(!FlushOutput(aCx, aSequence, output))) {
@@ -2084,9 +2088,7 @@ static bool UnstoreGroupName(nsAString& aName,
     return false;
   }
 
-  uint32_t pos = aGroupStack->Length() - 1;
-  aName = (*aGroupStack)[pos];
-  aGroupStack->RemoveElementAt(pos);
+  aName = aGroupStack->PopLastElement();
   return true;
 }
 
@@ -2919,10 +2921,8 @@ bool Console::ArgumentData::Initialize(JSContext* aCx,
                                        const Sequence<JS::Value>& aArguments) {
   mGlobal = JS::CurrentGlobalOrNull(aCx);
 
-  for (uint32_t i = 0; i < aArguments.Length(); ++i) {
-    if (NS_WARN_IF(!mArguments.AppendElement(aArguments[i]))) {
-      return false;
-    }
+  if (NS_WARN_IF(!mArguments.AppendElements(aArguments, fallible))) {
+    return false;
   }
 
   return true;
@@ -2951,5 +2951,4 @@ bool Console::ArgumentData::PopulateArgumentsSequence(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -17,7 +17,7 @@ body {
   font: caption;
   margin: 0;
   padding: 0;
-  -moz-user-select: none;
+  user-select: none;
 }
 
 body * {
@@ -26,7 +26,7 @@ body * {
 }
 
 .browser-style {
-  -moz-appearance: none;
+  appearance: none;
   margin-bottom: 6px;
   text-align: left;
 }
@@ -139,7 +139,7 @@ button.browser-style.default.focused {
 }
 
 .browser-style > label {
-  -moz-user-select: none;
+  user-select: none;
 }
 
 .browser-style.disabled > label {
@@ -149,7 +149,7 @@ button.browser-style.default.focused {
 
 /* Radio Buttons */
 .browser-style > input[type="radio"] {
-  -moz-appearance: none;
+  appearance: none;
   background-color: #fff;
   background-position: center;
   border: 1px solid #b1b1b1;
@@ -203,7 +203,7 @@ button.browser-style.default.focused {
 
 /* Checkboxes */
 .browser-style > input[type="checkbox"] {
-  -moz-appearance: none;
+  appearance: none;
   background-color: #fff;
   background-position: center;
   border: 1px solid #b1b1b1;
@@ -265,24 +265,24 @@ button.browser-style.expander {
 }
 
 /* Interactive States */
-button.browser-style:hover:not(.pressed):not(:disabled):not(.focused),
-select.browser-style:hover:not(.pressed):not(:disabled):not(.focused) {
+button.browser-style:hover:not(.pressed, :disabled, .focused),
+select.browser-style:hover:not(.pressed, :disabled, .focused) {
   background-color: #ebebeb;
   border: 1px solid #b1b1b1;
 }
 
-button.browser-style:hover:active:not(.hover):not(:disabled):not(.focused),
-select.browser-style:hover:active:not(.hover):not(:disabled):not(.focused) {
+button.browser-style:hover:active:not(.hover, :disabled, .focused),
+select.browser-style:hover:active:not(.hover, :disabled, .focused) {
   background-color: #d4d4d4;
   border: 1px solid #858585;
 }
 
-button.browser-style.default:hover:not(.pressed):not(:disabled):not(.focused) {
+button.browser-style.default:hover:not(.pressed, :disabled, .focused) {
   background-color: #0670cc;
   border-color: #005bab;
 }
 
-button.browser-style.default:hover:active:not(.hover):not(:disabled):not(.focused) {
+button.browser-style.default:hover:active:not(.hover, :disabled, .focused) {
   background-color: #005bab;
   border-color: #004480;
 }

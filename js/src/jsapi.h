@@ -16,6 +16,7 @@
 #include "mozilla/Range.h"
 #include "mozilla/RangedPtr.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/Utf8.h"
 #include "mozilla/Variant.h"
 
@@ -27,7 +28,6 @@
 #include "jspubtd.h"
 
 #include "js/AllocPolicy.h"
-#include "js/BinASTFormat.h"  // JS::BinASTFormat
 #include "js/CallArgs.h"
 #include "js/CharacterEncoding.h"
 #include "js/Class.h"
@@ -76,10 +76,8 @@ using StringVector = JS::GCVector<JSString*>;
 class MOZ_RAII JS_PUBLIC_API CustomAutoRooter : private AutoGCRooter {
  public:
   template <typename CX>
-  explicit CustomAutoRooter(const CX& cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : AutoGCRooter(cx, AutoGCRooter::Tag::Custom) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+  explicit CustomAutoRooter(const CX& cx)
+      : AutoGCRooter(cx, AutoGCRooter::Kind::Custom) {}
 
   friend void AutoGCRooter::trace(JSTracer* trc);
 
@@ -90,7 +88,6 @@ class MOZ_RAII JS_PUBLIC_API CustomAutoRooter : private AutoGCRooter {
   virtual void trace(JSTracer* trc) = 0;
 
  private:
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace JS */
@@ -98,6 +95,8 @@ class MOZ_RAII JS_PUBLIC_API CustomAutoRooter : private AutoGCRooter {
 /* Callbacks and their arguments. */
 
 /************************************************************************/
+using JSGetElementCallback = JSObject* (*)(JSContext* aCx,
+                                           JS::HandleValue privateValue);
 
 using JSInterruptCallback = bool (*)(JSContext*);
 
@@ -192,6 +191,17 @@ namespace JS {
 
 extern JS_PUBLIC_API const char* InformalValueTypeName(const JS::Value& v);
 
+/** Timing information for telemetry purposes **/
+struct JSTimers {
+  mozilla::TimeDuration executionTime;       // Total time spent executing
+  mozilla::TimeDuration delazificationTime;  // Total time spent delazifying
+  mozilla::TimeDuration xdrEncodingTime;     // Total time spent XDR encoding
+  mozilla::TimeDuration
+      baselineCompileTime;  // Total time spent in baseline compiler
+};
+
+extern JS_PUBLIC_API JSTimers GetJSTimers(JSContext* cx);
+
 } /* namespace JS */
 
 /** True iff fun is the global eval function. */
@@ -216,9 +226,8 @@ extern JS_PUBLIC_API bool JS_IsBuiltinFunctionConstructor(JSFunction* fun);
 // Compartment
 // -----------
 // Security membrane; when an object from compartment A is used in compartment
-// B, a cross-compartment wrapper (a kind of proxy) is used. In the browser each
-// compartment currently contains one global/realm, but we want to change that
-// so each compartment contains multiple same-origin realms (bug 1357862).
+// B, a cross-compartment wrapper (a kind of proxy) is used. In the browser,
+// same-origin realms can share a compartment.
 //
 // Zone
 // ----
@@ -230,7 +239,11 @@ extern JS_PUBLIC_API bool JS_IsBuiltinFunctionConstructor(JSFunction* fun);
 // Context
 // -------
 // JSContext represents a thread: there must be exactly one JSContext for each
-// thread running JS/Wasm. Internally, helper threads have their own JSContext.
+// thread running JS/Wasm.
+//
+// Internally, helper threads can also have a JSContext. They do not always have
+// an active context, but one may be requested by AutoSetHelperThreadContext,
+// which activates a pre-allocated JSContext for the duration of its lifetime.
 //
 // Runtime
 // -------
@@ -311,7 +324,7 @@ JS_PUBLIC_API void SetFilenameValidationCallback(FilenameValidationCallback cb);
  * Set callback to send tasks to XPCOM thread pools
  */
 JS_PUBLIC_API void SetHelperThreadTaskCallback(
-    void (*callback)(js::UniquePtr<js::RunnableTask>));
+    bool (*callback)(js::UniquePtr<js::RunnableTask>));
 
 extern JS_PUBLIC_API const char* JS_GetImplementationVersion(void);
 
@@ -418,11 +431,9 @@ class MOZ_RAII JS_PUBLIC_API JSAutoRealm {
   JS::Realm* oldRealm_;
 
  public:
-  JSAutoRealm(JSContext* cx, JSObject* target MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
-  JSAutoRealm(JSContext* cx, JSScript* target MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+  JSAutoRealm(JSContext* cx, JSObject* target);
+  JSAutoRealm(JSContext* cx, JSScript* target);
   ~JSAutoRealm();
-
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 class MOZ_RAII JS_PUBLIC_API JSAutoNullableRealm {
@@ -430,11 +441,8 @@ class MOZ_RAII JS_PUBLIC_API JSAutoNullableRealm {
   JS::Realm* oldRealm_;
 
  public:
-  explicit JSAutoNullableRealm(
-      JSContext* cx, JSObject* targetOrNull MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+  explicit JSAutoNullableRealm(JSContext* cx, JSObject* targetOrNull);
   ~JSAutoNullableRealm();
-
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 namespace JS {
@@ -451,8 +459,8 @@ extern JS_PUBLIC_API JS::Realm* EnterRealm(JSContext* cx, JSObject* target);
 
 extern JS_PUBLIC_API void LeaveRealm(JSContext* cx, JS::Realm* oldRealm);
 
-using IterateRealmCallback = void (*)(JSContext* cx, void* data,
-                                      Handle<Realm*> realm);
+using IterateRealmCallback = void (*)(JSContext* cx, void* data, Realm* realm,
+                                      const AutoRequireNoGC& nogc);
 
 /**
  * This function calls |realmCallback| on every realm. Beware that there is no
@@ -658,56 +666,6 @@ extern JS_PUBLIC_API bool IsProfileTimelineRecordingEnabled();
 
 }  // namespace JS
 
-#ifdef JS_HAS_CTYPES
-/**
- * Initialize the 'ctypes' object on a global variable 'obj'. The 'ctypes'
- * object will be sealed.
- */
-extern JS_PUBLIC_API bool JS_InitCTypesClass(JSContext* cx,
-                                             JS::HandleObject global);
-
-/**
- * Convert a unicode string 'source' of length 'slen' to the platform native
- * charset, returning a null-terminated string allocated with JS_malloc. On
- * failure, this function should report an error.
- */
-using JSCTypesUnicodeToNativeFun = char* (*)(JSContext*, const char16_t*,
-                                             size_t);
-
-/**
- * Set of function pointers that ctypes can use for various internal functions.
- * See JS_SetCTypesCallbacks below. Providing nullptr for a function is safe,
- * and will result in the applicable ctypes functionality not being available.
- */
-struct JSCTypesCallbacks {
-  JSCTypesUnicodeToNativeFun unicodeToNative;
-};
-
-/**
- * Set the callbacks on the provided 'ctypesObj' object. 'callbacks' should be a
- * pointer to static data that exists for the lifetime of 'ctypesObj', but it
- * may safely be altered after calling this function and without having
- * to call this function again.
- */
-extern JS_PUBLIC_API void JS_SetCTypesCallbacks(
-    JSObject* ctypesObj, const JSCTypesCallbacks* callbacks);
-#endif
-
-/*
- * A replacement for MallocAllocPolicy that allocates in the JS heap and adds no
- * extra behaviours.
- *
- * This is currently used for allocating source buffers for parsing. Since these
- * are temporary and will not be freed by GC, the memory is not tracked by the
- * usual accounting.
- */
-class JS_PUBLIC_API JSMallocAllocPolicy : public js::AllocPolicyBase {
- public:
-  void reportAllocOverflow() const {}
-
-  MOZ_MUST_USE bool checkSimulatedOOM() const { return true; }
-};
-
 /**
  * Set the size of the native stack that should not be exceed. To disable
  * stack size checking pass 0.
@@ -768,15 +726,6 @@ extern JS_PUBLIC_API bool GetFirstArgumentAsTypeHint(JSContext* cx,
 
 } /* namespace JS */
 
-template <typename T>
-struct JSConstScalarSpec {
-  const char* name;
-  T val;
-};
-
-using JSConstDoubleSpec = JSConstScalarSpec<double>;
-using JSConstIntegerSpec = JSConstScalarSpec<int32_t>;
-
 extern JS_PUBLIC_API JSObject* JS_InitClass(
     JSContext* cx, JS::HandleObject obj, JS::HandleObject parent_proto,
     const JSClass* clasp, JSNative constructor, unsigned nargs,
@@ -789,8 +738,6 @@ extern JS_PUBLIC_API JSObject* JS_InitClass(
  */
 extern JS_PUBLIC_API bool JS_LinkConstructorAndPrototype(
     JSContext* cx, JS::Handle<JSObject*> ctor, JS::Handle<JSObject*> proto);
-
-extern JS_PUBLIC_API const JSClass* JS_GetClass(JSObject* obj);
 
 extern JS_PUBLIC_API bool JS_InstanceOf(JSContext* cx,
                                         JS::Handle<JSObject*> obj,
@@ -819,10 +766,6 @@ extern JS_PUBLIC_API bool InstanceofOperator(JSContext* cx, HandleObject obj,
                                              HandleValue v, bool* bp);
 
 }  // namespace JS
-
-extern JS_PUBLIC_API void* JS_GetPrivate(JSObject* obj);
-
-extern JS_PUBLIC_API void JS_SetPrivate(JSObject* obj, void* data);
 
 extern JS_PUBLIC_API void JS_InitPrivate(JSObject* obj, void* data,
                                          size_t nbytes, JS::MemoryUse use);
@@ -947,7 +890,7 @@ extern JS_PUBLIC_API bool JS_FreezeObject(JSContext* cx,
  */
 
 /**
- * Get the prototype of obj, storing it in result.
+ * Get the prototype of |obj|, storing it in |proto|.
  *
  * Implements: ES6 [[GetPrototypeOf]] internal method.
  */
@@ -1569,14 +1512,6 @@ extern JS_PUBLIC_API JSObject* JS_DefineObject(JSContext* cx,
                                                const JSClass* clasp = nullptr,
                                                unsigned attrs = 0);
 
-extern JS_PUBLIC_API bool JS_DefineConstDoubles(JSContext* cx,
-                                                JS::HandleObject obj,
-                                                const JSConstDoubleSpec* cds);
-
-extern JS_PUBLIC_API bool JS_DefineConstIntegers(JSContext* cx,
-                                                 JS::HandleObject obj,
-                                                 const JSConstIntegerSpec* cis);
-
 extern JS_PUBLIC_API bool JS_DefineProperties(JSContext* cx,
                                               JS::HandleObject obj,
                                               const JSPropertySpec* ps);
@@ -1632,9 +1567,6 @@ extern JS_PUBLIC_API bool IsSetObject(JSContext* cx, JS::HandleObject obj,
  * done for all slots, regardless of the associated property descriptor.
  */
 JS_PUBLIC_API void JS_SetAllNonReservedSlotsToUndefined(JS::HandleObject obj);
-
-extern JS_PUBLIC_API JS::Value JS_GetReservedSlot(JSObject* obj,
-                                                  uint32_t index);
 
 extern JS_PUBLIC_API void JS_SetReservedSlot(JSObject* obj, uint32_t index,
                                              const JS::Value& v);
@@ -1812,20 +1744,6 @@ using ScriptPrivateReferenceHook = void (*)(const JS::Value&);
 extern JS_PUBLIC_API void SetScriptPrivateReferenceHooks(
     JSRuntime* rt, ScriptPrivateReferenceHook addRefHook,
     ScriptPrivateReferenceHook releaseHook);
-
-} /* namespace JS */
-
-namespace JS {
-
-// This throws an exception if built without JS_BUILD_BINAST.
-extern JS_PUBLIC_API JSScript* DecodeBinAST(
-    JSContext* cx, const ReadOnlyCompileOptions& options, FILE* file,
-    JS::BinASTFormat format);
-
-// This throws an exception if built without JS_BUILD_BINAST.
-extern JS_PUBLIC_API JSScript* DecodeBinAST(
-    JSContext* cx, const ReadOnlyCompileOptions& options, const uint8_t* buf,
-    size_t length, JS::BinASTFormat format);
 
 } /* namespace JS */
 
@@ -2166,14 +2084,14 @@ extern JS_PUBLIC_API size_t JS_PutEscapedString(JSContext* cx, char* buffer,
  *
  *   // In an infallible context, for the same 'str'.
  *   AutoCheckCannotGC nogc;
- *   const char16_t* chars = JS_GetTwoByteLinearStringChars(nogc, lstr)
+ *   const char16_t* chars = JS::GetTwoByteLinearStringChars(nogc, lstr)
  *   MOZ_ASSERT(chars);
  *
  * Note: JS strings (including linear strings and atoms) are not
  * null-terminated!
  *
  * Additionally, string characters are stored as either Latin1Char (8-bit)
- * or char16_t (16-bit). Clients can use JS_StringHasLatin1Chars and can then
+ * or char16_t (16-bit). Clients can use JS::StringHasLatin1Chars and can then
  * call either the Latin1* or TwoByte* functions. Some functions like
  * JS_CopyStringChars and JS_GetStringCharAt accept both Latin1 and TwoByte
  * strings.
@@ -2182,9 +2100,6 @@ extern JS_PUBLIC_API size_t JS_PutEscapedString(JSContext* cx, char* buffer,
 extern JS_PUBLIC_API size_t JS_GetStringLength(JSString* str);
 
 extern JS_PUBLIC_API bool JS_StringIsLinear(JSString* str);
-
-/** Returns true iff the string's characters are stored as Latin1. */
-extern JS_PUBLIC_API bool JS_StringHasLatin1Chars(JSString* str);
 
 extern JS_PUBLIC_API const JS::Latin1Char* JS_GetLatin1StringCharsAndLength(
     JSContext* cx, const JS::AutoRequireNoGC& nogc, JSString* str,
@@ -2196,9 +2111,6 @@ extern JS_PUBLIC_API const char16_t* JS_GetTwoByteStringCharsAndLength(
 
 extern JS_PUBLIC_API bool JS_GetStringCharAt(JSContext* cx, JSString* str,
                                              size_t index, char16_t* res);
-
-extern JS_PUBLIC_API char16_t JS_GetLinearStringCharAt(JSLinearString* str,
-                                                       size_t index);
 
 extern JS_PUBLIC_API const char16_t* JS_GetTwoByteExternalStringChars(
     JSString* str);
@@ -2217,12 +2129,6 @@ extern JS_PUBLIC_API JS::UniqueTwoByteChars JS_CopyStringCharsZ(JSContext* cx,
 
 extern JS_PUBLIC_API JSLinearString* JS_EnsureLinearString(JSContext* cx,
                                                            JSString* str);
-
-extern JS_PUBLIC_API const JS::Latin1Char* JS_GetLatin1LinearStringChars(
-    const JS::AutoRequireNoGC& nogc, JSLinearString* str);
-
-extern JS_PUBLIC_API const char16_t* JS_GetTwoByteLinearStringChars(
-    const JS::AutoRequireNoGC& nogc, JSLinearString* str);
 
 static MOZ_ALWAYS_INLINE JSLinearString* JSID_TO_LINEAR_STRING(jsid id) {
   MOZ_ASSERT(JSID_IS_STRING(id));
@@ -2320,7 +2226,7 @@ MOZ_MUST_USE JS_PUBLIC_API bool JS_EncodeStringToBuffer(JSContext* cx,
  * into the caller-provided buffer replacing unpaired surrogates
  * with the REPLACEMENT CHARACTER.
  *
- * If JS_StringHasLatin1Chars(str) returns true, the function
+ * If JS::StringHasLatin1Chars(str) returns true, the function
  * is guaranteed to convert the entire string if
  * buffer.Length() >= 2 * JS_GetStringLength(str). Otherwise,
  * the function is guaranteed to convert the entire string if
@@ -2744,8 +2650,7 @@ extern JS_PUBLIC_API void JS_SetOffthreadIonCompilationEnabled(JSContext* cx,
   Register(WASM_FOLD_OFFSETS, "wasm.fold-offsets") \
   Register(WASM_DELAY_TIER2, "wasm.delay-tier2") \
   Register(WASM_JIT_BASELINE, "wasm.baseline") \
-  Register(WASM_JIT_CRANELIFT, "wasm.cranelift") \
-  Register(WASM_JIT_ION, "wasm.ion")
+  Register(WASM_JIT_OPTIMIZING, "wasm.optimizing") \
 // clang-format on
 
 typedef enum JSJitCompilerOption {
@@ -2852,16 +2757,13 @@ extern JS_PUBLIC_API void UnhideScriptedCaller(JSContext* cx);
 
 class MOZ_RAII AutoHideScriptedCaller {
  public:
-  explicit AutoHideScriptedCaller(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : mContext(cx) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+  explicit AutoHideScriptedCaller(JSContext* cx) : mContext(cx) {
     HideScriptedCaller(mContext);
   }
   ~AutoHideScriptedCaller() { UnhideScriptedCaller(mContext); }
 
  protected:
   JSContext* mContext;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace JS */
@@ -2884,30 +2786,6 @@ extern JS_PUBLIC_API StackFormat GetStackFormat(JSContext* cx);
 }  // namespace js
 
 namespace JS {
-
-/**
- * The WasmModule interface allows the embedding to hold a reference to the
- * underying C++ implementation of a JS WebAssembly.Module object for purposes
- * of efficient postMessage() and (de)serialization from a random thread.
- *
- * In particular, this allows postMessage() of a WebAssembly.Module:
- * GetWasmModule() is called when making a structured clone of a payload
- * containing a WebAssembly.Module object. The structured clone buffer holds a
- * refcount of the JS::WasmModule until createObject() is called in the target
- * agent's JSContext. The new WebAssembly.Module object continues to hold the
- * JS::WasmModule and thus the final reference of a JS::WasmModule may be
- * dropped from any thread and so the virtual destructor (and all internal
- * methods of the C++ module) must be thread-safe.
- */
-
-struct WasmModule : js::AtomicRefCounted<WasmModule> {
-  virtual ~WasmModule() = default;
-  virtual JSObject* createObject(JSContext* cx) = 0;
-};
-
-extern JS_PUBLIC_API bool IsWasmModuleObject(HandleObject obj);
-
-extern JS_PUBLIC_API RefPtr<WasmModule> GetWasmModule(HandleObject obj);
 
 /**
  * Attempt to disable Wasm's usage of reserving a large virtual memory
@@ -3065,6 +2943,16 @@ extern JS_PUBLIC_API bool CaptureCurrentStack(
     JSContext* cx, MutableHandleObject stackp,
     StackCapture&& capture = StackCapture(AllFrames()));
 
+/**
+ * Returns true if capturing stack trace data to associate with an asynchronous
+ * operation is currently enabled for the current context realm.
+ *
+ * Users should check this state before capturing a stack that will be passed
+ * back to AutoSetAsyncStackForNewCalls later, in order to avoid capturing a
+ * stack for async use when we don't actually want to capture it.
+ */
+extern JS_PUBLIC_API bool IsAsyncStackCaptureEnabledForRealm(JSContext* cx);
+
 /*
  * This is a utility function for preparing an async stack to be used
  * by some other object.  This may be used when you need to treat a
@@ -3113,13 +3001,6 @@ extern JS_PUBLIC_API bool IsMaybeWrappedSavedFrame(JSObject* obj);
  */
 extern JS_PUBLIC_API bool IsUnwrappedSavedFrame(JSObject* obj);
 
-/**
- * Clean up a finalization registry in response to the engine calling the
- * HostCleanupFinalizationRegistry callback.
- */
-extern JS_PUBLIC_API bool CleanupQueuedFinalizationRegistry(
-    JSContext* cx, HandleObject registry);
-
 } /* namespace JS */
 
 namespace js {
@@ -3137,5 +3018,13 @@ namespace js {
 enum class CompletionKind { Normal, Return, Throw };
 
 } /* namespace js */
+
+#ifdef DEBUG
+namespace JS {
+
+extern JS_PUBLIC_API void SetSupportDifferentialTesting(bool value);
+
+}
+#endif /* DEBUG */
 
 #endif /* jsapi_h */

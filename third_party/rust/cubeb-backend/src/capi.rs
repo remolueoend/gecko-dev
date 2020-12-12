@@ -49,7 +49,9 @@ macro_rules! capi_new(
                 Some($crate::capi::capi_stream_reset_default_device::<$stm>),
             stream_get_position: Some($crate::capi::capi_stream_get_position::<$stm>),
             stream_get_latency: Some($crate::capi::capi_stream_get_latency::<$stm>),
+            stream_get_input_latency: Some($crate::capi::capi_stream_get_input_latency::<$stm>),
             stream_set_volume: Some($crate::capi::capi_stream_set_volume::<$stm>),
+            stream_set_name: Some($crate::capi::capi_stream_set_name::<$stm>),
             stream_get_current_device: Some($crate::capi::capi_stream_get_current_device::<$stm>),
             stream_device_destroy: Some($crate::capi::capi_stream_device_destroy::<$stm>),
             stream_register_device_changed_callback:
@@ -216,6 +218,16 @@ pub unsafe extern "C" fn capi_stream_get_latency<STM: StreamOps>(
     ffi::CUBEB_OK
 }
 
+pub unsafe extern "C" fn capi_stream_get_input_latency<STM: StreamOps>(
+    s: *mut ffi::cubeb_stream,
+    latency: *mut u32,
+) -> c_int {
+    let stm = &mut *(s as *mut STM);
+
+    *latency = _try!(stm.input_latency());
+    ffi::CUBEB_OK
+}
+
 pub unsafe extern "C" fn capi_stream_set_volume<STM: StreamOps>(
     s: *mut ffi::cubeb_stream,
     volume: f32,
@@ -224,6 +236,20 @@ pub unsafe extern "C" fn capi_stream_set_volume<STM: StreamOps>(
 
     _try!(stm.set_volume(volume));
     ffi::CUBEB_OK
+}
+
+pub unsafe extern "C" fn capi_stream_set_name<STM: StreamOps>(
+    s: *mut ffi::cubeb_stream,
+    name: *const c_char,
+) -> c_int {
+    let stm = &mut *(s as *mut STM);
+    let anchor = &();
+    if let Some(name) = opt_cstr(anchor, name) {
+        _try!(stm.set_name(name));
+        ffi::CUBEB_OK
+    } else {
+        ffi::CUBEB_ERROR_INVALID_PARAMETER
+    }
 }
 
 pub unsafe extern "C" fn capi_stream_get_current_device<STM: StreamOps>(

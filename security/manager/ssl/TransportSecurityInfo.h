@@ -103,6 +103,7 @@ class TransportSecurityInfo : public nsITransportSecurityInfo,
   nsCString mKeaGroup;
   nsCString mSignatureSchemeName;
 
+  bool mIsAcceptedEch;
   bool mIsDelegatedCredential;
   bool mIsDomainMismatch;
   bool mIsNotValidAtThisTime;
@@ -122,14 +123,15 @@ class TransportSecurityInfo : public nsITransportSecurityInfo,
   // on the original TransportSecurityInfo).
   Atomic<bool> mCanceled;
 
+ protected:
   mutable ::mozilla::Mutex mMutex;
 
- protected:
   nsCOMPtr<nsIInterfaceRequestor> mCallbacks;
   nsTArray<RefPtr<nsIX509Cert>> mSucceededCertChain;
   bool mNPNCompleted;
   nsCString mNegotiatedNPN;
   bool mResumed;
+  bool mIsBuiltCertChainRootBuiltInRoot;
 
  private:
   uint32_t mSecurityState;

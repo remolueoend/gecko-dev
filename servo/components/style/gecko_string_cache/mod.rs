@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #![allow(unsafe_code)]
-
 // This is needed for the constants in atom_macro.rs, because we have some
 // atoms whose names differ only by case, e.g. datetime and dateTime.
 #![allow(non_upper_case_globals)]
@@ -30,7 +29,7 @@ use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::{slice, str};
 use style_traits::SpecifiedValueInfo;
-use to_shmem::{SharedMemoryBuilder, ToShmem};
+use to_shmem::{self, SharedMemoryBuilder, ToShmem};
 
 #[macro_use]
 #[allow(improper_ctypes, non_camel_case_types, missing_docs)]
@@ -42,12 +41,6 @@ pub mod atom_macro {
 pub mod namespace;
 
 pub use self::namespace::{Namespace, WeakNamespace};
-
-macro_rules! local_name {
-    ($s:tt) => {
-        atom!($s)
-    };
-}
 
 /// A handle to a Gecko atom. This is a type that can represent either:
 ///
@@ -132,14 +125,15 @@ impl Borrow<WeakAtom> for Atom {
 }
 
 impl ToShmem for Atom {
-    fn to_shmem(&self, _builder: &mut SharedMemoryBuilder) -> ManuallyDrop<Self> {
-        assert!(
-            self.is_static(),
-            "ToShmem failed for Atom: must be a static atom: {}",
-            self
-        );
+    fn to_shmem(&self, _builder: &mut SharedMemoryBuilder) -> to_shmem::Result<Self> {
+        if !self.is_static() {
+            return Err(format!(
+                "ToShmem failed for Atom: must be a static atom: {}",
+                self
+            ));
+        }
 
-        ManuallyDrop::new(Atom(self.0))
+        Ok(ManuallyDrop::new(Atom(self.0)))
     }
 }
 

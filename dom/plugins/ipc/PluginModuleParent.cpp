@@ -12,15 +12,19 @@
 #include "mozilla/BackgroundHangMonitor.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/ipc/CrashReporterClient.h"
 #include "mozilla/ipc/CrashReporterHost.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/ipc/MessageChannel.h"
-#include "mozilla/ipc/ProtocolUtils.h"
+#include "mozilla/layers/ImageBridgeChild.h"
 #include "mozilla/plugins/BrowserStreamParent.h"
 #include "mozilla/plugins/PluginBridge.h"
 #include "mozilla/plugins/PluginInstanceParent.h"
+#include "mozilla/plugins/PPluginBackgroundDestroyerParent.h"
+#include "mozilla/plugins/PStreamNotifyParent.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ProcessHangMonitor.h"
 #include "mozilla/Services.h"
@@ -32,6 +36,7 @@
 #include "nsICrashService.h"
 #include "nsIObserverService.h"
 #include "nsNPAPIPlugin.h"
+#include "nsPluginInstanceOwner.h"
 #include "nsPrintfCString.h"
 #include "prsystem.h"
 #include "prclist.h"
@@ -268,8 +273,7 @@ class PluginModuleMapping : public PRCList {
 
   class MOZ_RAII NotifyLoadingModule {
    public:
-    explicit NotifyLoadingModule(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM) {
-      MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+    explicit NotifyLoadingModule() {
       PluginModuleMapping::sIsLoadModuleOnStack = true;
     }
 
@@ -278,7 +282,6 @@ class PluginModuleMapping : public PRCList {
     }
 
    private:
-    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
   };
 
  private:
@@ -939,17 +942,16 @@ void PluginModuleChromeParent::AnnotateHang(
        be pretty obvious from the hang stack that we're in a plugin
        call when the hang occurred. */
     if (flags & kHangUIShown) {
-      aAnnotations.AddAnnotation(NS_LITERAL_STRING("HangUIShown"), true);
+      aAnnotations.AddAnnotation(u"HangUIShown"_ns, true);
     }
     if (flags & kHangUIContinued) {
-      aAnnotations.AddAnnotation(NS_LITERAL_STRING("HangUIContinued"), true);
+      aAnnotations.AddAnnotation(u"HangUIContinued"_ns, true);
     }
     if (flags & kHangUIDontShow) {
-      aAnnotations.AddAnnotation(NS_LITERAL_STRING("HangUIDontShow"), true);
+      aAnnotations.AddAnnotation(u"HangUIDontShow"_ns, true);
     }
-    aAnnotations.AddAnnotation(NS_LITERAL_STRING("pluginName"), mPluginName);
-    aAnnotations.AddAnnotation(NS_LITERAL_STRING("pluginVersion"),
-                               mPluginVersion);
+    aAnnotations.AddAnnotation(u"pluginName"_ns, mPluginName);
+    aAnnotations.AddAnnotation(u"pluginVersion"_ns, mPluginVersion);
   }
 }
 
@@ -980,7 +982,7 @@ bool PluginModuleChromeParent::ShouldContinueFromReplyTimeout() {
 #endif  // XP_WIN
 
   TerminateChildProcess(MessageLoop::current(), mozilla::ipc::kInvalidProcessId,
-                        NS_LITERAL_CSTRING("ModalHangUI"), EmptyString());
+                        "ModalHangUI"_ns, u""_ns);
   GetIPCChannel()->CloseWithTimeout();
   return false;
 }
@@ -1019,7 +1021,7 @@ void PluginModuleChromeParent::TakeFullMinidump(base::ProcessId aContentPid,
     // We have a single browser report, generate a new plugin process parent
     // report and pair it up with the browser report handed in.
     reportsReady = mCrashReporter->GenerateMinidumpAndPair(
-        this, browserDumpFile, NS_LITERAL_CSTRING("browser"));
+        this, browserDumpFile, "browser"_ns);
 
     if (!reportsReady) {
       browserDumpFile = nullptr;
@@ -1035,7 +1037,7 @@ void PluginModuleChromeParent::TakeFullMinidump(base::ProcessId aContentPid,
     reportsReady = mCrashReporter->GenerateMinidumpAndPair(
         this,
         nullptr,  // Pair with a dump of this process and thread.
-        NS_LITERAL_CSTRING("browser"));
+        "browser"_ns);
   }
 
   if (reportsReady) {
@@ -1049,18 +1051,18 @@ void PluginModuleChromeParent::TakeFullMinidump(base::ProcessId aContentPid,
       // If we have handles to the flash sandbox processes on Windows,
       // include those minidumps as well.
       if (CreatePluginMinidump(mFlashProcess1, 0, pluginDumpFile,
-                               NS_LITERAL_CSTRING("flash1"))) {
+                               "flash1"_ns)) {
         additionalDumps.AppendLiteral(",flash1");
       }
       if (CreatePluginMinidump(mFlashProcess2, 0, pluginDumpFile,
-                               NS_LITERAL_CSTRING("flash2"))) {
+                               "flash2"_ns)) {
         additionalDumps.AppendLiteral(",flash2");
       }
 #endif  // MOZ_CRASHREPORTER_INJECTOR
       if (aContentPid != mozilla::ipc::kInvalidProcessId) {
         // Include the content process minidump
         if (CreatePluginMinidump(aContentPid, 0, pluginDumpFile,
-                                 NS_LITERAL_CSTRING("content"))) {
+                                 "content"_ns)) {
           additionalDumps.AppendLiteral(",content");
         }
       }
@@ -1080,7 +1082,7 @@ void PluginModuleChromeParent::TerminateChildProcess(
   // support recursive locking.
   nsAutoString dumpId;
   if (aDumpId.IsEmpty()) {
-    TakeFullMinidump(aContentPid, EmptyString(), dumpId);
+    TakeFullMinidump(aContentPid, u""_ns, dumpId);
   }
 
   mozilla::MutexAutoLock lock(mCrashReporterMutex);
@@ -1350,9 +1352,9 @@ void PluginModuleChromeParent::ProcessFirstMinidump() {
 void PluginModuleChromeParent::HandleOrphanedMinidump() {
   if (CrashReporter::FinalizeOrphanedMinidump(
           OtherPid(), GeckoProcessType_Plugin, &mOrphanedDumpId)) {
-    CrashReporterHost::RecordCrash(GeckoProcessType_Plugin,
-                                   nsICrashService::CRASH_TYPE_CRASH,
-                                   mOrphanedDumpId);
+    ipc::CrashReporterHost::RecordCrash(GeckoProcessType_Plugin,
+                                        nsICrashService::CRASH_TYPE_CRASH,
+                                        mOrphanedDumpId);
   } else {
     NS_WARNING(nsPrintfCString("plugin process pid = %d crashed without "
                                "leaving a minidump behind",
@@ -1392,8 +1394,7 @@ nsresult PluginModuleParent::GetRunID(uint32_t* aRunID) {
 void PluginModuleChromeParent::ActorDestroy(ActorDestroyReason why) {
   if (why == AbnormalShutdown) {
     ProcessFirstMinidump();
-    Telemetry::Accumulate(Telemetry::SUBPROCESS_ABNORMAL_ABORT,
-                          NS_LITERAL_CSTRING("plugin"), 1);
+    Telemetry::Accumulate(Telemetry::SUBPROCESS_ABNORMAL_ABORT, "plugin"_ns, 1);
   }
 
   // We can't broadcast settings changes anymore.
@@ -2035,7 +2036,7 @@ class nsCaseInsensitiveUTF8StringArrayComparator {
  public:
   template <class A, class B>
   bool Equals(const A& a, const B& b) const {
-    return a.Equals(b.get(), nsCaseInsensitiveUTF8StringComparator());
+    return a.Equals(b.get(), nsCaseInsensitiveUTF8StringComparator);
   }
 };
 
@@ -2043,8 +2044,8 @@ class nsCaseInsensitiveUTF8StringArrayComparator {
 static void ForceWindowless(nsTArray<nsCString>& names,
                             nsTArray<nsCString>& values) {
   nsCaseInsensitiveUTF8StringArrayComparator comparator;
-  NS_NAMED_LITERAL_CSTRING(wmodeAttributeName, "wmode");
-  NS_NAMED_LITERAL_CSTRING(opaqueAttributeValue, "opaque");
+  constexpr auto wmodeAttributeName = "wmode"_ns;
+  constexpr auto opaqueAttributeValue = "opaque"_ns;
   auto wmodeAttributeIndex = names.IndexOf(wmodeAttributeName, 0, comparator);
   if (wmodeAttributeIndex != names.NoIndex) {
     if (!values[wmodeAttributeIndex].EqualsLiteral("transparent")) {
@@ -2060,8 +2061,8 @@ static void ForceWindowless(nsTArray<nsCString>& names,
 static void ForceDirect(nsTArray<nsCString>& names,
                         nsTArray<nsCString>& values) {
   nsCaseInsensitiveUTF8StringArrayComparator comparator;
-  NS_NAMED_LITERAL_CSTRING(wmodeAttributeName, "wmode");
-  NS_NAMED_LITERAL_CSTRING(directAttributeValue, "direct");
+  constexpr auto wmodeAttributeName = "wmode"_ns;
+  constexpr auto directAttributeValue = "direct"_ns;
   auto wmodeAttributeIndex = names.IndexOf(wmodeAttributeName, 0, comparator);
   if (wmodeAttributeIndex != names.NoIndex) {
     if ((!values[wmodeAttributeIndex].EqualsLiteral("transparent")) &&
@@ -2085,7 +2086,7 @@ nsresult PluginModuleParent::NPP_NewInternal(
   }
 
   nsCaseInsensitiveUTF8StringArrayComparator comparator;
-  NS_NAMED_LITERAL_CSTRING(srcAttributeName, "src");
+  constexpr auto srcAttributeName = "src"_ns;
   auto srcAttributeIndex = names.IndexOf(srcAttributeName, 0, comparator);
   nsAutoCString srcAttribute;
   if (srcAttributeIndex != names.NoIndex) {
@@ -2146,7 +2147,7 @@ nsresult PluginModuleParent::NPP_NewInternal(
   owner->GetDOMElement(getter_AddRefs(elt));
   if (elt) {
     RefPtr<dom::Document> doc = elt->OwnerDoc();
-    nsCOMPtr<nsIEventTarget> eventTarget =
+    nsCOMPtr<nsISerialEventTarget> eventTarget =
         doc->EventTargetFor(TaskCategory::Other);
     SetEventTargetForActor(parentInstance, eventTarget);
   }
@@ -2430,8 +2431,9 @@ mozilla::ipc::IPCResult PluginModuleParent::RecvReturnSitesWithData(
 layers::TextureClientRecycleAllocator*
 PluginModuleParent::EnsureTextureAllocatorForDirectBitmap() {
   if (!mTextureAllocatorForDirectBitmap) {
-    mTextureAllocatorForDirectBitmap = new TextureClientRecycleAllocator(
-        ImageBridgeChild::GetSingleton().get());
+    mTextureAllocatorForDirectBitmap =
+        new layers::TextureClientRecycleAllocator(
+            layers::ImageBridgeChild::GetSingleton().get());
   }
   return mTextureAllocatorForDirectBitmap;
 }
@@ -2439,8 +2441,8 @@ PluginModuleParent::EnsureTextureAllocatorForDirectBitmap() {
 layers::TextureClientRecycleAllocator*
 PluginModuleParent::EnsureTextureAllocatorForDXGISurface() {
   if (!mTextureAllocatorForDXGISurface) {
-    mTextureAllocatorForDXGISurface = new TextureClientRecycleAllocator(
-        ImageBridgeChild::GetSingleton().get());
+    mTextureAllocatorForDXGISurface = new layers::TextureClientRecycleAllocator(
+        layers::ImageBridgeChild::GetSingleton().get());
   }
   return mTextureAllocatorForDXGISurface;
 }
@@ -2457,7 +2459,7 @@ PluginModuleParent::AnswerNPN_SetValue_NPPVpluginRequiresAudioDeviceChanges(
 
 // We only add the crash reporter to subprocess which have the filename
 // FlashPlayerPlugin*
-#  define FLASH_PROCESS_PREFIX "FLASHPLAYERPLUGIN"
+#  define FLASH_PROCESS_PREFIX u"FLASHPLAYERPLUGIN"
 
 static DWORD GetFlashChildOfPID(DWORD pid, HANDLE snapshot) {
   PROCESSENTRY32 entry = {sizeof(entry)};
@@ -2466,7 +2468,7 @@ static DWORD GetFlashChildOfPID(DWORD pid, HANDLE snapshot) {
     if (entry.th32ParentProcessID == pid) {
       nsString name(entry.szExeFile);
       ToUpperCase(name);
-      if (StringBeginsWith(name, NS_LITERAL_STRING(FLASH_PROCESS_PREFIX))) {
+      if (StringBeginsWith(name, nsLiteralString(FLASH_PROCESS_PREFIX))) {
         return entry.th32ProcessID;
       }
     }
@@ -2488,7 +2490,7 @@ void PluginModuleChromeParent::InitializeInjector() {
   if (kNotFound == lastSlash) return;
 
   if (!StringBeginsWith(Substring(path, lastSlash + 1),
-                        NS_LITERAL_CSTRING(FLASH_PLUGIN_PREFIX)))
+                        nsLiteralCString(FLASH_PLUGIN_PREFIX)))
     return;
 
   mFinishInitTask = mChromeTaskFactory.NewTask<FinishInjectorInitTask>();

@@ -38,7 +38,8 @@ const PerformanceController = {
    * Listen for events emitted by the current tab target and
    * main UI events.
    */
-  async initialize(targetFront, performanceFront) {
+  async initialize(toolbox, targetFront, performanceFront) {
+    this.toolbox = toolbox;
     this.target = targetFront;
     this.front = performanceFront;
 
@@ -206,13 +207,6 @@ const PerformanceController = {
     if (!hasActor) {
       return true;
     }
-    const actorCanCheck = await this.target.actorHasMethod(
-      "performance",
-      "canCurrentlyRecord"
-    );
-    if (!actorCanCheck) {
-      return true;
-    }
     return (await this.front.canCurrentlyRecord()).success;
   },
 
@@ -252,8 +246,7 @@ const PerformanceController = {
   async stopRecording() {
     const recording = this.getLatestManualRecording();
 
-    // What the actorID is null means this actor was already destroyed.
-    if (this.front.actorID) {
+    if (!this.front.isDestroyed()) {
       await this.front.stopRecording(recording);
     } else {
       // As the front was destroyed, we do stop sequence manually without the actor.
@@ -432,6 +425,12 @@ const PerformanceController = {
    */
   getTraits: function() {
     return this.front.traits;
+  },
+
+  viewSourceInDebugger(url, line, column) {
+    // Currently, the line and column values are strings, so we have to convert
+    // them to numbers before passing them on to the toolbox.
+    return this.toolbox.viewSourceInDebugger(url, +line, +column);
   },
 
   /**

@@ -26,6 +26,7 @@
 #include "nsIPermissionManager.h"
 #include "nsPluginHost.h"
 #include "nsPluginInstanceOwner.h"
+#include "nsIHttpChannel.h"
 #include "nsJSNPRuntime.h"
 #include "nsINestedURI.h"
 #include "nsScriptSecurityManager.h"
@@ -37,6 +38,7 @@
 #include "nsIAppShell.h"
 #include "nsIXULRuntime.h"
 #include "nsIScriptError.h"
+#include "nsSubDocumentFrame.h"
 
 #include "nsError.h"
 
@@ -48,6 +50,7 @@
 #include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
 #include "nsDocShellCID.h"
+#include "nsDocShellLoadState.h"
 #include "nsGkAtoms.h"
 #include "nsThreadUtils.h"
 #include "nsNetUtil.h"
@@ -56,6 +59,7 @@
 #include "nsUnicharUtils.h"
 #include "mozilla/Preferences.h"
 #include "nsSandboxFlags.h"
+#include "nsQueryObject.h"
 
 // Concrete classes
 #include "nsFrameLoader.h"
@@ -66,6 +70,7 @@
 #include "nsPluginFrame.h"
 #include "nsWrapperCacheInlines.h"
 #include "nsDOMJSUtils.h"
+#include "js/Object.h"  // JS::GetClass
 
 #include "nsWidgetsCID.h"
 #include "nsContentCID.h"
@@ -88,9 +93,11 @@
 #include "mozilla/dom/HTMLObjectElement.h"
 #include "mozilla/dom/UserActivation.h"
 #include "mozilla/dom/nsCSPContext.h"
+#include "mozilla/net/DocumentChannel.h"
 #include "mozilla/net/UrlClassifierFeatureFactory.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "nsChannelClassifier.h"
 #include "nsFocusManager.h"
@@ -345,8 +352,8 @@ nsPluginCrashedEvent::Run() {
   init.mBubbles = true;
   init.mCancelable = true;
 
-  RefPtr<PluginCrashedEvent> event = PluginCrashedEvent::Constructor(
-      doc, NS_LITERAL_STRING("PluginCrashed"), init);
+  RefPtr<PluginCrashedEvent> event =
+      PluginCrashedEvent::Constructor(doc, u"PluginCrashed"_ns, init);
 
   event->SetTrusted(true);
   event->WidgetEventPtr()->mFlags.mOnlyChromeDispatch = true;
@@ -601,7 +608,7 @@ void nsObjectLoadingContent::UnbindFromTree(bool aNullParent) {
     Document* doc = thisElement->GetComposedDoc();
     if (doc && doc->IsActive()) {
       nsCOMPtr<nsIRunnable> ev =
-          new nsSimplePluginEvent(doc, NS_LITERAL_STRING("PluginRemoved"));
+          new nsSimplePluginEvent(doc, u"PluginRemoved"_ns);
       NS_DispatchToCurrentThread(ev);
     }
   }
@@ -640,7 +647,7 @@ nsObjectLoadingContent::~nsObjectLoadingContent() {
         "Should not be tearing down a plugin at this point!");
     StopPluginInstance();
   }
-  DestroyImageLoadingContent();
+  nsImageLoadingContent::Destroy();
 }
 
 nsresult nsObjectLoadingContent::InstantiatePluginInstance(bool aIsLoading) {
@@ -763,8 +770,8 @@ nsresult nsObjectLoadingContent::InstantiatePluginInstance(bool aIsLoading) {
       // Fire plugin outdated event if necessary
       LOG(("OBJLC [%p]: Dispatching plugin outdated event for content\n",
            this));
-      nsCOMPtr<nsIRunnable> ev = new nsSimplePluginEvent(
-          thisContent, NS_LITERAL_STRING("PluginOutdated"));
+      nsCOMPtr<nsIRunnable> ev =
+          new nsSimplePluginEvent(thisContent, u"PluginOutdated"_ns);
       nsresult rv = NS_DispatchToCurrentThread(ev);
       if (NS_FAILED(rv)) {
         NS_WARNING("failed to dispatch nsSimplePluginEvent");
@@ -783,8 +790,8 @@ nsresult nsObjectLoadingContent::InstantiatePluginInstance(bool aIsLoading) {
     }
   }
 
-  nsCOMPtr<nsIRunnable> ev = new nsSimplePluginEvent(
-      thisContent, doc, NS_LITERAL_STRING("PluginInstantiated"));
+  nsCOMPtr<nsIRunnable> ev =
+      new nsSimplePluginEvent(thisContent, doc, u"PluginInstantiated"_ns);
   NS_DispatchToCurrentThread(ev);
 
 #ifdef XP_MACOSX
@@ -796,12 +803,12 @@ nsresult nsObjectLoadingContent::InstantiatePluginInstance(bool aIsLoading) {
 
 void nsObjectLoadingContent::GetPluginAttributes(
     nsTArray<MozPluginParameter>& aAttributes) {
-  aAttributes = mCachedAttributes;
+  aAttributes = mCachedAttributes.Clone();
 }
 
 void nsObjectLoadingContent::GetPluginParameters(
     nsTArray<MozPluginParameter>& aParameters) {
-  aParameters = mCachedParameters;
+  aParameters = mCachedParameters.Clone();
 }
 
 void nsObjectLoadingContent::GetNestedParams(
@@ -810,10 +817,9 @@ void nsObjectLoadingContent::GetNestedParams(
       do_QueryInterface(static_cast<nsIObjectLoadingContent*>(this));
 
   nsCOMPtr<nsIHTMLCollection> allParams;
-  NS_NAMED_LITERAL_STRING(xhtml_ns, "http://www.w3.org/1999/xhtml");
+  constexpr auto xhtml_ns = u"http://www.w3.org/1999/xhtml"_ns;
   ErrorResult rv;
-  allParams = ourElement->GetElementsByTagNameNS(
-      xhtml_ns, NS_LITERAL_STRING("param"), rv);
+  allParams = ourElement->GetElementsByTagNameNS(xhtml_ns, u"param"_ns, rv);
   if (rv.Failed()) {
     return;
   }
@@ -885,7 +891,7 @@ nsresult nsObjectLoadingContent::BuildParametersArray() {
 
   if (!wmodeOverride.IsEmpty()) {
     MozPluginParameter param;
-    param.mName = NS_LITERAL_STRING("wmode");
+    param.mName = u"wmode"_ns;
     CopyASCIItoUTF16(wmodeOverride, param.mValue);
     mCachedAttributes.AppendElement(param);
   }
@@ -901,7 +907,7 @@ nsresult nsObjectLoadingContent::BuildParametersArray() {
     MozPluginParameter param;
     element->GetAttr(kNameSpaceID_None, nsGkAtoms::data, param.mValue);
     if (!param.mValue.IsEmpty()) {
-      param.mName = NS_LITERAL_STRING("SRC");
+      param.mName = u"SRC"_ns;
       mCachedAttributes.AppendElement(param);
     }
   }
@@ -954,6 +960,46 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest* aRequest) {
     return NS_BINDING_ABORTED;
   }
 
+  nsCOMPtr<nsIChannel> chan(do_QueryInterface(aRequest));
+  NS_ASSERTION(chan, "Why is our request not a channel?");
+
+  nsresult status = NS_OK;
+  bool success = IsSuccessfulRequest(aRequest, &status);
+
+  // If we have already switched to type document, we're doing a
+  // process-switching DocumentChannel load. We should be able to pass down the
+  // load to our inner listener, but should also make sure to update our local
+  // state.
+  if (mType == eType_Document) {
+    if (!mFinalListener) {
+      MOZ_ASSERT_UNREACHABLE(
+          "Already are eType_Document, but don't have final listener yet?");
+      return NS_BINDING_ABORTED;
+    }
+
+    // If the load looks successful, fix up some of our local state before
+    // forwarding the request to the final URI loader.
+    //
+    // Forward load errors down to the document loader, so we don't tear down
+    // the nsDocShell ourselves.
+    if (success) {
+      LOG(("OBJLC [%p]: OnStartRequest: DocumentChannel request succeeded\n",
+           this));
+      nsCString channelType;
+      MOZ_ALWAYS_SUCCEEDS(mChannel->GetContentType(channelType));
+
+      if (GetTypeOfContent(channelType, mSkipFakePlugins) != eType_Document) {
+        MOZ_CRASH("DocumentChannel request with non-document MIME");
+      }
+      mContentType = channelType;
+
+      MOZ_ALWAYS_SUCCEEDS(
+          NS_GetFinalChannelURI(mChannel, getter_AddRefs(mURI)));
+    }
+
+    return mFinalListener->OnStartRequest(aRequest);
+  }
+
   // Otherwise we should be state loading, and call LoadObject with the channel
   if (mType != eType_Loading) {
     MOZ_ASSERT_UNREACHABLE("Should be type loading at this point");
@@ -964,12 +1010,6 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest* aRequest) {
 
   mChannelLoaded = true;
 
-  nsCOMPtr<nsIChannel> chan(do_QueryInterface(aRequest));
-  NS_ASSERTION(chan, "Why is our request not a channel?");
-
-  nsresult status = NS_OK;
-  bool success = IsSuccessfulRequest(aRequest, &status);
-
   if (status == NS_ERROR_BLOCKED_URI) {
     nsCOMPtr<nsIConsoleService> console(
         do_GetService("@mozilla.org/consoleservice;1"));
@@ -977,10 +1017,10 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest* aRequest) {
       nsCOMPtr<nsIURI> uri;
       chan->GetURI(getter_AddRefs(uri));
       nsString message =
-          NS_LITERAL_STRING("Blocking ") +
+          u"Blocking "_ns +
           NS_ConvertASCIItoUTF16(uri->GetSpecOrDefault().get()) +
-          NS_LITERAL_STRING(
-              " since it was found on an internal Firefox blocklist.");
+          nsLiteralString(
+              u" since it was found on an internal Firefox blocklist.");
       console->LogStringMessage(message.get());
     }
     mContentBlockingEnabled = true;
@@ -1182,6 +1222,12 @@ ObjectInterfaceRequestorShim::GetInterface(const nsIID& aIID, void** aResult) {
     NS_ADDREF(sink);
     return NS_OK;
   }
+  if (aIID.Equals(NS_GET_IID(nsIObjectLoadingContent))) {
+    nsIObjectLoadingContent* olc = mContent;
+    *aResult = olc;
+    NS_ADDREF(olc);
+    return NS_OK;
+  }
   return NS_NOINTERFACE;
 }
 
@@ -1197,6 +1243,20 @@ nsObjectLoadingContent::AsyncOnChannelRedirect(
   }
 
   mChannel = aNewChannel;
+
+  if (mFinalListener) {
+    nsCOMPtr<nsIChannelEventSink> sink(do_QueryInterface(mFinalListener));
+    MOZ_RELEASE_ASSERT(sink, "mFinalListener isn't nsIChannelEventSink?");
+    if (mType != eType_Document) {
+      MOZ_ASSERT_UNREACHABLE(
+          "Not a DocumentChannel load, but we're getting a "
+          "AsyncOnChannelRedirect with a mFinalListener?");
+      return NS_BINDING_ABORTED;
+    }
+
+    return sink->AsyncOnChannelRedirect(aOldChannel, aNewChannel, aFlags, cb);
+  }
+
   cb->OnRedirectVerifyCallback(NS_OK);
   return NS_OK;
 }
@@ -1217,10 +1277,6 @@ EventStates nsObjectLoadingContent::ObjectState() const {
       return EventStates();
     case eType_Null:
       switch (mFallbackType) {
-        case eFallbackSuppressed:
-          return NS_EVENT_STATE_SUPPRESSED;
-        case eFallbackUserDisabled:
-          return NS_EVENT_STATE_USERDISABLED;
         case eFallbackClickToPlay:
         case eFallbackClickToPlayQuiet:
           return NS_EVENT_STATE_TYPE_CLICK_TO_PLAY;
@@ -1238,6 +1294,8 @@ EventStates nsObjectLoadingContent::ObjectState() const {
           return NS_EVENT_STATE_VULNERABLE_UPDATABLE;
         case eFallbackVulnerableNoUpdate:
           return NS_EVENT_STATE_VULNERABLE_NO_UPDATE;
+        case eFallbackBlockAllPlugins:
+          return NS_EVENT_STATE_HANDLER_NOPLUGINS;
       }
   }
   MOZ_ASSERT_UNREACHABLE("unknown type?");
@@ -1283,7 +1341,7 @@ void nsObjectLoadingContent::MaybeRewriteYoutubeEmbed(nsIURI* aURI,
   // touch object nodes with "/embed/" urls that already do that right thing.
   nsAutoCString path;
   aURI->GetPathQueryRef(path);
-  if (!StringBeginsWith(path, NS_LITERAL_CSTRING("/v/"))) {
+  if (!StringBeginsWith(path, "/v/"_ns)) {
     return;
   }
 
@@ -1325,8 +1383,7 @@ void nsObjectLoadingContent::MaybeRewriteYoutubeEmbed(nsIURI* aURI,
   }
   // Switch out video access url formats, which should possibly allow HTML5
   // video loading.
-  uri.ReplaceSubstring(NS_LITERAL_CSTRING("/v/"),
-                       NS_LITERAL_CSTRING("/embed/"));
+  uri.ReplaceSubstring("/v/"_ns, "/embed/"_ns);
   nsAutoString utf16URI = NS_ConvertUTF8toUTF16(uri);
   rv = nsContentUtils::NewURIWithDocumentCharset(
       aOutURI, utf16URI, thisContent->OwnerDoc(), aBaseURI);
@@ -1343,9 +1400,8 @@ void nsObjectLoadingContent::MaybeRewriteYoutubeEmbed(nsIURI* aURI,
     msgName = "RewriteYouTubeEmbedPathParams";
   }
   nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Plugins"),
-      thisContent->OwnerDoc(), nsContentUtils::eDOM_PROPERTIES, msgName,
-      params);
+      nsIScriptError::warningFlag, "Plugins"_ns, thisContent->OwnerDoc(),
+      nsContentUtils::eDOM_PROPERTIES, msgName, params);
 }
 
 bool nsObjectLoadingContent::CheckLoadPolicy(int16_t* aContentPolicy) {
@@ -1541,7 +1597,7 @@ nsObjectLoadingContent::UpdateObjectParameters() {
     if (rewrittenURI) {
       newURI = rewrittenURI;
       mRewrittenYoutubeEmbed = true;
-      newMime = NS_LITERAL_CSTRING("text/html");
+      newMime = "text/html"_ns;
     }
 
     if (NS_FAILED(rv)) {
@@ -1586,7 +1642,20 @@ nsObjectLoadingContent::UpdateObjectParameters() {
   // channel for a previous load.
   bool newChannel = useChannel && mType == eType_Loading;
 
-  if (newChannel && mChannel) {
+  RefPtr<DocumentChannel> documentChannel = do_QueryObject(mChannel);
+  if (newChannel && documentChannel) {
+    // If we've got a DocumentChannel which is marked as loaded using
+    // `mChannelLoaded`, we are currently in the middle of a
+    // `UpgradeLoadToDocument`.
+    //
+    // As we don't have the real mime-type from the channel, handle this by
+    // using `newMime`.
+    newMime = TEXT_HTML;
+
+    MOZ_DIAGNOSTIC_ASSERT(
+        GetTypeOfContent(newMime, mSkipFakePlugins) == eType_Document,
+        "How is text/html not eType_Document?");
+  } else if (newChannel && mChannel) {
     nsCString channelType;
     rv = mChannel->GetContentType(channelType);
     if (NS_FAILED(rv)) {
@@ -1838,8 +1907,19 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
   // XXX(johns): In these cases, we refuse to touch our content and just
   //   remain unloaded, as per legacy behavior. It would make more sense to
   //   load fallback content initially and refuse to ever change state again.
-  if (doc->IsBeingUsedAsImage() || doc->IsLoadedAsData()) {
+  if (doc->IsBeingUsedAsImage()) {
     return NS_OK;
+  }
+
+  if (doc->IsLoadedAsData() && !doc->IsStaticDocument()) {
+    return NS_OK;
+  }
+  if (doc->IsStaticDocument()) {
+    // We only allow image loads in static documents, but we need to let the
+    // eType_Loading state go through too while we do so.
+    if (mType != eType_Image && mType != eType_Loading) {
+      return NS_OK;
+    }
   }
 
   LOG(("OBJLC [%p]: LoadObject called, notify %u, forceload %u, channel %p",
@@ -1963,15 +2043,11 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
       return NS_OK;
     }
 
-    // Load denied, switch to fallback and set disabled/suppressed if applicable
+    // Load denied, switch to fallback and set disabled if applicable
     if (!allowLoad) {
       LOG(("OBJLC [%p]: Load denied by policy", this));
       mType = eType_Null;
-      if (contentPolicy == nsIContentPolicy::REJECT_TYPE) {
-        fallbackType = eFallbackUserDisabled;
-      } else {
-        fallbackType = eFallbackSuppressed;
-      }
+      fallbackType = eFallbackDisabled;
     }
   }
 
@@ -2009,11 +2085,11 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
   // reason click-to-play instead. Items resolved as Image/Document
   // will not be checked for previews, as well as invalid plugins
   // (they will not have the mContentType set).
-  FallbackType clickToPlayReason;
-  if (!mActivated && IsPluginType(mType) && !ShouldPlay(clickToPlayReason)) {
-    LOG(("OBJLC [%p]: Marking plugin as click-to-play", this));
+  FallbackType noPlayReason;
+  if (!mActivated && IsPluginType(mType) && !ShouldPlay(noPlayReason)) {
+    LOG(("OBJLC [%p]: Marking plugin as do-not-play", this));
     mType = eType_Null;
-    fallbackType = clickToPlayReason;
+    fallbackType = noPlayReason;
   }
 
   if (!mActivated && IsPluginType(mType)) {
@@ -2124,7 +2200,9 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
 
       rv = uriLoader->OpenChannel(mChannel, nsIURILoader::DONT_RETARGET, req,
                                   getter_AddRefs(finalListener));
-      // finalListener will receive OnStartRequest below
+      // finalListener will receive OnStartRequest either below, or if
+      // `mChannel` is a `DocumentChannel`, it will be received after
+      // RedirectToRealChannel.
     } break;
     case eType_Loading:
       // If our type remains Loading, we need a channel to proceed
@@ -2159,8 +2237,9 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
     NS_ASSERTION(!mFrameLoader && !mInstanceOwner,
                  "switched to type null but also loaded something");
 
-    // Don't fire error events if we're falling back to click-to-play; instead
-    // pretend like this is a really slow-loading plug-in instead.
+    // Don't fire error events if we're falling back to click-to-play or if we
+    // are blocking all plugins; pretend like this is a really slow-loading
+    // plug-in instead.
     if (fallbackType != eFallbackClickToPlay &&
         fallbackType != eFallbackClickToPlayQuiet) {
       MaybeFireErrorEvent();
@@ -2214,7 +2293,17 @@ nsresult nsObjectLoadingContent::LoadObject(bool aNotify, bool aForceLoad,
     NS_ASSERTION(mType != eType_Null && mType != eType_Loading,
                  "We should not have a final listener with a non-loaded type");
     mFinalListener = finalListener;
-    rv = finalListener->OnStartRequest(mChannel);
+
+    // If we're a DocumentChannel load, hold off on firing the `OnStartRequest`
+    // callback, as we haven't received it yet from our caller.
+    RefPtr<DocumentChannel> documentChannel = do_QueryObject(mChannel);
+    if (documentChannel) {
+      MOZ_ASSERT(
+          mType == eType_Document,
+          "We have a DocumentChannel here but aren't loading a document?");
+    } else {
+      rv = finalListener->OnStartRequest(mChannel);
+    }
   }
 
   if (NS_FAILED(rv) && mIsLoading) {
@@ -2270,38 +2359,25 @@ nsresult nsObjectLoadingContent::OpenChannel() {
   RefPtr<ObjectInterfaceRequestorShim> shim =
       new ObjectInterfaceRequestorShim(this);
 
-  bool inherit = nsContentUtils::ChannelShouldInheritPrincipal(
-      thisContent->NodePrincipal(), mURI,
-      true,    // aInheritForAboutBlank
-      false);  // aForceInherit
+  bool inheritAttrs = nsContentUtils::ChannelShouldInheritPrincipal(
+      thisContent->NodePrincipal(),  // aLoadState->PrincipalToInherit()
+      mURI,                          // aLoadState->URI()
+      true,                          // aInheritForAboutBlank
+      false);                        // aForceInherit
+
+  bool inheritPrincipal = inheritAttrs && !SchemeIsData(mURI);
+
   nsSecurityFlags securityFlags =
-      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL;
-
-  bool isURIUniqueOrigin =
-      StaticPrefs::security_data_uri_unique_opaque_origin() &&
-      mURI->SchemeIs("data");
-
-  if (inherit && !isURIUniqueOrigin) {
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL;
+  if (inheritPrincipal) {
     securityFlags |= nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL;
   }
 
   nsContentPolicyType contentPolicyType = GetContentPolicyType();
-
-  rv = NS_NewChannel(getter_AddRefs(chan), mURI, thisContent, securityFlags,
-                     contentPolicyType,
-                     nullptr,  // aPerformanceStorage
-                     group,    // aLoadGroup
-                     shim,     // aCallbacks
-                     nsIChannel::LOAD_CALL_CONTENT_SNIFFERS |
-                         nsIChannel::LOAD_BYPASS_SERVICE_WORKER |
-                         nsIRequest::LOAD_HTML_OBJECT_DATA,
-                     nullptr,  // aIoService
-                     doc->GetSandboxFlags());
-  NS_ENSURE_SUCCESS(rv, rv);
-  if (inherit) {
-    nsCOMPtr<nsILoadInfo> loadinfo = chan->LoadInfo();
-    loadinfo->SetPrincipalToInherit(thisContent->NodePrincipal());
-  }
+  nsLoadFlags loadFlags = nsIChannel::LOAD_CALL_CONTENT_SNIFFERS |
+                          nsIChannel::LOAD_BYPASS_SERVICE_WORKER |
+                          nsIRequest::LOAD_HTML_OBJECT_DATA;
+  uint32_t sandboxFlags = doc->GetSandboxFlags();
 
   // For object loads we store the CSP that potentially needs to
   // be inherited, e.g. in case we are loading an opaque origin
@@ -2310,19 +2386,83 @@ nsresult nsObjectLoadingContent::OpenChannel() {
   // (do not share the same reference) otherwise a Meta CSP of an
   // opaque origin will incorrectly be propagated to the embedding
   // document.
-  nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp();
-  if (csp) {
-    RefPtr<nsCSPContext> cspToInherit = new nsCSPContext();
+  RefPtr<nsCSPContext> cspToInherit;
+  if (nsCOMPtr<nsIContentSecurityPolicy> csp = doc->GetCsp()) {
+    cspToInherit = new nsCSPContext();
     cspToInherit->InitFromOther(static_cast<nsCSPContext*>(csp.get()));
-    nsCOMPtr<nsILoadInfo> loadinfo = chan->LoadInfo();
-    static_cast<LoadInfo*>(loadinfo.get())->SetCSPToInherit(cspToInherit);
   }
+
+  // --- Create LoadInfo
+  RefPtr<LoadInfo> loadInfo = new LoadInfo(
+      /*aLoadingPrincipal = aLoadingContext->NodePrincipal() */ nullptr,
+      /*aTriggeringPrincipal = aLoadingPrincipal */ nullptr,
+      /*aLoadingContext = */ thisContent,
+      /*aSecurityFlags = */ securityFlags,
+      /*aContentPolicyType = */ contentPolicyType,
+      /*aLoadingClientInfo = */ Nothing(),
+      /*aController = */ Nothing(),
+      /*aSandboxFlags = */ sandboxFlags);
+
+  if (inheritAttrs) {
+    loadInfo->SetPrincipalToInherit(thisContent->NodePrincipal());
+  }
+
+  if (cspToInherit) {
+    loadInfo->SetCSPToInherit(cspToInherit);
+  }
+
+  if (DocumentChannel::CanUseDocumentChannel(mURI)) {
+    // --- Create LoadState
+    RefPtr<nsDocShellLoadState> loadState = new nsDocShellLoadState(mURI);
+    loadState->SetPrincipalToInherit(thisContent->NodePrincipal());
+    loadState->SetTriggeringPrincipal(loadInfo->TriggeringPrincipal());
+    if (cspToInherit) {
+      loadState->SetCsp(cspToInherit);
+    }
+    // TODO(djg): This was httpChan->SetReferrerInfoWithoutClone(referrerInfo);
+    // Is the ...WithoutClone(...) important?
+    auto referrerInfo = MakeRefPtr<ReferrerInfo>(*doc);
+    loadState->SetReferrerInfo(referrerInfo);
+
+    chan =
+        DocumentChannel::CreateForObject(loadState, loadInfo, loadFlags, shim);
+    MOZ_ASSERT(chan);
+    // NS_NewChannel sets the group on the channel.  CreateDocumentChannel does
+    // not.
+    chan->SetLoadGroup(group);
+  } else {
+    rv = NS_NewChannelInternal(getter_AddRefs(chan),  // outChannel
+                               mURI,                  // aUri
+                               loadInfo,              // aLoadInfo
+                               nullptr,               // aPerformanceStorage
+                               group,                 // aLoadGroup
+                               shim,                  // aCallbacks
+                               loadFlags,             // aLoadFlags
+                               nullptr);              // aIoService
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    if (inheritAttrs) {
+      nsCOMPtr<nsILoadInfo> loadinfo = chan->LoadInfo();
+      loadinfo->SetPrincipalToInherit(thisContent->NodePrincipal());
+    }
+
+    // For object loads we store the CSP that potentially needs to
+    // be inherited, e.g. in case we are loading an opaque origin
+    // like a data: URI. The actual inheritance check happens within
+    // Document::InitCSP(). Please create an actual copy of the CSP
+    // (do not share the same reference) otherwise a Meta CSP of an
+    // opaque origin will incorrectly be propagated to the embedding
+    // document.
+    if (cspToInherit) {
+      nsCOMPtr<nsILoadInfo> loadinfo = chan->LoadInfo();
+      static_cast<LoadInfo*>(loadinfo.get())->SetCSPToInherit(cspToInherit);
+    }
+  };
 
   // Referrer
   nsCOMPtr<nsIHttpChannel> httpChan(do_QueryInterface(chan));
   if (httpChan) {
-    nsCOMPtr<nsIReferrerInfo> referrerInfo = new ReferrerInfo();
-    referrerInfo->InitWithDocument(doc);
+    auto referrerInfo = MakeRefPtr<ReferrerInfo>(*doc);
 
     rv = httpChan->SetReferrerInfoWithoutClone(referrerInfo);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
@@ -2357,7 +2497,7 @@ uint32_t nsObjectLoadingContent::GetCapabilities() const {
   return eSupportImages | eSupportPlugins | eSupportDocuments;
 }
 
-void nsObjectLoadingContent::DestroyContent() {
+void nsObjectLoadingContent::Destroy() {
   if (mFrameLoader) {
     mFrameLoader->Destroy();
     mFrameLoader = nullptr;
@@ -2366,6 +2506,12 @@ void nsObjectLoadingContent::DestroyContent() {
   if (mInstanceOwner || mInstantiating) {
     QueueCheckPluginStopEvent();
   }
+
+  // Reset state so that if the element is re-appended to tree again (e.g.
+  // adopting to another document), it will reload resource again.
+  UnloadObject();
+
+  nsImageLoadingContent::Destroy();
 }
 
 /* static */
@@ -2463,11 +2609,11 @@ void nsObjectLoadingContent::NotifyStateChanged(ObjectType aOldType,
     }
 
     // Create/destroy plugin problem UAWidget.
-    const EventStates pluginProblemState = NS_EVENT_STATE_HANDLER_BLOCKED |
-                                           NS_EVENT_STATE_HANDLER_CRASHED |
-                                           NS_EVENT_STATE_TYPE_CLICK_TO_PLAY |
-                                           NS_EVENT_STATE_VULNERABLE_UPDATABLE |
-                                           NS_EVENT_STATE_VULNERABLE_NO_UPDATE;
+    const EventStates pluginProblemState =
+        NS_EVENT_STATE_HANDLER_BLOCKED | NS_EVENT_STATE_HANDLER_CRASHED |
+        NS_EVENT_STATE_TYPE_CLICK_TO_PLAY |
+        NS_EVENT_STATE_VULNERABLE_UPDATABLE |
+        NS_EVENT_STATE_VULNERABLE_NO_UPDATE | NS_EVENT_STATE_HANDLER_NOPLUGINS;
 
     bool hadProblemState = !(aOldState & pluginProblemState).IsEmpty();
     bool hasProblemState = !(newState & pluginProblemState).IsEmpty();
@@ -2476,7 +2622,14 @@ void nsObjectLoadingContent::NotifyStateChanged(ObjectType aOldType,
       thisEl->NotifyUAWidgetTeardown();
     } else if (!hadProblemState && hasProblemState) {
       thisEl->AttachAndSetUAShadowRoot();
-      thisEl->NotifyUAWidgetSetupOrChange();
+      // When blocking all plugins, we do not want the element to have focus
+      // so relinquish focus if we are in that state.
+      if (PluginFallbackType() == eFallbackBlockAllPlugins) {
+        nsFocusManager* fm = nsFocusManager::GetFocusManager();
+        if (fm && fm->GetFocusedElement() == thisEl) {
+          fm->ClearFocus(doc->GetWindow());
+        }
+      }
     }
   } else if (aOldType != mType) {
     // If our state changed, then we already recreated frames
@@ -2530,25 +2683,20 @@ nsPluginFrame* nsObjectLoadingContent::GetExistingFrame() {
 
 void nsObjectLoadingContent::CreateStaticClone(
     nsObjectLoadingContent* aDest) const {
-  nsImageLoadingContent::CreateStaticImageClone(aDest);
-
   aDest->mType = mType;
   nsObjectLoadingContent* thisObj = const_cast<nsObjectLoadingContent*>(this);
   if (thisObj->mPrintFrame.IsAlive()) {
     aDest->mPrintFrame = thisObj->mPrintFrame;
   } else {
-    aDest->mPrintFrame =
-        const_cast<nsObjectLoadingContent*>(this)->GetExistingFrame();
+    aDest->mPrintFrame = thisObj->GetExistingFrame();
   }
 
   if (mFrameLoader) {
     nsCOMPtr<nsIContent> content =
         do_QueryInterface(static_cast<nsIImageLoadingContent*>(aDest));
-    RefPtr<nsFrameLoader> fl =
-        nsFrameLoader::Create(content->AsElement(), false);
-    if (fl) {
-      aDest->mFrameLoader = fl;
-      mFrameLoader->CreateStaticClone(fl);
+    Document* doc = content->OwnerDoc();
+    if (doc->IsStaticDocument()) {
+      doc->AddPendingFrameStaticClone(aDest, mFrameLoader);
     }
   }
 }
@@ -2634,9 +2782,10 @@ nsNPAPIPluginInstance* nsObjectLoadingContent::ScriptRequestPluginInstance(
   // an event.  Fallback types >= eFallbackClickToPlay are plugin-replacement
   // types, see header.
   if (callerIsContentJS && !mScriptRequested && InActiveDocument(thisContent) &&
-      mType == eType_Null && mFallbackType >= eFallbackClickToPlay) {
-    nsCOMPtr<nsIRunnable> ev = new nsSimplePluginEvent(
-        thisContent, NS_LITERAL_STRING("PluginScripted"));
+      mType == eType_Null && mFallbackType >= eFallbackClickToPlay &&
+      mFallbackType <= eFallbackClickToPlayQuiet) {
+    nsCOMPtr<nsIRunnable> ev =
+        new nsSimplePluginEvent(thisContent, u"PluginScripted"_ns);
     nsresult rv = NS_DispatchToCurrentThread(ev);
     if (NS_FAILED(rv)) {
       MOZ_ASSERT_UNREACHABLE("failed to dispatch PluginScripted event");
@@ -2740,7 +2889,8 @@ void nsObjectLoadingContent::LoadFallback(FallbackType aType, bool aNotify) {
   nsTArray<nsINodeList*> childNodes;
   if (thisContent->IsHTMLElement(nsGkAtoms::object) &&
       (aType == eFallbackUnsupported || aType == eFallbackDisabled ||
-       aType == eFallbackBlocklisted || aType == eFallbackAlternate)) {
+       aType == eFallbackBlocklisted || aType == eFallbackAlternate ||
+       aType == eFallbackBlockAllPlugins)) {
     for (nsIContent* child = thisContent->GetFirstChild(); child;) {
       // When we advance to our next child, we don't want to traverse subtrees
       // under descendant <object> and <embed> elements; those will handle
@@ -2889,7 +3039,8 @@ void nsObjectLoadingContent::PlayPlugin(SystemCallerGuarantee,
   // If we're in a click-to-play state, reload.
   // Fallback types >= eFallbackClickToPlay are plugin-replacement types, see
   // header
-  if (mType == eType_Null && mFallbackType >= eFallbackClickToPlay) {
+  if (mType == eType_Null && mFallbackType >= eFallbackClickToPlay &&
+      mFallbackType <= eFallbackClickToPlayQuiet) {
     aRv = LoadObject(true, true);
   }
 }
@@ -2932,6 +3083,49 @@ nsObjectLoadingContent::SkipFakePlugins() {
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsObjectLoadingContent::UpgradeLoadToDocument(
+    nsIChannel* aRequest, BrowsingContext** aBrowsingContext) {
+  AUTO_PROFILER_LABEL("nsObjectLoadingContent::UpgradeLoadToDocument", NETWORK);
+
+  LOG(("OBJLC [%p]: UpgradeLoadToDocument", this));
+
+  if (aRequest != mChannel || !aRequest) {
+    // happens when a new load starts before the previous one got here.
+    return NS_BINDING_ABORTED;
+  }
+
+  // We should be state loading.
+  if (mType != eType_Loading) {
+    MOZ_ASSERT_UNREACHABLE("Should be type loading at this point");
+    return NS_BINDING_ABORTED;
+  }
+  MOZ_ASSERT(!mChannelLoaded, "mChannelLoaded set already?");
+  MOZ_ASSERT(!mFinalListener, "mFinalListener exists already?");
+
+  mChannelLoaded = true;
+
+  // We don't need to check for errors here, unlike in `OnStartRequest`, as
+  // `UpgradeLoadToDocument` is only called when the load is going to become a
+  // process-switching load. As we never process switch for failed object loads,
+  // we know our channel status is successful.
+
+  // Call `LoadObject` to trigger our nsObjectLoadingContext to switch into the
+  // specified new state.
+  nsresult rv = LoadObject(true, false, aRequest);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  RefPtr<BrowsingContext> bc = GetBrowsingContext();
+  if (!bc) {
+    return NS_ERROR_FAILURE;
+  }
+
+  bc.forget(aBrowsingContext);
+  return NS_OK;
+}
+
 uint32_t nsObjectLoadingContent::GetRunID(SystemCallerGuarantee,
                                           ErrorResult& aRv) {
   if (!mHasRunID) {
@@ -2953,162 +3147,11 @@ bool nsObjectLoadingContent::ShouldBlockContent() {
 }
 
 bool nsObjectLoadingContent::ShouldPlay(FallbackType& aReason) {
-  nsresult rv;
+  MOZ_ASSERT(!BrowserTabsRemoteAutostart() || !XRE_IsParentProcess());
 
-  if (BrowserTabsRemoteAutostart() && XRE_IsParentProcess()) {
-    // We no longer support loading plugins in the parent process.
-    aReason = eFallbackDisabled;
-    return false;
-  }
-
-  RefPtr<nsPluginHost> pluginHost = nsPluginHost::GetInst();
-
-  // Order of checks:
-  // * Assume a default of click-to-play
-  // * If globally disabled, per-site permissions cannot override.
-  // * If blocklisted, override the reason with the blocklist reason
-  // * Check if the flash blocking status for this page denies flash from
-  // loading.
-  // * Check per-site permissions and follow those if specified.
-  // * Honor per-plugin disabled permission
-  // * Blocklisted plugins are forced to CtP
-  // * Check per-plugin permission and follow that.
-
-  aReason = eFallbackClickToPlay;
-
-  uint32_t enabledState = nsIPluginTag::STATE_DISABLED;
-  pluginHost->GetStateForType(mContentType, nsPluginHost::eExcludeNone,
-                              &enabledState);
-  if (nsIPluginTag::STATE_DISABLED == enabledState) {
-    aReason = eFallbackDisabled;
-    return false;
-  }
-
-  // Before we check permissions, get the blocklist state of this plugin to set
-  // the fallback reason correctly. In the content process this will involve
-  // an ipc call to chrome.
-  uint32_t blocklistState = nsIBlocklistService::STATE_BLOCKED;
-  pluginHost->GetBlocklistStateForType(mContentType, nsPluginHost::eExcludeNone,
-                                       &blocklistState);
-  if (blocklistState == nsIBlocklistService::STATE_BLOCKED) {
-    // no override possible
-    aReason = eFallbackBlocklisted;
-    return false;
-  }
-
-  if (blocklistState ==
-      nsIBlocklistService::STATE_VULNERABLE_UPDATE_AVAILABLE) {
-    aReason = eFallbackVulnerableUpdatable;
-  } else if (blocklistState ==
-             nsIBlocklistService::STATE_VULNERABLE_NO_UPDATE) {
-    aReason = eFallbackVulnerableNoUpdate;
-  }
-
-  // Document and window lookup
-  nsCOMPtr<nsIContent> thisContent =
-      do_QueryInterface(static_cast<nsIObjectLoadingContent*>(this));
-  MOZ_ASSERT(thisContent);
-  Document* ownerDoc = thisContent->OwnerDoc();
-
-  nsCOMPtr<nsPIDOMWindowOuter> window = ownerDoc->GetWindow();
-  if (!window) {
-    return false;
-  }
-  nsCOMPtr<nsPIDOMWindowOuter> topWindow = window->GetInProcessTop();
-  NS_ENSURE_TRUE(topWindow, false);
-  nsCOMPtr<Document> topDoc = topWindow->GetDoc();
-  NS_ENSURE_TRUE(topDoc, false);
-
-  // Check the flash blocking status for this page (this applies to Flash only)
-  FlashClassification documentClassification = FlashClassification::Unknown;
-  if (IsFlashMIME(mContentType)) {
-    documentClassification = ownerDoc->DocumentFlashClassification();
-  }
-  if (documentClassification == FlashClassification::Denied) {
-    aReason = eFallbackSuppressed;
-    return false;
-  }
-
-  // Check the permission manager for permission based on the principal of
-  // the toplevel content.
-  nsCOMPtr<nsIPermissionManager> permissionManager =
-      services::GetPermissionManager();
-  NS_ENSURE_TRUE(permissionManager, false);
-
-  // For now we always say that the system principal uses click-to-play since
-  // that maintains current behavior and we have tests that expect this.  What
-  // we really should do is disable plugins entirely in pages that use the
-  // system principal, i.e. in chrome pages. That way the click-to-play code
-  // here wouldn't matter at all. Bug 775301 is tracking this.
-  if (!topDoc->NodePrincipal()->IsSystemPrincipal()) {
-    nsAutoCString permissionString;
-    rv = pluginHost->GetPermissionStringForType(
-        mContentType, nsPluginHost::eExcludeNone, permissionString);
-    NS_ENSURE_SUCCESS(rv, false);
-    uint32_t permission;
-    rv = permissionManager->TestPermissionFromPrincipal(
-        topDoc->NodePrincipal(), permissionString, &permission);
-    NS_ENSURE_SUCCESS(rv, false);
-    switch (permission) {
-      case nsIPermissionManager::ALLOW_ACTION:
-        if (PreferFallback(false /* isPluginClickToPlay */)) {
-          aReason = eFallbackAlternate;
-          return false;
-        }
-
-        return true;
-      case nsIPermissionManager::DENY_ACTION:
-        aReason = eFallbackDisabled;
-        return false;
-      case PLUGIN_PERMISSION_PROMPT_ACTION_QUIET:
-        if (PreferFallback(true /* isPluginClickToPlay */)) {
-          aReason = eFallbackAlternate;
-        } else {
-          aReason = eFallbackClickToPlayQuiet;
-        }
-
-        return false;
-      case nsIPermissionManager::PROMPT_ACTION:
-        if (PreferFallback(true /* isPluginClickToPlay */)) {
-          // False is already returned in this case, but
-          // it's important to correctly set aReason too.
-          aReason = eFallbackAlternate;
-        }
-
-        return false;
-      case nsIPermissionManager::UNKNOWN_ACTION:
-        break;
-      default:
-        MOZ_ASSERT(false);
-        return false;
-    }
-  }
-
-  // No site-specific permissions. Vulnerable plugins are automatically CtP
-  if (blocklistState ==
-          nsIBlocklistService::STATE_VULNERABLE_UPDATE_AVAILABLE ||
-      blocklistState == nsIBlocklistService::STATE_VULNERABLE_NO_UPDATE) {
-    return false;
-  }
-
-  if (PreferFallback(enabledState == nsIPluginTag::STATE_CLICKTOPLAY)) {
-    aReason = eFallbackAlternate;
-    return false;
-  }
-
-  // On the following switch we don't need to handle the case where
-  // documentClassification is FlashClassification::Denied because
-  // that's already handled above.
-  switch (enabledState) {
-    case nsIPluginTag::STATE_ENABLED:
-      return true;
-    case nsIPluginTag::STATE_CLICKTOPLAY:
-      if (documentClassification == FlashClassification::Allowed) {
-        return true;
-      }
-      return false;
-  }
-  MOZ_CRASH("Unexpected enabledState");
+  // We no longer support plugins.  Always fall back to our placeholder.
+  aReason = eFallbackBlockAllPlugins;
+  return false;
 }
 
 bool nsObjectLoadingContent::FavorFallbackMode(bool aIsPluginClickToPlay) {
@@ -3196,7 +3239,7 @@ bool nsObjectLoadingContent::HasGoodFallback() {
             nsresult rv = href->GetAsciiHost(asciiHost);
             if (NS_SUCCEEDED(rv) && !asciiHost.IsEmpty() &&
                 (asciiHost.EqualsLiteral("adobe.com") ||
-                 StringEndsWith(asciiHost, NS_LITERAL_CSTRING(".adobe.com")))) {
+                 StringEndsWith(asciiHost, ".adobe.com"_ns))) {
               return false;
             }
           }
@@ -3212,12 +3255,10 @@ bool nsObjectLoadingContent::HasGoodFallback() {
       ErrorResult rv;
       thisContent->GetTextContent(textContent, rv);
       bool hasText =
-          !rv.Failed() && (CaseInsensitiveFindInReadable(
-                               NS_LITERAL_STRING("Flash"), textContent) ||
-                           CaseInsensitiveFindInReadable(
-                               NS_LITERAL_STRING("Install"), textContent) ||
-                           CaseInsensitiveFindInReadable(
-                               NS_LITERAL_STRING("Download"), textContent));
+          !rv.Failed() &&
+          (CaseInsensitiveFindInReadable(u"Flash"_ns, textContent) ||
+           CaseInsensitiveFindInReadable(u"Install"_ns, textContent) ||
+           CaseInsensitiveFindInReadable(u"Download"_ns, textContent));
 
       if (hasText) {
         return false;
@@ -3320,7 +3361,7 @@ void nsObjectLoadingContent::SetupProtoChain(JSContext* aCx,
     return;
   }
 
-  if (pi_proto && js::GetObjectClass(pi_proto) != js::ObjectClassPtr) {
+  if (pi_proto && JS::GetClass(pi_proto) != js::ObjectClassPtr) {
     // The plugin wrapper has a proto that's not Object.prototype, set
     // 'pi.__proto__.__proto__' to the original 'this.__proto__'
     if (pi_proto != my_proto && !::JS_SetPrototype(aCx, pi_proto, my_proto)) {
@@ -3475,8 +3516,7 @@ void nsObjectLoadingContent::MaybeFireErrorEvent() {
   if (thisContent->IsHTMLElement(nsGkAtoms::object)) {
     RefPtr<AsyncEventDispatcher> loadBlockingAsyncDispatcher =
         new LoadBlockingAsyncEventDispatcher(
-            thisContent, NS_LITERAL_STRING("error"), CanBubble::eNo,
-            ChromeOnlyDispatch::eNo);
+            thisContent, u"error"_ns, CanBubble::eNo, ChromeOnlyDispatch::eNo);
     loadBlockingAsyncDispatcher->PostDOMEvent();
   }
 }
@@ -3503,6 +3543,25 @@ bool nsObjectLoadingContent::BlockEmbedOrObjectContentLoading() {
     }
   }
   return false;
+}
+
+void nsObjectLoadingContent::SubdocumentIntrinsicSizeOrRatioChanged(
+    const Maybe<IntrinsicSize>& aIntrinsicSize,
+    const Maybe<AspectRatio>& aIntrinsicRatio) {
+  if (aIntrinsicSize == mSubdocumentIntrinsicSize &&
+      aIntrinsicRatio == mSubdocumentIntrinsicRatio) {
+    return;
+  }
+
+  mSubdocumentIntrinsicSize = aIntrinsicSize;
+  mSubdocumentIntrinsicRatio = aIntrinsicRatio;
+
+  nsCOMPtr<nsIContent> thisContent =
+      do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
+
+  if (nsSubDocumentFrame* sdf = do_QueryFrame(thisContent->GetPrimaryFrame())) {
+    sdf->SubdocumentIntrinsicSizeOrRatioChanged();
+  }
 }
 
 // SetupProtoChainRunner implementation

@@ -7,7 +7,7 @@
 #ifndef DOM_PLUGINS_PLUGINMESSAGEUTILS_H
 #define DOM_PLUGINS_PLUGINMESSAGEUTILS_H
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 #include "base/message_loop.h"
 #include "base/shared_memory.h"
 
@@ -15,7 +15,7 @@
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/UniquePtr.h"
-#include "gfxipc/ShadowLayerUtils.h"
+#include "gfxipc/SurfaceDescriptor.h"
 
 #include "npapi.h"
 #include "npruntime.h"
@@ -115,7 +115,7 @@ struct NPAudioDeviceStateChangedIPC {
 typedef HWND NativeWindowHandle;
 #elif defined(MOZ_X11)
 typedef XID NativeWindowHandle;
-#elif defined(XP_DARWIN) || defined(ANDROID)
+#elif defined(XP_DARWIN) || defined(ANDROID) || defined(MOZ_WAYLAND)
 typedef intptr_t NativeWindowHandle;  // never actually used, will always be 0
 #else
 #  error Need NativeWindowHandle for this platform

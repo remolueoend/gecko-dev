@@ -47,8 +47,8 @@ namespace gfx {
 // and mapped files if we have both release and nightlies
 // running at the same time? Or...what if we have multiple
 // release builds running on same machine? (Bug 1563232)
-#define SHMEM_VERSION "0.0.10"
-static const int32_t kVRExternalVersion = 17;
+#define SHMEM_VERSION "0.0.11"
+static const int32_t kVRExternalVersion = 18;
 
 // We assign VR presentations to groups with a bitmask.
 // Currently, we will only display either content or chrome.
@@ -119,13 +119,19 @@ enum class ControllerCapabilityFlags : uint16_t {
    */
   Cap_LinearAcceleration = 1 << 4,
   /**
-   * Cap_TargetRaySpacePosition is set if the Gamepad has a target ray space position.
+   * Cap_TargetRaySpacePosition is set if the Gamepad has a grip space position.
    */
-  Cap_TargetRaySpacePosition = 1 << 5,
+  Cap_GripSpacePosition = 1 << 5,
+  /**
+   * Cap_PositionEmulated is set if the XRInputSoruce is capable of setting a
+   * emulated position (e.g. neck model) even if still doesn't support 6DOF
+   * tracking.
+   */
+  Cap_PositionEmulated = 1 << 6,
   /**
    * Cap_All used for validity checking during IPC serialization
    */
-  Cap_All = (1 << 6) - 1
+  Cap_All = (1 << 7) - 1
 };
 
 #endif  // ifndef MOZILLA_INTERNAL_API
@@ -339,6 +345,7 @@ struct VRDisplayState {
   VRFieldOfView eyeFOV[VRDisplayState::NumEyes];
   Point3D_POD eyeTranslation[VRDisplayState::NumEyes];
   IntSize_POD eyeResolution;
+  float nativeFramebufferScaleFactor;
   bool suppressFrames;
   bool isConnected;
   bool isMounted;

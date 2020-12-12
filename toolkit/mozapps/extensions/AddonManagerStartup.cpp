@@ -21,7 +21,6 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ResultExtensions.h"
-#include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
 #include "mozilla/URLPreloader.h"
 #include "mozilla/Unused.h"
@@ -642,19 +641,19 @@ nsresult AddonManagerStartup::EnumerateJARSubtree(nsIURI* uri,
 
   // Mangle the path into a pattern to match all child entries by escaping any
   // existing pattern matching metacharacters it contains and appending "/*".
-  NS_NAMED_LITERAL_CSTRING(metaChars, "[]()?*~|$\\");
+  constexpr auto metaChars = "[]()?*~|$\\"_ns;
 
   nsCString pattern;
   pattern.SetCapacity(entry.Length());
 
   // The first character of the entry name is "/", which we want to skip.
-  for (auto chr : MakeSpan(Substring(entry, 1))) {
+  for (auto chr : Span(Substring(entry, 1))) {
     if (metaChars.FindChar(chr) >= 0) {
       pattern.Append('\\');
     }
     pattern.Append(chr);
   }
-  if (!pattern.IsEmpty() && !StringEndsWith(pattern, NS_LITERAL_CSTRING("/"))) {
+  if (!pattern.IsEmpty() && !StringEndsWith(pattern, "/"_ns)) {
     pattern.Append('/');
   }
   pattern.Append('*');
@@ -678,8 +677,8 @@ namespace {
 static bool sObserverRegistered;
 
 struct ContentEntry final {
-  explicit ContentEntry(nsTArray<nsCString>& aArgs, uint8_t aFlags = 0)
-      : mArgs(aArgs), mFlags(aFlags) {}
+  explicit ContentEntry(nsTArray<nsCString>&& aArgs, uint8_t aFlags = 0)
+      : mArgs(std::move(aArgs)), mFlags(aFlags) {}
 
   AutoTArray<nsCString, 2> mArgs;
   uint8_t mFlags;
@@ -814,21 +813,21 @@ AddonManagerStartup::RegisterChrome(nsIURI* manifestURI,
 
     if (type.EqualsLiteral("override")) {
       NS_ENSURE_TRUE(vals.Length() == 2, NS_ERROR_INVALID_ARG);
-      overrides.AppendElement(vals);
+      overrides.AppendElement(std::move(vals));
     } else if (type.EqualsLiteral("content")) {
       if (vals.Length() == 3 &&
           vals[2].EqualsLiteral("contentaccessible=yes")) {
         NS_ENSURE_TRUE(xpc::IsInAutomation(), NS_ERROR_INVALID_ARG);
         vals.RemoveElementAt(2);
-        content.AppendElement(
-            ContentEntry(vals, nsChromeRegistry::CONTENT_ACCESSIBLE));
+        content.AppendElement(ContentEntry(
+            std::move(vals), nsChromeRegistry::CONTENT_ACCESSIBLE));
       } else {
         NS_ENSURE_TRUE(vals.Length() == 2, NS_ERROR_INVALID_ARG);
-        content.AppendElement(ContentEntry(vals));
+        content.AppendElement(ContentEntry(std::move(vals)));
       }
     } else if (type.EqualsLiteral("locale")) {
       NS_ENSURE_TRUE(vals.Length() == 3, NS_ERROR_INVALID_ARG);
-      locales.AppendElement(vals);
+      locales.AppendElement(std::move(vals));
     } else {
       return NS_ERROR_INVALID_ARG;
     }

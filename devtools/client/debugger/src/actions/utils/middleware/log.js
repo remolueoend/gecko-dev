@@ -4,11 +4,12 @@
 
 // @flow
 
-import { isTesting } from "devtools-environment";
+// $FlowIgnore
+import flags from "devtools/shared/flags";
 import type { ThunkArgs } from "../../types";
 import { prefs } from "../../../utils/prefs";
 
-const blacklist = [
+const ignoreList = [
   "ADD_BREAKPOINT_POSITIONS",
   "SET_SYMBOLS",
   "OUT_OF_SCOPE_LOCATIONS",
@@ -21,6 +22,7 @@ const blacklist = [
   "SET_FOCUSED_SOURCE_ITEM",
   "NODE_EXPAND",
   "IN_SCOPE_LINES",
+  "SET_PREVIEW",
 ];
 
 function cloneAction(action: any) {
@@ -66,7 +68,7 @@ function formatPause(pause) {
 function serializeAction(action) {
   try {
     action = cloneAction(action);
-    if (blacklist.includes(action.type)) {
+    if (ignoreList.includes(action.type)) {
       action = {};
     }
 
@@ -99,7 +101,7 @@ export function log({ dispatch, getState }: ThunkArgs) {
     const asyncMsg = !action.status ? "" : `[${action.status}]`;
 
     if (prefs.logActions) {
-      if (isTesting()) {
+      if (flags.testing) {
         // $FlowIgnore
         dump(
           `[ACTION] ${action.type} ${asyncMsg} - ${serializeAction(action)}\n`

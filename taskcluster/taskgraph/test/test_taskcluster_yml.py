@@ -4,8 +4,10 @@
 
 from __future__ import absolute_import, unicode_literals
 
+
 import jsone
 import pprint
+
 import slugid
 import unittest
 
@@ -17,7 +19,6 @@ from taskgraph import GECKO
 
 
 class TestTaskclusterYml(unittest.TestCase):
-
     @property
     def taskcluster_yml(self):
         return load_yaml(GECKO, ".taskcluster.yml")
@@ -36,7 +37,7 @@ class TestTaskclusterYml(unittest.TestCase):
                 "project": "mozilla-central",
                 "level": "3",
             },
-            "ownTaskId": slugid.nice().encode("ascii"),
+            "ownTaskId": slugid.nice().decode("ascii"),
         }
         rendered = jsone.render(self.taskcluster_yml, context)
         pprint.pprint(rendered)
@@ -65,7 +66,7 @@ class TestTaskclusterYml(unittest.TestCase):
                 "quoted_args": "abc def",
             },
             "now": current_json_time(),
-            "ownTaskId": slugid.nice().encode("ascii"),
+            "ownTaskId": slugid.nice().decode("ascii"),
         }
         rendered = jsone.render(self.taskcluster_yml, context)
         pprint.pprint(rendered)
@@ -91,7 +92,7 @@ class TestTaskclusterYml(unittest.TestCase):
                 "name": "test-action",
                 "title": "Test Action",
                 "description": "Just testing",
-                "taskGroupId": slugid.nice().encode("ascii"),
+                "taskGroupId": slugid.nice().decode("ascii"),
                 "symbol": "t",
                 "repo_scope": "assume:repo:hg.mozilla.org/try:action:generic",
                 "cb_name": "test_action",
@@ -99,8 +100,8 @@ class TestTaskclusterYml(unittest.TestCase):
             "input": {},
             "parameters": {},
             "now": current_json_time(),
-            "taskId": slugid.nice().encode("ascii"),
-            "ownTaskId": slugid.nice().encode("ascii"),
+            "taskId": slugid.nice().decode("ascii"),
+            "ownTaskId": slugid.nice().decode("ascii"),
             "clientId": "testing/testing/testing",
         }
         rendered = jsone.render(self.taskcluster_yml, context)

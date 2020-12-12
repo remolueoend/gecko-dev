@@ -9,10 +9,10 @@
 
 #include "frontend/NameAnalysisTypes.h"
 #include "js/TypeDecls.h"
+#include "vm/BuiltinObjectKind.h"
 #include "vm/BytecodeUtil.h"
-#include "vm/CheckIsCallableKind.h"  // CheckIsCallableKind
-#include "vm/CheckIsObjectKind.h"    // CheckIsObjectKind
-#include "vm/FunctionPrefixKind.h"   // FunctionPrefixKind
+#include "vm/CheckIsObjectKind.h"   // CheckIsObjectKind
+#include "vm/FunctionPrefixKind.h"  // FunctionPrefixKind
 #include "vm/StringType.h"
 
 namespace js {
@@ -70,33 +70,35 @@ class BytecodeLocation {
 
   RawBytecode toRawBytecode() const { return rawBytecode_; }
 
+#ifdef DEBUG
   // Return true if this bytecode location is valid for the given script.
   // This includes the location 1-past the end of the bytecode.
-  JS_PUBLIC_API bool isValid(const JSScript* script) const;
+  bool isValid(const JSScript* script) const;
 
   // Return true if this bytecode location is within the bounds of the
   // bytecode for a given script.
   bool isInBounds(const JSScript* script) const;
 
-  uint32_t bytecodeToOffset(const JSScript* script) const;
+  const JSScript* getDebugOnlyScript() const;
+#endif
 
-  uint32_t tableSwitchCaseOffset(const JSScript* script,
-                                 uint32_t caseIndex) const;
+  inline uint32_t bytecodeToOffset(const JSScript* script) const;
 
-  uint32_t getJumpTargetOffset(const JSScript* script) const;
+  inline uint32_t tableSwitchCaseOffset(const JSScript* script,
+                                        uint32_t caseIndex) const;
 
-  uint32_t getTableSwitchDefaultOffset(const JSScript* script) const;
+  inline uint32_t getJumpTargetOffset(const JSScript* script) const;
+
+  inline uint32_t getTableSwitchDefaultOffset(const JSScript* script) const;
 
   inline BytecodeLocation getTableSwitchDefaultTarget() const;
   inline BytecodeLocation getTableSwitchCaseTarget(const JSScript* script,
                                                    uint32_t caseIndex) const;
 
-  uint32_t useCount() const;
-
-  uint32_t defCount() const;
+  inline uint32_t useCount() const;
+  inline uint32_t defCount() const;
 
   int32_t jumpOffset() const { return GET_JUMP_OFFSET(rawBytecode_); }
-  int32_t codeOffset() const { return GET_CODE_OFFSET(rawBytecode_); }
 
   inline JSAtom* getAtom(const JSScript* script) const;
   inline PropertyName* getPropertyName(const JSScript* script) const;
@@ -111,7 +113,7 @@ class BytecodeLocation {
     return GET_UINT8(rawBytecode_);
   }
 
-  Scope* innermostScope(const JSScript* script) const;
+  inline Scope* innermostScope(const JSScript* script) const;
 
 #ifdef DEBUG
   bool hasSameScript(const BytecodeLocation& other) const {
@@ -179,7 +181,6 @@ class BytecodeLocation {
   }
 
   bool opHasIC() const { return BytecodeOpHasIC(getOp()); }
-  bool opHasTypeSet() const { return BytecodeOpHasTypeSet(getOp()); }
 
   bool fallsThrough() const { return BytecodeFallsThrough(getOp()); }
 
@@ -197,6 +198,14 @@ class BytecodeLocation {
 
   bool isNameOp() const { return IsNameOp(getOp()); }
 
+  bool isSpreadOp() const { return IsSpreadOp(getOp()); }
+
+  bool isInvokeOp() const { return IsInvokeOp(getOp()); }
+
+  bool isGetPropOp() const { return IsGetPropOp(getOp()); }
+
+  bool isSetPropOp() const { return IsSetPropOp(getOp()); }
+
   bool resultIsPopped() const {
     MOZ_ASSERT(StackDefs(rawBytecode_) == 1);
     return BytecodeIsPopped(rawBytecode_);
@@ -209,12 +218,6 @@ class BytecodeLocation {
     MOZ_ASSERT(isJump());
     return BytecodeLocation(*this,
                             rawBytecode_ + GET_JUMP_OFFSET(rawBytecode_));
-  }
-
-  BytecodeLocation getEndOfTryLocation() const {
-    MOZ_ASSERT(is(JSOp::Try));
-    return BytecodeLocation(*this,
-                            rawBytecode_ + GET_CODE_OFFSET(rawBytecode_));
   }
 
   // Return the 'low' parameter to the tableswitch opcode
@@ -281,9 +284,10 @@ class BytecodeLocation {
     MOZ_ASSERT(is(JSOp::CheckIsObj));
     return CheckIsObjectKind(GET_UINT8(rawBytecode_));
   }
-  CheckIsCallableKind getCheckIsCallableKind() const {
-    MOZ_ASSERT(is(JSOp::CheckIsCallable));
-    return CheckIsCallableKind(GET_UINT8(rawBytecode_));
+
+  BuiltinObjectKind getBuiltinObjectKind() const {
+    MOZ_ASSERT(is(JSOp::BuiltinObject));
+    return BuiltinObjectKind(GET_UINT8(rawBytecode_));
   }
 
   uint32_t getNewArrayLength() const {

@@ -112,7 +112,7 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
   void NotifyChanged(nsISupports* aSubject, const char16_t* aData,
                      bool aOldCookieIsSession = false);
 
-  void AddCookie(const nsACString& aBaseDomain,
+  void AddCookie(nsIConsoleReportCollector* aCRC, const nsACString& aBaseDomain,
                  const OriginAttributes& aOriginAttributes, Cookie* aCookie,
                  int64_t aCurrentTimeInUsec, nsIURI* aHostURI,
                  const nsACString& aCookieHeader, bool aFromHttp);
@@ -177,6 +177,8 @@ class CookieStorage : public nsIObserver, public nsSupportsWeakReference {
                                uint32_t aLimit);
 
   void UpdateCookieOldestTime(Cookie* aCookie);
+
+  void MergeCookieSchemeMap(Cookie* aOldCookie, Cookie* aNewCookie);
 
   static already_AddRefed<nsIArray> CreatePurgeList(nsICookie* aCookie);
 

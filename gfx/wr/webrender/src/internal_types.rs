@@ -2,18 +2,19 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{ColorF, DebugCommand, DocumentId, ExternalImageData, ExternalImageId, PrimitiveFlags};
-use api::{ImageFormat, ItemTag, NotificationRequest, Shadow, FilterOp};
+use api::{ColorF, DocumentId, ExternalImageId, PrimitiveFlags};
+use api::{ImageFormat, NotificationRequest, Shadow, FilterOp, ImageBufferKind};
 use api::units::*;
 use api;
+use crate::render_api::DebugCommand;
 use crate::composite::NativeSurfaceOperation;
 use crate::device::TextureFilter;
 use crate::renderer::PipelineInfo;
 use crate::gpu_cache::GpuCacheUpdateList;
 use crate::frame_builder::Frame;
+use crate::profiler::TransactionProfile;
 use fxhash::FxHasher;
 use plane_split::BspSplitter;
-use crate::profiler::BackendProfileCounters;
 use smallvec::SmallVec;
 use std::{usize, i32};
 use std::collections::{HashMap, HashSet};
@@ -22,8 +23,10 @@ use std::hash::BuildHasherDefault;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(any(feature = "capture", feature = "replay"))]
+use crate::capture::CaptureConfig;
 #[cfg(feature = "capture")]
-use crate::capture::{CaptureConfig, ExternalCaptureImage};
+use crate::capture::ExternalCaptureImage;
 #[cfg(feature = "replay")]
 use crate::capture::PlainExternalImage;
 
@@ -68,7 +71,7 @@ const OPACITY_EPSILON: f32 = 0.001;
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 pub enum Filter {
     Identity,
-    Blur(f32),
+    Blur(f32, f32),
     Brightness(f32),
     Contrast(f32),
     Grayscale(f32),
@@ -114,13 +117,13 @@ impl Filter {
     pub fn is_noop(&self) -> bool {
         match *self {
             Filter::Identity => false, // this is intentional
-            Filter::Blur(length) => length == 0.0,
+            Filter::Blur(width, height) => width == 0.0 && height == 0.0,
             Filter::Brightness(amount) => amount == 1.0,
             Filter::Contrast(amount) => amount == 1.0,
             Filter::Grayscale(amount) => amount == 0.0,
             Filter::HueRotate(amount) => amount == 0.0,
             Filter::Invert(amount) => amount == 0.0,
-            Filter::Opacity(_, amount) => amount >= 1.0,
+            Filter::Opacity(api::PropertyBinding::Value(amount), _) => amount >= 1.0,
             Filter::Saturate(amount) => amount == 1.0,
             Filter::Sepia(amount) => amount == 0.0,
             Filter::DropShadows(ref shadows) => {
@@ -141,6 +144,7 @@ impl Filter {
                     0.0, 0.0, 0.0, 0.0
                 ]
             }
+            Filter::Opacity(api::PropertyBinding::Binding(..), _) |
             Filter::SrgbToLinear |
             Filter::LinearToSrgb |
             Filter::ComponentTransfer |
@@ -176,7 +180,7 @@ impl From<FilterOp> for Filter {
     fn from(op: FilterOp) -> Self {
         match op {
             FilterOp::Identity => Filter::Identity,
-            FilterOp::Blur(r) => Filter::Blur(r),
+            FilterOp::Blur(w, h) => Filter::Blur(w, h),
             FilterOp::Brightness(b) => Filter::Brightness(b),
             FilterOp::Contrast(c) => Filter::Contrast(c),
             FilterOp::Grayscale(g) => Filter::Grayscale(g),
@@ -229,7 +233,11 @@ pub struct SwizzleSettings {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
-pub struct CacheTextureId(pub u64);
+pub struct CacheTextureId(pub u32);
+
+impl CacheTextureId {
+    pub const INVALID: CacheTextureId = CacheTextureId(!0);
+}
 
 /// Canonical type for texture layer indices.
 ///
@@ -244,20 +252,10 @@ pub struct CacheTextureId(pub u64);
 /// the device module when making calls into the platform layer.
 pub type LayerIndex = usize;
 
-/// Identifies a render pass target that is persisted until the end of the frame.
-///
-/// By default, only the targets of the immediately-preceding pass are bound as
-/// inputs to the next pass. However, tasks can opt into having their target
-/// preserved in a list until the end of the frame, and this type specifies the
-/// index in that list.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
-pub struct SavedTargetIndex(pub usize);
-
-impl SavedTargetIndex {
-    pub const PENDING: Self = SavedTargetIndex(!0);
-}
+pub struct DeferredResolveIndex(pub u32);
 
 /// Identifies the source of an input texture to a shader.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -267,20 +265,44 @@ pub enum TextureSource {
     /// Equivalent to `None`, allowing us to avoid using `Option`s everywhere.
     Invalid,
     /// An entry in the texture cache.
-    TextureCache(CacheTextureId, Swizzle),
+    TextureCache(CacheTextureId, ImageBufferKind, Swizzle),
     /// An external image texture, mananged by the embedding.
-    External(ExternalImageData),
+    External(DeferredResolveIndex, ImageBufferKind),
     /// The alpha target of the immediately-preceding pass.
     PrevPassAlpha,
     /// The color target of the immediately-preceding pass.
     PrevPassColor,
-    /// A render target from an earlier pass. Unlike the immediately-preceding
-    /// passes, these are not made available automatically, but are instead
-    /// opt-in by the `RenderTask` (see `mark_for_saving()`).
-    RenderTaskCache(SavedTargetIndex, Swizzle),
     /// Select a dummy 1x1 white texture. This can be used by image
     /// shaders that want to draw a solid color.
     Dummy,
+}
+
+impl TextureSource {
+    pub fn image_buffer_kind(&self) -> ImageBufferKind {
+        match *self {
+            TextureSource::TextureCache(_, image_buffer_kind, _) => image_buffer_kind,
+
+            TextureSource::External(_, image_buffer_kind) => image_buffer_kind,
+
+            // Render tasks use texture arrays for now.
+            TextureSource::PrevPassAlpha
+            | TextureSource::PrevPassColor
+            | TextureSource::Dummy => ImageBufferKind::Texture2DArray,
+
+
+            TextureSource::Invalid => ImageBufferKind::Texture2D,
+        }
+    }
+
+    #[inline]
+    pub fn is_compatible(
+        &self,
+        other: &TextureSource,
+    ) -> bool {
+        *self == TextureSource::Invalid ||
+        *other == TextureSource::Invalid ||
+        self == other
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -319,6 +341,7 @@ pub struct TextureCacheAllocInfo {
     pub layer_count: i32,
     pub format: ImageFormat,
     pub filter: TextureFilter,
+    pub target: ImageBufferKind,
     /// Indicates whether this corresponds to one of the shared texture caches.
     pub is_shared_cache: bool,
     /// If true, this texture requires a depth target.
@@ -330,10 +353,6 @@ pub struct TextureCacheAllocInfo {
 pub enum TextureCacheAllocationKind {
     /// Performs an initial texture allocation.
     Alloc(TextureCacheAllocInfo),
-    /// Reallocates the texture. The existing live texture with the same id
-    /// will be deallocated and its contents blitted over. The new size must
-    /// be greater than the old size.
-    Realloc(TextureCacheAllocInfo),
     /// Reallocates the texture without preserving its contents.
     Reset(TextureCacheAllocInfo),
     /// Frees the texture and the corresponding cache ID.
@@ -432,30 +451,11 @@ impl TextureUpdateList {
 
     /// Pushes a reallocation operation onto the list, potentially coalescing
     /// with previous operations.
-    pub fn push_realloc(&mut self, id: CacheTextureId, info: TextureCacheAllocInfo) {
-        self.debug_assert_coalesced(id);
-
-        // Coallesce this realloc into a previous alloc or realloc, if available.
-        if let Some(cur) = self.allocations.iter_mut().find(|x| x.id == id) {
-            match cur.kind {
-                TextureCacheAllocationKind::Alloc(ref mut i) => *i = info,
-                TextureCacheAllocationKind::Realloc(ref mut i) => *i = info,
-                TextureCacheAllocationKind::Reset(ref mut i) => *i = info,
-                TextureCacheAllocationKind::Free => panic!("Reallocating freed texture"),
-            }
-            return
-        }
-
-        self.allocations.push(TextureCacheAllocation {
-            id,
-            kind: TextureCacheAllocationKind::Realloc(info),
-        });
-    }
-
-    /// Pushes a reallocation operation onto the list, potentially coalescing
-    /// with previous operations.
     pub fn push_reset(&mut self, id: CacheTextureId, info: TextureCacheAllocInfo) {
         self.debug_assert_coalesced(id);
+
+        // Drop any unapplied updates to the to-be-freed texture.
+        self.updates.remove(&id);
 
         // Coallesce this realloc into a previous alloc or realloc, if available.
         if let Some(cur) = self.allocations.iter_mut().find(|x| x.id == id) {
@@ -463,10 +463,6 @@ impl TextureUpdateList {
                 TextureCacheAllocationKind::Alloc(ref mut i) => *i = info,
                 TextureCacheAllocationKind::Reset(ref mut i) => *i = info,
                 TextureCacheAllocationKind::Free => panic!("Resetting freed texture"),
-                TextureCacheAllocationKind::Realloc(_) => {
-                    // Reset takes precedence over realloc
-                    cur.kind = TextureCacheAllocationKind::Reset(info);
-                }
             }
             return
         }
@@ -492,7 +488,6 @@ impl TextureUpdateList {
         match removed_kind {
             Some(TextureCacheAllocationKind::Alloc(..)) => { /* no-op! */ },
             Some(TextureCacheAllocationKind::Free) => panic!("Double free"),
-            Some(TextureCacheAllocationKind::Realloc(..)) |
             Some(TextureCacheAllocationKind::Reset(..)) |
             None => {
                 self.allocations.push(TextureCacheAllocation {
@@ -532,6 +527,7 @@ impl ResourceUpdateList {
 pub struct RenderedDocument {
     pub frame: Frame,
     pub is_new_scene: bool,
+    pub profile: TransactionProfile,
 }
 
 pub enum DebugOutput {
@@ -540,7 +536,7 @@ pub enum DebugOutput {
     #[cfg(feature = "capture")]
     SaveCapture(CaptureConfig, Vec<ExternalCaptureImage>),
     #[cfg(feature = "replay")]
-    LoadCapture(PathBuf, Vec<PlainExternalImage>),
+    LoadCapture(CaptureConfig, Vec<PlainExternalImage>),
 }
 
 #[allow(dead_code)]
@@ -558,7 +554,6 @@ pub enum ResultMsg {
         DocumentId,
         RenderedDocument,
         ResourceUpdateList,
-        BackendProfileCounters,
     ),
     AppendNotificationRequests(Vec<NotificationRequest>),
     ForceRedraw,
@@ -585,7 +580,6 @@ pub struct LayoutPrimitiveInfo {
     pub rect: LayoutRect,
     pub clip_rect: LayoutRect,
     pub flags: PrimitiveFlags,
-    pub hit_info: Option<ItemTag>,
 }
 
 impl LayoutPrimitiveInfo {
@@ -594,7 +588,6 @@ impl LayoutPrimitiveInfo {
             rect,
             clip_rect,
             flags: PrimitiveFlags::default(),
-            hit_info: None,
         }
     }
 }

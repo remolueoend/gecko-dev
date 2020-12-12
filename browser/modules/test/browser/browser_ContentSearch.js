@@ -2,14 +2,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "SearchTestUtils",
+  "resource://testing-common/SearchTestUtils.jsm"
+);
+
+SearchTestUtils.init(this);
+
 const SERVICE_EVENT_TYPE = "ContentSearchService";
 const CLIENT_EVENT_TYPE = "ContentSearchClient";
-
-/* import-globals-from ../../../components/search/test/browser/head.js */
-Services.scriptloader.loadSubScript(
-  "chrome://mochitests/content/browser/browser/components/search/test/browser/head.js",
-  this
-);
 
 var arrayBufferIconTested = false;
 var plainURIIconTested = false;
@@ -40,22 +42,19 @@ add_task(async function setup() {
     ],
   });
 
-  await promiseNewEngine("testEngine.xml", {
-    setAsCurrent: true,
-    testPath:
-      "chrome://mochitests/content/browser/browser/components/search/test/browser/",
-  });
+  let engine = await SearchTestUtils.promiseNewSearchEngine(
+    "chrome://mochitests/content/browser/browser/components/search/test/browser/testEngine.xml"
+  );
+  await Services.search.setDefault(engine);
 
-  await promiseNewEngine("testEngine_diacritics.xml", {
-    setAsCurrent: false,
-    setAsCurrentPrivate: true,
-    testPath:
-      "chrome://mochitests/content/browser/browser/components/search/test/browser/",
-  });
+  let engine2 = await SearchTestUtils.promiseNewSearchEngine(
+    "chrome://mochitests/content/browser/browser/components/search/test/browser/testEngine_diacritics.xml"
+  );
+  await Services.search.setDefaultPrivate(engine2);
 
-  await promiseNewEngine("testEngine_chromeicon.xml", {
-    setAsCurrent: false,
-  });
+  await SearchTestUtils.promiseNewSearchEngine(
+    getRootDirectory(gTestPath) + "testEngine_chromeicon.xml"
+  );
 
   registerCleanupFunction(async () => {
     await Services.search.setDefault(originalEngine);
@@ -212,7 +211,7 @@ add_task(async function badImage() {
   // If the bad image URI caused an exception to be thrown within ContentSearch,
   // then we'll hang waiting for the CurrentState responses triggered by the new
   // engine.  That's what we're testing, and obviously it shouldn't happen.
-  let vals = await waitForNewEngine(browser, "contentSearchBadImage.xml", 1);
+  let vals = await waitForNewEngine(browser, "contentSearchBadImage.xml");
   let engine = vals[0];
   let finalCurrentStateMsg = vals[vals.length - 1];
   let expectedCurrentState = await currentStateObj();
@@ -221,9 +220,9 @@ add_task(async function badImage() {
   );
   ok(!!expectedEngine, "Sanity check: engine should be in expected state");
   ok(
-    expectedEngine.iconData === null,
-    "Sanity check: icon array buffer of engine in expected state " +
-      "should be null: " +
+    expectedEngine.iconData ===
+      "chrome://browser/skin/search-engine-placeholder.png",
+    "Sanity check: icon of engine in expected state should be the placeholder: " +
       expectedEngine.iconData
   );
   checkMsg(finalCurrentStateMsg, {
@@ -242,11 +241,7 @@ add_task(
     let { browser } = await addTab();
 
     // Add the test engine that provides suggestions.
-    let vals = await waitForNewEngine(
-      browser,
-      "contentSearchSuggestions.xml",
-      0
-    );
+    let vals = await waitForNewEngine(browser, "contentSearchSuggestions.xml");
     let engine = vals[0];
 
     let searchStr = "browser_ContentSearch.js-suggestions-";
@@ -254,7 +249,10 @@ add_task(
     // Add a form history suggestion and wait for Satchel to notify about it.
     sendEventToContent(browser, {
       type: "AddFormHistoryEntry",
-      data: searchStr + "form",
+      data: {
+        value: searchStr + "form",
+        engineName: engine.name,
+      },
     });
     await new Promise(resolve => {
       Services.obs.addObserver(function onAdd(subj, topic, data) {
@@ -435,22 +433,16 @@ async function waitForTestMsg(browser, type, count = 1) {
   return { donePromise };
 }
 
-async function waitForNewEngine(browser, basename, numImages) {
+async function waitForNewEngine(browser, basename) {
   info("Waiting for engine to be added: " + basename);
 
   // Wait for the search events triggered by adding the new engine.
-  // engine-added engine-loaded
-  let count = 2;
-  // engine-changed for each of the images
-  for (let i = 0; i < numImages; i++) {
-    count++;
-  }
+  // There are two events triggerd by engine-added and engine-loaded
+  let statePromise = await waitForTestMsg(browser, "CurrentState", 2);
 
-  let statePromise = await waitForTestMsg(browser, "CurrentState", count);
-
-  // Wait for addEngine().
+  // Wait for addOpenSearchEngine().
   let url = getRootDirectory(gTestPath) + basename;
-  let engine = await Services.search.addEngine(url, "", false);
+  let engine = await Services.search.addOpenSearchEngine(url, "");
   let results = await statePromise.donePromise;
   return [engine, ...results];
 }
@@ -479,7 +471,7 @@ var currentStateObj = async function(isPrivateWindowValue, hiddenEngine = "") {
       name: engine.name,
       iconData: await iconDataFromURI(uri),
       hidden: engine.name == hiddenEngine,
-      identifier: engine.identifier,
+      isAppProvided: engine.isAppProvided,
     });
   }
   if (typeof isPrivateWindowValue == "boolean") {
@@ -490,19 +482,18 @@ var currentStateObj = async function(isPrivateWindowValue, hiddenEngine = "") {
 
 async function constructEngineObj(engine) {
   let uriFavicon = engine.getIconURLBySize(16, 16);
-  let bundle = Services.strings.createBundle(
-    "chrome://global/locale/autocomplete.properties"
-  );
   return {
     name: engine.name,
-    placeholder: bundle.formatStringFromName("searchWithEngine", [engine.name]),
     iconData: await iconDataFromURI(uriFavicon),
+    isAppProvided: engine.isAppProvided,
   };
 }
 
 function iconDataFromURI(uri) {
   if (!uri) {
-    return Promise.resolve(null);
+    return Promise.resolve(
+      "chrome://browser/skin/search-engine-placeholder.png"
+    );
   }
 
   if (!uri.startsWith("data:")) {
@@ -515,7 +506,7 @@ function iconDataFromURI(uri) {
     xhr.open("GET", uri, true);
     xhr.responseType = "arraybuffer";
     xhr.onerror = () => {
-      resolve(null);
+      resolve("chrome://browser/skin/search-engine-placeholder.png");
     };
     xhr.onload = () => {
       arrayBufferIconTested = true;
@@ -524,7 +515,7 @@ function iconDataFromURI(uri) {
     try {
       xhr.send();
     } catch (err) {
-      resolve(null);
+      resolve("chrome://browser/skin/search-engine-placeholder.png");
     }
   });
 }

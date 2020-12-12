@@ -16,6 +16,9 @@ class AudioDeviceInfo;
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(cubeb_stream_prefs)
 
 namespace mozilla {
+
+class AudioThreadRegistry;
+
 namespace CubebUtils {
 
 typedef cubeb_devid AudioDeviceID;
@@ -27,6 +30,12 @@ void InitLibrary();
 // Shutdown Audio Library. Some Audio backends require shutting down the
 // library after using it.
 void ShutdownLibrary();
+
+bool SandboxEnabled();
+
+// Returns the global instance of AudioThreadRegistry. Initialized and
+// destroying in Init/ShutdownLibrary(), and safe from all threads.
+AudioThreadRegistry* GetAudioThreadRegistry();
 
 // Returns the maximum number of channels supported by the audio hardware.
 uint32_t MaxNumberOfChannels();
@@ -45,12 +54,21 @@ uint32_t GetCubebPlaybackLatencyInMilliseconds();
 uint32_t GetCubebMTGLatencyInFrames(cubeb_stream_params* params);
 bool CubebLatencyPrefSet();
 void GetCurrentBackend(nsAString& aBackend);
-cubeb_stream_prefs GetDefaultStreamPrefs();
+cubeb_stream_prefs GetDefaultStreamPrefs(cubeb_device_type aType);
 char* GetForcedOutputDevice();
 // No-op on all platforms but Android, where it tells the device's AudioManager
 // to switch to "communication mode", which might change audio routing,
 // bluetooth communication type, etc.
 void SetInCommunication(bool aInCommunication);
+// Returns true if the output streams should be routed like a stream containing
+// voice data, and not generic audio. This can influence audio processing and
+// device selection.
+bool RouteOutputAsVoice();
+// Returns, in seconds, the roundtrip latency Gecko thinks there is between the
+// default input and output devices. This is for diagnosing purposes, the
+// latency figures are best used directly from the cubeb streams themselves, as
+// the devices being used matter. This is blocking.
+bool EstimatedRoundTripLatencyDefaultDevices(double* aMean, double* aStdDev);
 
 #  ifdef MOZ_WIDGET_ANDROID
 uint32_t AndroidGetAudioOutputSampleRate();

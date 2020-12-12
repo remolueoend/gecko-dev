@@ -13,8 +13,7 @@
 #include "mozilla/dom/TrackEvent.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 MediaTrackList::MediaTrackList(nsIGlobalObject* aOwnerObject,
                                HTMLMediaElement* aMediaElement)
@@ -56,7 +55,7 @@ void MediaTrackList::AddTrack(MediaTrack* aTrack) {
              "Where is this track from?");
   mTracks.AppendElement(aTrack);
   aTrack->SetTrackList(this);
-  CreateAndDispatchTrackEventRunner(aTrack, NS_LITERAL_STRING("addtrack"));
+  CreateAndDispatchTrackEventRunner(aTrack, u"addtrack"_ns);
 
   if ((!aTrack->AsAudioTrack() || !aTrack->AsAudioTrack()->Enabled()) &&
       (!aTrack->AsVideoTrack() || !aTrack->AsVideoTrack()->Selected())) {
@@ -73,7 +72,7 @@ void MediaTrackList::RemoveTrack(const RefPtr<MediaTrack>& aTrack) {
   mTracks.RemoveElement(aTrack);
   aTrack->SetEnabledInternal(false, MediaTrack::FIRE_NO_EVENTS);
   aTrack->SetTrackList(nullptr);
-  CreateAndDispatchTrackEventRunner(aTrack, NS_LITERAL_STRING("removetrack"));
+  CreateAndDispatchTrackEventRunner(aTrack, u"removetrack"_ns);
 }
 
 void MediaTrackList::RemoveTracks() {
@@ -110,8 +109,8 @@ void MediaTrackList::EmptyTracks() {
 }
 
 void MediaTrackList::CreateAndDispatchChangeEvent() {
-  RefPtr<AsyncEventDispatcher> asyncDispatcher = new AsyncEventDispatcher(
-      this, NS_LITERAL_STRING("change"), CanBubble::eNo);
+  RefPtr<AsyncEventDispatcher> asyncDispatcher =
+      new AsyncEventDispatcher(this, u"change"_ns, CanBubble::eNo);
   asyncDispatcher->PostDOMEvent();
 }
 
@@ -133,5 +132,4 @@ void MediaTrackList::CreateAndDispatchTrackEventRunner(
   asyncDispatcher->PostDOMEvent();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

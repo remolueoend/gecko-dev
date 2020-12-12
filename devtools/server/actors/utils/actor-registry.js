@@ -27,8 +27,7 @@ const ActorRegistry = {
    *        An object with 3 mandatory attributes:
    *        - prefix (string):
    *          The prefix of an actor is used to compute:
-   *          - the `actorID` of each new actor instance (ex: prefix1).
-   *            (See ActorPool.addActor)
+   *          - the `actorID` of each new actor instance (ex: prefix1). (See Pool.manage)
    *          - the actor name in the listTabs request. Sending a listTabs
    *            request to the root actor returns actor IDs. IDs are in
    *            dictionaries, with actor names as keys and actor IDs as values.
@@ -180,7 +179,7 @@ const ActorRegistry = {
       constructor: "InspectorActor",
       type: { target: true },
     });
-    this.registerModule("devtools/server/actors/stylesheets", {
+    this.registerModule("devtools/server/actors/style-sheets", {
       prefix: "styleSheets",
       constructor: "StyleSheetsActor",
       type: { target: true },
@@ -263,11 +262,27 @@ const ActorRegistry = {
         type: { target: true },
       }
     );
+    this.registerModule(
+      "devtools/server/actors/network-monitor/eventsource-actor",
+      {
+        prefix: "eventSource",
+        constructor: "EventSourceActor",
+        type: { target: true },
+      }
+    );
     this.registerModule("devtools/server/actors/manifest", {
       prefix: "manifest",
       constructor: "ManifestActor",
       type: { target: true },
     });
+    this.registerModule(
+      "devtools/server/actors/network-monitor/network-content",
+      {
+        prefix: "networkContent",
+        constructor: "NetworkContentActor",
+        type: { target: true },
+      }
+    );
   },
 
   /**

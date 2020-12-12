@@ -8,7 +8,6 @@
 
 #include <utility>
 
-#include "LayersLogging.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/layers/AsyncImagePipelineManager.h"
 #include "mozilla/layers/Compositor.h"                // for Compositor
@@ -69,7 +68,7 @@ void WebRenderImageHost::UseTextureHost(
 
   if (GetAsyncRef()) {
     for (const auto& it : mWrBridges) {
-      WebRenderBridgeParent* wrBridge = it.second;
+      RefPtr<WebRenderBridgeParent> wrBridge = it.second->WrBridge();
       if (wrBridge && wrBridge->CompositorScheduler()) {
         wrBridge->CompositorScheduler()->ScheduleComposition();
       }
@@ -87,7 +86,7 @@ void WebRenderImageHost::UseTextureHost(
           img.mFrameID > mLastFrameID || img.mProducerID != mLastProducerID;
       if (frameComesAfter && !img.mTimeStamp.IsNull()) {
         for (const auto& it : mWrBridges) {
-          WebRenderBridgeParent* wrBridge = it.second;
+          RefPtr<WebRenderBridgeParent> wrBridge = it.second->WrBridge();
           if (wrBridge) {
             wrBridge->AsyncImageManager()->CompositeUntil(
                 img.mTimeStamp + TimeDuration::FromMilliseconds(BIAS_TIME_MS));
@@ -124,6 +123,24 @@ TimeStamp WebRenderImageHost::GetCompositionTime() const {
   return time;
 }
 
+CompositionOpportunityId WebRenderImageHost::GetCompositionOpportunityId()
+    const {
+  CompositionOpportunityId id;
+
+  MOZ_ASSERT(mCurrentAsyncImageManager);
+  if (mCurrentAsyncImageManager) {
+    id = mCurrentAsyncImageManager->GetCompositionOpportunityId();
+  }
+  return id;
+}
+
+void WebRenderImageHost::AppendImageCompositeNotification(
+    const ImageCompositeNotificationInfo& aInfo) const {
+  if (mCurrentAsyncImageManager) {
+    mCurrentAsyncImageManager->AppendImageCompositeNotification(aInfo);
+  }
+}
+
 TextureHost* WebRenderImageHost::GetAsTextureHost(IntRect* aPictureRect) {
   MOZ_ASSERT_UNREACHABLE("unexpected to be called");
   return nullptr;
@@ -148,23 +165,12 @@ TextureHost* WebRenderImageHost::GetAsTextureHostForComposite(
   }
 
   const TimedImage* img = GetImage(imageIndex);
-
-  if (mLastFrameID != img->mFrameID || mLastProducerID != img->mProducerID) {
-    if (mAsyncRef) {
-      ImageCompositeNotificationInfo info;
-      info.mImageBridgeProcessId = mAsyncRef.mProcessId;
-      info.mNotification = ImageCompositeNotification(
-          mAsyncRef.mHandle, img->mTimeStamp,
-          mCurrentAsyncImageManager->GetCompositionTime(), img->mFrameID,
-          img->mProducerID);
-      mCurrentAsyncImageManager->AppendImageCompositeNotification(info);
-    }
-    mLastFrameID = img->mFrameID;
-    mLastProducerID = img->mProducerID;
-  }
   SetCurrentTextureHost(img->mTextureHost);
 
-  UpdateBias(imageIndex);
+  if (mCurrentAsyncImageManager->GetCompositionTime()) {
+    // We are in a composition. Send ImageCompositeNotifications.
+    OnFinishRendering(imageIndex, img, mAsyncRef.mProcessId, mAsyncRef.mHandle);
+  }
 
   return mCurrentTextureHost;
 }
@@ -207,7 +213,7 @@ void WebRenderImageHost::PrintInfo(std::stringstream& aStream,
   for (const auto& img : Images()) {
     aStream << "\n";
     img.mTextureHost->PrintInfo(aStream, pfx.get());
-    AppendToString(aStream, img.mPictureRect, " [picture-rect=", "]");
+    aStream << " [picture-rect=" << img.mPictureRect << "]";
   }
 }
 
@@ -251,7 +257,9 @@ void WebRenderImageHost::SetWrBridge(const wr::PipelineId& aPipelineId,
   const auto it = mWrBridges.find(wr::AsUint64(aPipelineId));
   MOZ_ASSERT(it == mWrBridges.end());
 #endif
-  mWrBridges.emplace(wr::AsUint64(aPipelineId), aWrBridge);
+  RefPtr<WebRenderBridgeParentRef> ref =
+      aWrBridge->GetWebRenderBridgeParentRef();
+  mWrBridges.emplace(wr::AsUint64(aPipelineId), ref);
 }
 
 void WebRenderImageHost::ClearWrBridge(const wr::PipelineId& aPipelineId,

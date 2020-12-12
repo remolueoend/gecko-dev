@@ -1,5 +1,7 @@
 /* import-globals-from antitracking_head.js */
 
+requestLongerTimeout(4);
+
 AntiTracking.runTestInNormalAndPrivateMode(
   "IndexedDB",
   // blocking callback
@@ -70,11 +72,7 @@ AntiTracking.runTestInNormalAndPrivateMode(
   // non-blocking callback
   async _ => {
     /* import-globals-from storageAccessAPIHelpers.js */
-    if (allowListed) {
-      await hasStorageAccessInitially();
-    } else {
-      await noStorageAccessInitially();
-    }
+    await hasStorageAccessInitially();
 
     indexedDB.open("test", "1");
     ok(true, "IDB should be allowed");

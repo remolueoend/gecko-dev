@@ -5,13 +5,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/MediaMetadata.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/MediaSessionBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "nsNetUtil.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // Only needed for refcounted objects.
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(MediaMetadata, mParent)
@@ -137,7 +137,8 @@ static nsresult ResolveURL(nsString& aURL, nsIURI* aBaseURI) {
 
 void MediaMetadata::SetArtworkInternal(const Sequence<MediaImage>& aArtwork,
                                        ErrorResult& aRv) {
-  nsTArray<MediaImage> artwork(aArtwork);
+  nsTArray<MediaImage> artwork;
+  artwork.Assign(aArtwork);
 
   nsCOMPtr<nsIURI> baseURI = GetEntryBaseURL();
   for (MediaImage& image : artwork) {
@@ -150,5 +151,4 @@ void MediaMetadata::SetArtworkInternal(const Sequence<MediaImage>& aArtwork,
   mArtwork = std::move(artwork);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

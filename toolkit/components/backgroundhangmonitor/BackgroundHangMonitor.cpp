@@ -16,22 +16,21 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/StaticPrefs_toolkit.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/ThreadLocal.h"
 #include "mozilla/Unused.h"
+#include "mozilla/dom/RemoteType.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
 #include "prinrval.h"
 #include "prthread.h"
-
-#ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerMarkerPayload.h"
-#endif
 
 #include <algorithm>
 
@@ -141,7 +140,7 @@ BackgroundHangManager::Observe(nsISupports* aSubject, const char* aTopic,
     nsresult rv = NS_GetSpecialDirectory(NS_APP_USER_PROFILE_50_DIR,
                                          getter_AddRefs(mPermahangFile));
     if (NS_SUCCEEDED(rv)) {
-      mPermahangFile->AppendNative(NS_LITERAL_CSTRING("last_permahang.bin"));
+      mPermahangFile->AppendNative("last_permahang.bin"_ns);
     } else {
       mPermahangFile = nullptr;
     }
@@ -504,7 +503,7 @@ void BackgroundHangThread::ReportHang(TimeDuration aHangTime,
 
   HangDetails hangDetails(aHangTime,
                           nsDependentCString(XRE_GetProcessTypeString()),
-                          VoidString(), mThreadName, mRunnableName,
+                          NOT_REMOTE_TYPE, mThreadName, mRunnableName,
                           std::move(mHangStack), std::move(mAnnotations));
 
   PersistedToDisk persistedToDisk = aPersistedToDisk;
@@ -532,12 +531,26 @@ void BackgroundHangThread::ReportHang(TimeDuration aHangTime,
   // If the profiler is enabled, add a marker.
 #ifdef MOZ_GECKO_PROFILER
   if (profiler_can_accept_markers()) {
-    TimeStamp endTime = TimeStamp::Now();
-    TimeStamp startTime = endTime - aHangTime;
-    AUTO_PROFILER_STATS(add_marker_with_HangMarkerPayload);
-    profiler_add_marker_for_thread(
-        mStackHelper.GetThreadId(), JS::ProfilingCategoryPair::OTHER,
-        "BHR-detected hang", MakeUnique<HangMarkerPayload>(startTime, endTime));
+    struct HangMarker {
+      static constexpr Span<const char> MarkerTypeName() {
+        return MakeStringSpan("BHR-detected hang");
+      }
+      static void StreamJSONMarkerData(
+          baseprofiler::SpliceableJSONWriter& aWriter) {}
+      static MarkerSchema MarkerTypeDisplay() {
+        using MS = MarkerSchema;
+        MS schema{MS::Location::markerChart, MS::Location::markerTable,
+                  MS::Location::timelineOverview};
+        return schema;
+      }
+    };
+
+    const TimeStamp endTime = TimeStamp::NowUnfuzzed();
+    const TimeStamp startTime = endTime - aHangTime;
+    profiler_add_marker("BHR-detected hang", geckoprofiler::category::OTHER,
+                        {MarkerThreadId(mStackHelper.GetThreadId()),
+                         MarkerTiming::Interval(startTime, endTime)},
+                        HangMarker{});
   }
 #endif
 }
@@ -607,18 +620,6 @@ bool BackgroundHangMonitor::ShouldDisableOnBeta(const nsCString& clientID) {
   return strtol(suffix, NULL, 16) % BHR_BETA_MOD;
 }
 
-bool BackgroundHangMonitor::IsDisabled() {
-  static bool sPrefCached = false;
-  static bool sPrefCacheValue = false;
-  if (!sPrefCached) {
-    sPrefCached = true;
-    Preferences::AddBoolVarCache(
-        &sPrefCacheValue, "toolkit.content-background-hang-monitor.disabled");
-  }
-
-  return sPrefCacheValue;
-}
-
 bool BackgroundHangMonitor::DisableOnBeta() {
   nsAutoCString clientID;
   nsresult rv =
@@ -643,7 +644,8 @@ void BackgroundHangMonitor::Startup() {
 #ifdef MOZ_ENABLE_BACKGROUND_HANG_MONITOR
   MOZ_ASSERT(!BackgroundHangManager::sInstance, "Already initialized");
 
-  if (XRE_IsContentProcess() && IsDisabled()) {
+  if (XRE_IsContentProcess() &&
+      StaticPrefs::toolkit_content_background_hang_monitor_disabled()) {
     BackgroundHangManager::sDisabled = true;
     return;
   }

@@ -24,14 +24,22 @@ const CONTENT_PROCESS_EXPECTED = [
       sidebar: {
         name: "Test page",
         role: "document",
+        relations: {
+          "containing document": {
+            role: "document",
+            name: "Test page",
+          },
+          embeds: {
+            role: "document",
+            name: "Test page",
+          },
+        },
       },
     },
   },
 ];
 
 add_task(async () => {
-  await pushPref("devtools.target-switching.enabled", true);
-
   info(
     "Open a test page running on the content process and accessibility panel"
   );
@@ -46,5 +54,5 @@ add_task(async () => {
   await navigateTo(CONTENT_PROCESS_URL);
   await runA11yPanelTests(CONTENT_PROCESS_EXPECTED, env);
 
-  await disableAccessibilityInspector(env);
+  await closeTabToolboxAccessibility(env.tab);
 });

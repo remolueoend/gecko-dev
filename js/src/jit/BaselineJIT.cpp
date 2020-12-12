@@ -7,6 +7,7 @@
 #include "jit/BaselineJIT.h"
 
 #include "mozilla/BinarySearch.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryReporting.h"
 
@@ -15,11 +16,14 @@
 #include "debugger/DebugAPI.h"
 #include "gc/FreeOp.h"
 #include "gc/PublicIterators.h"
+#include "jit/AutoWritableJitCode.h"
 #include "jit/BaselineCodeGen.h"
 #include "jit/BaselineIC.h"
-#include "jit/CompileInfo.h"
+#include "jit/CalleeToken.h"
 #include "jit/JitCommon.h"
+#include "jit/JitRuntime.h"
 #include "jit/JitSpewer.h"
+#include "js/friend/StackLimits.h"  // js::CheckRecursionLimitWithStackPointer
 #include "util/Memory.h"
 #include "util/StructuredSpewer.h"
 #include "vm/Interpreter.h"
@@ -27,7 +31,7 @@
 
 #include "debugger/DebugAPI-inl.h"
 #include "gc/GC-inl.h"
-#include "jit/JitFrames-inl.h"
+#include "jit/JitScript-inl.h"
 #include "jit/MacroAssembler-inl.h"
 #include "vm/BytecodeUtil-inl.h"
 #include "vm/GeckoProfiler-inl.h"
@@ -36,6 +40,7 @@
 #include "vm/Stack-inl.h"
 
 using mozilla::BinarySearchIf;
+using mozilla::CheckedInt;
 using mozilla::DebugOnly;
 
 using namespace js;
@@ -67,6 +72,35 @@ static bool CheckFrame(InterpreterFrame* fp) {
 
   return true;
 }
+
+struct EnterJitData {
+  explicit EnterJitData(JSContext* cx)
+      : jitcode(nullptr),
+        osrFrame(nullptr),
+        calleeToken(nullptr),
+        maxArgv(nullptr),
+        maxArgc(0),
+        numActualArgs(0),
+        osrNumStackValues(0),
+        envChain(cx),
+        result(cx),
+        constructing(false) {}
+
+  uint8_t* jitcode;
+  InterpreterFrame* osrFrame;
+
+  void* calleeToken;
+
+  Value* maxArgv;
+  unsigned maxArgc;
+  unsigned numActualArgs;
+  unsigned osrNumStackValues;
+
+  RootedObject envChain;
+  RootedValue result;
+
+  bool constructing;
+};
 
 static JitExecStatus EnterBaseline(JSContext* cx, EnterJitData& data) {
   MOZ_ASSERT(data.osrFrame);
@@ -118,8 +152,6 @@ static JitExecStatus EnterBaseline(JSContext* cx, EnterJitData& data) {
     data.osrFrame->clearRunningInJit();
   }
 
-  MOZ_ASSERT(!cx->hasIonReturnOverride());
-
   // Jit callers wrap primitive constructor return, except for derived
   // class constructors, which are forced to do it themselves.
   if (!data.result.isMagic() && data.constructing &&
@@ -147,8 +179,6 @@ JitExecStatus jit::EnterBaselineInterpreterAtBranch(JSContext* cx,
   const BaselineInterpreter& interp =
       cx->runtime()->jitRuntime()->baselineInterpreter();
   data.jitcode = interp.interpretOpNoDebugTrapAddr().value;
-
-  // Note: keep this in sync with SetEnterJitData.
 
   data.osrFrame = fp;
   data.osrNumStackValues =
@@ -442,65 +472,58 @@ bool jit::BaselineCompileFromBaselineInterpreter(JSContext* cx,
 }
 
 BaselineScript* BaselineScript::New(
-    JSScript* jsscript, uint32_t warmUpCheckPrologueOffset,
+    JSContext* cx, uint32_t warmUpCheckPrologueOffset,
     uint32_t profilerEnterToggleOffset, uint32_t profilerExitToggleOffset,
     size_t retAddrEntries, size_t osrEntries, size_t debugTrapEntries,
     size_t resumeEntries, size_t traceLoggerToggleOffsetEntries) {
-  static const unsigned DataAlignment = sizeof(uintptr_t);
+  // Compute size including trailing arrays.
+  CheckedInt<Offset> size = sizeof(BaselineScript);
+  size += CheckedInt<Offset>(resumeEntries) * sizeof(uintptr_t);
+  size += CheckedInt<Offset>(retAddrEntries) * sizeof(RetAddrEntry);
+  size += CheckedInt<Offset>(osrEntries) * sizeof(OSREntry);
+  size += CheckedInt<Offset>(debugTrapEntries) * sizeof(DebugTrapEntry);
+  size += CheckedInt<Offset>(traceLoggerToggleOffsetEntries) * sizeof(uint32_t);
 
-  size_t retAddrEntriesSize = retAddrEntries * sizeof(RetAddrEntry);
-  size_t osrEntriesSize = osrEntries * sizeof(BaselineScript::OSREntry);
-  size_t debugTrapEntriesSize =
-      debugTrapEntries * sizeof(BaselineScript::DebugTrapEntry);
-  size_t resumeEntriesSize = resumeEntries * sizeof(uintptr_t);
-  size_t tlEntriesSize = traceLoggerToggleOffsetEntries * sizeof(uint32_t);
-
-  size_t paddedRetAddrEntriesSize =
-      AlignBytes(retAddrEntriesSize, DataAlignment);
-  size_t paddedOSREntriesSize = AlignBytes(osrEntriesSize, DataAlignment);
-  size_t paddedDebugTrapEntriesSize =
-      AlignBytes(debugTrapEntriesSize, DataAlignment);
-  size_t paddedResumeEntriesSize = AlignBytes(resumeEntriesSize, DataAlignment);
-  size_t paddedTLEntriesSize = AlignBytes(tlEntriesSize, DataAlignment);
-
-  size_t allocBytes = paddedRetAddrEntriesSize + paddedOSREntriesSize +
-                      paddedDebugTrapEntriesSize + paddedResumeEntriesSize +
-                      paddedTLEntriesSize;
-
-  BaselineScript* script =
-      jsscript->zone()->pod_malloc_with_extra<BaselineScript, uint8_t>(
-          allocBytes);
-  if (!script) {
+  if (!size.isValid()) {
+    ReportAllocationOverflow(cx);
     return nullptr;
   }
-  new (script)
+
+  // Allocate contiguous raw buffer.
+  void* raw = cx->pod_malloc<uint8_t>(size.value());
+  MOZ_ASSERT(uintptr_t(raw) % alignof(BaselineScript) == 0);
+  if (!raw) {
+    return nullptr;
+  }
+  BaselineScript* script = new (raw)
       BaselineScript(warmUpCheckPrologueOffset, profilerEnterToggleOffset,
                      profilerExitToggleOffset);
 
-  size_t offsetCursor = sizeof(BaselineScript);
-  MOZ_ASSERT(offsetCursor == AlignBytes(sizeof(BaselineScript), DataAlignment));
+  Offset cursor = sizeof(BaselineScript);
 
-  script->retAddrEntriesOffset_ = offsetCursor;
-  script->retAddrEntries_ = retAddrEntries;
-  offsetCursor += paddedRetAddrEntriesSize;
+  MOZ_ASSERT(isAlignedOffset<uintptr_t>(cursor));
+  script->resumeEntriesOffset_ = cursor;
+  cursor += resumeEntries * sizeof(uintptr_t);
 
-  script->osrEntriesOffset_ = offsetCursor;
-  script->osrEntries_ = osrEntries;
-  offsetCursor += paddedOSREntriesSize;
+  MOZ_ASSERT(isAlignedOffset<RetAddrEntry>(cursor));
+  script->retAddrEntriesOffset_ = cursor;
+  cursor += retAddrEntries * sizeof(RetAddrEntry);
 
-  script->debugTrapEntriesOffset_ = offsetCursor;
-  script->debugTrapEntries_ = debugTrapEntries;
-  offsetCursor += paddedDebugTrapEntriesSize;
+  MOZ_ASSERT(isAlignedOffset<OSREntry>(cursor));
+  script->osrEntriesOffset_ = cursor;
+  cursor += osrEntries * sizeof(OSREntry);
 
-  script->resumeEntriesOffset_ = resumeEntries ? offsetCursor : 0;
-  offsetCursor += paddedResumeEntriesSize;
+  MOZ_ASSERT(isAlignedOffset<DebugTrapEntry>(cursor));
+  script->debugTrapEntriesOffset_ = cursor;
+  cursor += debugTrapEntries * sizeof(DebugTrapEntry);
 
-  script->traceLoggerToggleOffsetsOffset_ = tlEntriesSize ? offsetCursor : 0;
-  script->numTraceLoggerToggleOffsets_ = traceLoggerToggleOffsetEntries;
-  offsetCursor += paddedTLEntriesSize;
+  MOZ_ASSERT(isAlignedOffset<uint32_t>(cursor));
+  script->traceLoggerToggleOffsetsOffset_ = cursor;
+  cursor += traceLoggerToggleOffsetEntries * sizeof(uint32_t);
 
-  MOZ_ASSERT(offsetCursor == sizeof(BaselineScript) + allocBytes);
-  script->allocBytes_ = allocBytes;
+  script->allocBytes_ = cursor;
+
+  MOZ_ASSERT(script->endOffset() == size.value());
 
   return script;
 }
@@ -510,7 +533,7 @@ void BaselineScript::trace(JSTracer* trc) {
 }
 
 /* static */
-void BaselineScript::writeBarrierPre(Zone* zone, BaselineScript* script) {
+void BaselineScript::preWriteBarrier(Zone* zone, BaselineScript* script) {
   if (zone->needsIncrementalBarrier()) {
     script->trace(zone->barrierTracer());
   }
@@ -624,8 +647,7 @@ const RetAddrEntry& BaselineScript::retAddrEntryFromPCOffset(
 
 const RetAddrEntry& BaselineScript::prologueRetAddrEntry(
     RetAddrEntry::Kind kind) {
-  MOZ_ASSERT(kind == RetAddrEntry::Kind::StackCheck ||
-             kind == RetAddrEntry::Kind::WarmupCounter);
+  MOZ_ASSERT(kind == RetAddrEntry::Kind::StackCheck);
 
   // The prologue entries will always be at a very low offset, so just do a
   // linear search from the beginning.
@@ -665,7 +687,7 @@ void BaselineScript::computeResumeNativeOffsets(
   // nullptr if compiler decided code was unreachable.
   auto computeNative = [this, &entries](uint32_t pcOffset) -> uint8_t* {
     mozilla::Span<const ResumeOffsetEntry> entriesSpan =
-        mozilla::MakeSpan(entries.begin(), entries.length());
+        mozilla::Span(entries.begin(), entries.length());
     size_t mid;
     if (!ComputeBinarySearchMid(entriesSpan, pcOffset, &mid)) {
       return nullptr;
@@ -676,8 +698,8 @@ void BaselineScript::computeResumeNativeOffsets(
   };
 
   mozilla::Span<const uint32_t> pcOffsets = script->resumeOffsets();
-  uint8_t** nativeOffsets = resumeEntryList();
-  std::transform(pcOffsets.begin(), pcOffsets.end(), nativeOffsets,
+  mozilla::Span<uint8_t*> nativeOffsets = resumeEntryList();
+  std::transform(pcOffsets.begin(), pcOffsets.end(), nativeOffsets.begin(),
                  computeNative);
 }
 
@@ -831,8 +853,8 @@ void BaselineScript::toggleTraceLoggerEngine(bool enable) {
   AutoWritableJitCode awjc(method());
 
   // Enable/Disable the traceLogger prologue and epilogue.
-  for (size_t i = 0; i < numTraceLoggerToggleOffsets_; i++) {
-    CodeLocationLabel label(method_, CodeOffset(traceLoggerToggleOffsets()[i]));
+  for (uint32_t offset : traceLoggerToggleOffsets()) {
+    CodeLocationLabel label(method_, CodeOffset(offset));
     if (enable) {
       Assembler::ToggleToCmp(label);
     } else {

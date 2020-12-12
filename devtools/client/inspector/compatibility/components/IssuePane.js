@@ -11,6 +11,9 @@ const {
 const dom = require("devtools/client/shared/vendor/react-dom-factories");
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 
+const FluentReact = require("devtools/client/shared/vendor/fluent-react");
+const Localized = createFactory(FluentReact.Localized);
+
 const Types = require("devtools/client/inspector/compatibility/types");
 
 const IssueList = createFactory(
@@ -20,34 +23,30 @@ const IssueList = createFactory(
 class IssuePane extends PureComponent {
   static get propTypes() {
     return {
+      dispatch: PropTypes.func.isRequired,
       issues: PropTypes.arrayOf(PropTypes.shape(Types.issue)).isRequired,
-      hideBoxModelHighlighter: PropTypes.func.isRequired,
       setSelectedNode: PropTypes.func.isRequired,
-      showBoxModelHighlighterForNode: PropTypes.func.isRequired,
     };
   }
 
   _renderNoIssues() {
-    return dom.p(
-      { className: "devtools-sidepanel-no-result" },
-      "No compatibility issues found."
+    return Localized(
+      { id: "compatibility-no-issues-found" },
+      dom.p(
+        { className: "devtools-sidepanel-no-result" },
+        "compatibility-no-issues-found"
+      )
     );
   }
 
   render() {
-    const {
-      issues,
-      hideBoxModelHighlighter,
-      setSelectedNode,
-      showBoxModelHighlighterForNode,
-    } = this.props;
+    const { dispatch, issues, setSelectedNode } = this.props;
 
     return issues.length
       ? IssueList({
+          dispatch,
           issues,
-          hideBoxModelHighlighter,
           setSelectedNode,
-          showBoxModelHighlighterForNode,
         })
       : this._renderNoIssues();
   }

@@ -6,22 +6,57 @@
 
 #include "WorkerError.h"
 
+#include <stdio.h>
+#include <algorithm>
+#include <utility>
+#include "MainThreadUtils.h"
+#include "WorkerPrivate.h"
+#include "WorkerRunnable.h"
+#include "WorkerScope.h"
+#include "js/ComparisonOperators.h"
+#include "js/UniquePtr.h"
+#include "js/friend/ErrorMessages.h"
+#include "jsapi.h"
+#include "mozilla/ArrayAlgorithm.h"
+#include "mozilla/ArrayIterator.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/BasicEvents.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/ErrorResult.h"
+#include "mozilla/EventDispatcher.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Span.h"
+#include "mozilla/ThreadSafeWeakPtr.h"
+#include "mozilla/Unused.h"
+#include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ErrorEvent.h"
 #include "mozilla/dom/ErrorEventBinding.h"
+#include "mozilla/dom/Event.h"
+#include "mozilla/dom/EventBinding.h"
+#include "mozilla/dom/EventTarget.h"
 #include "mozilla/dom/RemoteWorkerChild.h"
+#include "mozilla/dom/RemoteWorkerTypes.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/dom/ServiceWorkerManager.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
 #include "mozilla/dom/SimpleGlobalObject.h"
+#include "mozilla/dom/Worker.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerDebuggerGlobalScopeBinding.h"
 #include "mozilla/dom/WorkerGlobalScopeBinding.h"
-#include "mozilla/EventDispatcher.h"
-#include "nsGlobalWindowInner.h"
+#include "mozilla/fallible.h"
+#include "nsCOMPtr.h"
+#include "nsDebug.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsIConsoleService.h"
+#include "nsIScriptError.h"
 #include "nsScriptError.h"
-#include "WorkerRunnable.h"
-#include "WorkerPrivate.h"
-#include "WorkerScope.h"
+#include "nsServiceManagerUtils.h"
+#include "nsString.h"
+#include "nsWrapperCacheInlines.h"
+#include "nscore.h"
+#include "xpcpublic.h"
 
 namespace mozilla {
 namespace dom {
@@ -97,9 +132,9 @@ class ReportErrorRunnable final : public WorkerDebuggeeRunnable {
           if (swm) {
             swm->HandleError(aCx, aWorkerPrivate->GetPrincipal(),
                              aWorkerPrivate->ServiceWorkerScope(),
-                             aWorkerPrivate->ScriptURL(), EmptyString(),
-                             EmptyString(), EmptyString(), 0, 0,
-                             nsIScriptError::errorFlag, JSEXN_ERR);
+                             aWorkerPrivate->ScriptURL(), u""_ns, u""_ns,
+                             u""_ns, 0, 0, nsIScriptError::errorFlag,
+                             JSEXN_ERR);
           }
         }
 
@@ -188,9 +223,8 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
         if (swm) {
           swm->HandleError(aCx, aWorkerPrivate->GetPrincipal(),
                            aWorkerPrivate->ServiceWorkerScope(),
-                           aWorkerPrivate->ScriptURL(), EmptyString(),
-                           EmptyString(), EmptyString(), 0, 0,
-                           nsIScriptError::errorFlag, JSEXN_ERR);
+                           aWorkerPrivate->ScriptURL(), u""_ns, u""_ns, u""_ns,
+                           0, 0, nsIScriptError::errorFlag, JSEXN_ERR);
         }
       }
 
@@ -203,8 +237,8 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
 
     RefPtr<mozilla::dom::EventTarget> parentEventTarget =
         aWorkerPrivate->ParentEventTargetRef();
-    RefPtr<Event> event = Event::Constructor(
-        parentEventTarget, NS_LITERAL_STRING("error"), EventInit());
+    RefPtr<Event> event =
+        Event::Constructor(parentEventTarget, u"error"_ns, EventInit());
     event->SetTrusted(true);
 
     parentEventTarget->DispatchEvent(*event);
@@ -215,7 +249,7 @@ class ReportGenericErrorRunnable final : public WorkerDebuggeeRunnable {
 }  // namespace
 
 void WorkerErrorBase::AssignErrorBase(JSErrorBase* aReport) {
-  mFilename = NS_ConvertUTF8toUTF16(aReport->filename);
+  CopyUTF8toUTF16(MakeStringSpan(aReport->filename), mFilename);
   mLineNumber = aReport->lineno;
   mColumnNumber = aReport->column;
   mErrorNumber = aReport->errorNumber;
@@ -286,7 +320,7 @@ void WorkerErrorReport::ReportError(
 
     if (aTarget) {
       RefPtr<ErrorEvent> event =
-          ErrorEvent::Constructor(aTarget, NS_LITERAL_STRING("error"), init);
+          ErrorEvent::Constructor(aTarget, u"error"_ns, init);
       event->SetTrusted(true);
 
       bool defaultActionEnabled =
@@ -339,7 +373,7 @@ void WorkerErrorReport::ReportError(
         MOZ_ASSERT(globalScope->GetWrapperPreserveColor() == global);
 
         RefPtr<ErrorEvent> event =
-            ErrorEvent::Constructor(aTarget, NS_LITERAL_STRING("error"), init);
+            ErrorEvent::Constructor(aTarget, u"error"_ns, init);
         event->SetTrusted(true);
 
         if (NS_FAILED(EventDispatcher::DispatchDOMEvent(
@@ -379,19 +413,16 @@ void WorkerErrorReport::ReportError(
 void WorkerErrorReport::LogErrorToConsole(JSContext* aCx,
                                           WorkerErrorReport& aReport,
                                           uint64_t aInnerWindowId) {
-  nsTArray<ErrorDataNote> notes;
-  for (size_t i = 0, len = aReport.mNotes.Length(); i < len; i++) {
-    const WorkerErrorNote& note = aReport.mNotes.ElementAt(i);
-    notes.AppendElement(ErrorDataNote(note.mLineNumber, note.mColumnNumber,
-                                      note.mMessage, note.mFilename));
-  }
-
   JS::RootedObject stack(aCx, aReport.ReadStack(aCx));
   JS::RootedObject stackGlobal(aCx, JS::CurrentGlobalOrNull(aCx));
 
-  ErrorData errorData(aReport.mIsWarning, aReport.mLineNumber,
-                      aReport.mColumnNumber, aReport.mMessage,
-                      aReport.mFilename, aReport.mLine, notes);
+  ErrorData errorData(
+      aReport.mIsWarning, aReport.mLineNumber, aReport.mColumnNumber,
+      aReport.mMessage, aReport.mFilename, aReport.mLine,
+      TransformIntoNewArray(aReport.mNotes, [](const WorkerErrorNote& note) {
+        return ErrorDataNote(note.mLineNumber, note.mColumnNumber,
+                             note.mMessage, note.mFilename);
+      }));
   LogErrorToConsole(errorData, aInnerWindowId, stack, stackGlobal);
 }
 
@@ -402,12 +433,8 @@ void WorkerErrorReport::LogErrorToConsole(const ErrorData& aReport,
                                           JS::HandleObject aStackGlobal) {
   AssertIsOnMainThread();
 
-  RefPtr<nsScriptErrorBase> scriptError;
-  if (aStack) {
-    scriptError = new nsScriptErrorWithStack(aStack, aStackGlobal);
-  } else {
-    scriptError = new nsScriptError();
-  }
+  RefPtr<nsScriptErrorBase> scriptError =
+      CreateScriptError(nullptr, JS::NothingHandleValue, aStack, aStackGlobal);
 
   NS_WARNING_ASSERTION(scriptError, "Failed to create script error!");
 
@@ -423,9 +450,7 @@ void WorkerErrorReport::LogErrorToConsole(const ErrorData& aReport,
       scriptError = nullptr;
     }
 
-    for (size_t i = 0, len = aReport.notes().Length(); i < len; i++) {
-      const ErrorDataNote& note = aReport.notes().ElementAt(i);
-
+    for (const ErrorDataNote& note : aReport.notes()) {
       nsScriptErrorNote* noteObject = new nsScriptErrorNote();
       noteObject->Init(note.message(), note.filename(), 0, note.lineNumber(),
                        note.columnNumber());

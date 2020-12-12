@@ -28,7 +28,7 @@ var DateTimePickerPanel = class {
     return frame;
   }
 
-  openPicker(type, anchor, detail) {
+  openPicker(type, rect, detail) {
     this.type = type;
     this.pickerState = {};
     // TODO: Resize picker according to content zoom level
@@ -58,7 +58,15 @@ var DateTimePickerPanel = class {
       }
     }
     this.element.hidden = false;
-    this.element.openPopup(anchor, "after_start", 0, 0);
+    this.element.openPopupAtScreenRect(
+      "after_start",
+      rect.left,
+      rect.top,
+      rect.width,
+      rect.height,
+      false,
+      false
+    );
   }
 
   closePicker() {
@@ -100,9 +108,12 @@ var DateTimePickerPanel = class {
   }
 
   initPicker(detail) {
-    // TODO: When bug 1376616 lands, replace this.setGregorian with
-    //       mozIntl.Locale for setting calendar to Gregorian
-    let locale = this.setGregorian(Services.locale.webExposedLocales[0]);
+    let locale = new Services.intl.Locale(
+      Services.locale.webExposedLocales[0],
+      {
+        calendar: "gregory",
+      }
+    ).toString();
 
     // Workaround for bug 1418061, while we wait for resolution of
     // http://bugs.icu-project.org/trac/ticket/13592: drop the PT region code,
@@ -110,7 +121,7 @@ var DateTimePickerPanel = class {
     // the region-less "pt" locale has shorter forms that are better here.
     locale = locale.replace(/^pt-PT/i, "pt");
 
-    const dir = Services.intl.getLocaleInfo(locale).direction;
+    const dir = Services.locale.isAppLocaleRTL ? "rtl" : "ltr";
 
     switch (this.type) {
       case "time": {
@@ -282,13 +293,6 @@ var DateTimePickerPanel = class {
   getDisplayNames(locale, keys, style) {
     const displayNames = Services.intl.getDisplayNames(locale, { keys, style });
     return keys.map(key => displayNames.values[key]);
-  }
-
-  setGregorian(locale) {
-    if (locale.match(/u-ca-/)) {
-      return locale.replace(/u-ca-[^-]+/, "u-ca-gregory");
-    }
-    return locale + "-u-ca-gregory";
   }
 
   handleEvent(aEvent) {

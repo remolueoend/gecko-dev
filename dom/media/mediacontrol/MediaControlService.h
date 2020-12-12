@@ -9,8 +9,8 @@
 
 #include "AudioFocusManager.h"
 #include "MediaController.h"
-#include "MediaControlKeysManager.h"
-#include "MediaEventSource.h"
+#include "MediaControlKeyManager.h"
+#include "mozilla/dom/MediaControllerBinding.h"
 #include "nsDataHashtable.h"
 #include "nsIObserver.h"
 #include "nsTArray.h"
@@ -36,9 +36,17 @@ class MediaControlService final : public nsIObserver {
 
   static RefPtr<MediaControlService> GetService();
 
+  // Currently these following static methods are only being used in testing.
+  static void GenerateMediaControlKey(const GlobalObject& global,
+                                      MediaControlKey aKey);
+  static void GetCurrentActiveMediaMetadata(const GlobalObject& aGlobal,
+                                            MediaMetadataInit& aMetadata);
+  static MediaSessionPlaybackState GetCurrentMediaSessionPlaybackState(
+      GlobalObject& aGlobal);
+
   AudioFocusManager& GetAudioFocusManager() { return mAudioFocusManager; }
-  MediaControlKeysEventSource* GetMediaControlKeysEventSource() {
-    return mMediaControlKeysManager;
+  MediaControlKeySource* GetMediaControlKeySource() {
+    return mMediaControlKeyManager;
   }
 
   // Use these functions to register/unresgister controller to/from the active
@@ -51,29 +59,32 @@ class MediaControlService final : public nsIObserver {
   // This method would be called when the controller changes its playback state.
   void NotifyControllerPlaybackStateChanged(MediaController* aController);
 
-  // This method would be called when the controller starts to being used in the
-  // picture-in-picture mode.
-  void NotifyControllerBeingUsedInPictureInPictureMode(
-      MediaController* aController);
+  // This method is used to help a media controller become a main controller, if
+  // it fits the requirement.
+  void RequestUpdateMainController(MediaController* aController);
 
   // The main controller is the controller which can receive the media control
   // key events and would show its metadata to virtual controller interface.
   MediaController* GetMainController() const;
-
-  // This event is used to generate a media event indicating media controller
-  // amount changed.
-  MediaEventSource<uint64_t>& MediaControllerAmountChangedEvent() {
-    return mMediaControllerAmountChangedEvent;
-  }
 
   /**
    * These following functions are used for testing only. We use them to
    * generate fake media control key events, get the media metadata and playback
    * state from the main controller.
    */
-  void GenerateMediaControlKeysTestEvent(MediaControlKeysEvent aEvent);
+  void GenerateTestMediaControlKey(MediaControlKey aKey);
   MediaMetadataBase GetMainControllerMediaMetadata() const;
   MediaSessionPlaybackState GetMainControllerPlaybackState() const;
+
+  // Media title that should be used as a fallback. This commonly used
+  // when playing media in private browsing mode and we are trying to avoid
+  // exposing potentially sensitive titles.
+  nsString GetFallbackTitle() const;
+
+  // These functions are used to update the variable which would be used for
+  // telemetry probe.
+  void NotifyMediaControlHasEverBeenUsed();
+  void NotifyMediaControlHasEverBeenEnabled();
 
  private:
   MediaControlService();
@@ -100,6 +111,11 @@ class MediaControlService final : public nsIObserver {
     explicit ControllerManager(MediaControlService* aService);
     ~ControllerManager() = default;
 
+    using MediaKeysArray = nsTArray<MediaControlKey>;
+    using LinkedListControllerPtr = LinkedListElement<RefPtr<MediaController>>*;
+    using ConstLinkedListControllerPtr =
+        const LinkedListElement<RefPtr<MediaController>>*;
+
     bool AddController(MediaController* aController);
     bool RemoveController(MediaController* aController);
     void UpdateMainControllerIfNeeded(MediaController* aController);
@@ -107,7 +123,6 @@ class MediaControlService final : public nsIObserver {
     void Shutdown();
 
     MediaController* GetMainController() const;
-    MediaController* GetControllerById(uint64_t aId) const;
     bool Contains(MediaController* aController) const;
     uint64_t GetControllersNum() const;
 
@@ -116,12 +131,14 @@ class MediaControlService final : public nsIObserver {
     void MainControllerMetadataChanged(const MediaMetadataBase& aMetadata);
 
    private:
-    // Assume that we have a list [A, B, C, D], and we want to reorder B.
-    // When applying `eInsertToTail`, list would become [A, C, D, B].
-    // When applying `eInsertBeforeTail`, list would become [A, C, B, D].
+    // When applying `eInsertAsMainController`, we would always insert the
+    // element to the tail of the list. Eg. Insert C , [A, B] -> [A, B, C]
+    // When applying `eInsertAsNormalController`, we would insert the element
+    // prior to the element with a higher priority controller. Eg. Insert E and
+    // C and D have higher priority. [A, B, C, D] -> [A, B, E, C, D]
     enum class InsertOptions {
-      eInsertToTail,
-      eInsertBeforeTail,
+      eInsertAsMainController,
+      eInsertAsNormalController,
     };
 
     // Adjust the given controller's order by the insert option.
@@ -129,7 +146,7 @@ class MediaControlService final : public nsIObserver {
                                 InsertOptions aOption);
 
     void UpdateMainControllerInternal(MediaController* aController);
-    void ConnectToMainControllerEvents();
+    void ConnectMainControllerEvents();
     void DisconnectMainControllerEvents();
 
     LinkedList<RefPtr<MediaController>> mControllers;
@@ -137,19 +154,28 @@ class MediaControlService final : public nsIObserver {
 
     // These member are use to listen main controller's play state changes and
     // update the playback state to the event source.
-    RefPtr<MediaControlKeysEventSource> mSource;
-    MediaEventListener mPlayStateChangedListener;
+    RefPtr<MediaControlKeySource> mSource;
     MediaEventListener mMetadataChangedListener;
+    MediaEventListener mSupportedKeysChangedListener;
+    MediaEventListener mFullScreenChangedListener;
+    MediaEventListener mPictureInPictureModeChangedListener;
+    MediaEventListener mPositionChangedListener;
   };
 
   void Init();
   void Shutdown();
 
   AudioFocusManager mAudioFocusManager;
-  RefPtr<MediaControlKeysManager> mMediaControlKeysManager;
-  RefPtr<MediaControlKeysEventListener> mMediaKeysHandler;
+  RefPtr<MediaControlKeyManager> mMediaControlKeyManager;
+  RefPtr<MediaControlKeyListener> mMediaKeysHandler;
   MediaEventProducer<uint64_t> mMediaControllerAmountChangedEvent;
   UniquePtr<ControllerManager> mControllerManager;
+  nsString mFallbackTitle;
+
+  // Used for telemetry probe.
+  void UpdateTelemetryUsageProbe();
+  bool mHasEverUsedMediaControl = false;
+  bool mHasEverEnabledMediaControl = false;
 };
 
 }  // namespace dom

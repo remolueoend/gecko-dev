@@ -28,6 +28,15 @@ let tests = [
     ],
   },
   {
+    description: "WebSocket upgrade should get logged",
+    expectLogLevel: Ci.nsIConsoleMessage.warn,
+    expectIncludes: [
+      "Upgrading insecure request",
+      "to use",
+      "ws://does.not.exist",
+    ],
+  },
+  {
     description: "Sub-Resource upgrade for file_1 should get logged",
     expectLogLevel: Ci.nsIConsoleMessage.warn,
     expectIncludes: ["Upgrading insecure request", "to use", "file_1.jpg"],
@@ -78,12 +87,14 @@ add_task(async function() {
   });
   Services.console.registerListener(on_new_message);
   // 1. Upgrade page to https://
-  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, kTestURISuccess);
+  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, kTestURISuccess);
   // 2. Make an exempt http:// request
   let xhr = new XMLHttpRequest();
   xhr.open("GET", kTestURIExempt, true);
   xhr.channel.loadInfo.httpsOnlyStatus |= Ci.nsILoadInfo.HTTPS_ONLY_EXEMPT;
   xhr.send();
+  // 3. Make Websocket request
+  new WebSocket("ws://does.not.exist");
 
   await BrowserTestUtils.waitForCondition(() => tests.length === 0);
 

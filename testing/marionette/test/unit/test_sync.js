@@ -11,9 +11,14 @@ const {
   Sleep,
   TimedPromise,
   waitForEvent,
+  waitForLoadEvent,
   waitForMessage,
   waitForObserverTopic,
 } = ChromeUtils.import("chrome://marionette/content/sync.js");
+
+const { EventDispatcher } = ChromeUtils.import(
+  "chrome://marionette/content/actors/MarionetteEventsParent.jsm"
+);
 
 /**
  * Mimic a DOM node for listening for events.
@@ -289,6 +294,14 @@ add_task(async function test_IdlePromise() {
   ok(called);
 });
 
+add_task(async function test_IdlePromiseAbortWhenWindowClosed() {
+  let win = {
+    closed: true,
+    requestAnimationFrame() {},
+  };
+  await IdlePromise(win);
+});
+
 add_test(function test_DebounceCallback_constructor() {
   for (let cb of [42, "foo", true, null, undefined, [], {}]) {
     Assert.throws(() => new DebounceCallback(cb), /TypeError/);
@@ -414,6 +427,21 @@ add_task(async function test_waitForEvent_wantsUntrustedTypes() {
     equal(element, event.target);
     equal(expected_untrusted, event.untrusted);
   }
+});
+
+add_task(async function test_waitForLoadEvent() {
+  const mockBrowsingContext = {};
+  const onLoad = waitForLoadEvent("pageshow", () => mockBrowsingContext);
+
+  // Fake a page load by emitting the expected event on the EventDispatcher.
+  EventDispatcher.emit("page-load", {
+    type: "pageshow",
+    browsingContext: mockBrowsingContext,
+  });
+
+  const loadEvent = await onLoad;
+  equal(loadEvent.type, "pageshow");
+  equal(loadEvent.browsingContext, mockBrowsingContext);
 });
 
 add_task(async function test_waitForMessage_messageManagerAndMessageTypes() {

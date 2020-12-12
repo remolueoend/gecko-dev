@@ -11,8 +11,10 @@
 
 #include <algorithm>
 
+#include "jsmath.h"
 #include "jsnum.h"
 
+#include "jit/CompileInfo.h"
 #include "jit/Ion.h"
 #include "jit/IonAnalysis.h"
 #include "jit/JitSpewer.h"
@@ -20,9 +22,11 @@
 #include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
 #include "js/Conversions.h"
+#include "js/ScalarType.h"  // js::Scalar::Type
 #include "util/CheckedArithmetic.h"
 #include "vm/ArgumentsObject.h"
 #include "vm/TypedArrayObject.h"
+#include "vm/Uint8Clamped.h"
 
 #include "vm/BytecodeUtil-inl.h"
 
@@ -1707,10 +1711,6 @@ void MTruncateToInt32::computeRange(TempAllocator& alloc) {
   setRange(output);
 }
 
-void MToNumeric::computeRange(TempAllocator& alloc) {
-  setRange(new (alloc) Range(getOperand(0)));
-}
-
 void MToNumberInt32::computeRange(TempAllocator& alloc) {
   // No clamping since this computes the range *before* bailouts.
   setRange(new (alloc) Range(getOperand(0)));
@@ -1726,11 +1726,7 @@ void MLimitedTruncate::computeRange(TempAllocator& alloc) {
   setRange(output);
 }
 
-void MFilterTypeSet::computeRange(TempAllocator& alloc) {
-  setRange(new (alloc) Range(getOperand(0)));
-}
-
-static Range* GetTypedArrayRange(TempAllocator& alloc, Scalar::Type type) {
+static Range* GetArrayBufferViewRange(TempAllocator& alloc, Scalar::Type type) {
   switch (type) {
     case Scalar::Uint8Clamped:
     case Scalar::Uint8:
@@ -1750,6 +1746,7 @@ static Range* GetTypedArrayRange(TempAllocator& alloc, Scalar::Type type) {
     case Scalar::BigInt64:
     case Scalar::BigUint64:
     case Scalar::Int64:
+    case Scalar::Simd128:
     case Scalar::Float32:
     case Scalar::Float64:
     case Scalar::MaxTypedArrayViewType:
@@ -1761,14 +1758,22 @@ static Range* GetTypedArrayRange(TempAllocator& alloc, Scalar::Type type) {
 void MLoadUnboxedScalar::computeRange(TempAllocator& alloc) {
   // We have an Int32 type and if this is a UInt32 load it may produce a value
   // outside of our range, but we have a bailout to handle those cases.
-  setRange(GetTypedArrayRange(alloc, readType()));
+  setRange(GetArrayBufferViewRange(alloc, storageType()));
+}
+
+void MLoadDataViewElement::computeRange(TempAllocator& alloc) {
+  // We have an Int32 type and if this is a UInt32 load it may produce a value
+  // outside of our range, but we have a bailout to handle those cases.
+  setRange(GetArrayBufferViewRange(alloc, storageType()));
 }
 
 void MArrayLength::computeRange(TempAllocator& alloc) {
-  // Array lengths can go up to UINT32_MAX, but we only create MArrayLength
+  // Array lengths can go up to UINT32_MAX. IonBuilder only creates MArrayLength
   // nodes when the value is known to be int32 (see the
-  // OBJECT_FLAG_LENGTH_OVERFLOW flag).
-  setRange(Range::NewUInt32Range(alloc, 0, INT32_MAX));
+  // OBJECT_FLAG_LENGTH_OVERFLOW flag). WarpBuilder does a dynamic check and we
+  // have to return the range pre-bailouts, so use UINT32_MAX for Warp.
+  uint32_t max = JitOptions.warpBuilder ? UINT32_MAX : INT32_MAX;
+  setRange(Range::NewUInt32Range(alloc, 0, max));
 }
 
 void MInitializedLength::computeRange(TempAllocator& alloc) {
@@ -1776,11 +1781,11 @@ void MInitializedLength::computeRange(TempAllocator& alloc) {
       Range::NewUInt32Range(alloc, 0, NativeObject::MAX_DENSE_ELEMENTS_COUNT));
 }
 
-void MTypedArrayLength::computeRange(TempAllocator& alloc) {
+void MArrayBufferViewLength::computeRange(TempAllocator& alloc) {
   setRange(Range::NewUInt32Range(alloc, 0, INT32_MAX));
 }
 
-void MTypedArrayByteOffset::computeRange(TempAllocator& alloc) {
+void MArrayBufferViewByteOffset::computeRange(TempAllocator& alloc) {
   setRange(Range::NewUInt32Range(alloc, 0, INT32_MAX));
 }
 
@@ -1832,8 +1837,8 @@ void MArrayPush::computeRange(TempAllocator& alloc) {
 void MMathFunction::computeRange(TempAllocator& alloc) {
   Range opRange(getOperand(0));
   switch (function()) {
-    case Sin:
-    case Cos:
+    case UnaryMathFunction::Sin:
+    case UnaryMathFunction::Cos:
       if (!opRange.canBeInfiniteOrNaN()) {
         setRange(Range::NewDoubleRange(alloc, -1.0, 1.0));
       }
@@ -1944,7 +1949,7 @@ bool RangeAnalysis::analyzeLoop(MBasicBlock* header) {
     analyzeLoopPhi(iterationBound, *iter);
   }
 
-  if (!mir->compilingWasm()) {
+  if (!mir->compilingWasm() && !mir->outerInfo().hadBoundsCheckBailout()) {
     // Try to hoist any bounds checks from the loop using symbolic bounds.
 
     Vector<MBoundsCheck*, 0, JitAllocPolicy> hoistedChecks(alloc());
@@ -2272,12 +2277,14 @@ bool RangeAnalysis::tryHoistBoundsCheck(MBasicBlock* header,
   MBasicBlock* preLoop = header->loopPredecessor();
   MOZ_ASSERT(!preLoop->isMarked());
 
-  MDefinition* lowerTerm = ConvertLinearSum(alloc(), preLoop, lower->sum);
+  MDefinition* lowerTerm = ConvertLinearSum(alloc(), preLoop, lower->sum,
+                                            BailoutKind::HoistBoundsCheck);
   if (!lowerTerm) {
     return false;
   }
 
-  MDefinition* upperTerm = ConvertLinearSum(alloc(), preLoop, upper->sum);
+  MDefinition* upperTerm = ConvertLinearSum(alloc(), preLoop, upper->sum,
+                                            BailoutKind::HoistBoundsCheck);
   if (!upperTerm) {
     return false;
   }
@@ -2311,6 +2318,7 @@ bool RangeAnalysis::tryHoistBoundsCheck(MBasicBlock* header,
   lowerCheck->setMinimum(lowerConstant);
   lowerCheck->computeRange(alloc());
   lowerCheck->collectRangeInfoPreTrunc();
+  lowerCheck->setBailoutKind(BailoutKind::HoistBoundsCheck);
   preLoop->insertBefore(preLoop->lastIns(), lowerCheck);
 
   // Hoist the loop invariant upper bounds checks.
@@ -2327,6 +2335,7 @@ bool RangeAnalysis::tryHoistBoundsCheck(MBasicBlock* header,
     upperCheck->setMaximum(upperConstant);
     upperCheck->computeRange(alloc());
     upperCheck->collectRangeInfoPreTrunc();
+    upperCheck->setBailoutKind(BailoutKind::HoistBoundsCheck);
     preLoop->insertBefore(preLoop->lastIns(), upperCheck);
   }
 
@@ -2747,16 +2756,20 @@ MDefinition::TruncateKind MToDouble::operandTruncateKind(size_t index) const {
 
 MDefinition::TruncateKind MStoreUnboxedScalar::operandTruncateKind(
     size_t index) const {
-  // Some receiver objects, such as typed arrays, will truncate out of range
-  // integer inputs.
-  return (truncateInput() && index == 2 && isIntegerWrite()) ? Truncate
-                                                             : NoTruncate;
+  // An integer store truncates the stored value.
+  return (index == 2 && isIntegerWrite()) ? Truncate : NoTruncate;
+}
+
+MDefinition::TruncateKind MStoreDataViewElement::operandTruncateKind(
+    size_t index) const {
+  // An integer store truncates the stored value.
+  return (index == 2 && isIntegerWrite()) ? Truncate : NoTruncate;
 }
 
 MDefinition::TruncateKind MStoreTypedArrayElementHole::operandTruncateKind(
     size_t index) const {
   // An integer store truncates the stored value.
-  return index == 3 && isIntegerWrite() ? Truncate : NoTruncate;
+  return (index == 3 && isIntegerWrite()) ? Truncate : NoTruncate;
 }
 
 MDefinition::TruncateKind MDiv::operandTruncateKind(size_t index) const {
@@ -2850,6 +2863,9 @@ static bool CloneForDeadBranches(TempAllocator& alloc,
   }
 
   MInstruction* clone = candidate->clone(alloc, operands);
+  if (!clone) {
+    return false;
+  }
   clone->setRange(nullptr);
 
   // Set UseRemoved flag on the cloned instruction in order to chain recover
@@ -3034,6 +3050,7 @@ static void AdjustTruncatedInputs(TempAllocator& alloc,
       MInstruction* op;
       if (kind == MDefinition::TruncateAfterBailouts) {
         op = MToNumberInt32::New(alloc, truncated->getOperand(i));
+        op->setBailoutKind(BailoutKind::EagerTruncation);
       } else {
         op = MTruncateToInt32::New(alloc, truncated->getOperand(i));
       }
@@ -3124,7 +3141,7 @@ bool RangeAnalysis::truncate() {
       // code within the current JSScript, we no longer attempt to make
       // this kind of eager optimizations.
       if (kind <= MDefinition::TruncateAfterBailouts &&
-          block->info().hadOverflowBailout()) {
+          block->info().hadEagerTruncationBailout()) {
         continue;
       }
 
@@ -3227,6 +3244,7 @@ void MInArray::collectRangeInfoPreTrunc() {
   Range indexRange(index());
   if (indexRange.isFiniteNonNegative()) {
     needsNegativeIntCheck_ = false;
+    setNotGuard();
   }
 }
 

@@ -54,8 +54,8 @@ class nsWindowWatcher : public nsIWindowWatcher,
 
   static int32_t GetWindowOpenLocation(nsPIDOMWindowOuter* aParent,
                                        uint32_t aChromeFlags,
-                                       bool aCalledFromJS,
-                                       bool aWidthSpecified);
+                                       bool aCalledFromJS, bool aWidthSpecified,
+                                       bool aIsForPrinting);
 
   // Will first look for a caller on the JS stack, and then fall back on
   // aCurrentContext if it can't find one.
@@ -76,39 +76,35 @@ class nsWindowWatcher : public nsIWindowWatcher,
 
   // Just like OpenWindowJS, but knows whether it got called via OpenWindowJS
   // (which means called from script) or called via OpenWindow.
-  nsresult OpenWindowInternal(mozIDOMWindowProxy* aParent, const char* aUrl,
-                              const char* aName, const char* aFeatures,
-                              bool aCalledFromJS, bool aDialog, bool aNavigate,
-                              nsIArray* aArgv, bool aIsPopupSpam,
-                              bool aForceNoOpener, bool aForceNoReferrer,
+  nsresult OpenWindowInternal(mozIDOMWindowProxy* aParent,
+                              const nsACString& aUrl, const nsACString& aName,
+                              const nsACString& aFeatures, bool aCalledFromJS,
+                              bool aDialog, bool aNavigate, nsIArray* aArgv,
+                              bool aIsPopupSpam, bool aForceNoOpener,
+                              bool aForceNoReferrer, PrintKind,
                               nsDocShellLoadState* aLoadState,
                               mozilla::dom::BrowsingContext** aResult);
 
-  static nsresult URIfromURL(const char* aURL, mozIDOMWindowProxy* aParent,
-                             nsIURI** aURI);
+  static nsresult URIfromURL(const nsACString& aURL,
+                             mozIDOMWindowProxy* aParent, nsIURI** aURI);
 
   static bool ShouldOpenPopup(const mozilla::dom::WindowFeatures& aFeatures,
                               const SizeSpec& aSizeSpec);
 
-  static uint32_t CalculateChromeFlagsForChild(
+  static uint32_t CalculateChromeFlagsForContent(
       const mozilla::dom::WindowFeatures& aFeatures, const SizeSpec& aSizeSpec);
 
-  static uint32_t CalculateChromeFlagsForParent(
-      mozIDOMWindowProxy* aParent,
+  static uint32_t CalculateChromeFlagsForSystem(
       const mozilla::dom::WindowFeatures& aFeatures, const SizeSpec& aSizeSpec,
-      bool aDialog, bool aChromeURL, bool aHasChromeParent, bool aCalledFromJS);
+      bool aDialog, bool aChromeURL, bool aHasChromeParent);
 
   /* Compute the right SizeSpec based on aFeatures */
   static void CalcSizeSpec(const mozilla::dom::WindowFeatures& aFeatures,
-                           SizeSpec& aResult);
+                           bool aHasChromeParent, SizeSpec& aResult);
   static void SizeOpenedWindow(
       nsIDocShellTreeOwner* aTreeOwner, mozIDOMWindowProxy* aParent,
       bool aIsCallerChrome, const SizeSpec& aSizeSpec,
       const mozilla::Maybe<float>& aOpenerFullZoom = mozilla::Nothing());
-  static void GetWindowTreeItem(mozIDOMWindowProxy* aWindow,
-                                nsIDocShellTreeItem** aResult);
-  static void GetWindowTreeOwner(nsPIDOMWindowOuter* aWindow,
-                                 nsIDocShellTreeOwner** aResult);
 
  private:
   nsresult CreateChromeWindow(nsIWebBrowserChrome* aParentChrome,

@@ -7,7 +7,7 @@
 import React, { PureComponent } from "react";
 import { connect } from "../../utils/connect";
 
-import { showMenu, buildMenu } from "devtools-contextmenu";
+import { showMenu, buildMenu } from "../../context-menu/menu";
 
 import SourceIcon from "../shared/SourceIcon";
 import { CloseButton } from "../shared/Button";
@@ -137,7 +137,7 @@ class Tab extends PureComponent<Props> {
       { item: { type: "separator" } },
       {
         item: {
-          ...tabMenuItems.copyToClipboard,
+          ...tabMenuItems.copySource,
           disabled: selectedSource.id !== tab,
           click: () => copyToClipboard(sourceTab),
         },
@@ -160,8 +160,8 @@ class Tab extends PureComponent<Props> {
         item: {
           ...tabMenuItems.toggleBlackBox,
           label: source.isBlackBoxed
-            ? L10N.getStr("blackboxContextItem.unblackbox")
-            : L10N.getStr("blackboxContextItem.blackbox"),
+            ? L10N.getStr("ignoreContextItem.unignore")
+            : L10N.getStr("ignoreContextItem.ignore"),
           disabled: !shouldBlackbox(source),
           click: () => toggleBlackBox(cx, source),
         },

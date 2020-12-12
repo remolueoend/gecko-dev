@@ -14,15 +14,15 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/PrivateBrowsingUtils.jsm"
 );
 
+// This object implements the JS parts of nsIWebNavigation.
 class RemoteWebNavigation {
   constructor(aBrowser) {
     this._browser = aBrowser;
     this._cancelContentJSEpoch = 1;
     this._currentURI = null;
-    this.canGoBack = false;
-    this.canGoForward = false;
+    this._canGoBack = false;
+    this._canGoForward = false;
     this.referringURI = null;
-    this.wrappedJSObject = this;
   }
 
   swapBrowser(aBrowser) {
@@ -38,27 +38,45 @@ class RemoteWebNavigation {
     return epoch;
   }
 
-  goBack() {
+  get canGoBack() {
+    if (Services.appinfo.sessionHistoryInParent) {
+      return this._browser.browsingContext.sessionHistory?.index > 0;
+    }
+    return this._canGoBack;
+  }
+
+  get canGoForward() {
+    if (Services.appinfo.sessionHistoryInParent) {
+      let sessionHistory = this._browser.browsingContext.sessionHistory;
+      return sessionHistory?.index < sessionHistory?.count - 1;
+    }
+    return this._canGoForward;
+  }
+
+  goBack(requireUserInteraction = false) {
     let cancelContentJSEpoch = this.maybeCancelContentJSExecution(
       Ci.nsIRemoteTab.NAVIGATE_BACK
     );
-    this._sendMessage("WebNavigation:GoBack", { cancelContentJSEpoch });
+    this._browser.browsingContext.goBack(
+      cancelContentJSEpoch,
+      requireUserInteraction
+    );
   }
-  goForward() {
+  goForward(requireUserInteraction = false) {
     let cancelContentJSEpoch = this.maybeCancelContentJSExecution(
       Ci.nsIRemoteTab.NAVIGATE_FORWARD
     );
-    this._sendMessage("WebNavigation:GoForward", { cancelContentJSEpoch });
+    this._browser.browsingContext.goForward(
+      cancelContentJSEpoch,
+      requireUserInteraction
+    );
   }
   gotoIndex(aIndex) {
     let cancelContentJSEpoch = this.maybeCancelContentJSExecution(
       Ci.nsIRemoteTab.NAVIGATE_INDEX,
       { index: aIndex }
     );
-    this._sendMessage("WebNavigation:GotoIndex", {
-      index: aIndex,
-      cancelContentJSEpoch,
-    });
+    this._browser.browsingContext.goToIndex(aIndex, cancelContentJSEpoch);
   }
   loadURI(aURI, aLoadURIOptions) {
     let uri;
@@ -73,7 +91,8 @@ class RemoteWebNavigation {
       if (isBrowserPrivate) {
         fixupFlags |= Services.uriFixup.FIXUP_FLAG_PRIVATE_CONTEXT;
       }
-      uri = Services.uriFixup.createFixupURI(aURI, fixupFlags);
+
+      uri = Services.uriFixup.getFixupURIInfo(aURI, fixupFlags).preferredURI;
 
       // We know the url is going to be loaded, let's start requesting network
       // connection before the content process asks.
@@ -106,16 +125,16 @@ class RemoteWebNavigation {
       Ci.nsIRemoteTab.NAVIGATE_URL,
       { uri }
     );
-    this._browser.frameLoader.browsingContext.loadURI(aURI, {
+    this._browser.browsingContext.loadURI(aURI, {
       ...aLoadURIOptions,
       cancelContentJSEpoch,
     });
   }
   reload(aReloadFlags) {
-    this._sendMessage("WebNavigation:Reload", { loadFlags: aReloadFlags });
+    this._browser.browsingContext.reload(aReloadFlags);
   }
   stop(aStopFlags) {
-    this._sendMessage("WebNavigation:Stop", { loadFlags: aStopFlags });
+    this._browser.browsingContext.stop(aStopFlags);
   }
 
   get document() {
@@ -159,9 +178,5 @@ class RemoteWebNavigation {
     }
   }
 }
-
-RemoteWebNavigation.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIWebNavigation,
-]);
 
 var EXPORTED_SYMBOLS = ["RemoteWebNavigation"];

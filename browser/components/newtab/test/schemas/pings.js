@@ -212,15 +212,6 @@ export const SpocsFillPing = Joi.object().keys(
   })
 );
 
-export const PerfPing = Joi.object().keys(
-  Object.assign({}, baseKeys, {
-    source: Joi.string(),
-    event: Joi.string().required(),
-    action: Joi.valid("activity_stream_performance_event").required(),
-    value: Joi.number().required(),
-  })
-);
-
 export const SessionPing = Joi.object().keys(
   Object.assign({}, baseKeys, {
     session_id: baseKeys.session_id.required(),
@@ -321,27 +312,6 @@ export const UTSessionPing = Joi.array().items(
     .valid("session"),
   Joi.string().required(),
   eventsTelemetryExtraKeys
-);
-
-export const trailheadEnrollExtraKeys = Joi.object()
-  .keys({
-    experimentType: Joi.string().required(),
-    branch: Joi.string().required(),
-  })
-  .options({ allowUnknown: false });
-
-export const UTTrailheadEnrollPing = Joi.array().items(
-  Joi.string()
-    .required()
-    .valid("activity_stream"),
-  Joi.string()
-    .required()
-    .valid("enroll"),
-  Joi.string()
-    .required()
-    .valid("preference_study"),
-  Joi.string().required(),
-  trailheadEnrollExtraKeys
 );
 
 export function chaiAssertions(_chai, utils) {

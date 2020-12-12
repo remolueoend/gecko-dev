@@ -14,6 +14,7 @@
 #include <stdlib.h>  // getenv
 
 #include "jit/BaselineFrame.h"   // js::jit::BaselineFrame
+#include "jit/JitFrames.h"       // js::jit::EnsureBareExitFrame
 #include "jit/JSJitFrameIter.h"  // js::jit::{FrameType,InlineFrameIterator,JSJitFrameIter,MaybeReadFallback,SnapshotIterator}
 #include "js/GCAPI.h"            // JS::AutoSuppressGCAnalysis
 #include "js/Principals.h"       // JSSubsumesOp
@@ -22,7 +23,7 @@
 #include "vm/EnvironmentObject.h"  // js::CallObject
 #include "vm/JitActivation.h"      // js::jit::JitActivation
 #include "vm/JSContext.h"          // JSContext
-#include "vm/JSFunction.h"  // js::CanReuseScriptForClone, js::FunctionFlags, JSFunction
+#include "vm/JSFunction.h"         // JSFunction
 #include "vm/JSScript.h"  // js::PCToLineNumber, JSScript, js::ScriptSource
 #include "vm/Runtime.h"   // JSRuntime
 #include "vm/Stack.h"  // js::{AbstractFramePtr,InterpreterFrame,MaybeCheckAliasing}
@@ -527,6 +528,15 @@ bool FrameIter::isEvalFrame() const {
       }
       MOZ_ASSERT(isWasm());
       return false;
+  }
+  MOZ_CRASH("Unexpected state");
+}
+
+bool FrameIter::isModuleFrame() const {
+  MOZ_ASSERT(!done());
+
+  if (hasScript()) {
+    return script()->isModule();
   }
   MOZ_CRASH("Unexpected state");
 }

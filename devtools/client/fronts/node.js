@@ -317,6 +317,10 @@ class NodeFront extends FrontClassWithSpec(nodeSpec) {
     return !!this._form.isDocumentElement;
   }
 
+  get isTopLevelDocument() {
+    return this._form.isTopLevelDocument;
+  }
+
   get isShadowRoot() {
     return this._form.isShadowRoot;
   }
@@ -389,6 +393,10 @@ class NodeFront extends FrontClassWithSpec(nodeSpec) {
     return this._form.isScrollable;
   }
 
+  get causesOverflow() {
+    return this._form.causesOverflow;
+  }
+
   get isTreeDisplayed() {
     let parent = this;
     while (parent) {
@@ -402,10 +410,6 @@ class NodeFront extends FrontClassWithSpec(nodeSpec) {
 
   get inspectorFront() {
     return this.parentFront.parentFront;
-  }
-
-  get highlighterFront() {
-    return this.inspectorFront.highlighter;
   }
 
   get walkerFront() {
@@ -525,26 +529,15 @@ class NodeFront extends FrontClassWithSpec(nodeSpec) {
       console.warn("Tried to open remote connection to an invalid frame.");
       return null;
     }
-    if (this._remoteFrameTarget) {
+    if (this._remoteFrameTarget && !this._remoteFrameTarget.isDestroyed()) {
       return this._remoteFrameTarget;
     }
-    // First get the target actor form of this remote frame element
-    const descriptor = await this.targetFront.client.mainRoot.getBrowsingContextDescriptor(
+
+    // Get the target for this remote frame element
+    this._remoteFrameTarget = await this.targetFront.getBrowsingContextTarget(
       this._form.browsingContextID
     );
-    this._remoteFrameTarget = await descriptor.getTarget();
     return this._remoteFrameTarget;
-  }
-
-  async getAllSelectors() {
-    if (!this.traits.supportsGetAllSelectors) {
-      // Backward compatibility: if the server does not support getAllSelectors
-      // fallback on getUniqueSelector and wrap the response in an array.
-      // getAllSelectors was added in FF72.
-      const selector = await super.getUniqueSelector();
-      return [selector];
-    }
-    return super.getAllSelectors();
   }
 }
 

@@ -2,12 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use euclid::SideOffsets2D;
+use euclid::{SideOffsets2D, Angle};
 use peek_poke::PeekPoke;
 use std::ops::Not;
 // local imports
 use crate::font;
-use crate::api::{PipelineId, PropertyBinding};
+use crate::{PipelineId, PropertyBinding};
 use crate::color::ColorF;
 use crate::image::{ColorDepth, ImageKey};
 use crate::units::*;
@@ -47,6 +47,10 @@ bitflags! {
         /// compositor surface under certain (implementation specific) conditions. This
         /// is typically used for large videos, and canvas elements.
         const PREFER_COMPOSITOR_SURFACE = 1 << 3;
+        /// If set, this primitive can be passed directly to the compositor via its
+        /// ExternalImageId, and the compositor will use the native image directly.
+        /// Used as a further extension on top of PREFER_COMPOSITOR_SURFACE.
+        const SUPPORTS_EXTERNAL_COMPOSITOR_SURFACE = 1 << 4;
     }
 }
 
@@ -68,10 +72,6 @@ pub struct CommonItemProperties {
     pub clip_id: ClipId,
     /// The coordinate-space the item is in (yes, it can be really granular)
     pub spatial_id: SpatialId,
-    /// Opaque bits for our clients to use for hit-testing. This is the most
-    /// dubious "common" field, but because it's an Option, it usually only
-    /// wastes a single byte (for None).
-    pub hit_info: Option<ItemTag>,
     /// Various flags describing properties of this primitive.
     pub flags: PrimitiveFlags,
 }
@@ -86,7 +86,6 @@ impl CommonItemProperties {
             clip_rect,
             spatial_id: space_and_clip.spatial_id,
             clip_id: space_and_clip.clip_id,
-            hit_info: None,
             flags: PrimitiveFlags::default(),
         }
     }
@@ -136,6 +135,9 @@ pub enum DisplayItem {
     BackdropFilter(BackdropFilterDisplayItem),
 
     // Clips
+    RectClip(RectClipDisplayItem),
+    RoundedRectClip(RoundedRectClipDisplayItem),
+    ImageMaskClip(ImageMaskClipDisplayItem),
     Clip(ClipDisplayItem),
     ClipChain(ClipChainItem),
 
@@ -184,10 +186,13 @@ pub enum DebugDisplayItem {
     YuvImage(YuvImageDisplayItem),
     BackdropFilter(BackdropFilterDisplayItem),
 
+    ImageMaskClip(ImageMaskClipDisplayItem),
+    RoundedRectClip(RoundedRectClipDisplayItem),
+    RectClip(RectClipDisplayItem),
     Clip(ClipDisplayItem, Vec<ComplexClipRegion>),
     ClipChain(ClipChainItem, Vec<ClipId>),
 
-    ScrollFrame(ScrollFrameDisplayItem, Vec<ComplexClipRegion>),
+    ScrollFrame(ScrollFrameDisplayItem),
     StickyFrame(StickyFrameDisplayItem),
     Iframe(IframeDisplayItem),
     PushReferenceFrame(ReferenceFrameDisplayListItem),
@@ -204,11 +209,31 @@ pub enum DebugDisplayItem {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub struct ImageMaskClipDisplayItem {
+    pub id: ClipId,
+    pub parent_space_and_clip: SpaceAndClipInfo,
+    pub image_mask: ImageMask,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub struct RectClipDisplayItem {
+    pub id: ClipId,
+    pub parent_space_and_clip: SpaceAndClipInfo,
+    pub clip_rect: LayoutRect,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub struct RoundedRectClipDisplayItem {
+    pub id: ClipId,
+    pub parent_space_and_clip: SpaceAndClipInfo,
+    pub clip: ComplexClipRegion,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct ClipDisplayItem {
     pub id: ClipId,
     pub parent_space_and_clip: SpaceAndClipInfo,
     pub clip_rect: LayoutRect,
-    pub image_mask: Option<ImageMask>,
 } // IMPLICIT: complex_clips: Vec<ComplexClipRegion>
 
 /// The minimum and maximum allowable offset for a sticky frame in a single dimension.
@@ -281,7 +306,6 @@ pub struct ScrollFrameDisplayItem {
     pub clip_rect: LayoutRect,
     pub parent_space_and_clip: SpaceAndClipInfo,
     pub external_id: Option<ExternalScrollId>,
-    pub image_mask: Option<ImageMask>,
     pub scroll_sensitivity: ScrollSensitivity,
     /// The amount this scrollframe has already been scrolled by, in the caller.
     /// This means that all the display items that are inside the scrollframe
@@ -289,7 +313,7 @@ pub struct ScrollFrameDisplayItem {
     /// should be added to those display item coordinates in order to get a
     /// normalized value that is consistent across display lists.
     pub external_scroll_offset: LayoutVector2D,
-} // IMPLICIT: complex_clips: Vec<ComplexClipRegion>
+}
 
 /// A solid or an animating color to draw (may not actually be a rectangle due to complex clips)
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
@@ -313,6 +337,7 @@ pub struct ClearRectangleDisplayItem {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct HitTestDisplayItem {
     pub common: CommonItemProperties,
+    pub tag: ItemTag,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
@@ -686,9 +711,72 @@ pub struct ReferenceFrameDisplayListItem {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub enum ReferenceFrameKind {
+    /// Zoom reference frames must be a scale + translation only
+    Zoom,
+    /// A normal transform matrix, may contain perspective (the CSS transform property)
     Transform,
+    /// A perspective transform, that optionally scrolls relative to a specific scroll node
     Perspective {
         scrolling_relative_to: Option<ExternalScrollId>,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub enum Rotation {
+    Degree0,
+    Degree90,
+    Degree180,
+    Degree270,
+}
+
+impl Rotation {
+    pub fn to_matrix(
+        &self,
+        size: LayoutSize,
+    ) -> LayoutTransform {
+        let (shift_center_to_origin, angle) = match self {
+            Rotation::Degree0 => {
+              (LayoutTransform::translation(-size.width / 2., -size.height / 2., 0.), Angle::degrees(0.))
+            },
+            Rotation::Degree90 => {
+              (LayoutTransform::translation(-size.height / 2., -size.width / 2., 0.), Angle::degrees(90.))
+            },
+            Rotation::Degree180 => {
+              (LayoutTransform::translation(-size.width / 2., -size.height / 2., 0.), Angle::degrees(180.))
+            },
+            Rotation::Degree270 => {
+              (LayoutTransform::translation(-size.height / 2., -size.width / 2., 0.), Angle::degrees(270.))
+            },
+        };
+        let shift_origin_to_center = LayoutTransform::translation(size.width / 2., size.height / 2., 0.);
+
+        shift_center_to_origin
+            .then(&LayoutTransform::rotation(0., 0., 1.0, angle))
+            .then(&shift_origin_to_center)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, PeekPoke)]
+pub enum ReferenceTransformBinding {
+    /// Standard reference frame which contains a precomputed transform.
+    Static {
+        binding: PropertyBinding<LayoutTransform>,
+    },
+    /// Computed reference frame which dynamically calculates the transform
+    /// based on the given parameters. The reference is the content size of
+    /// the parent iframe, which is affected by snapping.
+    Computed {
+        scale_from: Option<LayoutSize>,
+        vertical_flip: bool,
+        rotation: Rotation,
+    },
+}
+
+impl Default for ReferenceTransformBinding {
+    fn default() -> Self {
+        ReferenceTransformBinding::Static {
+            binding: Default::default(),
+        }
     }
 }
 
@@ -698,7 +786,7 @@ pub struct ReferenceFrame {
     pub transform_style: TransformStyle,
     /// The transform matrix, either the perspective matrix or the transform
     /// matrix.
-    pub transform: PropertyBinding<LayoutTransform>,
+    pub transform: ReferenceTransformBinding,
     pub id: SpatialId,
 }
 
@@ -716,10 +804,7 @@ pub struct StackingContext {
     pub mix_blend_mode: MixBlendMode,
     pub clip_id: Option<ClipId>,
     pub raster_space: RasterSpace,
-    /// True if picture caching should be used on this stacking context.
-    pub cache_tiles: bool,
-    /// True if this stacking context is a backdrop root.
-    pub is_backdrop_root: bool,
+    pub flags: StackingContextFlags,
 }
 // IMPLICIT: filters: Vec<FilterOp>, filter_datas: Vec<FilterData>, filter_primitives: Vec<FilterPrimitive>
 
@@ -756,6 +841,25 @@ impl RasterSpace {
             RasterSpace::Local(scale) => Some(scale),
             RasterSpace::Screen => None,
         }
+    }
+}
+
+bitflags! {
+    #[repr(C)]
+    #[derive(Deserialize, MallocSizeOf, Serialize, PeekPoke)]
+    pub struct StackingContextFlags: u8 {
+        /// If true, this stacking context represents a backdrop root, per the CSS
+        /// filter-effects specification (see https://drafts.fxtf.org/filter-effects-2/#BackdropRoot).
+        const IS_BACKDROP_ROOT = 1 << 0;
+        /// If true, this stacking context is a blend container than contains
+        /// mix-blend-mode children (and should thus be isolated).
+        const IS_BLEND_CONTAINER = 1 << 1;
+    }
+}
+
+impl Default for StackingContextFlags {
+    fn default() -> Self {
+        StackingContextFlags::empty()
     }
 }
 
@@ -866,7 +970,8 @@ impl FloodPrimitive {
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize, PeekPoke)]
 pub struct BlurPrimitive {
     pub input: FilterPrimitiveInput,
-    pub radius: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 #[repr(C)]
@@ -993,7 +1098,7 @@ pub enum FilterOp {
     /// Filter that does no transformation of the colors, needed for
     /// debug purposes only.
     Identity,
-    Blur(f32),
+    Blur(f32, f32),
     Brightness(f32),
     Contrast(f32),
     Grayscale(f32),
@@ -1185,6 +1290,7 @@ pub enum YuvColorSpace {
     Rec601 = 0,
     Rec709 = 1,
     Rec2020 = 2,
+    Identity = 3, // aka RGB as per ISO/IEC 23091-2:2019
 }
 
 #[repr(u8)]
@@ -1466,6 +1572,9 @@ impl DisplayItem {
             DisplayItem::BoxShadow(..) => "box_shadow",
             DisplayItem::ClearRectangle(..) => "clear_rectangle",
             DisplayItem::HitTest(..) => "hit_test",
+            DisplayItem::RectClip(..) => "rect_clip",
+            DisplayItem::RoundedRectClip(..) => "rounded_rect_clip",
+            DisplayItem::ImageMaskClip(..) => "image_mask_clip",
             DisplayItem::Clip(..) => "clip",
             DisplayItem::ClipChain(..) => "clip_chain",
             DisplayItem::ConicGradient(..) => "conic_gradient",
@@ -1526,6 +1635,7 @@ impl_default_for_enums! {
     ClipMode => Clip,
     ClipId => ClipId::invalid(),
     ReferenceFrameKind => Transform,
+    Rotation => Degree0,
     TransformStyle => Flat,
     RasterSpace => Local(f32::default()),
     MixBlendMode => Normal,

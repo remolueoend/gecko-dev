@@ -7,6 +7,8 @@
 #ifdef ACCESSIBILITY
 #  include "mozilla/a11y/DocAccessibleParent.h"
 #endif
+
+#include "mozilla/MouseEvents.h"
 #include "mozilla/dom/BrowserBridgeParent.h"
 #include "mozilla/dom/BrowserParent.h"
 #include "mozilla/dom/ContentParent.h"
@@ -14,53 +16,56 @@
 #include "mozilla/dom/CanonicalBrowsingContext.h"
 #include "mozilla/dom/BrowsingContextGroup.h"
 #include "mozilla/dom/WindowGlobalParent.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/InputAPZContext.h"
 
 using namespace mozilla::ipc;
 using namespace mozilla::layout;
 using namespace mozilla::hal;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 BrowserBridgeParent::BrowserBridgeParent() = default;
 
 BrowserBridgeParent::~BrowserBridgeParent() { Destroy(); }
 
 nsresult BrowserBridgeParent::InitWithProcess(
-    ContentParent* aContentParent, const nsString& aPresentationURL,
+    BrowserParent* aParentBrowser, ContentParent* aContentParent,
     const WindowGlobalInit& aWindowInit, uint32_t aChromeFlags, TabId aTabId) {
-  if (aWindowInit.browsingContext().IsNullOrDiscarded()) {
+  MOZ_ASSERT(!CanSend(),
+             "This should be called before the object is connected to IPC");
+
+  RefPtr<CanonicalBrowsingContext> browsingContext =
+      CanonicalBrowsingContext::Get(aWindowInit.context().mBrowsingContextId);
+  if (!browsingContext || browsingContext->IsDiscarded()) {
     return NS_ERROR_UNEXPECTED;
   }
 
-  RefPtr<CanonicalBrowsingContext> browsingContext =
-      aWindowInit.browsingContext().get_canonical();
-
-  // We can inherit most TabContext fields for the new BrowserParent actor from
-  // our Manager BrowserParent. We also need to sync the first party domain if
-  // the content principal exists.
-  MutableTabContext tabContext;
-  OriginAttributes attrs;
-  attrs = Manager()->OriginAttributesRef();
-  RefPtr<nsIPrincipal> principal = Manager()->GetContentPrincipal();
-  if (principal) {
-    attrs.SetFirstPartyDomain(
-        true, principal->OriginAttributesRef().mFirstPartyDomain);
+  // Unfortunately, due to the current racy destruction of BrowsingContext
+  // instances when Fission is enabled, while `browsingContext` may not be
+  // discarded, an ancestor might be.
+  //
+  // A discarded ancestor will cause us issues when creating our `BrowserParent`
+  // in the new content process, so abort the attempt if we have one.
+  //
+  // FIXME: We should never have a non-discarded BrowsingContext with discarded
+  // ancestors. (bug 1634759)
+  CanonicalBrowsingContext* ancestor = browsingContext->GetParent();
+  while (ancestor) {
+    if (NS_WARN_IF(ancestor->IsDiscarded())) {
+      return NS_ERROR_UNEXPECTED;
+    }
+    ancestor = ancestor->GetParent();
   }
-
-  tabContext.SetTabContext(false, Manager()->ChromeOuterWindowID(),
-                           Manager()->ShowFocusRings(), attrs, aPresentationURL,
-                           Manager()->GetMaxTouchPoints());
 
   // Ensure that our content process is subscribed to our newly created
   // BrowsingContextGroup.
-  browsingContext->Group()->EnsureSubscribed(aContentParent);
+  browsingContext->Group()->EnsureHostProcess(aContentParent);
   browsingContext->SetOwnerProcessId(aContentParent->ChildID());
 
   // Construct the BrowserParent object for our subframe.
   auto browserParent = MakeRefPtr<BrowserParent>(
-      aContentParent, aTabId, tabContext, browsingContext, aChromeFlags);
+      aContentParent, aTabId, *aParentBrowser, browsingContext, aChromeFlags);
   browserParent->SetBrowserBridgeParent(this);
 
   // Open a remote endpoint for our PBrowser actor.
@@ -74,8 +79,11 @@ nsresult BrowserBridgeParent::InitWithProcess(
   ContentProcessManager* cpm = ContentProcessManager::GetSingleton();
   cpm->RegisterRemoteFrame(browserParent);
 
-  auto windowParent =
-      MakeRefPtr<WindowGlobalParent>(aWindowInit, /* inprocess */ false);
+  RefPtr<WindowGlobalParent> windowParent =
+      WindowGlobalParent::CreateDisconnected(aWindowInit);
+  if (!windowParent) {
+    return NS_ERROR_UNEXPECTED;
+  }
 
   ManagedEndpoint<PWindowGlobalChild> windowChildEp =
       browserParent->OpenPWindowGlobalEndpoint(windowParent);
@@ -87,7 +95,7 @@ nsresult BrowserBridgeParent::InitWithProcess(
   // Tell the content process to set up its PBrowserChild.
   bool ok = aContentParent->SendConstructBrowser(
       std::move(childEp), std::move(windowChildEp), aTabId,
-      tabContext.AsIPCTabContext(), aWindowInit, aChromeFlags,
+      browserParent->AsIPCTabContext(), aWindowInit, aChromeFlags,
       aContentParent->ChildID(), aContentParent->IsForBrowser(),
       /* aIsTopLevel */ false);
   if (NS_WARN_IF(!ok)) {
@@ -97,13 +105,10 @@ nsresult BrowserBridgeParent::InitWithProcess(
 
   // Set our BrowserParent object to the newly created browser.
   mBrowserParent = std::move(browserParent);
-  mBrowserParent->SetOwnerElement(Manager()->GetOwnerElement());
+  mBrowserParent->SetOwnerElement(aParentBrowser->GetOwnerElement());
   mBrowserParent->InitRendering();
 
-  windowParent->Init(aWindowInit);
-
-  // Send the newly created layers ID back into content.
-  Unused << SendSetLayersId(mBrowserParent->GetLayersId());
+  windowParent->Init();
   return NS_OK;
 }
 
@@ -136,8 +141,9 @@ IPCResult BrowserBridgeParent::RecvScrollbarPreferenceChanged(
   return IPC_OK();
 }
 
-IPCResult BrowserBridgeParent::RecvLoadURL(const nsCString& aUrl) {
-  Unused << mBrowserParent->SendLoadURL(aUrl, mBrowserParent->GetShowInfo());
+IPCResult BrowserBridgeParent::RecvLoadURL(nsDocShellLoadState* aLoadState) {
+  Unused << mBrowserParent->SendLoadURL(aLoadState,
+                                        mBrowserParent->GetShowInfo());
   return IPC_OK();
 }
 
@@ -198,13 +204,14 @@ IPCResult BrowserBridgeParent::RecvWillChangeProcess() {
   return IPC_OK();
 }
 
-IPCResult BrowserBridgeParent::RecvActivate() {
-  mBrowserParent->Activate();
+IPCResult BrowserBridgeParent::RecvActivate(uint64_t aActionId) {
+  mBrowserParent->Activate(aActionId);
   return IPC_OK();
 }
 
-IPCResult BrowserBridgeParent::RecvDeactivate(const bool& aWindowLowering) {
-  mBrowserParent->Deactivate(aWindowLowering);
+IPCResult BrowserBridgeParent::RecvDeactivate(const bool& aWindowLowering,
+                                              uint64_t aActionId) {
+  mBrowserParent->Deactivate(aWindowLowering, aActionId);
   return IPC_OK();
 }
 
@@ -237,5 +244,4 @@ IPCResult BrowserBridgeParent::RecvSetEmbedderAccessible(
 
 void BrowserBridgeParent::ActorDestroy(ActorDestroyReason aWhy) { Destroy(); }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

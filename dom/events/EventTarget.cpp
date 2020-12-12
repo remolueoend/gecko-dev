@@ -13,8 +13,7 @@
 #include "nsIGlobalObject.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /* static */
 already_AddRefed<EventTarget> EventTarget::Constructor(
@@ -142,7 +141,7 @@ EventHandlerNonNull* EventTarget::GetEventHandler(nsAtom* aType) {
 void EventTarget::SetEventHandler(const nsAString& aType,
                                   EventHandlerNonNull* aHandler,
                                   ErrorResult& aRv) {
-  if (!StringBeginsWith(aType, NS_LITERAL_STRING("on"))) {
+  if (!StringBeginsWith(aType, u"on"_ns)) {
     aRv.Throw(NS_ERROR_INVALID_ARG);
     return;
   }
@@ -193,5 +192,4 @@ Nullable<WindowProxyHolder> EventTarget::GetOwnerGlobalForBindings() {
   return WindowProxyHolder(win->GetBrowsingContext());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

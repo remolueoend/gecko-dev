@@ -929,11 +929,7 @@ decorate_task(
   ) {
     // this assertion is mostly useful for --verify test runs, to make
     // sure that tests clean up correctly.
-    is(
-      Preferences.get("fake.preference"),
-      null,
-      "preference should start unset"
-    );
+    ok(!Preferences.get("fake.preference"), "preference should start unset");
 
     mockPreferences.set(
       `${startupPrefs}.fake.preference`,
@@ -1456,6 +1452,7 @@ decorate_task(
         {
           resetValue: false,
           reason: "user-preference-changed-sideload",
+          changedPref: "fake.preference",
         },
       ],
       "Experiment is stopped correctly because value changed"
@@ -1862,11 +1859,7 @@ decorate_task(
     sendEventStub,
     mockExperiments
   ) {
-    is(
-      Preferences.get("fake.preference"),
-      null,
-      "preference should start unset"
-    );
+    ok(!Preferences.get("fake.preference"), "preference should start unset");
     mockPreferences.set("fake.preference", "oldvalue", "default");
     PreferenceExperiments.startObserver("test", {
       "fake.preference": {
@@ -1896,6 +1889,7 @@ decorate_task(
           reason: "user-preference-changed",
           branch: "fakebranch",
           enrollmentId: mockExperiments[0].enrollmentId,
+          changedPref: "fake.preference",
         },
       ],
     ]);

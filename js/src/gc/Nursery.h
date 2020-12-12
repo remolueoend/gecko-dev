@@ -9,20 +9,22 @@
 #define gc_Nursery_h
 
 #include "mozilla/EnumeratedArray.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/TimeStamp.h"
 
 #include "gc/GCParallelTask.h"
 #include "gc/Heap.h"
+#include "js/AllocPolicy.h"
 #include "js/Class.h"
 #include "js/HeapAPI.h"
 #include "js/TracingAPI.h"
 #include "js/TypeDecls.h"
 #include "js/Vector.h"
+#include "util/Text.h"
 
 #define FOR_EACH_NURSERY_PROFILE_TIME(_)      \
   /* Key                       Header text */ \
   _(Total, "total")                           \
-  _(CancelIonCompilations, "canIon")          \
   _(TraceValues, "mkVals")                    \
   _(TraceCells, "mkClls")                     \
   _(TraceSlots, "mkSlts")                     \
@@ -39,10 +41,12 @@
   _(FreeMallocedBuffers, "frSlts")            \
   _(ClearStoreBuffer, "clrSB")                \
   _(ClearNursery, "clear")                    \
+  _(PurgeStringToAtomCache, "pStoA")          \
   _(Pretenure, "pretnr")
 
 template <typename T>
 class SharedMem;
+class JSDependentString;
 
 namespace js {
 
@@ -64,7 +68,7 @@ struct Cell;
 class GCSchedulingTunables;
 class MinorCollectionTracer;
 class RelocationOverlay;
-struct TenureCountCache;
+class StringRelocationOverlay;
 enum class AllocKind : uint8_t;
 class TenuredCell;
 }  // namespace gc
@@ -84,7 +88,7 @@ class NurseryDecommitTask : public GCParallelTask {
   void queueRange(size_t newCapacity, NurseryChunk& chunk,
                   const AutoLockHelperThreadState& lock);
 
-  void run() override;
+  void run(AutoLockHelperThreadState& lock) override;
   void decommitChunk(gc::Chunk* chunk);
   void decommitRange(AutoLockHelperThreadState& lock);
 
@@ -112,8 +116,8 @@ class TenuringTracer : public JSTracer {
   // to find things held live by intra-Nursery pointers.
   gc::RelocationOverlay* objHead;
   gc::RelocationOverlay** objTail;
-  gc::RelocationOverlay* stringHead;
-  gc::RelocationOverlay** stringTail;
+  gc::StringRelocationOverlay* stringHead;
+  gc::StringRelocationOverlay** stringTail;
   gc::RelocationOverlay* bigIntHead;
   gc::RelocationOverlay** bigIntTail;
 
@@ -129,18 +133,20 @@ class TenuringTracer : public JSTracer {
 
   // The store buffers need to be able to call these directly.
   void traceObject(JSObject* src);
-  void traceObjectSlots(NativeObject* nobj, uint32_t start, uint32_t length);
+  void traceObjectSlots(NativeObject* nobj, uint32_t start, uint32_t end);
   void traceSlots(JS::Value* vp, uint32_t nslots);
   void traceString(JSString* src);
   void traceBigInt(JS::BigInt* src);
 
  private:
   inline void insertIntoObjectFixupList(gc::RelocationOverlay* entry);
-  inline void insertIntoStringFixupList(gc::RelocationOverlay* entry);
+  inline void insertIntoStringFixupList(gc::StringRelocationOverlay* entry);
   inline void insertIntoBigIntFixupList(gc::RelocationOverlay* entry);
 
   template <typename T>
   inline T* allocTenured(JS::Zone* zone, gc::AllocKind kind);
+  JSString* allocTenuredString(JSString* src, JS::Zone* zone,
+                               gc::AllocKind dstKind);
 
   inline JSObject* movePlainObjectToTenured(PlainObject* src);
   JSObject* moveToTenuredSlow(JSObject* src);
@@ -176,20 +182,7 @@ class Nursery {
   // SubChunkStep is the minimum amount to adjust the nursery's size by.
   static const size_t SubChunkStep = gc::ArenaSize;
 
-  struct alignas(gc::CellAlignBytes) CellAlignedByte {
-    char byte;
-  };
-
-  struct StringLayout {
-    JS::Zone* zone;
-    CellAlignedByte cell;
-  };
-
-  struct BigIntLayout {
-    JS::Zone* zone;
-    CellAlignedByte cell;
-  };
-
+  using BufferRelocationOverlay = void*;
   using BufferSet = HashSet<void*, PointerHasher<void*>, SystemAllocPolicy>;
 
   explicit Nursery(gc::GCRuntime* gc);
@@ -244,45 +237,18 @@ class Nursery {
   JSObject* allocateObject(JSContext* cx, size_t size, size_t numDynamic,
                            const JSClass* clasp);
 
-  // Allocate and return a pointer to a new string. Returns nullptr if the
+  // Allocate and return a pointer to a new GC thing. Returns nullptr if the
   // Nursery is full.
-  gc::Cell* allocateString(JS::Zone* zone, size_t size, gc::AllocKind kind);
+  gc::Cell* allocateCell(JS::Zone* zone, size_t size, JS::TraceKind kind);
 
-  // Allocate and return a pointer to a new BigInt. Returns nullptr if the
-  // Nursery is full.
-  gc::Cell* allocateBigInt(JS::Zone* zone, size_t size, gc::AllocKind kind);
-
-  // String zones are stored just before the string in nursery memory.
-  static JS::Zone* getStringZone(const JSString* str) {
-#ifdef DEBUG
-    auto cell = reinterpret_cast<const js::gc::Cell*>(
-        str);  // JSString type is incomplete here
-    MOZ_ASSERT(js::gc::IsInsideNursery(cell),
-               "getStringZone must be passed a nursery string");
-#endif
-
-    auto layout =
-        reinterpret_cast<const uint8_t*>(str) - offsetof(StringLayout, cell);
-    return reinterpret_cast<const StringLayout*>(layout)->zone;
+  gc::Cell* allocateBigInt(JS::Zone* zone, size_t size) {
+    return allocateCell(zone, size, JS::TraceKind::BigInt);
   }
+  gc::Cell* allocateString(JS::Zone* zone, size_t size);
 
-  // BigInt zones are stored just before the BigInt in nursery memory.
-  static JS::Zone* getBigIntZone(const JS::BigInt* bi) {
-#ifdef DEBUG
-    auto cell = reinterpret_cast<const js::gc::Cell*>(
-        bi);  // JS::BigInt type is incomplete here
-    MOZ_ASSERT(js::gc::IsInsideNursery(cell),
-               "getBigIntZone must be passed a nursery BigInt");
-#endif
-
-    auto layout =
-        reinterpret_cast<const uint8_t*>(bi) - offsetof(BigIntLayout, cell);
-    return reinterpret_cast<const BigIntLayout*>(layout)->zone;
+  static size_t nurseryCellHeaderSize() {
+    return sizeof(gc::NurseryCellHeader);
   }
-
-  static size_t stringHeaderSize() { return offsetof(StringLayout, cell); }
-
-  static size_t bigIntHeaderSize() { return offsetof(BigIntLayout, cell); }
 
   // Allocate a buffer for a given zone, using the nursery if possible.
   void* allocateBuffer(JS::Zone* zone, size_t nbytes);
@@ -323,7 +289,7 @@ class Nursery {
   static const size_t MaxNurseryBufferSize = 1024;
 
   // Do a minor collection.
-  void collect(JS::GCReason reason);
+  void collect(JSGCInvocationKind kind, JS::GCReason reason);
 
   // If the thing at |*ref| in the Nursery has been forwarded, set |*ref| to
   // the new location and return true. Otherwise return false and leave
@@ -332,7 +298,7 @@ class Nursery {
       js::gc::Cell** ref);
 
   // Forward a slots/elements pointer stored in an Ion frame.
-  void forwardBufferPointer(HeapSlot** pSlotsElems);
+  void forwardBufferPointer(uintptr_t* pSlotsElems);
 
   inline void maybeSetForwardingPointer(JSTracer* trc, void* oldData,
                                         void* newData, bool direct);
@@ -458,6 +424,13 @@ class Nursery {
 
   void joinDecommitTask() { decommitTask.join(); }
 
+  mozilla::TimeStamp collectionStartTime() {
+    return startTimes_[ProfileKey::Total];
+  }
+
+  // Round a size in bytes to the nearest valid nursery size.
+  static size_t roundSize(size_t size);
+
  private:
   gc::GCRuntime* const gc;
 
@@ -505,9 +478,6 @@ class Nursery {
   // Whether we will nursery-allocate BigInts.
   bool canAllocateBigInts_;
 
-  // Report ObjectGroups with at least this many instances tenured.
-  int64_t reportTenurings_;
-
   // Whether and why a collection of this nursery has been requested. This is
   // mutable as it is set by the store buffer, which otherwise cannot modify
   // anything in the nursery.
@@ -533,14 +503,19 @@ class Nursery {
   ProfileDurations profileDurations_;
   ProfileDurations totalDurations_;
 
-  struct {
+  // Data about the previous collection.
+  struct PreviousGC {
     JS::GCReason reason = JS::GCReason::NO_REASON;
     size_t nurseryCapacity = 0;
     size_t nurseryCommitted = 0;
     size_t nurseryUsedBytes = 0;
     size_t tenuredBytes = 0;
     size_t tenuredCells = 0;
-  } previousGC;
+  };
+  PreviousGC previousGC;
+
+  mozilla::TimeStamp lastResizeTime;
+  double smoothedGrowthFactor;
 
   // Calculate the promotion rate of the most recent minor GC.
   // The valid_for_tenuring parameter is used to return whether this
@@ -548,7 +523,7 @@ class Nursery {
   // used for tenuring and other decisions.
   //
   // Must only be called if the previousGC data is initialised.
-  float calcPromotionRate(bool* validForTenuring) const;
+  double calcPromotionRate(bool* validForTenuring) const;
 
   // The set of externally malloced buffers potentially kept live by objects
   // stored in the nursery. Any external buffers that do not belong to a
@@ -581,6 +556,66 @@ class Nursery {
   using NativeObjectVector = Vector<NativeObject*, 0, SystemAllocPolicy>;
   NativeObjectVector dictionaryModeObjects_;
 
+  template <typename Key>
+  struct DeduplicationStringHasher {
+    using Lookup = Key;
+
+    static inline HashNumber hash(const Lookup& lookup) {
+      JS::AutoCheckCannotGC nogc;
+      HashNumber strHash;
+
+      // Include flags in the hash. A string relocation overlay stores either
+      // the nursery root base chars or the dependent string nursery base, but
+      // does not indicate which one. If strings with different string types
+      // were deduplicated, for example, a dependent string gets deduplicated
+      // into an extensible string, the base chain would be broken and the root
+      // base would be unreachable.
+
+      if (lookup->asLinear().hasLatin1Chars()) {
+        strHash = mozilla::HashString(lookup->asLinear().latin1Chars(nogc),
+                                      lookup->length());
+      } else {
+        MOZ_ASSERT(lookup->asLinear().hasTwoByteChars());
+        strHash = mozilla::HashString(lookup->asLinear().twoByteChars(nogc),
+                                      lookup->length());
+      }
+
+      return mozilla::HashGeneric(strHash, lookup->zone(), lookup->flags());
+    }
+
+    static MOZ_ALWAYS_INLINE bool match(const Key& key, const Lookup& lookup) {
+      if (!key->sameLengthAndFlags(*lookup) ||
+          key->asTenured().zone() != lookup->zone() ||
+          key->asTenured().getAllocKind() != lookup->getAllocKind()) {
+        return false;
+      }
+
+      JS::AutoCheckCannotGC nogc;
+
+      if (key->asLinear().hasLatin1Chars()) {
+        MOZ_ASSERT(lookup->asLinear().hasLatin1Chars());
+        return mozilla::ArrayEqual(key->asLinear().latin1Chars(nogc),
+                                   lookup->asLinear().latin1Chars(nogc),
+                                   lookup->length());
+      } else {
+        MOZ_ASSERT(key->asLinear().hasTwoByteChars());
+        MOZ_ASSERT(lookup->asLinear().hasTwoByteChars());
+        return EqualChars(key->asLinear().twoByteChars(nogc),
+                          lookup->asLinear().twoByteChars(nogc),
+                          lookup->length());
+      }
+    }
+  };
+
+  using StringDeDupSet =
+      HashSet<JSString*, DeduplicationStringHasher<JSString*>,
+              SystemAllocPolicy>;
+
+  // deDupSet is emplaced at the beginning of the nursery collection and reset
+  // at the end of the nursery collection. It can also be reset during nursery
+  // collection when out of memory to insert new entries.
+  mozilla::Maybe<StringDeDupSet> stringDeDupSet;
+
   // Lists of map and set objects allocated in the nursery or with iterators
   // allocated there. Such objects need to be swept after minor GC.
   Vector<MapObject*, 0, SystemAllocPolicy> mapsWithNurseryMemory_;
@@ -601,6 +636,8 @@ class Nursery {
   // current chunk, or the whole chunk if fullPoison is true or it is not
   // the current chunk.
   void setCurrentChunk(unsigned chunkno);
+
+  bool initFirstChunk(AutoLockGCBgAlloc& lock);
 
   // extent is advisory, it will be ignored in sub-chunk and generational zeal
   // modes. It will be clamped to Min(NurseryChunkUsableSize, capacity_).
@@ -628,15 +665,33 @@ class Nursery {
   // Common internal allocator function.
   void* allocate(size_t size);
 
-  void doCollection(JS::GCReason reason, gc::TenureCountCache& tenureCounts);
+  void* moveToNextChunkAndAllocate(size_t size);
 
-  float doPretenuring(JSRuntime* rt, JS::GCReason reason,
-                      gc::TenureCountCache& tenureCounts);
+#ifdef JS_GC_ZEAL
+  void writeCanary(uintptr_t address);
+#endif
+
+  struct CollectionResult {
+    size_t tenuredBytes;
+    size_t tenuredCells;
+  };
+  CollectionResult doCollection(JS::GCReason reason);
+
+  void doPretenuring(JSRuntime* rt, JS::GCReason reason,
+                     bool highPromotionRate);
 
   // Move the object at |src| in the Nursery to an already-allocated cell
   // |dst| in Tenured.
-  void collectToFixedPoint(TenuringTracer& trc,
-                           gc::TenureCountCache& tenureCounts);
+  void collectToFixedPoint(TenuringTracer& trc);
+
+  // The dependent string chars needs to be relocated if the base which it's
+  // using chars from has been deduplicated.
+  template <typename CharT>
+  void relocateDependentStringChars(JSDependentString* tenuredDependentStr,
+                                    JSLinearString* baseOrRelocOverlay,
+                                    size_t* offset,
+                                    bool* rootBaseNotYetForwarded,
+                                    JSLinearString** rootBase);
 
   // Handle relocation of slots/elements pointers stored in Ion frames.
   inline void setForwardingPointer(void* oldData, void* newData, bool direct);
@@ -662,9 +717,9 @@ class Nursery {
   void sweepMapAndSetObjects();
 
   // Change the allocable space provided by the nursery.
-  void maybeResizeNursery(JS::GCReason reason);
-  bool maybeResizeExact(JS::GCReason reason);
-  static size_t roundSize(size_t size);
+  void maybeResizeNursery(JSGCInvocationKind kind, JS::GCReason reason);
+  size_t targetSize(JSGCInvocationKind kind, JS::GCReason reason);
+  void clearRecentGrowthData();
   void growAllocableSpace(size_t newCapacity);
   void shrinkAllocableSpace(size_t newCapacity);
   void minimizeAllocableSpace();
@@ -672,6 +727,11 @@ class Nursery {
   // Free the chunks starting at firstFreeChunk until the end of the chunks
   // vector. Shrinks the vector but does not update maxChunkCount().
   void freeChunksFrom(unsigned firstFreeChunk);
+
+  void sendTelemetry(JS::GCReason reason, mozilla::TimeDuration totalTime,
+                     bool wasEmpty, double promotionRate);
+
+  void printCollectionProfile(JS::GCReason reason, double promotionRate);
 
   // Profile recording and printing.
   void maybeClearProfileDurations();

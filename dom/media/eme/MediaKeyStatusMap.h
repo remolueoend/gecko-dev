@@ -7,7 +7,6 @@
 #ifndef mozilla_dom_MediaKeyStatuses_h
 #define mozilla_dom_MediaKeyStatuses_h
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/Attributes.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
@@ -19,6 +18,8 @@
 class nsPIDOMWindowInner;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class ArrayBufferViewOrArrayBuffer;
@@ -60,7 +61,7 @@ class MediaKeyStatusMap final : public nsISupports, public nsWrapperCache {
 
   struct KeyStatus {
     KeyStatus(const nsTArray<uint8_t>& aKeyId, MediaKeyStatus aStatus)
-        : mKeyId(aKeyId), mStatus(aStatus) {}
+        : mKeyId(aKeyId.Clone()), mStatus(aStatus) {}
     bool operator==(const KeyStatus& aOther) const {
       return aOther.mKeyId == mKeyId;
     }

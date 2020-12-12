@@ -23,10 +23,14 @@ addAccessibleTask(
     let actions = checkbox.actionNames;
     ok(actions.includes("AXPress"), "Has press action");
 
+    let evt = waitForMacEvent("AXValueChanged", "vehicle");
     checkbox.performAction("AXPress");
+    await evt;
     is(checkbox.getAttributeValue("AXValue"), 1, "Correct checked value");
 
+    evt = waitForMacEvent("AXValueChanged", "vehicle");
     checkbox.performAction("AXPress");
+    await evt;
     is(checkbox.getAttributeValue("AXValue"), 0, "Correct checked value");
   }
 );
@@ -52,10 +56,14 @@ addAccessibleTask(
     let actions = toggle.actionNames;
     ok(actions.includes("AXPress"), "Has press action");
 
+    let evt = waitForMacEvent("AXValueChanged", "toggle");
     toggle.performAction("AXPress");
+    await evt;
     is(toggle.getAttributeValue("AXValue"), 1, "Correct checked value");
 
+    evt = waitForMacEvent("AXValueChanged", "toggle");
     toggle.performAction("AXPress");
+    await evt;
     is(toggle.getAttributeValue("AXValue"), 0, "Correct checked value");
   }
 );
@@ -82,10 +90,14 @@ addAccessibleTask(
     let actions = checkbox.actionNames;
     ok(actions.includes("AXPress"), "Has press action");
 
+    let evt = waitForMacEvent("AXValueChanged", "checkbox");
     checkbox.performAction("AXPress");
+    await evt;
     is(checkbox.getAttributeValue("AXValue"), 1, "Correct checked value");
 
+    evt = waitForMacEvent("AXValueChanged", "checkbox");
     checkbox.performAction("AXPress");
+    await evt;
     is(checkbox.getAttributeValue("AXValue"), 2, "Correct checked value");
   }
 );
@@ -110,11 +122,14 @@ addAccessibleTask(
     );
 
     let actions = dewey.actionNames;
-    ok(actions.includes("AXPick"), "Has pick action");
+    ok(actions.includes("AXPress"), "Has press action");
 
-    let stateChanged = waitForEvent(EVENT_STATE_CHANGE, "huey");
-    dewey.performAction("AXPick");
-    await stateChanged;
+    let evt = Promise.all([
+      waitForMacEvent("AXValueChanged", "huey"),
+      waitForMacEvent("AXValueChanged", "dewey"),
+    ]);
+    dewey.performAction("AXPress");
+    await evt;
     is(
       dewey.getAttributeValue("AXValue"),
       1,

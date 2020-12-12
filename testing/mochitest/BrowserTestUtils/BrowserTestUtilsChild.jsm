@@ -7,6 +7,11 @@
 var EXPORTED_SYMBOLS = ["BrowserTestUtilsChild"];
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+ChromeUtils.defineModuleGetter(
+  this,
+  "E10SUtils",
+  "resource://gre/modules/E10SUtils.jsm"
+);
 
 class BrowserTestUtilsChildObserver {
   constructor() {
@@ -98,7 +103,7 @@ class BrowserTestUtilsChildObserver {
 }
 
 BrowserTestUtilsChildObserver.prototype.QueryInterface = ChromeUtils.generateQI(
-  [Ci.nsIObserver, Ci.nsISupportsWeakReference]
+  ["nsIObserver", "nsISupportsWeakReference"]
 );
 
 class BrowserTestUtilsChild extends JSWindowActorChild {
@@ -264,7 +269,9 @@ class BrowserTestUtilsChild extends JSWindowActorChild {
       case "load": {
         this.sendAsyncMessage(aEvent.type, {
           internalURL: aEvent.target.documentURI,
-          visibleURL: aEvent.target.location.href,
+          visibleURL: aEvent.target.location
+            ? aEvent.target.location.href
+            : null,
         });
         break;
       }
@@ -292,7 +299,8 @@ class BrowserTestUtilsChild extends JSWindowActorChild {
         // Account for nodes found in iframes.
         let cur = target;
         do {
-          let frame = cur.ownerGlobal.frameElement;
+          // eslint-disable-next-line mozilla/use-ownerGlobal
+          let frame = cur.ownerDocument.defaultView.frameElement;
           let rect = frame.getBoundingClientRect();
 
           left += rect.left;
@@ -318,16 +326,19 @@ class BrowserTestUtilsChild extends JSWindowActorChild {
     }
 
     let result;
-    if (data.event && data.event.wheel) {
-      this.EventUtils.synthesizeWheelAtPoint(left, top, data.event, window);
-    } else {
-      result = this.EventUtils.synthesizeMouseAtPoint(
-        left,
-        top,
-        data.event,
-        window
-      );
-    }
+
+    E10SUtils.wrapHandlingUserInput(window, data.handlingUserInput, () => {
+      if (data.event && data.event.wheel) {
+        this.EventUtils.synthesizeWheelAtPoint(left, top, data.event, window);
+      } else {
+        result = this.EventUtils.synthesizeMouseAtPoint(
+          left,
+          top,
+          data.event,
+          window
+        );
+      }
+    });
 
     return result;
   }

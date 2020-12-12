@@ -11,6 +11,7 @@
 #if defined(JS_ION_PERF)
 #  include "jit/PerfSpewer.h"
 #endif
+#include "js/ScalarType.h"  // js::Scalar::Type
 
 #if defined(JS_CODEGEN_X86)
 #  include "jit/x86/CodeGenerator-x86.h"
@@ -34,6 +35,8 @@
 
 namespace js {
 namespace jit {
+
+class WarpSnapshot;
 
 template <typename Fn, Fn fn, class ArgSeq, class StoreOutputTo>
 class OutOfLineCallVM;
@@ -63,9 +66,9 @@ class OutOfLineRegExpInstanceOptimizable;
 class OutOfLineNaNToZero;
 class OutOfLineZeroIfNaN;
 class OutOfLineTypedArrayIndexToInt32;
+class OutOfLineBoxNonStrictThis;
 
 class CodeGenerator final : public CodeGeneratorSpecific {
-  void generateArgumentsChecks(bool assert = false);
   MOZ_MUST_USE bool generateBody();
 
   ConstantOrRegister toConstantOrRegister(LInstruction* lir, size_t n,
@@ -101,11 +104,13 @@ class CodeGenerator final : public CodeGeneratorSpecific {
                                  wasm::FuncOffsets* offsets,
                                  wasm::StackMaps* stackMaps);
 
-  MOZ_MUST_USE bool link(JSContext* cx, CompilerConstraintList* constraints);
+  MOZ_MUST_USE bool link(JSContext* cx, const WarpSnapshot* snapshot);
 
   void emitOOLTestObject(Register objreg, Label* ifTruthy, Label* ifFalsy,
                          Register scratch);
   void emitIntToString(Register input, Register output, Label* ool);
+
+  void emitTypeOfObject(Register obj, Register output, Label* done);
 
   template <typename Fn, Fn fn, class ArgSeq, class StoreOutputTo>
   void visitOutOfLineCallVM(
@@ -134,6 +139,8 @@ class CodeGenerator final : public CodeGeneratorSpecific {
 
   void visitOutOfLineUnboxFloatingPoint(OutOfLineUnboxFloatingPoint* ool);
   void visitOutOfLineStoreElementHole(OutOfLineStoreElementHole* ool);
+
+  void visitOutOfLineBoxNonStrictThis(OutOfLineBoxNonStrictThis* ool);
 
   void visitOutOfLineICFallback(OutOfLineICFallback* ool);
 
@@ -189,8 +196,6 @@ class CodeGenerator final : public CodeGeneratorSpecific {
                                   const ConstantOrRegister& value);
   void emitCompareS(LInstruction* lir, JSOp op, Register left, Register right,
                     Register output);
-  void emitSameValue(FloatRegister left, FloatRegister right,
-                     FloatRegister temp, Register output);
 
   void emitConcat(LInstruction* lir, Register lhs, Register rhs,
                   Register output);
@@ -202,9 +207,6 @@ class CodeGenerator final : public CodeGeneratorSpecific {
   template <typename T>
   void emitStoreElementHoleV(T* lir);
 
-  void emitArrayPopShift(LInstruction* lir, const MArrayPopShift* mir,
-                         Register obj, Register elementsTemp,
-                         Register lengthTemp, TypedOrValueRegister out);
   void emitArrayPush(LInstruction* lir, Register obj,
                      const ConstantOrRegister& value, Register elementsTemp,
                      Register length, Register spectreTemp);
@@ -213,12 +215,7 @@ class CodeGenerator final : public CodeGeneratorSpecific {
                 Register temp0, Register temp1, unsigned numFormals,
                 JSObject* templateObject, bool saveAndRestore,
                 Register resultreg);
-  void emitInstanceOf(LInstruction* ins, JSObject* prototypeObject);
-
-  enum CallableOrConstructor { Callable, Constructor };
-  template <CallableOrConstructor mode>
-  void emitIsCallableOrConstructor(Register object, Register output,
-                                   Label* failure);
+  void emitInstanceOf(LInstruction* ins, const LAllocation* prototypeObject);
 
   void loadJSScriptForBlock(MBasicBlock* block, Register reg);
   void loadOutermostJSScript(Register reg);
@@ -240,15 +237,11 @@ class CodeGenerator final : public CodeGeneratorSpecific {
 
   void addGetPropertyCache(LInstruction* ins, LiveRegisterSet liveRegs,
                            TypedOrValueRegister value,
-                           const ConstantOrRegister& id,
-                           TypedOrValueRegister output, Register maybeTemp,
-                           GetPropertyResultFlags flags);
+                           const ConstantOrRegister& id, ValueOperand output);
   void addSetPropertyCache(LInstruction* ins, LiveRegisterSet liveRegs,
                            Register objReg, Register temp,
                            const ConstantOrRegister& id,
-                           const ConstantOrRegister& value, bool strict,
-                           bool needsPostBarrier, bool needsTypeBarrier,
-                           bool guardHoles);
+                           const ConstantOrRegister& value, bool strict);
 
   MOZ_MUST_USE bool generateBranchV(const ValueOperand& value, Label* ifTrue,
                                     Label* ifFalse, FloatRegister fr);
@@ -264,6 +257,11 @@ class CodeGenerator final : public CodeGeneratorSpecific {
 
   template <class OrderedHashTable>
   void emitLoadIteratorValues(Register result, Register temp, Register front);
+
+  void emitStringToInt64(LInstruction* lir, Register input, Register64 output);
+
+  void emitCreateBigInt(LInstruction* lir, Scalar::Type type, Register64 input,
+                        Register output, Register maybeTemp);
 
   template <size_t NumDefs>
   void emitIonToWasmCallBase(LIonToWasmCallBase<NumDefs>* lir);
@@ -322,12 +320,11 @@ class CodeGenerator final : public CodeGeneratorSpecific {
 
   void emitStoreElementTyped(const LAllocation* value, MIRType valueType,
                              MIRType elementType, Register elements,
-                             const LAllocation* index,
-                             int32_t offsetAdjustment);
+                             const LAllocation* index);
 
   // Bailout if an element about to be written to is a hole.
   void emitStoreHoleCheck(Register elements, const LAllocation* index,
-                          int32_t offsetAdjustment, LSnapshot* snapshot);
+                          LSnapshot* snapshot);
 
   void emitAssertRangeI(const Range* r, Register input);
   void emitAssertRangeD(const Range* r, FloatRegister input,
@@ -337,6 +334,16 @@ class CodeGenerator final : public CodeGeneratorSpecific {
                                    OutOfLineCode* ool);
 
   Vector<CodeOffset, 0, JitAllocPolicy> ionScriptLabels_;
+
+  // Used to bake in a pointer into the IonScript's list of nursery objects, for
+  // MNurseryObject codegen.
+  struct NurseryObjectLabel {
+    CodeOffset offset;
+    uint32_t nurseryIndex;
+    NurseryObjectLabel(CodeOffset offset, uint32_t nurseryIndex)
+        : offset(offset), nurseryIndex(nurseryIndex) {}
+  };
+  Vector<NurseryObjectLabel, 0, JitAllocPolicy> ionNurseryObjectLabels_;
 
   void branchIfInvalidated(Register temp, Label* invalidated);
 

@@ -4,19 +4,13 @@
 
 "use strict";
 
-const defer = require("devtools/shared/defer");
 const {
   FrontClassWithSpec,
   types,
   registerFront,
 } = require("devtools/shared/protocol.js");
 const { walkerSpec } = require("devtools/shared/specs/walker");
-
-loader.lazyRequireGetter(
-  this,
-  "nodeConstants",
-  "devtools/shared/dom-node-constants"
-);
+const { safeAsyncMethod } = require("devtools/shared/async-utils");
 
 /**
  * Client side of the DOM walker.
@@ -24,23 +18,48 @@ loader.lazyRequireGetter(
 class WalkerFront extends FrontClassWithSpec(walkerSpec) {
   constructor(client, targetFront, parentFront) {
     super(client, targetFront, parentFront);
-    this._createRootNodePromise();
+    this._isPicking = false;
     this._orphaned = new Set();
     this._retainedOrphans = new Set();
 
     // Set to true if cleanup should be requested after every mutation list.
     this.autoCleanup = true;
 
+    this._rootNodePromise = new Promise(
+      r => (this._rootNodePromiseResolve = r)
+    );
+
+    this._onRootNodeAvailable = this._onRootNodeAvailable.bind(this);
+    this._onRootNodeDestroyed = this._onRootNodeDestroyed.bind(this);
+
+    // pick/cancelPick requests can be triggered while the Walker is being destroyed.
+    this.pick = safeAsyncMethod(this.pick.bind(this), () => this.isDestroyed());
+    this.cancelPick = safeAsyncMethod(this.cancelPick.bind(this), () =>
+      this.isDestroyed()
+    );
+
     this.before("new-mutations", this.onMutations.bind(this));
+
+    // Those events will be emitted if watchRootNode was called on the
+    // corresponding WalkerActor, which should be handled by the ResourceWatcher
+    // as long as a consumer is watching for root-node resources.
+    // This should be fixed by using watchResources directly from the walker
+    // front, either with the ROOT_NODE resource, or with the DOCUMENT_EVENT
+    // resource. See Bug 1663973.
+    this.on("root-available", this._onRootNodeAvailable);
+    this.on("root-destroyed", this._onRootNodeDestroyed);
   }
 
   // Update the object given a form representation off the wire.
   form(json) {
     this.actorID = json.actor;
+
+    // The rootNode property should usually be provided via watchRootNode.
+    // However tests are currently using the walker front without explicitly
+    // calling watchRootNode, so we keep this assignment as a fallback.
     this.rootNode = types.getType("domnode").read(json.root, this);
-    this._rootNodeDeferred.resolve(this.rootNode);
-    // FF42+ the actor starts exposing traits
-    this.traits = json.traits || {};
+
+    this.traits = json.traits;
   }
 
   /**
@@ -49,18 +68,13 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
    * method returns a promise that will resolve to the root node when it is
    * set.
    */
-  getRootNode() {
-    return this._rootNodeDeferred.promise;
-  }
+  async getRootNode() {
+    let rootNode = this.rootNode;
+    if (!rootNode) {
+      rootNode = await this._rootNodePromise;
+    }
 
-  /**
-   * Create the root node promise, triggering the "new-root" notification
-   * on resolution.
-   */
-  async _createRootNodePromise() {
-    this._rootNodeDeferred = defer();
-    await this._rootNodeDeferred.promise;
-    this.emit("new-root");
+    return rootNode;
   }
 
   /**
@@ -72,7 +86,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
    * with a real form by the end of the deserialization.
    */
   ensureDOMNodeFront(id) {
-    const front = this.get(id);
+    const front = this.getActorByID(id);
     if (front) {
       return front;
     }
@@ -130,17 +144,6 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
   async querySelector(queryNode, selector) {
     const response = await super.querySelector(queryNode, selector);
     return response.node;
-  }
-
-  async gripToNodeFront(grip) {
-    const response = await this.getNodeActorFromObjectActor(grip.actor);
-    const nodeFront = response ? response.node : null;
-    if (!nodeFront) {
-      throw new Error(
-        "The ValueGrip passed could not be translated to a NodeFront"
-      );
-    }
-    return nodeFront;
   }
 
   async getNodeActorFromWindowID(windowID) {
@@ -243,23 +246,8 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     const emitMutations = [];
     for (const change of mutations) {
       // The target is only an actorID, get the associated front.
-      let targetID;
-      let targetFront;
-
-      if (change.type === "newRoot") {
-        // We may receive a new root without receiving any documentUnload
-        // beforehand. Like when opening tools in middle of a document load.
-        if (this.rootNode) {
-          this._createRootNodePromise();
-        }
-        this.rootNode = types.getType("domnode").read(change.target, this);
-        this._rootNodeDeferred.resolve(this.rootNode);
-        targetID = this.rootNode.actorID;
-        targetFront = this.rootNode;
-      } else {
-        targetID = change.target;
-        targetFront = this.get(targetID);
-      }
+      const targetID = change.target;
+      const targetFront = this.getActorByID(targetID);
 
       if (!targetFront) {
         console.warn(
@@ -281,7 +269,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
         const addedFronts = [];
         const removedFronts = [];
         for (const removed of change.removed) {
-          const removedFront = this.get(removed);
+          const removedFront = this.getActorByID(removed);
           if (!removedFront) {
             console.error(
               "Got a removal of an actor we didn't know about: " + removed
@@ -297,7 +285,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
           removedFronts.push(removedFront);
         }
         for (const added of change.added) {
-          const addedFront = this.get(added);
+          const addedFront = this.getActorByID(added);
           if (!addedFront) {
             console.error(
               "Got an addition of an actor we didn't know " + "about: " + added
@@ -323,31 +311,6 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
         if ("numChildren" in change) {
           targetFront._form.numChildren = change.numChildren;
         }
-      } else if (change.type === "frameLoad") {
-        // Nothing we need to do here, except verify that we don't have any
-        // document children, because we should have gotten a documentUnload
-        // first.
-        for (const child of targetFront.treeChildren()) {
-          if (child.nodeType === nodeConstants.DOCUMENT_NODE) {
-            console.warn(
-              "Got an unexpected frameLoad in the inspector, " +
-                "please file a bug on bugzilla.mozilla.org!"
-            );
-            console.trace();
-          }
-        }
-      } else if (change.type === "documentUnload") {
-        if (targetFront === this.rootNode) {
-          this._createRootNodePromise();
-        }
-
-        // We try to give fronts instead of actorIDs, but these fronts need
-        // to be destroyed now.
-        emittedMutation.target = targetFront.actorID;
-        emittedMutation.targetParent = targetFront.parentNode();
-
-        // Release the document node and all of its children, even retained.
-        this._releaseFront(targetFront, true);
       } else if (change.type === "shadowRootAttached") {
         targetFront._form.isShadowHost = true;
       } else if (change.type === "customElementDefined") {
@@ -356,7 +319,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
         // Retained orphans were force-released without the intervention of
         // client (probably a navigated frame).
         for (const released of change.nodes) {
-          const releasedFront = this.get(released);
+          const releasedFront = this.getActorByID(released);
           this._retainedOrphans.delete(released);
           this._releaseFront(releasedFront, true);
         }
@@ -453,14 +416,10 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
    * two documents.
    */
   async reparentRemoteFrame() {
-    // Get the parent target, which most likely runs in another process
-    const descriptorFront = this.targetFront.descriptorFront;
-    // If we are on the top target, descriptorFront will be the RootFront
-    // and won't have the getParentTarget method.
-    if (!descriptorFront.getParentTarget) {
+    const parentTarget = await this.targetFront.getParentTarget();
+    if (!parentTarget) {
       return;
     }
-    const parentTarget = await descriptorFront.getParentTarget();
     // Don't reparent if we are on the top target
     if (parentTarget == this.targetFront) {
       return;
@@ -471,7 +430,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     // As this <iframe> most likely runs in another process, we have to get it through the parent
     // target's WalkerFront.
     const parentNode = (
-      await parentWalker.getEmbedderElement(descriptorFront.id)
+      await parentWalker.getEmbedderElement(this.targetFront.browsingContextID)
     ).node;
 
     // Finally, set this embedder element's node front as the
@@ -506,12 +465,7 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
       }
 
       if (nodeSelectors.length > 0) {
-        if (nodeFront.traits.supportsWaitForFrameLoad) {
-          // Backward compatibility: only FF72 or newer are able to wait for
-          // iframes to load. After FF72 reaches release we can unconditionally
-          // call waitForFrameLoad.
-          await nodeFront.waitForFrameLoad();
-        }
+        await nodeFront.waitForFrameLoad();
 
         const { nodes } = await this.children(nodeFront);
 
@@ -548,6 +502,48 @@ class WalkerFront extends FrontClassWithSpec(walkerSpec) {
     nodeSelectors.splice(0, rootFrontSelectors.length - 1);
 
     return querySelectors(nodeFront);
+  }
+
+  _onRootNodeAvailable(rootNode) {
+    if (rootNode.isTopLevelDocument) {
+      this.rootNode = rootNode;
+      this._rootNodePromiseResolve(this.rootNode);
+    }
+  }
+
+  _onRootNodeDestroyed(rootNode) {
+    if (rootNode.isTopLevelDocument) {
+      this._rootNodePromise = new Promise(
+        r => (this._rootNodePromiseResolve = r)
+      );
+      this.rootNode = null;
+    }
+  }
+
+  /**
+   * Start the element picker on the debuggee target.
+   * @param {Boolean} doFocus - Optionally focus the content area once the picker is
+   *                            activated.
+   */
+  pick(doFocus) {
+    if (this._isPicking) {
+      return Promise.resolve();
+    }
+
+    this._isPicking = true;
+    return super.pick(doFocus);
+  }
+
+  /**
+   * Stop the element picker.
+   */
+  cancelPick() {
+    if (!this._isPicking) {
+      return Promise.resolve();
+    }
+
+    this._isPicking = false;
+    return super.cancelPick();
   }
 }
 

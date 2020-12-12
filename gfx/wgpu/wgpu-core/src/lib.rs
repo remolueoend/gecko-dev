@@ -9,51 +9,56 @@
     unused_qualifications
 )]
 
+#[macro_use]
+mod macros;
+
 pub mod backend {
-    #[cfg(windows)]
-    pub use gfx_backend_dx11::Backend as Dx11;
-    #[cfg(windows)]
-    pub use gfx_backend_dx12::Backend as Dx12;
     pub use gfx_backend_empty::Backend as Empty;
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
+
+    #[cfg(dx11)]
+    pub use gfx_backend_dx11::Backend as Dx11;
+    #[cfg(dx12)]
+    pub use gfx_backend_dx12::Backend as Dx12;
+    #[cfg(metal)]
     pub use gfx_backend_metal::Backend as Metal;
-    #[cfg(any(
-        not(any(target_os = "ios", target_os = "macos")),
-        feature = "gfx-backend-vulkan"
-    ))]
+    #[cfg(vulkan)]
     pub use gfx_backend_vulkan::Backend as Vulkan;
 }
 
 pub mod binding_model;
 pub mod command;
-pub mod conv;
+mod conv;
 pub mod device;
 pub mod hub;
 pub mod id;
 pub mod instance;
 pub mod pipeline;
-pub mod power;
 pub mod resource;
 pub mod swap_chain;
-pub mod track;
+mod track;
+mod validation;
 
-pub use hal::pso::read_spirv;
+#[cfg(test)]
+use loom::sync::atomic;
+#[cfg(not(test))]
+use std::sync::atomic;
 
-use std::{
-    os::raw::c_char,
-    ptr,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use atomic::{AtomicUsize, Ordering};
+
+use std::{borrow::Cow, os::raw::c_char, ptr};
+
+pub const MAX_BIND_GROUPS: usize = 8;
 
 type SubmissionIndex = usize;
 type Index = u32;
 type Epoch = u32;
 
 pub type RawString = *const c_char;
+pub type Label<'a> = Option<Cow<'a, str>>;
 
-//TODO: make it private. Currently used for swapchain creation impl.
+/// Reference count object that is 1:1 with each reference.
 #[derive(Debug)]
-pub struct RefCount(ptr::NonNull<AtomicUsize>);
+struct RefCount(ptr::NonNull<AtomicUsize>);
 
 unsafe impl Send for RefCount {}
 unsafe impl Sync for RefCount {}
@@ -64,21 +69,94 @@ impl RefCount {
     fn load(&self) -> usize {
         unsafe { self.0.as_ref() }.load(Ordering::Acquire)
     }
+
+    /// This works like `std::mem::drop`, except that it returns a boolean which is true if and only
+    /// if we deallocated the underlying memory, i.e. if this was the last clone of this `RefCount`
+    /// to be dropped. This is useful for loom testing because it allows us to verify that we
+    /// deallocated the underlying memory exactly once.
+    #[cfg(test)]
+    fn rich_drop_outer(self) -> bool {
+        unsafe { std::mem::ManuallyDrop::new(self).rich_drop_inner() }
+    }
+
+    /// This function exists to allow `Self::rich_drop_outer` and `Drop::drop` to share the same
+    /// logic. To use this safely from outside of `Drop::drop`, the calling function must move
+    /// `Self` into a `ManuallyDrop`.
+    unsafe fn rich_drop_inner(&mut self) -> bool {
+        if self.0.as_ref().fetch_sub(1, Ordering::AcqRel) == 1 {
+            let _ = Box::from_raw(self.0.as_ptr());
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl Clone for RefCount {
     fn clone(&self) -> Self {
-        let old_size = unsafe { self.0.as_ref() }.fetch_add(1, Ordering::Relaxed);
+        let old_size = unsafe { self.0.as_ref() }.fetch_add(1, Ordering::AcqRel);
         assert!(old_size < Self::MAX);
-        RefCount(self.0)
+        Self(self.0)
     }
 }
 
 impl Drop for RefCount {
     fn drop(&mut self) {
-        if unsafe { self.0.as_ref() }.fetch_sub(1, Ordering::Relaxed) == 1 {
-            let _ = unsafe { Box::from_raw(self.0.as_ptr()) };
+        unsafe {
+            self.rich_drop_inner();
         }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn loom() {
+    loom::model(move || {
+        let bx = Box::new(AtomicUsize::new(1));
+        let ref_count_main = ptr::NonNull::new(Box::into_raw(bx)).map(RefCount).unwrap();
+        let ref_count_spawned = ref_count_main.clone();
+
+        let join_handle = loom::thread::spawn(move || {
+            let _ = ref_count_spawned.clone();
+            ref_count_spawned.rich_drop_outer()
+        });
+
+        let dropped_in_main = ref_count_main.rich_drop_outer();
+        let dropped_in_spawned = join_handle.join().unwrap();
+        assert_ne!(
+            dropped_in_main, dropped_in_spawned,
+            "must drop exactly once"
+        );
+    });
+}
+
+/// Reference count object that tracks multiple references.
+/// Unlike `RefCount`, it's manually inc()/dec() called.
+#[derive(Debug)]
+struct MultiRefCount(ptr::NonNull<AtomicUsize>);
+
+unsafe impl Send for MultiRefCount {}
+unsafe impl Sync for MultiRefCount {}
+
+impl MultiRefCount {
+    fn new() -> Self {
+        let bx = Box::new(AtomicUsize::new(1));
+        let ptr = Box::into_raw(bx);
+        Self(unsafe { ptr::NonNull::new_unchecked(ptr) })
+    }
+
+    fn inc(&self) {
+        unsafe { self.0.as_ref() }.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn dec_and_check_empty(&self) -> bool {
+        unsafe { self.0.as_ref() }.fetch_sub(1, Ordering::AcqRel) == 1
+    }
+}
+
+impl Drop for MultiRefCount {
+    fn drop(&mut self) {
+        let _ = unsafe { Box::from_raw(self.0.as_ptr()) };
     }
 }
 
@@ -91,7 +169,7 @@ struct LifeGuard {
 impl LifeGuard {
     fn new() -> Self {
         let bx = Box::new(AtomicUsize::new(1));
-        LifeGuard {
+        Self {
             ref_count: ptr::NonNull::new(Box::into_raw(bx)).map(RefCount),
             submission_index: AtomicUsize::new(0),
         }
@@ -110,40 +188,55 @@ impl LifeGuard {
 
 #[derive(Clone, Debug)]
 struct Stored<T> {
-    value: T,
+    value: id::Valid<T>,
     ref_count: RefCount,
 }
 
-#[repr(C)]
-#[derive(Debug)]
-pub struct U32Array {
-    pub bytes: *const u32,
-    pub length: usize,
-}
-
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Features {
-    pub max_bind_groups: u32,
-    pub supports_texture_d24_s8: bool,
+struct PrivateFeatures {
+    shader_validation: bool,
+    anisotropic_filtering: bool,
+    texture_d24: bool,
+    texture_d24_s8: bool,
 }
 
 #[macro_export]
 macro_rules! gfx_select {
-    ($id:expr => $global:ident.$method:ident( $($param:expr),+ )) => {
+    ($id:expr => $global:ident.$method:ident( $($param:expr),* )) => {
         match $id.backend() {
             #[cfg(any(not(any(target_os = "ios", target_os = "macos")), feature = "gfx-backend-vulkan"))]
-            wgt::Backend::Vulkan => $global.$method::<$crate::backend::Vulkan>( $($param),+ ),
+            wgt::Backend::Vulkan => $global.$method::<$crate::backend::Vulkan>( $($param),* ),
             #[cfg(any(target_os = "ios", target_os = "macos"))]
-            wgt::Backend::Metal => $global.$method::<$crate::backend::Metal>( $($param),+ ),
+            wgt::Backend::Metal => $global.$method::<$crate::backend::Metal>( $($param),* ),
             #[cfg(windows)]
-            wgt::Backend::Dx12 => $global.$method::<$crate::backend::Dx12>( $($param),+ ),
+            wgt::Backend::Dx12 => $global.$method::<$crate::backend::Dx12>( $($param),* ),
             #[cfg(windows)]
-            wgt::Backend::Dx11 => $global.$method::<$crate::backend::Dx11>( $($param),+ ),
+            wgt::Backend::Dx11 => $global.$method::<$crate::backend::Dx11>( $($param),* ),
             _ => unreachable!()
         }
+    };
+}
+
+#[macro_export]
+macro_rules! span {
+    ($guard_name:tt, $level:ident, $name:expr, $($fields:tt)*) => {
+        let span = tracing::span!(tracing::Level::$level, $name, $($fields)*);
+        let $guard_name = span.enter();
+    };
+    ($guard_name:tt, $level:ident, $name:expr) => {
+        let span = tracing::span!(tracing::Level::$level, $name);
+        let $guard_name = span.enter();
     };
 }
 
 /// Fast hash map used internally.
 type FastHashMap<K, V> =
     std::collections::HashMap<K, V, std::hash::BuildHasherDefault<fxhash::FxHasher>>;
+/// Fast hash set used internally.
+type FastHashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<fxhash::FxHasher>>;
+
+#[test]
+fn test_default_limits() {
+    let limits = wgt::Limits::default();
+    assert!(limits.max_bind_groups <= MAX_BIND_GROUPS as u32);
+}

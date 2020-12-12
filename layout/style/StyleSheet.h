@@ -14,17 +14,17 @@
 #include "mozilla/MozPromise.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/ServoBindingTypes.h"
-#include "mozilla/ServoUtils.h"
+#include "mozilla/ServoTypes.h"
 #include "mozilla/StyleSheetInfo.h"
-#include "mozilla/URLExtraData.h"
 #include "nsICSSLoaderObserver.h"
+#include "nsIPrincipal.h"
 #include "nsWrapperCache.h"
-#include "nsCompatibility.h"
 #include "nsStringFwd.h"
 
+class nsIGlobalObject;
 class nsINode;
 class nsIPrincipal;
-struct RawServoSharedMemoryBuilder;
+struct ServoCssRules;
 class nsIReferrerInfo;
 
 namespace mozilla {
@@ -36,6 +36,8 @@ typedef MozPromise</* Dummy */ bool,
                    /* Dummy */ bool,
                    /* IsExclusive = */ true>
     StyleSheetParsePromise;
+
+enum class StyleRuleChangeKind : uint32_t;
 
 namespace css {
 class GroupRule;
@@ -51,7 +53,6 @@ class CSSRuleList;
 class DocumentOrShadowRoot;
 class MediaList;
 class ShadowRoot;
-class SRIMetadata;
 struct CSSStyleSheetInit;
 }  // namespace dom
 
@@ -119,8 +120,7 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
 
   // Common code that needs to be called after servo finishes parsing. This is
   // shared between the parallel and sequential paths.
-  void FinishAsyncParse(
-      already_AddRefed<RawServoStyleSheetContents> aSheetContents);
+  void FinishAsyncParse(already_AddRefed<RawServoStyleSheetContents>);
 
   // Similar to `ParseSheet`, but guarantees that
   // parsing will be performed synchronously.
@@ -156,21 +156,6 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
 
   // Returns the stylesheet's Servo origin as a StyleOrigin value.
   StyleOrigin GetOrigin() const;
-
-  /**
-   * The different changes that a stylesheet may go through.
-   *
-   * Used by the StyleSets in order to handle more efficiently some kinds of
-   * changes.
-   */
-  enum class ChangeType {
-    Added,
-    Removed,
-    ApplicableStateChanged,
-    RuleAdded,
-    RuleRemoved,
-    RuleChanged,
-  };
 
   void SetOwningNode(nsINode* aOwningNode) { mOwningNode = aOwningNode; }
 
@@ -333,8 +318,8 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
   }
 
   size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const;
-#ifdef DEBUG
-  void List(FILE* aOut = stdout, int32_t aIndex = 0) const;
+#if defined(DEBUG) || defined(MOZ_LAYOUT_DEBUGGER)
+  void List(FILE* aOut = stdout, int32_t aIndex = 0);
 #endif
 
   // WebIDL StyleSheet API
@@ -426,8 +411,8 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
   // Called when a rule changes from CSSOM.
   //
   // FIXME(emilio): This shouldn't allow null, but MediaList doesn't know about
-  // it's owning media rule, plus it's used for the stylesheet media itself.
-  void RuleChanged(css::Rule*);
+  // its owning media rule, plus it's used for the stylesheet media itself.
+  void RuleChanged(css::Rule*, StyleRuleChangeKind);
 
   void AddStyleSet(ServoStyleSet* aStyleSet);
   void DropStyleSet(ServoStyleSet* aStyleSet);
@@ -441,8 +426,10 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
 
   // Copy the contents of this style sheet into the shared memory buffer managed
   // by aBuilder.  Returns the pointer into the buffer that the sheet contents
-  // were stored at.  (The returned pointer is to an Arc<Locked<Rules>> value.)
-  const ServoCssRules* ToShared(RawServoSharedMemoryBuilder* aBuilder);
+  // were stored at.  (The returned pointer is to an Arc<Locked<Rules>> value,
+  // or null, with a filled in aErrorMessage, on failure.)
+  const ServoCssRules* ToShared(RawServoSharedMemoryBuilder* aBuilder,
+                                nsCString& aErrorMessage);
 
   // Sets the contents of this style sheet to the specified aSharedRules
   // pointer, which must be a pointer somewhere in the aSharedMemory buffer
@@ -529,8 +516,6 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
   // assertion will fail if the expectation does not match reality.
   void ApplicableStateChanged(bool aApplicable);
 
-  void UnparentChildren();
-
   void LastRelease();
 
   // Return success if the subject principal subsumes the principal of our
@@ -552,6 +537,12 @@ class StyleSheet final : public nsICSSLoaderObserver, public nsWrapperCache {
   static bool RuleHasPendingChildSheet(css::Rule* aRule);
 
   StyleSheet* mParentSheet;  // weak ref
+
+  // A pointer to the sheets relevant global object.
+  // This is populated when the sheet gets an associated document.
+  // This is required for the sheet to be able to create a promise.
+  // https://html.spec.whatwg.org/#concept-relevant-everything
+  nsCOMPtr<nsIGlobalObject> mRelevantGlobal;
 
   RefPtr<dom::Document> mConstructorDocument;
 

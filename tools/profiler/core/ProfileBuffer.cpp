@@ -15,39 +15,20 @@
 
 using namespace mozilla;
 
-// 65536 bytes should be plenty for a single backtrace.
-static constexpr auto WorkerBufferBytes = MakePowerOfTwo32<65536>();
-
-ProfileBuffer::ProfileBuffer(BlocksRingBuffer& aBuffer, PowerOfTwo32 aCapacity)
-    : mEntries(aBuffer),
-      mWorkerBuffer(
-          MakeUnique<BlocksRingBuffer::Byte[]>(WorkerBufferBytes.Value())) {
-  // Only ProfileBuffer should control this buffer, and it should be empty when
-  // there is no ProfileBuffer using it.
-  MOZ_ASSERT(!mEntries.IsInSession());
-  // Allocate the requested capacity.
-  mEntries.Set(aCapacity);
-}
-
-ProfileBuffer::ProfileBuffer(BlocksRingBuffer& aBuffer) : mEntries(aBuffer) {
-  // Assume the given buffer is not empty.
+ProfileBuffer::ProfileBuffer(ProfileChunkedBuffer& aBuffer)
+    : mEntries(aBuffer) {
+  // Assume the given buffer is in-session.
   MOZ_ASSERT(mEntries.IsInSession());
-}
-
-ProfileBuffer::~ProfileBuffer() {
-  // Only ProfileBuffer controls this buffer, and it should be empty when there
-  // is no ProfileBuffer using it.
-  mEntries.Reset();
-  MOZ_ASSERT(!mEntries.IsInSession());
 }
 
 /* static */
 ProfileBufferBlockIndex ProfileBuffer::AddEntry(
-    BlocksRingBuffer& aBlocksRingBuffer, const ProfileBufferEntry& aEntry) {
+    ProfileChunkedBuffer& aProfileChunkedBuffer,
+    const ProfileBufferEntry& aEntry) {
   switch (aEntry.GetKind()) {
-#define SWITCH_KIND(KIND, TYPE, SIZE)                      \
-  case ProfileBufferEntry::Kind::KIND: {                   \
-    return aBlocksRingBuffer.PutFrom(&aEntry, 1 + (SIZE)); \
+#define SWITCH_KIND(KIND, TYPE, SIZE)                          \
+  case ProfileBufferEntry::Kind::KIND: {                       \
+    return aProfileChunkedBuffer.PutFrom(&aEntry, 1 + (SIZE)); \
   }
 
     FOR_EACH_PROFILE_BUFFER_ENTRY_KIND(SWITCH_KIND)
@@ -66,8 +47,9 @@ uint64_t ProfileBuffer::AddEntry(const ProfileBufferEntry& aEntry) {
 
 /* static */
 ProfileBufferBlockIndex ProfileBuffer::AddThreadIdEntry(
-    BlocksRingBuffer& aBlocksRingBuffer, int aThreadId) {
-  return AddEntry(aBlocksRingBuffer, ProfileBufferEntry::ThreadId(aThreadId));
+    ProfileChunkedBuffer& aProfileChunkedBuffer, int aThreadId) {
+  return AddEntry(aProfileChunkedBuffer,
+                  ProfileBufferEntry::ThreadId(aThreadId));
 }
 
 uint64_t ProfileBuffer::AddThreadIdEntry(int aThreadId) {
@@ -85,17 +67,37 @@ void ProfileBuffer::CollectCodeLocation(
   if (aStr) {
     // Store the string using one or more DynamicStringFragment entries.
     size_t strLen = strlen(aStr) + 1;  // +1 for the null terminator
-    for (size_t j = 0; j < strLen;) {
+    // If larger than the prescribed limit, we will cut the string and end it
+    // with an ellipsis.
+    const bool tooBig = strLen > kMaxFrameKeyLength;
+    if (tooBig) {
+      strLen = kMaxFrameKeyLength;
+    }
+    char chars[ProfileBufferEntry::kNumChars];
+    for (size_t j = 0;; j += ProfileBufferEntry::kNumChars) {
       // Store up to kNumChars characters in the entry.
-      char chars[ProfileBufferEntry::kNumChars];
       size_t len = ProfileBufferEntry::kNumChars;
-      if (j + len >= strLen) {
+      const bool last = j + len >= strLen;
+      if (last) {
+        // Only the last entry may be smaller than kNumChars.
         len = strLen - j;
+        if (tooBig) {
+          // That last entry is part of a too-big string, replace the end
+          // characters with an ellipsis "...".
+          len = std::max(len, size_t(4));
+          chars[len - 4] = '.';
+          chars[len - 3] = '.';
+          chars[len - 2] = '.';
+          chars[len - 1] = '\0';
+          // Make sure the memcpy will not overwrite our ellipsis!
+          len -= 4;
+        }
       }
       memcpy(chars, &aStr[j], len);
-      j += ProfileBufferEntry::kNumChars;
-
       AddEntry(ProfileBufferEntry::DynamicStringFragment(chars));
+      if (last) {
+        break;
+      }
     }
   }
 
@@ -133,26 +135,26 @@ void ProfileBuffer::CollectOverheadStats(TimeDuration aSamplingTime,
                                          TimeDuration aCounters,
                                          TimeDuration aThreads) {
   double time = aSamplingTime.ToMilliseconds() * 1000.0;
-  if (mFirstSamplingTimeNs == 0.0) {
-    mFirstSamplingTimeNs = time;
+  if (mFirstSamplingTimeUs == 0.0) {
+    mFirstSamplingTimeUs = time;
   } else {
     // Note that we'll have 1 fewer interval than other numbers (because
     // we need both ends of an interval to know its duration). The final
     // difference should be insignificant over the expected many thousands
     // of iterations.
-    mIntervalsNs.Count(time - mLastSamplingTimeNs);
+    mIntervalsUs.Count(time - mLastSamplingTimeUs);
   }
-  mLastSamplingTimeNs = time;
+  mLastSamplingTimeUs = time;
   double locking = aLocking.ToMilliseconds() * 1000.0;
   double cleaning = aCleaning.ToMilliseconds() * 1000.0;
   double counters = aCounters.ToMilliseconds() * 1000.0;
   double threads = aThreads.ToMilliseconds() * 1000.0;
 
-  mOverheadsNs.Count(locking + cleaning + counters + threads);
-  mLockingsNs.Count(locking);
-  mCleaningsNs.Count(cleaning);
-  mCountersNs.Count(counters);
-  mThreadsNs.Count(threads);
+  mOverheadsUs.Count(locking + cleaning + counters + threads);
+  mLockingsUs.Count(locking);
+  mCleaningsUs.Count(cleaning);
+  mCountersUs.Count(counters);
+  mThreadsUs.Count(threads);
 
   AddEntry(ProfileBufferEntry::ProfilerOverheadTime(time));
   AddEntry(ProfileBufferEntry::ProfilerOverheadDuration(locking));
@@ -164,22 +166,17 @@ void ProfileBuffer::CollectOverheadStats(TimeDuration aSamplingTime,
 ProfilerBufferInfo ProfileBuffer::GetProfilerBufferInfo() const {
   return {BufferRangeStart(),
           BufferRangeEnd(),
-          mEntries.BufferLength()->Value() / 8,  // 8 bytes per entry.
-          mIntervalsNs,
-          mOverheadsNs,
-          mLockingsNs,
-          mCleaningsNs,
-          mCountersNs,
-          mThreadsNs};
+          static_cast<uint32_t>(*mEntries.BufferLength() /
+                                8),  // 8 bytes per entry.
+          mIntervalsUs,
+          mOverheadsUs,
+          mLockingsUs,
+          mCleaningsUs,
+          mCountersUs,
+          mThreadsUs};
 }
 
 /* ProfileBufferCollector */
-
-static bool IsChromeJSScript(JSScript* aScript) {
-  // WARNING: this function runs within the profiler's "critical section".
-  auto realm = js::GetScriptRealm(aScript);
-  return js::IsSystemRealm(realm);
-}
 
 void ProfileBufferCollector::CollectNativeLeafAddr(void* aAddr) {
   mBuf.AddEntry(ProfileBufferEntry::NativeLeafAddr(aAddr));
@@ -202,7 +199,6 @@ void ProfileBufferCollector::CollectProfilingStackFrame(
 
   const char* label = aFrame.label();
   const char* dynamicString = aFrame.dynamicString();
-  bool isChromeJSEntry = false;
   Maybe<uint32_t> line;
   Maybe<uint32_t> column;
 
@@ -220,7 +216,6 @@ void ProfileBufferCollector::CollectProfilingStackFrame(
       // We call aFrame.script() repeatedly -- rather than storing the result in
       // a local variable in order -- to avoid rooting hazards.
       if (aFrame.script()) {
-        isChromeJSEntry = IsChromeJSScript(aFrame.script());
         if (aFrame.pc()) {
           unsigned col = 0;
           line = Some(JS_PCToLineNumber(aFrame.script(), aFrame.pc(), &col));
@@ -233,15 +228,6 @@ void ProfileBufferCollector::CollectProfilingStackFrame(
     }
   } else {
     MOZ_ASSERT(aFrame.isLabelFrame());
-  }
-
-  if (dynamicString) {
-    // Adjust the dynamic string as necessary.
-    if (ProfilerFeature::HasPrivacy(mFeatures) && !isChromeJSEntry) {
-      dynamicString = "(private)";
-    } else if (strlen(dynamicString) >= ProfileBuffer::kMaxFrameKeyLength) {
-      dynamicString = "(too long)";
-    }
   }
 
   mBuf.CollectCodeLocation(label, dynamicString, aFrame.flags(),

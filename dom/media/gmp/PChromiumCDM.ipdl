@@ -6,7 +6,11 @@
 include protocol PGMPContent;
 include GMPTypes;
 
-using cdm::HdcpVersion from "content_decryption_module.h";
+include "GMPMessageUtils.h";
+
+using cdm::HdcpVersion from "gmp-sanitized-cdm-exports.h";
+
+include "GMPMessageUtils.h";
 
 namespace mozilla {
 namespace gmp {
@@ -62,7 +66,7 @@ child:
   async GiveBuffer(Shmem aShmem);
 
   async PurgeShmems();
-  
+
 
 parent:
   async __delete__();

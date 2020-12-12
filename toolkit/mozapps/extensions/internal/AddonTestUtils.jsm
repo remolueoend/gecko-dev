@@ -31,42 +31,16 @@ const { EventEmitter } = ChromeUtils.import(
 );
 const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "AMTelemetry",
-  "resource://gre/modules/AddonManager.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionTestCommon",
-  "resource://testing-common/ExtensionTestCommon.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "Management",
-  "resource://gre/modules/Extension.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "ExtensionAddonObserver",
-  "resource://gre/modules/Extension.jsm"
-);
-
-ChromeUtils.defineModuleGetter(
-  this,
-  "FileTestUtils",
-  "resource://testing-common/FileTestUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "HttpServer",
-  "resource://testing-common/httpd.js"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "MockRegistrar",
-  "resource://testing-common/MockRegistrar.jsm"
-);
+XPCOMUtils.defineLazyModuleGetters(this, {
+  AMTelemetry: "resource://gre/modules/AddonManager.jsm",
+  ExtensionTestCommon: "resource://testing-common/ExtensionTestCommon.jsm",
+  Management: "resource://gre/modules/Extension.jsm",
+  ExtensionAddonObserver: "resource://gre/modules/Extension.jsm",
+  FileTestUtils: "resource://testing-common/FileTestUtils.jsm",
+  HttpServer: "resource://testing-common/httpd.js",
+  L10nRegistry: "resource://gre/modules/L10nRegistry.jsm",
+  MockRegistrar: "resource://testing-common/MockRegistrar.jsm",
+});
 
 XPCOMUtils.defineLazyServiceGetters(this, {
   aomStartup: [
@@ -686,9 +660,6 @@ var AddonTestUtils = {
       version,
       platformVersion,
       crashReporter: true,
-      extraProps: {
-        browserTabsRemoteAutostart: false,
-      },
     });
     this.appInfo = AppInfo.getAppInfo();
   },
@@ -815,7 +786,7 @@ var AddonTestUtils = {
         );
       },
 
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIX509CertDB]),
+      QueryInterface: ChromeUtils.generateQI(["nsIX509CertDB"]),
     };
 
     // Unregister the real database. This only works because the add-ons manager
@@ -891,8 +862,24 @@ var AddonTestUtils = {
     );
     const blocklistMapping = {
       extensions: bsPass.ExtensionBlocklistRS,
+      extensionsMLBF: bsPass.ExtensionBlocklistMLBF,
       plugins: bsPass.PluginBlocklistRS,
     };
+
+    // Since we load the specified test data, we shouldn't let the
+    // packaged JSON dumps to interfere.
+    const pref = "services.settings.load_dump";
+    const backup = Services.prefs.getBoolPref(pref, null);
+    Services.prefs.setBoolPref(pref, false);
+    if (this.testScope) {
+      this.testScope.registerCleanupFunction(() => {
+        if (backup === null) {
+          Services.prefs.clearUserPref(pref);
+        } else {
+          Services.prefs.setBoolPref(pref, backup);
+        }
+      });
+    }
 
     for (const [dataProp, blocklistObj] of Object.entries(blocklistMapping)) {
       let newData = data[dataProp];
@@ -916,12 +903,12 @@ var AddonTestUtils = {
       }
       blocklistObj.ensureInitialized();
       let db = await blocklistObj._client.db;
-      await db.clear();
       const collectionTimestamp = Math.max(
         ...newData.map(r => r.last_modified)
       );
-      await db.saveLastModified(collectionTimestamp);
-      await db.importBulk(newData);
+      await db.importChanges({}, collectionTimestamp, newData, {
+        clear: true,
+      });
       // We manually call _onUpdate... which is evil, but at the moment kinto doesn't have
       // a better abstraction unless you want to mock your own http server to do the update.
       await blocklistObj._onUpdate();
@@ -934,8 +921,12 @@ var AddonTestUtils = {
    * @param {string} [newVersion]
    *        If provided, the application version is changed to this string
    *        before the AddonManager is started.
+   * @param {string} [newPlatformVersion]
+   *        If provided, the platform version is changed to this string
+   *        before the AddonManager is started.  It will default to the appVersion
+   *        as that is how Firefox currently builds (app === platform).
    */
-  async promiseStartupManager(newVersion) {
+  async promiseStartupManager(newVersion, newPlatformVersion = newVersion) {
     if (this.addonIntegrationService) {
       throw new Error(
         "Attempting to startup manager that was already started."
@@ -945,6 +936,11 @@ var AddonTestUtils = {
     if (newVersion) {
       this.appInfo.version = newVersion;
     }
+
+    if (newPlatformVersion) {
+      this.appInfo.platformVersion = newPlatformVersion;
+    }
+
     // AddonListeners are removed when the addonManager is shutdown,
     // ensure the Extension observer is added.  We call uninit in
     // promiseShutdown to allow re-initialization.
@@ -1007,8 +1003,23 @@ var AddonTestUtils = {
       this.overrideEntry = null;
     }
 
+    const XPIscope = ChromeUtils.import(
+      "resource://gre/modules/addons/XPIProvider.jsm",
+      null
+    );
+
+    // Ensure some startup observers in XPIProvider are released.
+    Services.obs.notifyObservers(null, "test-load-xpi-database");
+
     Services.obs.notifyObservers(null, "quit-application-granted");
     await MockAsyncShutdown.quitApplicationGranted.trigger();
+
+    // If XPIDatabase.asyncLoadDB() has been called before, then _dbPromise is
+    // a promise, potentially still pending. Wait for it to settle before
+    // triggering profileBeforeChange, because the latter can trigger errors in
+    // the pending asyncLoadDB() by an indirect call to XPIDatabase.shutdown().
+    await XPIscope.XPIDatabase._dbPromise;
+
     await MockAsyncShutdown.profileBeforeChange.trigger();
     await MockAsyncShutdown.profileChangeTeardown.trigger();
 
@@ -1025,15 +1036,15 @@ var AddonTestUtils = {
       Services.obs.notifyObservers(file, "flush-cache-entry");
     }
 
+    // Clear L10nRegistry entries so restaring the AOM will work correctly with locales.
+    L10nRegistry.clearSources();
+
     // Clear any crash report annotations
     this.appInfo.annotations = {};
 
     // Force the XPIProvider provider to reload to better
     // simulate real-world usage.
-    let XPIscope = ChromeUtils.import(
-      "resource://gre/modules/addons/XPIProvider.jsm",
-      null
-    );
+
     // This would be cleaner if I could get it as the rejection reason from
     // the AddonManagerInternal.shutdown() promise
     let shutdownError = XPIscope.XPIDatabase._saveError;
@@ -1421,7 +1432,7 @@ var AddonTestUtils = {
   },
 
   async promiseSetExtensionModifiedTime(path, time) {
-    await OS.File.setDates(path, time, time);
+    await IOUtils.touch(path, time);
 
     let iterator = new OS.File.DirectoryIterator(path);
     try {
@@ -1448,7 +1459,7 @@ var AddonTestUtils = {
         return null;
       },
 
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIDirectoryServiceProvider]),
+      QueryInterface: ChromeUtils.generateQI(["nsIDirectoryServiceProvider"]),
     };
     Services.dirsvc.registerProvider(dirProvider);
 
@@ -1470,14 +1481,22 @@ var AddonTestUtils = {
    * @param {string} event
    *        The name of the AddonListener event handler method for which
    *        an event is expected.
+   * @param {function} checkFn [optional]
+   *        A function to check if this is the right event. Should return true
+   *        for the event that it wants, false otherwise. Will be passed
+   *        all the relevant arguments.
+   *        If not passed, any event will do to resolve the promise.
    * @returns {Promise<Array>}
    *        Resolves to an array containing the event handler's
    *        arguments the first time it is called.
    */
-  promiseAddonEvent(event) {
+  promiseAddonEvent(event, checkFn) {
     return new Promise(resolve => {
       let listener = {
         [event](...args) {
+          if (typeof checkFn == "function" && !checkFn(...args)) {
+            return;
+          }
           AddonManager.removeAddonListener(listener);
           resolve(args);
         },

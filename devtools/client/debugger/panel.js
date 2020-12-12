@@ -51,6 +51,7 @@ class DebuggerPanel {
       client,
     } = await this.panelWin.Debugger.bootstrap({
       targetList: this.toolbox.targetList,
+      resourceWatcher: this.toolbox.resourceWatcher,
       devToolsClient: this.toolbox.target.client,
       workers: {
         sourceMaps: this.toolbox.sourceMapService,
@@ -75,6 +76,12 @@ class DebuggerPanel {
     );
 
     registerStoreObserver(this._store, this._onDebuggerStateChange.bind(this));
+
+    const resourceWatcher = this.toolbox.resourceWatcher;
+    await resourceWatcher.watchResources(
+      [resourceWatcher.TYPES.ERROR_MESSAGE],
+      { onAvailable: actions.addExceptionFromResources }
+    );
 
     return this;
   }
@@ -156,8 +163,7 @@ class DebuggerPanel {
       return;
     }
 
-    const forceUnHighlightInTest = true;
-    return this._unhighlight(forceUnHighlightInTest);
+    return this._unhighlight();
   }
 
   getFrames() {
@@ -200,8 +206,9 @@ class DebuggerPanel {
     return this._actions.selectSourceURL(cx, url, { line, column });
   }
 
-  async selectWorker(workerTargetFront) {
-    const threadActorID = workerTargetFront.threadFront.actorID;
+  async selectWorker(workerDescriptorFront) {
+    const threadActorID = workerDescriptorFront.threadFront?.actorID;
+
     const isThreadAvailable = this._selectors
       .getThreads(this._getState())
       .find(x => x.actor === threadActorID);
@@ -222,7 +229,7 @@ class DebuggerPanel {
     this.selectThread(threadActorID);
 
     // select worker's source
-    const source = this.getSourceByURL(workerTargetFront._url);
+    const source = this.getSourceByURL(workerDescriptorFront._url);
     await this.selectSource(source.id, 1, 1);
   }
 
@@ -249,8 +256,8 @@ class DebuggerPanel {
     }
   }
 
-  canLoadSource(sourceId) {
-    return this._selectors.canLoadSource(this._getState(), sourceId);
+  getSourceActorsForSource(sourceId) {
+    return this._selectors.getSourceActorsForSource(this._getState(), sourceId);
   }
 
   getSourceByActorId(sourceId) {
@@ -261,7 +268,16 @@ class DebuggerPanel {
     return this._selectors.getSourceByURL(this._getState(), sourceURL);
   }
 
+  getSource(sourceId) {
+    return this._selectors.getSource(this._getState(), sourceId);
+  }
+
   destroy() {
+    const resourceWatcher = this.toolbox.resourceWatcher;
+    resourceWatcher.unwatchResources([resourceWatcher.TYPES.ERROR_MESSAGE], {
+      onAvailable: this._actions.addExceptionFromResources,
+    });
+
     this.panelWin.Debugger.destroy();
     this.emit("destroyed");
   }

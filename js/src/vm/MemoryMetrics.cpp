@@ -16,7 +16,7 @@
 #include "util/Text.h"
 #include "vm/ArrayObject.h"
 #include "vm/BigIntType.h"
-#include "vm/HelperThreads.h"
+#include "vm/HelperThreadState.h"
 #include "vm/JSObject.h"
 #include "vm/JSScript.h"
 #include "vm/Realm.h"
@@ -184,7 +184,8 @@ struct StatsClosure {
 };
 
 static void DecommittedArenasChunkCallback(JSRuntime* rt, void* data,
-                                           gc::Chunk* chunk) {
+                                           gc::Chunk* chunk,
+                                           const JS::AutoRequireNoGC& nogc) {
   // This case is common and fast to check.  Do it first.
   if (chunk->decommittedArenas.isAllClear()) {
     return;
@@ -200,7 +201,8 @@ static void DecommittedArenasChunkCallback(JSRuntime* rt, void* data,
   *static_cast<size_t*>(data) += n;
 }
 
-static void StatsZoneCallback(JSRuntime* rt, void* data, Zone* zone) {
+static void StatsZoneCallback(JSRuntime* rt, void* data, Zone* zone,
+                              const JS::AutoRequireNoGC& nogc) {
   // Append a new RealmStats to the vector.
   RuntimeStats* rtStats = static_cast<StatsClosure*>(data)->rtStats;
 
@@ -208,20 +210,19 @@ static void StatsZoneCallback(JSRuntime* rt, void* data, Zone* zone) {
   MOZ_ALWAYS_TRUE(rtStats->zoneStatsVector.growBy(1));
   ZoneStats& zStats = rtStats->zoneStatsVector.back();
   zStats.initStrings();
-  rtStats->initExtraZoneStats(zone, &zStats);
+  rtStats->initExtraZoneStats(zone, &zStats, nogc);
   rtStats->currZoneStats = &zStats;
 
   zone->addSizeOfIncludingThis(
-      rtStats->mallocSizeOf_, &zStats.code, &zStats.typePool,
-      &zStats.regexpZone, &zStats.jitZone, &zStats.baselineStubsOptimized,
-      &zStats.uniqueIdMap, &zStats.shapeTables,
+      rtStats->mallocSizeOf_, &zStats.code, &zStats.regexpZone, &zStats.jitZone,
+      &zStats.baselineStubsOptimized, &zStats.uniqueIdMap, &zStats.shapeTables,
       &rtStats->runtime.atomsMarkBitmaps, &zStats.compartmentObjects,
       &zStats.crossCompartmentWrappersTables, &zStats.compartmentsPrivateData,
       &zStats.scriptCountsMap);
 }
 
-static void StatsRealmCallback(JSContext* cx, void* data,
-                               Handle<Realm*> realm) {
+static void StatsRealmCallback(JSContext* cx, void* data, Realm* realm,
+                               const JS::AutoRequireNoGC& nogc) {
   // Append a new RealmStats to the vector.
   RuntimeStats* rtStats = static_cast<StatsClosure*>(data)->rtStats;
 
@@ -229,23 +230,21 @@ static void StatsRealmCallback(JSContext* cx, void* data,
   MOZ_ALWAYS_TRUE(rtStats->realmStatsVector.growBy(1));
   RealmStats& realmStats = rtStats->realmStatsVector.back();
   realmStats.initClasses();
-  rtStats->initExtraRealmStats(realm, &realmStats);
+  rtStats->initExtraRealmStats(realm, &realmStats, nogc);
 
   realm->setRealmStats(&realmStats);
 
   // Measure the realm object itself, and things hanging off it.
   realm->addSizeOfIncludingThis(
-      rtStats->mallocSizeOf_, &realmStats.typeInferenceAllocationSiteTables,
-      &realmStats.typeInferenceArrayTypeTables,
-      &realmStats.typeInferenceObjectTypeTables, &realmStats.realmObject,
-      &realmStats.realmTables, &realmStats.innerViewsTable,
-      &realmStats.objectMetadataTable, &realmStats.savedStacksSet,
-      &realmStats.varNamesSet, &realmStats.nonSyntacticLexicalScopesTable,
-      &realmStats.jitRealm);
+      rtStats->mallocSizeOf_, &realmStats.realmObject, &realmStats.realmTables,
+      &realmStats.innerViewsTable, &realmStats.objectMetadataTable,
+      &realmStats.savedStacksSet, &realmStats.varNamesSet,
+      &realmStats.nonSyntacticLexicalScopesTable, &realmStats.jitRealm);
 }
 
 static void StatsArenaCallback(JSRuntime* rt, void* data, gc::Arena* arena,
-                               JS::TraceKind traceKind, size_t thingSize) {
+                               JS::TraceKind traceKind, size_t thingSize,
+                               const JS::AutoRequireNoGC& nogc) {
   RuntimeStats* rtStats = static_cast<StatsClosure*>(data)->rtStats;
 
   // The admin space includes (a) the header fields and (b) the padding
@@ -325,7 +324,8 @@ static void CollectScriptSourceStats(StatsClosure* closure, ScriptSource* ss) {
 // profile speed for complex pages such as gmail.com.
 template <Granularity granularity>
 static void StatsCellCallback(JSRuntime* rt, void* data, JS::GCCellPtr cellptr,
-                              size_t thingSize) {
+                              size_t thingSize,
+                              const JS::AutoRequireNoGC& nogc) {
   StatsClosure* closure = static_cast<StatsClosure*>(data);
   RuntimeStats* rtStats = closure->rtStats;
   ZoneStats* zStats = rtStats->currZoneStats;
@@ -336,6 +336,10 @@ static void StatsCellCallback(JSRuntime* rt, void* data, JS::GCCellPtr cellptr,
       RealmStats& realmStats = obj->maybeCCWRealm()->realmStats();
       JS::ClassInfo info;  // This zeroes all the sizes.
       info.objectsGCHeap += thingSize;
+
+      if (!obj->isTenured()) {
+        info.objectsGCHeap += Nursery::nurseryCellHeaderSize();
+      }
 
       obj->addSizeOfExcludingThis(rtStats->mallocSizeOf_, &info);
 
@@ -400,7 +404,7 @@ static void StatsCellCallback(JSRuntime* rt, void* data, JS::GCCellPtr cellptr,
       JSString* str = &cellptr.as<JSString>();
       size_t size = thingSize;
       if (!str->isTenured()) {
-        size += Nursery::stringHeaderSize();
+        size += Nursery::nurseryCellHeaderSize();
       }
 
       JS::StringInfo info;
@@ -442,7 +446,7 @@ static void StatsCellCallback(JSRuntime* rt, void* data, JS::GCCellPtr cellptr,
       JS::BigInt* bi = &cellptr.as<BigInt>();
       size_t size = thingSize;
       if (!bi->isTenured()) {
-        size += Nursery::bigIntHeaderSize();
+        size += Nursery::nurseryCellHeaderSize();
       }
       zStats->bigIntsGCHeap += size;
       zStats->bigIntsMallocHeap +=
@@ -480,10 +484,7 @@ static void StatsCellCallback(JSRuntime* rt, void* data, JS::GCCellPtr cellptr,
     }
 
     case JS::TraceKind::ObjectGroup: {
-      ObjectGroup* group = &cellptr.as<ObjectGroup>();
       zStats->objectGroupsGCHeap += thingSize;
-      zStats->objectGroupsMallocHeap +=
-          group->sizeOfExcludingThis(rtStats->mallocSizeOf_);
       break;
     }
 
@@ -614,12 +615,17 @@ static bool FindNotableScriptSources(JS::RuntimeSizes& runtime) {
 static bool CollectRuntimeStatsHelper(JSContext* cx, RuntimeStats* rtStats,
                                       ObjectPrivateVisitor* opv, bool anonymize,
                                       IterateCellCallback statsCellCallback) {
+  // Wait for any off-thread parsing to finish, as that currently allocates GC
+  // things.
+  JSRuntime* rt = cx->runtime();
+  WaitForOffThreadParses(rt);
+
   // Finish any ongoing incremental GC that may change the data we're gathering
   // and ensure that we don't do anything that could start another one.
   gc::FinishGC(cx);
+  gc::WaitForBackgroundTasks(cx);
   JS::AutoAssertNoGC nogc(cx);
 
-  JSRuntime* rt = cx->runtime();
   if (!rtStats->realmStatsVector.reserve(rt->numRealms)) {
     return false;
   }
@@ -790,11 +796,11 @@ class SimpleJSRuntimeStats : public JS::RuntimeStats {
   explicit SimpleJSRuntimeStats(MallocSizeOf mallocSizeOf)
       : JS::RuntimeStats(mallocSizeOf) {}
 
-  virtual void initExtraZoneStats(JS::Zone* zone,
-                                  JS::ZoneStats* zStats) override {}
+  virtual void initExtraZoneStats(JS::Zone* zone, JS::ZoneStats* zStats,
+                                  const JS::AutoRequireNoGC& nogc) override {}
 
-  virtual void initExtraRealmStats(Handle<Realm*> realm,
-                                   JS::RealmStats* realmStats) override {}
+  virtual void initExtraRealmStats(Realm* realm, JS::RealmStats* realmStats,
+                                   const JS::AutoRequireNoGC& nogc) override {}
 };
 
 JS_PUBLIC_API bool AddSizeOfTab(JSContext* cx, HandleObject obj,

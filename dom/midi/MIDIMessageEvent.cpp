@@ -10,13 +10,13 @@
 #include "js/GCAPI.h"
 #include "jsfriendapi.h"
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/PrimitiveConversions.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/Performance.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MIDIMessageEvent)
 
@@ -59,9 +59,9 @@ already_AddRefed<MIDIMessageEvent> MIDIMessageEvent::Constructor(
     const nsTArray<uint8_t>& aData) {
   MOZ_ASSERT(aOwner);
   RefPtr<MIDIMessageEvent> e = new MIDIMessageEvent(aOwner);
-  e->InitEvent(NS_LITERAL_STRING("midimessage"), false, false);
+  e->InitEvent(u"midimessage"_ns, false, false);
   e->mEvent->mTimeStamp = aReceivedTime;
-  e->mRawData = aData;
+  e->mRawData = aData.Clone();
   e->SetTrusted(true);
   return e.forget();
 }
@@ -103,5 +103,4 @@ void MIDIMessageEvent::GetData(JSContext* cx,
   aData.set(mData);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

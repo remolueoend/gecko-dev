@@ -7,7 +7,9 @@
 #ifndef mozilla_StyleSheetInlines_h
 #define mozilla_StyleSheetInlines_h
 
+#include "mozilla/dom/Document.h"
 #include "mozilla/StyleSheet.h"
+#include "nsIGlobalObject.h"
 #include "nsINode.h"
 
 namespace mozilla {
@@ -24,6 +26,9 @@ void StyleSheet::SetURIs(nsIURI* aSheetURI, nsIURI* aOriginalSheetURI,
 }
 
 dom::ParentObject StyleSheet::GetParentObject() const {
+  if (mRelevantGlobal) {
+    return dom::ParentObject(mRelevantGlobal);
+  }
   if (IsConstructed()) {
     return dom::ParentObject(mConstructorDocument.get());
   }

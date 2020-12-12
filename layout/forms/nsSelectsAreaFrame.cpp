@@ -114,7 +114,7 @@ class nsDisplayListFocus : public nsPaintedDisplayItem {
     // override bounds because the list item focus ring may extend outside
     // the nsSelectsAreaFrame
     nsListControlFrame* listFrame = GetEnclosingListFrame(Frame());
-    return listFrame->GetVisualOverflowRectRelativeToSelf() +
+    return listFrame->InkOverflowRectRelativeToSelf() +
            listFrame->GetOffsetToCrossDoc(ReferenceFrame());
   }
   virtual void Paint(nsDisplayListBuilder* aBuilder,
@@ -174,7 +174,7 @@ void nsSelectsAreaFrame::Reflow(nsPresContext* aPresContext,
   if (isInDropdownMode) {
     // Store the block size now in case it changes during
     // nsBlockFrame::Reflow for some odd reason.
-    if (!(GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
+    if (!HasAnyStateBits(NS_FRAME_FIRST_REFLOW)) {
       oldBSize = BSize(wm);
     } else {
       oldBSize = NS_UNCONSTRAINEDSIZE;

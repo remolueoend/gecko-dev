@@ -7,26 +7,35 @@
 #ifndef mozilla_BasePrincipal_h
 #define mozilla_BasePrincipal_h
 
-#include "nsJSPrincipals.h"
-
-#include "mozilla/Attributes.h"
+#include <stdint.h>
+#include "ErrorList.h"
+#include "js/TypeDecls.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/OriginAttributes.h"
-
-class nsAtom;
-class nsIContentSecurityPolicy;
-class nsIObjectOutputStream;
-class nsIObjectInputStream;
-class nsIURI;
+#include "mozilla/RefPtr.h"
+#include "nsAtom.h"
+#include "nsIPrincipal.h"
+#include "nsJSPrincipals.h"
+#include "nsStringFwd.h"
+#include "nscore.h"
 
 class ExpandedPrincipal;
-
+class mozIDOMWindow;
+class nsIChannel;
+class nsIReferrerInfo;
+class nsISupports;
+class nsIURI;
 namespace Json {
 class Value;
 }
+
 namespace mozilla {
+
 namespace dom {
-class Document;
+enum class ReferrerPolicy : uint8_t;
 }
+
 namespace extensions {
 class WebExtensionPolicy;
 }
@@ -106,6 +115,8 @@ class BasePrincipal : public nsJSPrincipals {
   NS_IMETHOD Equals(nsIPrincipal* other, bool* _retval) final;
   NS_IMETHOD EqualsConsideringDomain(nsIPrincipal* other, bool* _retval) final;
   NS_IMETHOD EqualsURI(nsIURI* aOtherURI, bool* _retval) override;
+  NS_IMETHOD EqualsForPermission(nsIPrincipal* other, bool aExactHost,
+                                 bool* _retval) final;
   NS_IMETHOD Subsumes(nsIPrincipal* other, bool* _retval) final;
   NS_IMETHOD SubsumesConsideringDomain(nsIPrincipal* other,
                                        bool* _retval) final;
@@ -120,6 +131,7 @@ class BasePrincipal : public nsJSPrincipals {
   NS_IMETHOD GetIsContentPrincipal(bool* aResult) override;
   NS_IMETHOD GetIsExpandedPrincipal(bool* aResult) override;
   NS_IMETHOD GetIsSystemPrincipal(bool* aResult) override;
+  NS_IMETHOD GetScheme(nsACString& aScheme) override;
   NS_IMETHOD SchemeIs(const char* aScheme, bool* aResult) override;
   NS_IMETHOD IsURIInPrefList(const char* aPref, bool* aResult) override;
   NS_IMETHOD IsL10nAllowed(nsIURI* aURI, bool* aResult) override;
@@ -128,26 +140,35 @@ class BasePrincipal : public nsJSPrincipals {
   NS_IMETHOD GetOriginAttributes(JSContext* aCx,
                                  JS::MutableHandle<JS::Value> aVal) final;
   NS_IMETHOD GetAsciiSpec(nsACString& aSpec) override;
+  NS_IMETHOD GetSpec(nsACString& aSpec) override;
   NS_IMETHOD GetExposablePrePath(nsACString& aResult) override;
   NS_IMETHOD GetExposableSpec(nsACString& aSpec) override;
   NS_IMETHOD GetHostPort(nsACString& aRes) override;
   NS_IMETHOD GetHost(nsACString& aRes) override;
   NS_IMETHOD GetPrepath(nsACString& aResult) override;
+  NS_IMETHOD GetFilePath(nsACString& aResult) override;
   NS_IMETHOD GetOriginSuffix(nsACString& aOriginSuffix) final;
   NS_IMETHOD GetIsIpAddress(bool* aIsIpAddress) override;
+  NS_IMETHOD GetIsLocalIpAddress(bool* aIsIpAddress) override;
   NS_IMETHOD GetIsOnion(bool* aIsOnion) override;
   NS_IMETHOD GetIsInIsolatedMozBrowserElement(
       bool* aIsInIsolatedMozBrowserElement) final;
   NS_IMETHOD GetUserContextId(uint32_t* aUserContextId) final;
   NS_IMETHOD GetPrivateBrowsingId(uint32_t* aPrivateBrowsingId) final;
-  NS_IMETHOD GetSiteOrigin(nsACString& aOrigin) override;
+  NS_IMETHOD GetSiteOrigin(nsACString& aSiteOrigin) final;
+  NS_IMETHOD GetSiteOriginNoSuffix(nsACString& aSiteOrigin) override;
   NS_IMETHOD IsThirdPartyURI(nsIURI* uri, bool* aRes) override;
   NS_IMETHOD IsThirdPartyPrincipal(nsIPrincipal* uri, bool* aRes) override;
+  NS_IMETHOD IsThirdPartyChannel(nsIChannel* aChannel, bool* aRes) override;
   NS_IMETHOD GetIsOriginPotentiallyTrustworthy(bool* aResult) override;
   NS_IMETHOD IsSameOrigin(nsIURI* aURI, bool aIsPrivateWin,
                           bool* aRes) override;
   NS_IMETHOD GetPrefLightCacheKey(nsIURI* aURI, bool aWithCredentials,
+                                  const OriginAttributes& aOriginAttributes,
                                   nsACString& _retval) override;
+  NS_IMETHOD HasFirstpartyStorageAccess(mozIDOMWindow* aCheckWindow,
+                                        uint32_t* aRejectedReason,
+                                        bool* aOutAllowed) override;
   NS_IMETHOD GetAsciiHost(nsACString& aAsciiHost) override;
   NS_IMETHOD GetLocalStorageQuotaKey(nsACString& aRes) override;
   NS_IMETHOD AllowsRelaxStrictFileOriginPolicy(nsIURI* aURI,
@@ -157,6 +178,9 @@ class BasePrincipal : public nsJSPrincipals {
   NS_IMETHOD GetIsScriptAllowedByPolicy(
       bool* aIsScriptAllowedByPolicy) override;
   NS_IMETHOD GetStorageOriginKey(nsACString& aOriginKey) override;
+
+  NS_IMETHOD GetNextSubDomainPrincipal(
+      nsIPrincipal** aNextSubDomainPrincipal) override;
   nsresult ToJSON(nsACString& aJSON);
   static already_AddRefed<BasePrincipal> FromJSON(const nsACString& aJSON);
   // Method populates a passed Json::Value with serializable fields
@@ -307,8 +331,8 @@ class BasePrincipal : public nsJSPrincipals {
       nsIURI* aURI, const OriginAttributes& aAttrs,
       const nsACString& aOriginNoSuffix);
 
-  inline bool FastSubsumesIgnoringFPD(
-      nsIPrincipal* aOther, DocumentDomainConsideration aConsideration);
+  bool FastSubsumesIgnoringFPD(nsIPrincipal* aOther,
+                               DocumentDomainConsideration aConsideration);
 
   RefPtr<nsAtom> mOriginNoSuffix;
   RefPtr<nsAtom> mOriginSuffix;
@@ -381,19 +405,6 @@ inline bool BasePrincipal::FastSubsumesConsideringDomain(nsIPrincipal* aOther) {
   }
 
   return Subsumes(aOther, ConsiderDocumentDomain);
-}
-
-inline bool BasePrincipal::FastSubsumesIgnoringFPD(
-    nsIPrincipal* aOther, DocumentDomainConsideration aConsideration) {
-  MOZ_ASSERT(aOther);
-
-  if (Kind() == eContentPrincipal &&
-      !dom::ChromeUtils::IsOriginAttributesEqualIgnoringFPD(
-          mOriginAttributes, Cast(aOther)->mOriginAttributes)) {
-    return false;
-  }
-
-  return SubsumesInternal(aOther, aConsideration);
 }
 
 inline bool BasePrincipal::FastSubsumesIgnoringFPD(nsIPrincipal* aOther) {

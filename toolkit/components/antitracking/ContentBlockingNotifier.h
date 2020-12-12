@@ -10,13 +10,16 @@
 #include "nsStringFwd.h"
 #include "mozilla/Maybe.h"
 
-#define ANTITRACKING_CONSOLE_CATEGORY NS_LITERAL_CSTRING("Content Blocking")
+#define ANTITRACKING_CONSOLE_CATEGORY "Content Blocking"_ns
 
 class nsIChannel;
 class nsPIDOMWindowInner;
 class nsPIDOMWindowOuter;
 
 namespace mozilla {
+namespace dom {
+class BrowsingContext;
+}  // namespace dom
 
 class ContentBlockingNotifier final {
  public:
@@ -24,7 +27,7 @@ class ContentBlockingNotifier final {
     eBlock,
     eAllow,
   };
-  enum StorageAccessGrantedReason {
+  enum StorageAccessPermissionGrantedReason {
     eStorageAccessAPI,
     eOpenerAfterUserInteraction,
     eOpener
@@ -49,16 +52,20 @@ class ContentBlockingNotifier final {
   static void OnDecision(nsPIDOMWindowInner* aWindow,
                          BlockingDecision aDecision, uint32_t aRejectedReason);
 
-  static void OnEvent(nsIChannel* aChannel, uint32_t aRejectedReason);
+  static void OnDecision(dom::BrowsingContext* aBrowsingContext,
+                         BlockingDecision aDecision, uint32_t aRejectedReason);
+
+  static void OnEvent(nsIChannel* aChannel, uint32_t aRejectedReason,
+                      bool aBlocked = true);
 
   static void OnEvent(
       nsIChannel* aChannel, bool aBlocked, uint32_t aRejectedReason,
       const nsACString& aTrackingOrigin,
-      const Maybe<StorageAccessGrantedReason>& aReason = Nothing());
+      const Maybe<StorageAccessPermissionGrantedReason>& aReason = Nothing());
 
-  static void ReportUnblockingToConsole(nsPIDOMWindowInner* aWindow,
-                                        const nsAString& aTrackingOrigin,
-                                        StorageAccessGrantedReason aReason);
+  static void ReportUnblockingToConsole(
+      dom::BrowsingContext* aBrowsingContext, const nsAString& aTrackingOrigin,
+      StorageAccessPermissionGrantedReason aReason);
 };
 
 }  // namespace mozilla

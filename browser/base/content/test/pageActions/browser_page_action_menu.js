@@ -190,8 +190,8 @@ add_task(async function pinTabFromPanel() {
     Assert.ok(gBrowser.selectedTab.pinned, "Tab was pinned");
 
     // Open the panel and click Unpin Tab.
-    Assert.equal(pinTabButton.label, "Unpin Tab");
     await promisePageActionPanelOpen();
+    Assert.equal(pinTabButton.label, "Unpin Tab");
 
     hiddenPromise = promisePageActionPanelHidden();
     EventUtils.synthesizeMouseAtCenter(pinTabButton, {});
@@ -273,7 +273,7 @@ add_task(async function copyURLFromPanel() {
     EventUtils.synthesizeMouseAtCenter(copyURLButton, {});
     await hiddenPromise;
 
-    let feedbackPanel = document.getElementById("confirmation-hint");
+    let feedbackPanel = ConfirmationHint._panel;
     let feedbackShownPromise = BrowserTestUtils.waitForEvent(
       feedbackPanel,
       "popupshown"
@@ -284,7 +284,7 @@ add_task(async function copyURLFromPanel() {
       "pageActionButton",
       "Feedback menu should be anchored on the main Page Action button"
     );
-    let feedbackHiddenPromise = promisePanelHidden("confirmation-hint");
+    let feedbackHiddenPromise = promisePanelHidden(feedbackPanel);
     await feedbackHiddenPromise;
 
     action.pinnedToUrlbar = false;
@@ -302,17 +302,17 @@ add_task(async function copyURLFromURLBar() {
     registerCleanupFunction(() => (action.pinnedToUrlbar = false));
 
     let copyURLButton = document.getElementById("pageAction-urlbar-copyURL");
-    let feedbackShownPromise = promisePanelShown("confirmation-hint");
+    let panel = ConfirmationHint._panel;
+    let feedbackShownPromise = promisePanelShown(panel);
     EventUtils.synthesizeMouseAtCenter(copyURLButton, {});
 
     await feedbackShownPromise;
-    let panel = document.getElementById("confirmation-hint");
     Assert.equal(
       panel.anchorNode.id,
       "pageAction-urlbar-copyURL",
       "Feedback menu should be anchored on the main URL bar button"
     );
-    let feedbackHiddenPromise = promisePanelHidden("confirmation-hint");
+    let feedbackHiddenPromise = promisePanelHidden(panel);
     await feedbackHiddenPromise;
 
     action.pinnedToUrlbar = false;
@@ -506,6 +506,11 @@ add_task(async function sendToDevice_syncNotReady_configured() {
         expectedItems.push(null, {
           attrs: {
             label: "Send to All Devices",
+          },
+        });
+        expectedItems.push(null, {
+          attrs: {
+            label: "Manage Devices...",
           },
         });
         checkSendToDeviceItems(expectedItems);
@@ -739,6 +744,11 @@ add_task(async function sendToDevice_devices() {
           label: "Send to All Devices",
         },
       },
+      {
+        attrs: {
+          label: "Manage Devices...",
+        },
+      },
     ];
     checkSendToDeviceItems(expectedItems);
 
@@ -877,10 +887,6 @@ add_task(async function sendToDevice_title() {
         Assert.ok(!sendToDeviceButton.disabled);
 
         Assert.equal(sendToDeviceButton.label, "Send Tab to Device");
-        Assert.equal(
-          PageActions.actionForID("sendToDevice").getTitle(window),
-          "Send Tab to Device"
-        );
 
         // Hide the panel.
         let hiddenPromise = promisePageActionPanelHidden();
@@ -898,10 +904,6 @@ add_task(async function sendToDevice_title() {
         await promisePageActionPanelOpen();
         Assert.ok(!sendToDeviceButton.disabled);
         Assert.equal(sendToDeviceButton.label, "Send 2 Tabs to Device");
-        Assert.equal(
-          PageActions.actionForID("sendToDevice").getTitle(window),
-          "Send 2 Tabs to Device"
-        );
 
         // Hide the panel.
         hiddenPromise = promisePageActionPanelHidden();
@@ -1012,6 +1014,11 @@ add_task(async function sendToDevice_inUrlbar() {
       {
         attrs: {
           label: "Send to All Devices",
+        },
+      },
+      {
+        attrs: {
+          label: "Manage Devices...",
         },
       },
     ];

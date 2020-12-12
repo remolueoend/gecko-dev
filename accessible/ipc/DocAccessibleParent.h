@@ -102,7 +102,7 @@ class DocAccessibleParent : public ProxyAccessible,
 #if defined(XP_WIN)
       const LayoutDeviceIntRect& aCaretRect,
 #endif
-      const int32_t& aOffset) final;
+      const int32_t& aOffset, const bool& aIsSelectionCollapsed) final;
 
   virtual mozilla::ipc::IPCResult RecvTextChangeEvent(
       const uint64_t& aID, const nsString& aStr, const int32_t& aStart,
@@ -140,6 +140,9 @@ class DocAccessibleParent : public ProxyAccessible,
   virtual mozilla::ipc::IPCResult RecvAnnouncementEvent(
       const uint64_t& aID, const nsString& aAnnouncement,
       const uint16_t& aPriority) override;
+
+  virtual mozilla::ipc::IPCResult RecvTextSelectionChangeEvent(
+      const uint64_t& aID, nsTArray<TextRangeData>&& aSelection) override;
 #endif
 
   mozilla::ipc::IPCResult RecvRoleChangedEvent(const a11y::role& aRole) final;

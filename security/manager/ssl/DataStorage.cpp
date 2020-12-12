@@ -7,13 +7,16 @@
 #include "DataStorage.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/AppShutdown.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/PContent.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/FileUtils.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/TaskQueue.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/Unused.h"
 #include "nsAppDirectoryServiceDefs.h"
@@ -23,12 +26,18 @@
 #endif
 #include "nsIMemoryReporter.h"
 #include "nsIObserverService.h"
+#include "nsISerialEventTarget.h"
 #include "nsITimer.h"
 #include "nsIThread.h"
 #include "nsNetUtil.h"
 #include "nsPrintfCString.h"
 #include "nsStreamUtils.h"
 #include "nsThreadUtils.h"
+#include "private/pprio.h"
+
+#if defined(XP_WIN)
+#  include "nsILocalFileWin.h"
+#endif
 
 // NB: Read DataStorage.h first.
 
@@ -40,108 +49,6 @@ static const uint32_t sMaxScore = UINT32_MAX;
 static const uint32_t sMaxDataEntries = 1024;
 static const int64_t sOneDayInMicroseconds =
     int64_t(24 * 60 * 60) * PR_USEC_PER_SEC;
-
-namespace {
-
-// DataStorageSharedThread provides one shared thread that every DataStorage
-// instance can use to do background work (reading/writing files and scheduling
-// timers). This means we don't have to have one thread per DataStorage
-// instance. The shared thread is initialized when the first DataStorage
-// instance is initialized (Initialize is idempotent, so it's safe to call
-// multiple times in any case).
-// When Gecko shuts down, it will send a "profile-before-change" notification.
-// The first DataStorage instance to observe the notification will dispatch an
-// event for each known DataStorage (as tracked by sDataStorages) to write out
-// their backing data. That instance will then shut down the shared thread,
-// which ensures those events actually run. At that point sDataStorages is
-// cleared and any subsequent attempt to create a DataStorage will fail because
-// the shared thread will refuse to be instantiated again.
-// In some cases (e.g. xpcshell), no profile notification will be sent, so
-// instead we rely on the notification "xpcom-shutdown-threads".
-class DataStorageSharedThread final {
- public:
-  static nsresult Initialize();
-  static nsresult Shutdown();
-  static nsresult Dispatch(nsIRunnable* event);
-
-  virtual ~DataStorageSharedThread() = default;
-
- private:
-  DataStorageSharedThread() : mThread(nullptr) {}
-
-  nsCOMPtr<nsIThread> mThread;
-};
-
-mozilla::StaticMutex sDataStorageSharedThreadMutex;
-static mozilla::StaticAutoPtr<DataStorageSharedThread> gDataStorageSharedThread;
-static bool gDataStorageSharedThreadShutDown = false;
-
-nsresult DataStorageSharedThread::Initialize() {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  mozilla::StaticMutexAutoLock lock(sDataStorageSharedThreadMutex);
-
-  // If this happens, we initialized a DataStorage after shutdown notifications
-  // were sent, so don't re-initialize the shared thread.
-  if (gDataStorageSharedThreadShutDown) {
-    return NS_ERROR_FAILURE;
-  }
-
-  if (!gDataStorageSharedThread) {
-    gDataStorageSharedThread = new DataStorageSharedThread();
-    nsresult rv = NS_NewNamedThread(
-        "DataStorage", getter_AddRefs(gDataStorageSharedThread->mThread));
-    if (NS_FAILED(rv)) {
-      gDataStorageSharedThread = nullptr;
-      return rv;
-    }
-  }
-
-  return NS_OK;
-}
-
-nsresult DataStorageSharedThread::Shutdown() {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  mozilla::StaticMutexAutoLock lock(sDataStorageSharedThreadMutex);
-
-  if (!gDataStorageSharedThread || gDataStorageSharedThreadShutDown) {
-    return NS_OK;
-  }
-
-  MOZ_ASSERT(gDataStorageSharedThread->mThread);
-  if (!gDataStorageSharedThread->mThread) {
-    return NS_ERROR_FAILURE;
-  }
-
-  // We can't hold sDataStorageSharedThreadMutex while shutting down the thread,
-  // because we might process events that try to acquire it (e.g. via
-  // DataStorage::GetAllChildProcessData). So, we set our shutdown sentinel
-  // boolean to true, get a handle on the thread, release the lock, shut down
-  // the thread (thus processing all pending events on it), and re-acquire the
-  // lock.
-  gDataStorageSharedThreadShutDown = true;
-  nsCOMPtr<nsIThread> threadHandle = gDataStorageSharedThread->mThread;
-  nsresult rv;
-  {
-    mozilla::StaticMutexAutoUnlock unlock(sDataStorageSharedThreadMutex);
-    rv = threadHandle->Shutdown();
-  }
-  gDataStorageSharedThread->mThread = nullptr;
-  gDataStorageSharedThread = nullptr;
-
-  return rv;
-}
-
-nsresult DataStorageSharedThread::Dispatch(nsIRunnable* event) {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  mozilla::StaticMutexAutoLock lock(sDataStorageSharedThreadMutex);
-  if (gDataStorageSharedThreadShutDown || !gDataStorageSharedThread ||
-      !gDataStorageSharedThread->mThread) {
-    return NS_ERROR_FAILURE;
-  }
-  return gDataStorageSharedThread->mThread->Dispatch(event, NS_DISPATCH_NORMAL);
-}
-
-}  // unnamed namespace
 
 namespace mozilla {
 
@@ -162,8 +69,8 @@ class DataStorageMemoryReporter final : public nsIMemoryReporter {
       nsPrintfCString path("explicit/data-storage/%s",
                            NS_ConvertUTF16toUTF8(file).get());
       Unused << aHandleReport->Callback(
-          EmptyCString(), path, KIND_HEAP, UNITS_BYTES, amount,
-          NS_LITERAL_CSTRING("Memory used by PSM data storage cache."), aData);
+          ""_ns, path, KIND_HEAP, UNITS_BYTES, amount,
+          "Memory used by PSM data storage cache."_ns, aData);
     }
     return NS_OK;
   }
@@ -177,7 +84,6 @@ mozilla::StaticAutoPtr<DataStorage::DataStorages> DataStorage::sDataStorages;
 
 DataStorage::DataStorage(const nsString& aFilename)
     : mMutex("DataStorage::mMutex"),
-      mTimerDelay(sDataStorageDefaultTimerDelay),
       mPendingWrite(false),
       mShuttingDown(false),
       mInitCalled(false),
@@ -185,17 +91,12 @@ DataStorage::DataStorage(const nsString& aFilename)
       mReady(false),
       mFilename(aFilename) {}
 
-DataStorage::~DataStorage() {
-  Preferences::UnregisterCallback(DataStorage::PrefChanged,
-                                  "test.datastorage.write_timer_ms", this);
-}
-
 // static
 already_AddRefed<DataStorage> DataStorage::Get(DataStorageClass aFilename) {
   switch (aFilename) {
 #define DATA_STORAGE(_)     \
   case DataStorageClass::_: \
-    return GetFromRawFileName(NS_LITERAL_STRING(#_ ".txt"));
+    return GetFromRawFileName(NS_LITERAL_STRING_FROM_CSTRING(#_ ".txt"));
 #include "mozilla/DataStorageList.h"
 #undef DATA_STORAGE
     default:
@@ -226,18 +127,19 @@ void DataStorage::GetAllFileNames(nsTArray<nsString>& aItems) {
   if (!sDataStorages) {
     return;
   }
-#define DATA_STORAGE(_) aItems.AppendElement(NS_LITERAL_STRING(#_ ".txt"));
+#define DATA_STORAGE(_) \
+  aItems.AppendElement(NS_LITERAL_STRING_FROM_CSTRING(#_ ".txt"));
 #include "mozilla/DataStorageList.h"
 #undef DATA_STORAGE
 }
 
 // static
 void DataStorage::GetAllChildProcessData(
-    nsTArray<mozilla::dom::DataStorageEntry>& aEntries) {
+    nsTArray<mozilla::psm::DataStorageEntry>& aEntries) {
   nsTArray<nsString> storageFiles;
   GetAllFileNames(storageFiles);
   for (auto& file : storageFiles) {
-    dom::DataStorageEntry entry;
+    psm::DataStorageEntry entry;
     entry.filename() = file;
     RefPtr<DataStorage> storage = DataStorage::GetFromRawFileName(file);
     if (!storage->mInitCalled) {
@@ -255,7 +157,7 @@ void DataStorage::GetAllChildProcessData(
 
 // static
 void DataStorage::SetCachedStorageEntries(
-    const nsTArray<mozilla::dom::DataStorageEntry>& aEntries) {
+    const nsTArray<mozilla::psm::DataStorageEntry>& aEntries) {
   MOZ_ASSERT(XRE_IsContentProcess());
 
   // Make sure to initialize all DataStorage classes.
@@ -266,18 +168,18 @@ void DataStorage::SetCachedStorageEntries(
   // (currently 3).  There is a comment in the DataStorageList.h header
   // about updating the algorithm here to something more fancy if the list
   // of DataStorage items grows some day.
-  nsTArray<dom::DataStorageEntry> entries;
-#define DATA_STORAGE(_)                              \
-  {                                                  \
-    dom::DataStorageEntry entry;                     \
-    entry.filename() = NS_LITERAL_STRING(#_ ".txt"); \
-    for (auto& e : aEntries) {                       \
-      if (entry.filename().Equals(e.filename())) {   \
-        entry.items() = std::move(e.items());        \
-        break;                                       \
-      }                                              \
-    }                                                \
-    entries.AppendElement(std::move(entry));         \
+  nsTArray<psm::DataStorageEntry> entries;
+#define DATA_STORAGE(_)                                           \
+  {                                                               \
+    psm::DataStorageEntry entry;                                  \
+    entry.filename() = NS_LITERAL_STRING_FROM_CSTRING(#_ ".txt"); \
+    for (auto& e : aEntries) {                                    \
+      if (entry.filename().Equals(e.filename())) {                \
+        entry.items() = e.items().Clone();                        \
+        break;                                                    \
+      }                                                           \
+    }                                                             \
+    entries.AppendElement(std::move(entry));                      \
   }
 #include "mozilla/DataStorageList.h"
 #undef DATA_STORAGE
@@ -299,12 +201,20 @@ size_t DataStorage::SizeOfIncludingThis(
   return aMallocSizeOf(this) + sizeOfExcludingThis;
 }
 
-nsresult DataStorage::Init(
-    const nsTArray<mozilla::dom::DataStorageItem>* aItems) {
+nsresult DataStorage::Init(const nsTArray<DataStorageItem>* aItems,
+                           mozilla::ipc::FileDescriptor aWriteFd) {
   // Don't access the observer service or preferences off the main thread.
   if (!NS_IsMainThread()) {
     MOZ_ASSERT_UNREACHABLE("DataStorage::Init called off main thread");
     return NS_ERROR_NOT_SAME_THREAD;
+  }
+
+  if (AppShutdown::IsShuttingDown()) {
+    // Reject new DataStorage instances if the browser is shutting down. There
+    // is no guarantee that DataStorage writes will be able to be persisted if
+    // we init during shutdown, so we return an error here to hopefully make
+    // this more explicit and consistent.
+    return NS_ERROR_NOT_AVAILABLE;
   }
 
   MutexAutoLock lock(mMutex);
@@ -325,29 +235,48 @@ nsresult DataStorage::Init(
     memoryReporterRegistered = true;
   }
 
-  nsresult rv;
-  if (XRE_IsParentProcess()) {
-    MOZ_ASSERT(!aItems);
-
-    rv = DataStorageSharedThread::Initialize();
+  if (XRE_IsParentProcess() || XRE_IsSocketProcess()) {
+    nsCOMPtr<nsISerialEventTarget> target;
+    nsresult rv = NS_CreateBackgroundTaskQueue(
+        "DataStorage::mBackgroundTaskQueue", getter_AddRefs(target));
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
+    mBackgroundTaskQueue = new TaskQueue(target.forget());
 
-    rv = AsyncReadData(lock);
+    // For test purposes, we can set the write timer to be very fast.
+    uint32_t timerDelayMS = Preferences::GetInt(
+        "test.datastorage.write_timer_ms", sDataStorageDefaultTimerDelay);
+    rv = NS_NewTimerWithFuncCallback(
+        getter_AddRefs(mTimer), DataStorage::TimerCallback, this, timerDelayMS,
+        nsITimer::TYPE_REPEATING_SLACK_LOW_PRIORITY, "DataStorageTimer",
+        mBackgroundTaskQueue);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+  }
+
+  if (XRE_IsParentProcess()) {
+    MOZ_ASSERT(!aItems);
+
+    nsresult rv = AsyncReadData(lock);
     if (NS_FAILED(rv)) {
       return rv;
     }
   } else {
-    // In the child process, we use the data passed to us by the parent process
-    // to initialize.
-    MOZ_ASSERT(XRE_IsContentProcess());
+    // In the child process and socket process, we use the data passed to us by
+    // the parent process to initialize.
+    MOZ_ASSERT(XRE_IsContentProcess() || XRE_IsSocketProcess());
     MOZ_ASSERT(aItems);
+
+    if (XRE_IsSocketProcess() && aWriteFd.IsValid()) {
+      mWriteFd = aWriteFd;
+    }
 
     for (auto& item : *aItems) {
       Entry entry;
       entry.mValue = item.value();
-      rv = PutInternal(item.key(), entry, item.type(), lock);
+      nsresult rv = PutInternal(item.key(), entry, item.type(), lock);
       if (NS_FAILED(rv)) {
         return rv;
       }
@@ -362,25 +291,98 @@ nsresult DataStorage::Init(
   }
   // Clear private data as appropriate.
   os->AddObserver(this, "last-pb-context-exited", false);
-  // Observe shutdown; save data and prevent any further writes.
-  // In the parent process, we need to write to the profile directory, so
-  // we should listen for profile-before-change so that we can safely write to
-  // the profile. In the content process however we
-  // don't have access to the profile directory and profile notifications are
-  // not dispatched, so we need to clean up on xpcom-shutdown-threads.
-  if (XRE_IsParentProcess()) {
+  if (XRE_IsParentProcess() || XRE_IsSocketProcess()) {
+    // Observe shutdown; save data and prevent any further writes.
+    // In the parent process, we need to write to the profile directory, so
+    // we should listen for profile-before-change so that we can safely write to
+    // the profile.
     os->AddObserver(this, "profile-before-change", false);
+    // In the Parent process, this is a backstop for xpcshell and other cases
+    // where profile-before-change might not get sent.
+    os->AddObserver(this, "xpcom-shutdown-threads", false);
   }
-  // In the Parent process, this is a backstop for xpcshell and other cases
-  // where profile-before-change might not get sent.
-  os->AddObserver(this, "xpcom-shutdown-threads", false);
 
-  // For test purposes, we can set the write timer to be very fast.
-  mTimerDelay = Preferences::GetInt("test.datastorage.write_timer_ms",
-                                    sDataStorageDefaultTimerDelay);
-  Preferences::RegisterCallback(DataStorage::PrefChanged,
-                                "test.datastorage.write_timer_ms", this);
+  return NS_OK;
+}
 
+class DataStorage::Opener : public Runnable {
+ public:
+  explicit Opener(
+      nsIFile* aFile,
+      std::function<void(mozilla::ipc::FileDescriptor&&)>&& aResolver)
+      : Runnable("DataStorage::Opener"),
+        mFile(aFile),
+        mResolver(std::move(aResolver)) {
+    MOZ_ASSERT(mFile);
+  }
+  ~Opener() = default;
+
+ private:
+  NS_DECL_NSIRUNNABLE
+
+  void ResolveFD();
+
+  nsCOMPtr<nsIFile> mFile;
+  std::function<void(mozilla::ipc::FileDescriptor&&)> mResolver;
+  mozilla::ipc::FileDescriptor mFd;
+};
+
+void DataStorage::Opener::ResolveFD() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  mResolver(std::move(mFd));
+}
+
+NS_IMETHODIMP
+DataStorage::Opener::Run() {
+  AutoFDClose prFileDesc;
+  nsresult rv;
+
+#if defined(XP_WIN)
+  nsCOMPtr<nsILocalFileWin> winFile = do_QueryInterface(mFile, &rv);
+  MOZ_ASSERT(winFile);
+  if (NS_SUCCEEDED(rv)) {
+    rv = winFile->OpenNSPRFileDescShareDelete(
+        PR_WRONLY | PR_CREATE_FILE | PR_TRUNCATE, 0664, &prFileDesc.rwget());
+  }
+#else
+  rv = mFile->OpenNSPRFileDesc(PR_WRONLY | PR_CREATE_FILE | PR_TRUNCATE, 0664,
+                               &prFileDesc.rwget());
+#endif /* XP_WIN */
+
+  if (NS_SUCCEEDED(rv)) {
+    mFd = mozilla::ipc::FileDescriptor(
+        mozilla::ipc::FileDescriptor::PlatformHandleType(
+            PR_FileDesc2NativeHandle(prFileDesc)));
+  }
+
+  RefPtr<Opener> self = this;
+  rv = NS_DispatchToMainThread(
+      NS_NewRunnableFunction("DataStorage::Opener::ResolveFD",
+                             [self]() { self->ResolveFD(); }),
+      NS_DISPATCH_NORMAL);
+  MOZ_ASSERT(NS_SUCCEEDED(rv));
+
+  return NS_OK;
+}
+
+nsresult DataStorage::AsyncTakeFileDesc(
+    std::function<void(mozilla::ipc::FileDescriptor&&)>&& aResolver) {
+  MOZ_ASSERT(XRE_IsParentProcess());
+
+  WaitForReady();
+  MutexAutoLock lock(mMutex);
+  if (!mBackingFile) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  nsCOMPtr<nsIRunnable> job(new Opener(mBackingFile, std::move(aResolver)));
+  nsresult rv = mBackgroundTaskQueue->Dispatch(job.forget());
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  mBackingFile = nullptr;
   return NS_OK;
 }
 
@@ -601,7 +603,7 @@ nsresult DataStorage::AsyncReadData(const MutexAutoLock& /*aProofOfLock*/) {
   // Allocate a Reader so that even if it isn't dispatched,
   // the data-storage-ready notification will be fired and Get
   // will be able to proceed (this happens in its destructor).
-  RefPtr<Reader> job(new Reader(this));
+  nsCOMPtr<nsIRunnable> job(new Reader(this));
   nsresult rv;
   // If we don't have a profile directory, this will fail.
   // That's okay - it just means there is no persistent state.
@@ -617,12 +619,17 @@ nsresult DataStorage::AsyncReadData(const MutexAutoLock& /*aProofOfLock*/) {
     return rv;
   }
 
-  rv = DataStorageSharedThread::Dispatch(job);
+  rv = mBackgroundTaskQueue->Dispatch(job.forget());
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
   return NS_OK;
+}
+
+bool DataStorage::IsReady() {
+  MonitorAutoLock readyLock(mReadyMonitor);
+  return mReady;
 }
 
 void DataStorage::WaitForReady() {
@@ -642,7 +649,7 @@ nsCString DataStorage::Get(const nsCString& aKey, DataStorageType aType) {
   Entry entry;
   bool foundValue = GetInternal(aKey, &entry, aType, lock);
   if (!foundValue) {
-    return EmptyCString();
+    return ""_ns;
   }
 
   // If we're here, we found a value. Maybe update its score.
@@ -676,7 +683,7 @@ DataStorage::DataStorageTable& DataStorage::GetTableForType(
 }
 
 void DataStorage::ReadAllFromTable(DataStorageType aType,
-                                   nsTArray<dom::DataStorageItem>* aItems,
+                                   nsTArray<DataStorageItem>* aItems,
                                    const MutexAutoLock& aProofOfLock) {
   for (auto iter = GetTableForType(aType, aProofOfLock).Iter(); !iter.Done();
        iter.Next()) {
@@ -687,7 +694,7 @@ void DataStorage::ReadAllFromTable(DataStorageType aType,
   }
 }
 
-void DataStorage::GetAll(nsTArray<dom::DataStorageItem>* aItems) {
+void DataStorage::GetAll(nsTArray<DataStorageItem>* aItems) {
   WaitForReady();
   MutexAutoLock lock(mMutex);
 
@@ -796,8 +803,8 @@ nsresult DataStorage::PutInternal(const nsCString& aKey, Entry& aEntry,
   DataStorageTable& table = GetTableForType(aType, aProofOfLock);
   table.Put(aKey, aEntry);
 
-  if (aType == DataStorage_Persistent && !mPendingWrite) {
-    return AsyncSetTimer(aProofOfLock);
+  if (aType == DataStorage_Persistent) {
+    mPendingWrite = true;
   }
 
   return NS_OK;
@@ -810,8 +817,8 @@ void DataStorage::Remove(const nsCString& aKey, DataStorageType aType) {
   DataStorageTable& table = GetTableForType(aType, lock);
   table.Remove(aKey);
 
-  if (aType == DataStorage_Persistent && !mPendingWrite) {
-    Unused << AsyncSetTimer(lock);
+  if (aType == DataStorage_Persistent) {
+    mPendingWrite = true;
   }
 
   nsString filename(mFilename);
@@ -820,23 +827,40 @@ void DataStorage::Remove(const nsCString& aKey, DataStorageType aType) {
   });
 }
 
-class DataStorage::Writer : public Runnable {
+class DataStorage::Writer final : public Runnable {
  public:
   Writer(nsCString& aData, DataStorage* aDataStorage)
       : Runnable("DataStorage::Writer"),
         mData(aData),
         mDataStorage(aDataStorage) {}
 
- private:
+ protected:
   NS_DECL_NSIRUNNABLE
+  nsresult CreateOutputStream(nsIOutputStream** aResult);
 
   nsCString mData;
   RefPtr<DataStorage> mDataStorage;
 };
 
-NS_IMETHODIMP
-DataStorage::Writer::Run() {
+nsresult DataStorage::Writer::CreateOutputStream(nsIOutputStream** aResult) {
   nsresult rv;
+
+  if (XRE_IsSocketProcess()) {
+    mozilla::ipc::FileDescriptor fd;
+    {
+      MutexAutoLock lock(mDataStorage->mMutex);
+      fd = mDataStorage->mWriteFd;
+    }
+
+    if (!fd.IsValid()) {
+      return NS_ERROR_NOT_AVAILABLE;
+    }
+
+    return NS_NewLocalFileOutputStream(aResult, fd);
+  }
+
+  MOZ_ASSERT(XRE_IsParentProcess());
+
   // Concurrent operations on nsIFile objects are not guaranteed to be safe,
   // so we clone the file while holding the lock and then release the lock.
   // At that point, we can safely operate on the clone.
@@ -853,15 +877,25 @@ DataStorage::Writer::Run() {
     }
   }
 
+  return NS_NewLocalFileOutputStream(aResult, file,
+                                     PR_CREATE_FILE | PR_TRUNCATE | PR_WRONLY);
+}
+
+NS_IMETHODIMP
+DataStorage::Writer::Run() {
   nsCOMPtr<nsIOutputStream> outputStream;
-  rv = NS_NewLocalFileOutputStream(getter_AddRefs(outputStream), file,
-                                   PR_CREATE_FILE | PR_TRUNCATE | PR_WRONLY);
+  nsresult rv = CreateOutputStream(getter_AddRefs(outputStream));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
+  // When the output stream is null, it means we don't have a profile.
+  if (!outputStream) {
+    return NS_OK;
+  }
+
   const char* ptr = mData.get();
-  int32_t remaining = mData.Length();
+  uint32_t remaining = mData.Length();
   uint32_t written = 0;
   while (remaining > 0) {
     rv = outputStream->Write(ptr, remaining, &written);
@@ -885,9 +919,10 @@ DataStorage::Writer::Run() {
 }
 
 nsresult DataStorage::AsyncWriteData(const MutexAutoLock& /*aProofOfLock*/) {
-  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_ASSERT(XRE_IsParentProcess() || XRE_IsSocketProcess());
 
-  if (mShuttingDown || !mBackingFile) {
+  if (!mPendingWrite || mShuttingDown ||
+      (!mBackingFile && !mWriteFd.IsValid())) {
     return NS_OK;
   }
 
@@ -904,8 +939,8 @@ nsresult DataStorage::AsyncWriteData(const MutexAutoLock& /*aProofOfLock*/) {
     output.Append('\n');
   }
 
-  RefPtr<Writer> job(new Writer(output, this));
-  nsresult rv = DataStorageSharedThread::Dispatch(job);
+  nsCOMPtr<nsIRunnable> job(new Writer(output, this));
+  nsresult rv = mBackgroundTaskQueue->Dispatch(job.forget());
   mPendingWrite = false;
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
@@ -920,8 +955,9 @@ nsresult DataStorage::Clear() {
   mPersistentDataTable.Clear();
   mTemporaryDataTable.Clear();
   mPrivateDataTable.Clear();
+  mPendingWrite = true;
 
-  if (XRE_IsParentProcess()) {
+  if (XRE_IsParentProcess() || XRE_IsSocketProcess()) {
     // Asynchronously clear the file. This is similar to the permission manager
     // in that it doesn't wait to synchronously remove the data from its backing
     // storage either.
@@ -941,48 +977,11 @@ nsresult DataStorage::Clear() {
 
 /* static */
 void DataStorage::TimerCallback(nsITimer* aTimer, void* aClosure) {
-  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_ASSERT(XRE_IsParentProcess() || XRE_IsSocketProcess());
 
   RefPtr<DataStorage> aDataStorage = (DataStorage*)aClosure;
   MutexAutoLock lock(aDataStorage->mMutex);
   Unused << aDataStorage->AsyncWriteData(lock);
-}
-
-// We only initialize the timer on the worker thread because it's not safe
-// to mix what threads are operating on the timer.
-nsresult DataStorage::AsyncSetTimer(const MutexAutoLock& /*aProofOfLock*/) {
-  if (mShuttingDown || !XRE_IsParentProcess()) {
-    return NS_OK;
-  }
-
-  mPendingWrite = true;
-  nsCOMPtr<nsIRunnable> job =
-      NewRunnableMethod("DataStorage::SetTimer", this, &DataStorage::SetTimer);
-  nsresult rv = DataStorageSharedThread::Dispatch(job);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
-}
-
-void DataStorage::SetTimer() {
-  MOZ_ASSERT(!NS_IsMainThread());
-  MOZ_ASSERT(XRE_IsParentProcess());
-
-  MutexAutoLock lock(mMutex);
-
-  nsresult rv;
-  if (!mTimer) {
-    mTimer = NS_NewTimer();
-    if (NS_WARN_IF(!mTimer)) {
-      return;
-    }
-  }
-
-  rv = mTimer->InitWithNamedFuncCallback(TimerCallback, this, mTimerDelay,
-                                         nsITimer::TYPE_ONE_SHOT,
-                                         "DataStorage::SetTimer");
-  Unused << NS_WARN_IF(NS_FAILED(rv));
 }
 
 void DataStorage::NotifyObservers(const char* aTopic) {
@@ -999,26 +998,14 @@ void DataStorage::NotifyObservers(const char* aTopic) {
   }
 }
 
-nsresult DataStorage::DispatchShutdownTimer(
-    const MutexAutoLock& /*aProofOfLock*/) {
-  MOZ_ASSERT(XRE_IsParentProcess());
-
-  nsCOMPtr<nsIRunnable> job = NewRunnableMethod(
-      "DataStorage::ShutdownTimer", this, &DataStorage::ShutdownTimer);
-  nsresult rv = DataStorageSharedThread::Dispatch(job);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-  return NS_OK;
-}
-
 void DataStorage::ShutdownTimer() {
-  MOZ_ASSERT(XRE_IsParentProcess());
-  MOZ_ASSERT(!NS_IsMainThread());
-  MutexAutoLock lock(mMutex);
-  nsresult rv = mTimer->Cancel();
-  Unused << NS_WARN_IF(NS_FAILED(rv));
-  mTimer = nullptr;
+  MOZ_ASSERT(XRE_IsParentProcess() || XRE_IsSocketProcess());
+  MOZ_ASSERT(NS_IsMainThread());
+  if (mTimer) {
+    nsresult rv = mTimer->Cancel();
+    Unused << NS_WARN_IF(NS_FAILED(rv));
+    mTimer = nullptr;
+  }
 }
 
 //------------------------------------------------------------
@@ -1028,7 +1015,6 @@ void DataStorage::ShutdownTimer() {
 NS_IMETHODIMP
 DataStorage::Observe(nsISupports* /*aSubject*/, const char* aTopic,
                      const char16_t* /*aData*/) {
-  // Don't access preferences off the main thread.
   if (!NS_IsMainThread()) {
     MOZ_ASSERT_UNREACHABLE("DataStorage::Observe called off main thread");
     return NS_ERROR_NOT_SAME_THREAD;
@@ -1037,50 +1023,36 @@ DataStorage::Observe(nsISupports* /*aSubject*/, const char* aTopic,
   if (strcmp(aTopic, "last-pb-context-exited") == 0) {
     MutexAutoLock lock(mMutex);
     mPrivateDataTable.Clear();
-  }
-
-  if (!XRE_IsParentProcess()) {
-    if (strcmp(aTopic, "xpcom-shutdown-threads") == 0) {
-      sDataStorages->Clear();
-    }
     return NS_OK;
   }
 
-  // The first DataStorage to observe a shutdown notification will dispatch
-  // events for all DataStorages to write their data out. It will then shut down
-  // the shared background thread, which actually runs those events. The table
-  // of DataStorages is then cleared, turning further observations by any other
-  // DataStorages into no-ops.
+  if (!XRE_IsParentProcess() && !XRE_IsSocketProcess()) {
+    MOZ_ASSERT_UNREACHABLE("unexpected observation topic for content proces");
+    return NS_ERROR_UNEXPECTED;
+  }
+
   if (strcmp(aTopic, "profile-before-change") == 0 ||
       strcmp(aTopic, "xpcom-shutdown-threads") == 0) {
-    for (auto iter = sDataStorages->Iter(); !iter.Done(); iter.Next()) {
-      RefPtr<DataStorage> storage = iter.UserData();
-      MutexAutoLock lock(storage->mMutex);
-      if (!storage->mShuttingDown) {
-        nsresult rv = storage->AsyncWriteData(lock);
-        storage->mShuttingDown = true;
+    RefPtr<TaskQueue> taskQueueToAwait;
+    {
+      MutexAutoLock lock(mMutex);
+      if (!mShuttingDown) {
+        nsresult rv = AsyncWriteData(lock);
         Unused << NS_WARN_IF(NS_FAILED(rv));
-        if (storage->mTimer) {
-          Unused << storage->DispatchShutdownTimer(lock);
-        }
+        mShuttingDown = true;
+        mBackgroundTaskQueue->BeginShutdown();
+        taskQueueToAwait = mBackgroundTaskQueue;
       }
     }
-    sDataStorages->Clear();
-    DataStorageSharedThread::Shutdown();
+    // Tasks on the background queue may take the lock, so it can't be held
+    // while waiting for them to finish.
+    if (taskQueueToAwait) {
+      taskQueueToAwait->AwaitShutdownAndIdle();
+    }
+    ShutdownTimer();
   }
 
   return NS_OK;
-}
-
-// static
-void DataStorage::PrefChanged(const char* aPref, void* aSelf) {
-  static_cast<DataStorage*>(aSelf)->PrefChanged(aPref);
-}
-
-void DataStorage::PrefChanged(const char* aPref) {
-  MutexAutoLock lock(mMutex);
-  mTimerDelay = Preferences::GetInt("test.datastorage.write_timer_ms",
-                                    sDataStorageDefaultTimerDelay);
 }
 
 DataStorage::Entry::Entry()

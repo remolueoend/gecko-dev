@@ -2,13 +2,72 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-// Some of this is copied from Skia and is governed by a BSD-style license
-// Every function in this file should be marked static and inline using SI.
 #define SI ALWAYS_INLINE static
 
 #include "vector_type.h"
 
 namespace glsl {
+
+enum TextureFormat { RGBA32F, RGBA32I, RGBA8, R8, RG8, R16, YUV422 };
+
+enum TextureFilter { NEAREST, LINEAR };
+
+struct samplerCommon {
+  uint32_t* buf = nullptr;
+  uint32_t stride = 0;  // in units of BPP if < 4, or dwords if BPP >= 4
+  uint32_t height = 0;
+  uint32_t width = 0;
+  TextureFormat format = TextureFormat::RGBA8;
+};
+
+struct samplerDepth {
+  int depth = 0;
+  uint32_t height_stride = 0;  // in units of BPP if < 4, or dwords if BPP >= 4
+};
+
+struct samplerFilter {
+  TextureFilter filter = TextureFilter::NEAREST;
+};
+
+struct sampler2DArray_impl : samplerCommon, samplerDepth, samplerFilter {};
+typedef sampler2DArray_impl* sampler2DArray;
+
+typedef struct sampler2DArrayR8_impl : sampler2DArray_impl{} * sampler2DArrayR8;
+typedef struct sampler2DArrayRG8_impl : sampler2DArray_impl{} *
+                                        sampler2DArrayRG8;
+typedef struct sampler2DArrayRGBA8_impl : sampler2DArray_impl{} *
+                                          sampler2DArrayRGBA8;
+typedef struct sampler2DArrayRGBA32F_impl : sampler2DArray_impl{} *
+                                            sampler2DArrayRGBA32F;
+
+struct sampler2D_impl : samplerCommon, samplerFilter {};
+typedef sampler2D_impl* sampler2D;
+
+typedef struct sampler2DR8_impl : sampler2D_impl{} * sampler2DR8;
+typedef struct sampler2DRG8_impl : sampler2D_impl{} * sampler2DRG8;
+typedef struct sampler2DRGBA8_impl : sampler2D_impl{} * sampler2DRGBA8;
+typedef struct sampler2DRGBA32F_impl : sampler2D_impl{} * sampler2DRGBA32F;
+
+struct isampler2D_impl : samplerCommon {};
+typedef isampler2D_impl* isampler2D;
+
+struct isampler2DRGBA32I_impl : isampler2D_impl {};
+typedef isampler2DRGBA32I_impl* isampler2DRGBA32I;
+
+struct sampler2DRect_impl : samplerCommon, samplerFilter {};
+typedef sampler2DRect_impl* sampler2DRect;
+
+#if USE_SSE2
+SI bool test_all(Bool cond) { return _mm_movemask_ps(cond) == 0xF; }
+SI bool test_any(Bool cond) { return _mm_movemask_ps(cond) != 0; }
+SI bool test_none(Bool cond) { return _mm_movemask_ps(cond) == 0; }
+#else
+SI bool test_all(Bool cond) {
+  return bit_cast<uint32_t>(CONVERT(cond, U8)) == 0xFFFFFFFFU;
+}
+SI bool test_any(Bool cond) { return bit_cast<uint32_t>(CONVERT(cond, U8)) != 0; }
+SI bool test_none(Bool cond) { return bit_cast<uint32_t>(CONVERT(cond, U8)) == 0; }
+#endif
 
 float make_float(float n) { return n; }
 
@@ -73,6 +132,10 @@ SI I32 if_then_else(I32 c, int32_t t, int32_t e) {
   return (c & I32(t)) | (~c & I32(e));
 }
 
+SI U32 if_then_else(I32 c, U32 t, U32 e) {
+  return bit_cast<U32>((c & bit_cast<I32>(t)) | (~c & bit_cast<I32>(e)));
+}
+
 SI Float if_then_else(I32 c, Float t, Float e) {
   return bit_cast<Float>((c & bit_cast<I32>(t)) | (~c & bit_cast<I32>(e)));
 }
@@ -82,6 +145,8 @@ SI Float if_then_else(int32_t c, Float t, Float e) { return c ? t : e; }
 SI Bool if_then_else(I32 c, Bool t, Bool e) { return (c & t) | (~c & e); }
 
 SI Bool if_then_else(int32_t c, Bool t, Bool e) { return c ? t : e; }
+
+SI I16 if_then_else(I16 c, I16 t, I16 e) { return (c & t) | (~c & e); }
 
 template <typename T> SI void swap(T& a, T& b) {
   T t(a);
@@ -296,6 +361,12 @@ struct vec2_scalar {
     return *this;
   }
 
+  vec2_scalar operator/=(vec2_scalar a) {
+    x /= a.x;
+    y /= a.y;
+    return *this;
+  }
+
   vec2_scalar operator+=(vec2_scalar a) {
     x += a.x;
     y += a.y;
@@ -349,7 +420,7 @@ struct vec2 {
   constexpr vec2(vec2_scalar s) : x(s.x), y(s.y) {}
   constexpr vec2(vec2_scalar s0, vec2_scalar s1, vec2_scalar s2, vec2_scalar s3)
       : x(Float{s0.x, s1.x, s2.x, s3.x}), y(Float{s0.y, s1.y, s2.y, s3.y}) {}
-  vec2(ivec2 a);
+  explicit vec2(ivec2 a);
   Float x;
   Float y;
 
@@ -473,6 +544,10 @@ vec2 step(vec2 edge, vec2 x) {
   return vec2(step(edge.x, x.x), step(edge.y, x.y));
 }
 
+vec2_scalar step(vec2_scalar edge, vec2_scalar x) {
+  return vec2_scalar(step(edge.x, x.x), step(edge.y, x.y));
+}
+
 vec2 max(vec2 a, vec2 b) { return vec2(max(a.x, b.x), max(a.y, b.y)); }
 vec2 max(vec2 a, Float b) { return vec2(max(a.x, b), max(a.y, b)); }
 
@@ -566,15 +641,19 @@ SI I32 roundfast(Float v, Float scale) {
 #endif
 }
 
+template <typename T> SI auto round_pixel(T v) { return roundfast(v, 255.0f); }
+
 #define round __glsl_round
 
 float round(float a) { return roundf(a); }
 
-float fract(float a) { return a - floor(a); }
-
 Float round(Float v) { return floor(v + 0.5f); }
 
+float fract(float a) { return a - floor(a); }
+
 Float fract(Float v) { return v - floor(v); }
+
+vec2 fract(vec2 v) { return vec2(fract(v.x), fract(v.y)); }
 
 // X derivatives can be approximated by dFdx(x) = x[1] - x[0].
 // Y derivatives are not easily available since we operate in terms of X spans
@@ -598,6 +677,7 @@ Float approx_log2(Float x) {
   return e - 124.225514990f - 1.498030302f * m -
          1.725879990f / (0.3520887068f + m);
 }
+
 Float approx_pow2(Float x) {
   Float f = fract(x);
   return bit_cast<Float>(
@@ -605,15 +685,40 @@ Float approx_pow2(Float x) {
                                       27.728023300f / (4.84252568f - f)));
 }
 
-// From skia
+#define pow __glsl_pow
+
+SI float pow(float x, float y) { return powf(x, y); }
+
 Float pow(Float x, Float y) {
   return if_then_else((x == 0) | (x == 1), x, approx_pow2(approx_log2(x) * y));
 }
 
+#define exp __glsl_exp
+
+SI float exp(float x) { return expf(x); }
+
 Float exp(Float y) {
-  float x = 2.718281828459045235360287471352;
-  return approx_pow2(log2f(x) * y);
+  float l2e = 1.4426950408889634074f;
+  return approx_pow2(l2e * y);
 }
+
+#define exp2 __glsl_exp2
+
+SI float exp2(float x) { return exp2f(x); }
+
+Float exp2(Float x) { return approx_pow2(x); }
+
+#define log __glsl_log
+
+SI float log(float x) { return logf(x); }
+
+Float log(Float x) { return approx_log2(x) * 0.69314718f; }
+
+#define log2 __glsl_log2
+
+SI float log2(float x) { return log2f(x); }
+
+Float log2(Float x) { return approx_log2(x); }
 
 struct ivec4;
 
@@ -996,6 +1101,8 @@ struct bvec3 {
   Bool z;
 };
 
+bvec3_scalar make_bvec3(bool n) { return bvec3_scalar{n, n, n}; }
+
 struct bvec4_scalar {
   bool x;
   bool y;
@@ -1277,6 +1384,12 @@ struct vec3 {
     z += a.z;
     return *this;
   }
+  vec3& operator+=(vec3 a) {
+    x += a.x;
+    y += a.y;
+    z += a.z;
+    return *this;
+  }
 };
 
 vec3_scalar force_scalar(const vec3& v) {
@@ -1385,7 +1498,7 @@ struct vec4_scalar {
       : x(x), y(y), z(z), w(w) {}
   vec4_scalar(vec3_scalar xyz, float w) : x(xyz.x), y(xyz.y), z(xyz.z), w(w) {}
 
-  float& select(XYZW c) {
+  ALWAYS_INLINE float& select(XYZW c) {
     switch (c) {
       case X:
         return x;
@@ -1452,6 +1565,14 @@ struct vec4_scalar {
     z /= a.z;
     w /= a.w;
     return *this;
+  }
+
+  friend bool operator==(const vec4_scalar& l, const vec4_scalar& r) {
+    return l.x == r.x && l.y == r.y && l.z == r.z && l.w == r.w;
+  }
+
+  friend bool operator!=(const vec4_scalar& l, const vec4_scalar& r) {
+    return l.x != r.x || l.y != r.y || l.z != r.z || l.w != r.w;
   }
 };
 
@@ -1521,7 +1642,7 @@ struct vec4 {
   // glsl supports non-const indexing of vecs.
   // hlsl doesn't. The code it generates is probably not wonderful.
   Float operator[](I32 index) {
-    float sel_x;
+    float sel_x = 0;
     switch (index.x) {
       case 0:
         sel_x = x.x;
@@ -1536,7 +1657,7 @@ struct vec4 {
         sel_x = w.x;
         break;
     }
-    float sel_y;
+    float sel_y = 0;
     switch (index.y) {
       case 0:
         sel_y = x.y;
@@ -1551,7 +1672,7 @@ struct vec4 {
         sel_y = w.y;
         break;
     }
-    float sel_z;
+    float sel_z = 0;
     switch (index.z) {
       case 0:
         sel_z = x.z;
@@ -1566,7 +1687,7 @@ struct vec4 {
         sel_z = w.z;
         break;
     }
-    float sel_w;
+    float sel_w = 0;
     switch (index.w) {
       case 0:
         sel_w = x.w;
@@ -1664,6 +1785,10 @@ vec4_scalar make_vec4(float x, float y, const vec2_scalar& v) {
   return vec4_scalar{x, y, v.x, v.y};
 }
 
+ivec4_scalar make_ivec4(const vec4_scalar& v) {
+  return ivec4_scalar{int32_t(v.x), int32_t(v.y), int32_t(v.z), int32_t(v.w)};
+}
+
 template <typename N>
 vec4 make_vec4(const N& n) {
   return vec4(n);
@@ -1723,6 +1848,13 @@ SI vec4 clamp(vec4 a, vec4 minVal, vec4 maxVal) {
   return vec4(clamp(a.x, minVal.x, maxVal.x), clamp(a.y, minVal.y, maxVal.y),
               clamp(a.z, minVal.z, maxVal.z), clamp(a.w, minVal.w, maxVal.w));
 }
+
+SI vec4_scalar clamp(vec4_scalar a, vec4_scalar minVal, vec4_scalar maxVal) {
+  return vec4_scalar{
+      clamp(a.x, minVal.x, maxVal.x), clamp(a.y, minVal.y, maxVal.y),
+      clamp(a.z, minVal.z, maxVal.z), clamp(a.w, minVal.w, maxVal.w)};
+}
+
 template <typename T>
 auto lessThanEqual(T x, T y) -> decltype(x <= y) {
   return x <= y;
@@ -1778,52 +1910,6 @@ bvec4 greaterThanEqual(vec4 x, vec4 y) {
   return bvec4(greaterThanEqual(x.x, y.x), greaterThanEqual(x.y, y.y),
                greaterThanEqual(x.z, y.z), greaterThanEqual(x.w, y.w));
 }
-
-enum TextureFormat { RGBA32F, RGBA32I, RGBA8, R8 };
-
-enum TextureFilter { NEAREST, LINEAR };
-
-struct samplerCommon {
-  uint32_t* buf = nullptr;
-  uint32_t stride = 0;  // in dwords
-  uint32_t height = 0;
-  uint32_t width = 0;
-  TextureFormat format = TextureFormat::RGBA8;
-};
-
-struct samplerDepth {
-  int depth = 0;
-  uint32_t height_stride = 0;  // in dwords
-};
-
-struct samplerFilter {
-  TextureFilter filter = TextureFilter::NEAREST;
-};
-
-struct sampler2DArray_impl : samplerCommon, samplerDepth, samplerFilter {};
-typedef sampler2DArray_impl* sampler2DArray;
-
-typedef struct sampler2DArrayR8_impl : sampler2DArray_impl{} * sampler2DArrayR8;
-typedef struct sampler2DArrayRGBA8_impl : sampler2DArray_impl{} *
-                                          sampler2DArrayRGBA8;
-typedef struct sampler2DArrayRGBA32F_impl : sampler2DArray_impl{} *
-                                            sampler2DArrayRGBA32F;
-
-struct sampler2D_impl : samplerCommon, samplerFilter {};
-typedef sampler2D_impl* sampler2D;
-
-typedef struct sampler2DR8_impl : sampler2D_impl{} * sampler2DR8;
-typedef struct sampler2DRGBA8_impl : sampler2D_impl{} * sampler2DRGBA8;
-typedef struct sampler2DRGBA32F_impl : sampler2D_impl{} * sampler2DRGBA32F;
-
-struct isampler2D_impl : samplerCommon {};
-typedef isampler2D_impl* isampler2D;
-
-struct isampler2DRGBA32I_impl : isampler2D_impl {};
-typedef isampler2DRGBA32I_impl* isampler2DRGBA32I;
-
-struct sampler2DRect_impl : samplerCommon, samplerFilter {};
-typedef sampler2DRect_impl* sampler2DRect;
 
 struct mat4_scalar;
 
@@ -2175,253 +2261,6 @@ SI mat4 if_then_else(I32 c, mat4 t, mat4 e) {
 
 SI mat4 if_then_else(int32_t c, mat4 t, mat4 e) { return c ? t : e; }
 
-SI I32 clampCoord(I32 coord, int limit) {
-#if USE_SSE2
-  return _mm_min_epi16(_mm_max_epi16(coord, _mm_setzero_si128()),
-                       _mm_set1_epi32(limit - 1));
-#else
-  return clamp(coord, 0, limit - 1);
-#endif
-}
-SI int clampCoord(int coord, int limit) {
-  return min(max(coord, 0), limit - 1);
-}
-template <typename T, typename S>
-SI T clamp2D(T P, S sampler) {
-  return T{clampCoord(P.x, sampler->width), clampCoord(P.y, sampler->height)};
-}
-template <typename T>
-SI T clamp2DArray(T P, sampler2DArray sampler) {
-  return T{clampCoord(P.x, sampler->width), clampCoord(P.y, sampler->height),
-           clampCoord(P.z, sampler->depth)};
-}
-
-float to_float(uint32_t x) { return x * (1.f / 255.f); }
-
-vec4 pixel_to_vec4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
-  U32 pixels = {a, b, c, d};
-  return vec4(cast((pixels >> 16) & 0xFF), cast((pixels >> 8) & 0xFF),
-              cast(pixels & 0xFF), cast(pixels >> 24)) *
-         (1.0f / 255.0f);
-}
-
-vec4 pixel_float_to_vec4(Float a, Float b, Float c, Float d) {
-  return vec4(Float{a.x, b.x, c.x, d.x}, Float{a.y, b.y, c.y, d.y},
-              Float{a.z, b.z, c.z, d.z}, Float{a.w, b.w, c.w, d.w});
-}
-
-ivec4 pixel_int_to_ivec4(I32 a, I32 b, I32 c, I32 d) {
-  return ivec4(I32{a.x, b.x, c.x, d.x}, I32{a.y, b.y, c.y, d.y},
-               I32{a.z, b.z, c.z, d.z}, I32{a.w, b.w, c.w, d.w});
-}
-
-vec4_scalar pixel_to_vec4(uint32_t p) {
-  U32 i = {(p >> 16) & 0xFF, (p >> 8) & 0xFF, p & 0xFF, p >> 24};
-  Float f = cast(i) * (1.0f / 255.0f);
-  return vec4_scalar(f.x, f.y, f.z, f.w);
-}
-
-template <typename S>
-SI vec4 fetchOffsetsRGBA8(S sampler, I32 offset) {
-  return pixel_to_vec4(sampler->buf[offset.x], sampler->buf[offset.y],
-                       sampler->buf[offset.z], sampler->buf[offset.w]);
-}
-
-vec4 texelFetchRGBA8(sampler2D sampler, ivec2 P) {
-  I32 offset = P.x + P.y * sampler->stride;
-  return fetchOffsetsRGBA8(sampler, offset);
-}
-
-vec4 texelFetchRGBA8(sampler2DArray sampler, ivec3 P) {
-  I32 offset = P.x + P.y * sampler->stride + P.z * sampler->height_stride;
-  return fetchOffsetsRGBA8(sampler, offset);
-}
-
-template <typename S>
-SI Float fetchOffsetsR8(S sampler, I32 offset) {
-  U32 i = {
-      ((uint8_t*)sampler->buf)[offset.x], ((uint8_t*)sampler->buf)[offset.y],
-      ((uint8_t*)sampler->buf)[offset.z], ((uint8_t*)sampler->buf)[offset.w]};
-  return cast(i) * (1.0f / 255.0f);
-}
-
-vec4 texelFetchR8(sampler2D sampler, ivec2 P) {
-  I32 offset = P.x + P.y * sampler->stride;
-  return vec4(fetchOffsetsR8(sampler, offset), 0.0f, 0.0f, 1.0f);
-}
-
-vec4 texelFetchR8(sampler2DArray sampler, ivec3 P) {
-  I32 offset = P.x + P.y * sampler->stride + P.z * sampler->height_stride;
-  return vec4(fetchOffsetsR8(sampler, offset), 0.0f, 0.0f, 1.0f);
-}
-
-template <typename S>
-SI vec4 fetchOffsetsFloat(S sampler, I32 offset) {
-  return pixel_float_to_vec4(
-      *(Float*)&sampler->buf[offset.x], *(Float*)&sampler->buf[offset.y],
-      *(Float*)&sampler->buf[offset.z], *(Float*)&sampler->buf[offset.w]);
-}
-
-vec4 texelFetchFloat(sampler2D sampler, ivec2 P) {
-  I32 offset = P.x * 4 + P.y * sampler->stride;
-  return fetchOffsetsFloat(sampler, offset);
-}
-
-vec4 texelFetchFloat(sampler2DArray sampler, ivec3 P) {
-  I32 offset = P.x * 4 + P.y * sampler->stride + P.z * sampler->height_stride;
-  return fetchOffsetsFloat(sampler, offset);
-}
-
-vec4 texelFetch(sampler2D sampler, ivec2 P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  if (sampler->format == TextureFormat::RGBA32F) {
-    return texelFetchFloat(sampler, P);
-  } else if (sampler->format == TextureFormat::RGBA8) {
-    return texelFetchRGBA8(sampler, P);
-  } else {
-    assert(sampler->format == TextureFormat::R8);
-    return texelFetchR8(sampler, P);
-  }
-}
-
-vec4 texelFetch(sampler2DRGBA32F sampler, ivec2 P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA32F);
-  return texelFetchFloat(sampler, P);
-}
-
-vec4 texelFetch(sampler2DRGBA8 sampler, ivec2 P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA8);
-  return texelFetchRGBA8(sampler, P);
-}
-
-vec4 texelFetch(sampler2DR8 sampler, ivec2 P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::R8);
-  return texelFetchR8(sampler, P);
-}
-
-vec4_scalar texelFetch(sampler2D sampler, ivec2_scalar P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  if (sampler->format == TextureFormat::RGBA32F) {
-    return *(vec4_scalar*)&sampler->buf[P.x * 4 + P.y * sampler->stride];
-  } else {
-    assert(sampler->format == TextureFormat::RGBA8);
-    return pixel_to_vec4(sampler->buf[P.x + P.y * sampler->stride]);
-  }
-}
-
-vec4_scalar texelFetch(sampler2DRGBA32F sampler, ivec2_scalar P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA32F);
-  return *(vec4_scalar*)&sampler->buf[P.x * 4 + P.y * sampler->stride];
-}
-
-vec4_scalar texelFetch(sampler2DRGBA8 sampler, ivec2_scalar P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA8);
-  return pixel_to_vec4(sampler->buf[P.x + P.y * sampler->stride]);
-}
-
-vec4_scalar texelFetch(sampler2DR8 sampler, ivec2_scalar P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::R8);
-  return vec4_scalar{
-      to_float(((uint8_t*)sampler->buf)[P.x + P.y * sampler->stride]), 0.0f,
-      0.0f, 0.0f};
-}
-
-vec4 texelFetch(sampler2DRect sampler, ivec2 P) {
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA8);
-  I32 offset = P.x + P.y * sampler->stride;
-  return fetchOffsetsRGBA8(sampler, offset);
-}
-
-vec4 texelFetch(sampler2DArray sampler, ivec3 P, int lod) {
-  assert(lod == 0);
-  P = clamp2DArray(P, sampler);
-  if (sampler->format == TextureFormat::RGBA32F) {
-    return texelFetchFloat(sampler, P);
-  } else if (sampler->format == TextureFormat::R8) {
-    return texelFetchR8(sampler, P);
-  } else {
-    assert(sampler->format == TextureFormat::RGBA8);
-    return texelFetchRGBA8(sampler, P);
-  }
-}
-
-vec4 texelFetch(sampler2DArrayRGBA32F sampler, ivec3 P, int lod) {
-  assert(lod == 0);
-  P = clamp2DArray(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA32F);
-  return texelFetchFloat(sampler, P);
-}
-
-vec4 texelFetch(sampler2DArrayRGBA8 sampler, ivec3 P, int lod) {
-  assert(lod == 0);
-  P = clamp2DArray(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA8);
-  return texelFetchRGBA8(sampler, P);
-}
-
-vec4 texelFetch(sampler2DArrayR8 sampler, ivec3 P, int lod) {
-  assert(lod == 0);
-  P = clamp2DArray(P, sampler);
-  assert(sampler->format == TextureFormat::R8);
-  return texelFetchR8(sampler, P);
-}
-
-template <typename S>
-SI ivec4 fetchOffsetsInt(S sampler, I32 offset) {
-  return pixel_int_to_ivec4(
-      *(I32*)&sampler->buf[offset.x], *(I32*)&sampler->buf[offset.y],
-      *(I32*)&sampler->buf[offset.z], *(I32*)&sampler->buf[offset.w]);
-}
-
-ivec4 texelFetch(isampler2D sampler, ivec2 P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA32I);
-  I32 offset = P.x * 4 + P.y * sampler->stride;
-  return fetchOffsetsInt(sampler, offset);
-}
-
-ivec4_scalar texelFetch(isampler2D sampler, ivec2_scalar P, int lod) {
-  assert(lod == 0);
-  P = clamp2D(P, sampler);
-  assert(sampler->format == TextureFormat::RGBA32I);
-  return *(ivec4_scalar*)&sampler->buf[P.x * 4 + P.y * sampler->stride];
-}
-
-SI vec4_scalar* texelFetchPtr(sampler2D sampler, ivec2_scalar P, int min_x,
-                              int max_x, int min_y, int max_y) {
-  P.x = min(max(P.x, -min_x), int(sampler->width) - 1 - max_x);
-  P.y = min(max(P.y, -min_y), int(sampler->height) - 1 - max_y);
-  assert(sampler->format == TextureFormat::RGBA32F);
-  return (vec4_scalar*)&sampler->buf[P.x * 4 + P.y * sampler->stride];
-}
-
-SI ivec4_scalar* texelFetchPtr(isampler2D sampler, ivec2_scalar P, int min_x,
-                               int max_x, int min_y, int max_y) {
-  P.x = min(max(P.x, -min_x), int(sampler->width) - 1 - max_x);
-  P.y = min(max(P.y, -min_y), int(sampler->height) - 1 - max_y);
-  assert(sampler->format == TextureFormat::RGBA32I);
-  return (ivec4_scalar*)&sampler->buf[P.x * 4 + P.y * sampler->stride];
-}
-
-#define texelFetchOffset(sampler, P, lod, offset) \
-  texelFetch(sampler, (P) + (offset), lod)
-
 template <typename T, typename U, typename A,
           typename R = typename T::vector_type>
 SI R mix(T x, U y, A a) {
@@ -2439,350 +2278,6 @@ template <typename T>
 SI T mix(T x, T y, vec4_scalar a) {
   return T{mix(x.x, y.x, a.x), mix(x.y, y.y, a.y), mix(x.z, y.z, a.z),
            mix(x.w, y.w, a.w)};
-}
-
-template <typename S>
-vec4 textureLinearRGBA8(S sampler, vec2 P, I32 zoffset = 0) {
-  assert(sampler->format == TextureFormat::RGBA8);
-
-#if USE_SSE2
-  P.x *= sampler->width * 256.0f;
-  P.y *= sampler->height * 256.0f;
-  P -= 0.5f * 256.0f;
-  ivec2 i(P);
-  ivec2 frac = i & (I32)0xFF;
-  i >>= 8;
-
-  __m128i row0 = _mm_min_epi16(_mm_max_epi16(i.y, _mm_setzero_si128()),
-                               _mm_set1_epi32(sampler->height - 1));
-  row0 = _mm_madd_epi16(row0, _mm_set1_epi32(sampler->stride));
-  row0 =
-      _mm_add_epi32(row0, _mm_min_epi16(_mm_max_epi16(i.x, _mm_setzero_si128()),
-                                        _mm_set1_epi32(sampler->width - 1)));
-  row0 = _mm_add_epi32(row0, zoffset);
-
-  if (_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_or_si128(frac.x, frac.y),
-                                       _mm_setzero_si128())) == 0xFFFF) {
-    return fetchOffsetsRGBA8(sampler, row0);
-  }
-
-  __m128i yinside = _mm_andnot_si128(
-      _mm_cmplt_epi32(i.y, _mm_setzero_si128()),
-      _mm_cmplt_epi32(i.y, _mm_set1_epi32(sampler->height - 1)));
-  __m128i row1 = _mm_and_si128(yinside, _mm_set1_epi32(sampler->stride));
-
-  __m128i xinside = _mm_andnot_si128(
-      _mm_cmplt_epi32(i.x, _mm_setzero_si128()),
-      _mm_cmplt_epi32(i.x, _mm_set1_epi32(sampler->width - 1)));
-  __m128i fracx = _mm_and_si128(xinside, frac.x);
-  fracx = _mm_shufflelo_epi16(fracx, _MM_SHUFFLE(2, 2, 0, 0));
-  fracx = _mm_shufflehi_epi16(fracx, _MM_SHUFFLE(2, 2, 0, 0));
-  fracx = _mm_slli_epi16(fracx, 4);
-
-  __m128i fracy = _mm_or_si128(_mm_slli_epi32(frac.y, 16),
-                               _mm_sub_epi32(_mm_set1_epi32(256), frac.y));
-
-  // r0,g0,b0,a0,r1,g1,b1,a1 \/ R0,G0,B0,A0,R1,G1,B1,A1
-  // r0,R0,g0,G0,b0,B0,a0,A0,r1,R1,g1,G1,b1,B1,a1,A1
-  // r0_,R0_,g0_,G0_,b0_,B0_,a0_,A0_ /\ r1_,R1_,g1_,G1_,b1_,B1_,a1_,A1_
-  // (r0*(256-fracy) + R0*fracy), ...
-  __m128 r0, r1, r2, r3;
-#  define FILTER_LANE(out, idx)                                               \
-    {                                                                         \
-      uint32_t* buf = &sampler->buf[_mm_cvtsi128_si32(                        \
-          _mm_shuffle_epi32(row0, _MM_SHUFFLE(idx, idx, idx, idx)))];         \
-      __m128i cc = _mm_unpacklo_epi8(                                         \
-          _mm_loadl_epi64((__m128i*)buf),                                     \
-          _mm_loadl_epi64(                                                    \
-              (__m128i*)(buf + _mm_extract_epi16(row1, 2 * idx))));           \
-      __m128i cc0 = _mm_unpacklo_epi8(cc, _mm_setzero_si128());               \
-      __m128i cc1 = _mm_unpackhi_epi8(cc, _mm_setzero_si128());               \
-      cc = _mm_add_epi16(                                                     \
-          cc0, _mm_mulhi_epi16(_mm_slli_epi16(_mm_sub_epi16(cc1, cc0), 4),    \
-                               _mm_shuffle_epi32(                             \
-                                   fracx, _MM_SHUFFLE(idx, idx, idx, idx)))); \
-      out = _mm_cvtepi32_ps(_mm_madd_epi16(                                   \
-          cc, _mm_shuffle_epi32(fracy, _MM_SHUFFLE(idx, idx, idx, idx))));    \
-    }
-  FILTER_LANE(r0, 0);
-  FILTER_LANE(r1, 1);
-  FILTER_LANE(r2, 2);
-  FILTER_LANE(r3, 3);
-#  undef FILTER_LANE
-
-  _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
-  return vec4(r2, r1, r0, r3) * (1.0f / 0xFF00);
-#else
-  P.x *= sampler->width * 128.0f;
-  P.y *= sampler->height * 128.0f;
-  P -= 0.5f * 128.0f;
-  ivec2 i(P);
-  ivec2 frac = i & (I32)0x7F;
-  i >>= 7;
-
-  I32 row0 = clampCoord(i.x, sampler->width) +
-             clampCoord(i.y, sampler->height) * sampler->stride + zoffset;
-  I32 row1 = row0 + ((i.y >= 0 && i.y < int32_t(sampler->height) - 1) &
-                     I32(sampler->stride));
-  I16 fracx =
-      CONVERT(frac.x & (i.x >= 0 && i.x < int32_t(sampler->width) - 1), I16);
-  I16 fracy = CONVERT(frac.y, I16);
-
-  auto a0 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row0.x]), V8<int16_t>);
-  auto a1 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row1.x]), V8<int16_t>);
-  a0 += ((a1 - a0) * fracy.x) >> 7;
-
-  auto b0 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row0.y]), V8<int16_t>);
-  auto b1 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row1.y]), V8<int16_t>);
-  b0 += ((b1 - b0) * fracy.y) >> 7;
-
-  auto abl = zipLow(a0, b0);
-  auto abh = zipHigh(a0, b0);
-  abl += ((abh - abl) * fracx.xyxyxyxy) >> 7;
-
-  auto c0 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row0.z]), V8<int16_t>);
-  auto c1 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row1.z]), V8<int16_t>);
-  c0 += ((c1 - c0) * fracy.z) >> 7;
-
-  auto d0 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row0.w]), V8<int16_t>);
-  auto d1 =
-      CONVERT(unaligned_load<V8<uint8_t> >(&sampler->buf[row1.w]), V8<int16_t>);
-  d0 += ((d1 - d0) * fracy.w) >> 7;
-
-  auto cdl = zipLow(c0, d0);
-  auto cdh = zipHigh(c0, d0);
-  cdl += ((cdh - cdl) * fracx.zwzwzwzw) >> 7;
-
-  auto rg = CONVERT(V8<uint16_t>(zip2Low(abl, cdl)), V8<float>);
-  auto ba = CONVERT(V8<uint16_t>(zip2High(abl, cdl)), V8<float>);
-
-  auto r = lowHalf(rg);
-  auto g = highHalf(rg);
-  auto b = lowHalf(ba);
-  auto a = highHalf(ba);
-  return vec4(b, g, r, a) * (1.0f / 255.0f);
-#endif
-}
-
-template <typename S>
-static U16 textureLinearPackedR8(S sampler, ivec2 i, I32 zoffset) {
-  assert(sampler->format == TextureFormat::R8);
-  ivec2 frac = i & (I32)0x7F;
-  i >>= 7;
-
-  I32 row0 = clampCoord(i.x, sampler->width) +
-             clampCoord(i.y, sampler->height) * sampler->stride + zoffset;
-  I32 row1 = row0 + ((i.y >= 0 && i.y < int32_t(sampler->height) - 1) &
-                     I32(sampler->stride));
-  I16 fracx =
-      CONVERT(frac.x & (i.x >= 0 && i.x < int32_t(sampler->width) - 1), I16);
-  I16 fracy = CONVERT(frac.y, I16);
-
-  uint8_t* buf = (uint8_t*)sampler->buf;
-  auto a0 = unaligned_load<V2<uint8_t> >(&buf[row0.x]);
-  auto b0 = unaligned_load<V2<uint8_t> >(&buf[row0.y]);
-  auto c0 = unaligned_load<V2<uint8_t> >(&buf[row0.z]);
-  auto d0 = unaligned_load<V2<uint8_t> >(&buf[row0.w]);
-  auto abcd0 = CONVERT(combine(combine(a0, b0), combine(c0, d0)), V8<int16_t>);
-
-  auto a1 = unaligned_load<V2<uint8_t> >(&buf[row1.x]);
-  auto b1 = unaligned_load<V2<uint8_t> >(&buf[row1.y]);
-  auto c1 = unaligned_load<V2<uint8_t> >(&buf[row1.z]);
-  auto d1 = unaligned_load<V2<uint8_t> >(&buf[row1.w]);
-  auto abcd1 = CONVERT(combine(combine(a1, b1), combine(c1, d1)), V8<int16_t>);
-
-  abcd0 += ((abcd1 - abcd0) * fracy.xxyyzzww) >> 7;
-
-  abcd0 = SHUFFLE(abcd0, abcd0, 0, 2, 4, 6, 1, 3, 5, 7);
-  auto abcdl = lowHalf(abcd0);
-  auto abcdh = highHalf(abcd0);
-  abcdl += ((abcdh - abcdl) * fracx) >> 7;
-
-  return U16(abcdl);
-}
-
-template <typename S>
-vec4 textureLinearR8(S sampler, vec2 P, I32 zoffset = 0) {
-  assert(sampler->format == TextureFormat::R8);
-
-#if USE_SSE2
-  P.x *= sampler->width * 256.0f;
-  P.y *= sampler->height * 256.0f;
-  P -= 0.5f * 256.0f;
-  ivec2 i(P);
-  ivec2 frac = i & (I32)0xFF;
-  i >>= 8;
-
-  __m128i row0 = _mm_min_epi16(_mm_max_epi16(i.y, _mm_setzero_si128()),
-                               _mm_set1_epi32(sampler->height - 1));
-  row0 = _mm_madd_epi16(row0, _mm_set1_epi32(sampler->stride));
-  row0 =
-      _mm_add_epi32(row0, _mm_min_epi16(_mm_max_epi16(i.x, _mm_setzero_si128()),
-                                        _mm_set1_epi32(sampler->width - 1)));
-  row0 = _mm_add_epi32(row0, zoffset);
-
-  __m128i yinside = _mm_andnot_si128(
-      _mm_cmplt_epi32(i.y, _mm_setzero_si128()),
-      _mm_cmplt_epi32(i.y, _mm_set1_epi32(sampler->height - 1)));
-  __m128i row1 = _mm_and_si128(yinside, _mm_set1_epi32(sampler->stride));
-
-  __m128i xinside = _mm_andnot_si128(
-      _mm_cmplt_epi32(i.x, _mm_setzero_si128()),
-      _mm_cmplt_epi32(i.x, _mm_set1_epi32(sampler->width - 1)));
-  __m128i fracx = _mm_and_si128(xinside, frac.x);
-  fracx = _mm_or_si128(_mm_slli_epi32(fracx, 16),
-                       _mm_sub_epi32(_mm_set1_epi32(256), fracx));
-
-  __m128i fracy = _mm_slli_epi16(frac.y, 4);
-  fracy = _mm_shufflelo_epi16(fracy, _MM_SHUFFLE(2, 2, 0, 0));
-  fracy = _mm_shufflehi_epi16(fracy, _MM_SHUFFLE(2, 2, 0, 0));
-
-  uint8_t* buf = (uint8_t*)sampler->buf;
-  uint8_t* buf0 =
-      buf + _mm_cvtsi128_si32(_mm_shuffle_epi32(row0, _MM_SHUFFLE(0, 0, 0, 0)));
-  uint8_t* buf1 =
-      buf + _mm_cvtsi128_si32(_mm_shuffle_epi32(row0, _MM_SHUFFLE(1, 1, 1, 1)));
-  uint8_t* buf2 =
-      buf + _mm_cvtsi128_si32(_mm_shuffle_epi32(row0, _MM_SHUFFLE(2, 2, 2, 2)));
-  uint8_t* buf3 =
-      buf + _mm_cvtsi128_si32(_mm_shuffle_epi32(row0, _MM_SHUFFLE(3, 3, 3, 3)));
-  __m128i cc0 = _mm_unpacklo_epi8(
-      _mm_setr_epi16(*(uint16_t*)buf0, *(uint16_t*)buf1, *(uint16_t*)buf2,
-                     *(uint16_t*)buf3, 0, 0, 0, 0),
-      _mm_setzero_si128());
-  __m128i cc1 = _mm_unpacklo_epi8(
-      _mm_setr_epi16(*(uint16_t*)(buf0 + _mm_extract_epi16(row1, 0)),
-                     *(uint16_t*)(buf1 + _mm_extract_epi16(row1, 2)),
-                     *(uint16_t*)(buf2 + _mm_extract_epi16(row1, 4)),
-                     *(uint16_t*)(buf3 + _mm_extract_epi16(row1, 6)), 0, 0, 0,
-                     0),
-      _mm_setzero_si128());
-  __m128i cc = _mm_add_epi16(
-      cc0, _mm_mulhi_epi16(_mm_slli_epi16(_mm_sub_epi16(cc1, cc0), 4), fracy));
-  __m128 r = _mm_cvtepi32_ps(_mm_madd_epi16(cc, fracx));
-  return vec4((Float)r * (1.0f / 0xFF00), 0.0f, 0.0f, 1.0f);
-#else
-  P.x *= sampler->width * 128.0f;
-  P.y *= sampler->height * 128.0f;
-  P -= 0.5f * 128.0f;
-  Float r = CONVERT(textureLinearPackedR8(sampler, ivec2(P), zoffset), Float);
-  return vec4(r * (1.0f / 255.0f), 0.0f, 0.0f, 1.0f);
-#endif
-}
-
-template <typename S>
-vec4 textureLinearRGBA32F(S sampler, vec2 P, I32 zoffset = 0) {
-  assert(sampler->format == TextureFormat::RGBA32F);
-  P.x *= sampler->width;
-  P.y *= sampler->height;
-  P -= 0.5f;
-  vec2 f = floor(P);
-  vec2 r = P - f;
-  ivec2 i(f);
-  ivec2 c = clamp2D(i, sampler);
-  r.x = if_then_else(i.x >= 0 && i.x < sampler->width - 1, r.x, 0.0f);
-  I32 offset0 = c.x * 4 + c.y * sampler->stride + zoffset;
-  I32 offset1 = offset0 + ((i.y >= 0 && i.y < int32_t(sampler->height) - 1) &
-                           I32(sampler->stride));
-
-  Float c0 = mix(mix(*(Float*)&sampler->buf[offset0.x],
-                     *(Float*)&sampler->buf[offset0.x + 4], r.x),
-                 mix(*(Float*)&sampler->buf[offset1.x],
-                     *(Float*)&sampler->buf[offset1.x + 4], r.x),
-                 r.y);
-  Float c1 = mix(mix(*(Float*)&sampler->buf[offset0.y],
-                     *(Float*)&sampler->buf[offset0.y + 4], r.x),
-                 mix(*(Float*)&sampler->buf[offset1.y],
-                     *(Float*)&sampler->buf[offset1.y + 4], r.x),
-                 r.y);
-  Float c2 = mix(mix(*(Float*)&sampler->buf[offset0.z],
-                     *(Float*)&sampler->buf[offset0.z + 4], r.x),
-                 mix(*(Float*)&sampler->buf[offset1.z],
-                     *(Float*)&sampler->buf[offset1.z + 4], r.x),
-                 r.y);
-  Float c3 = mix(mix(*(Float*)&sampler->buf[offset0.w],
-                     *(Float*)&sampler->buf[offset0.w + 4], r.x),
-                 mix(*(Float*)&sampler->buf[offset1.w],
-                     *(Float*)&sampler->buf[offset1.w + 4], r.x),
-                 r.y);
-  return pixel_float_to_vec4(c0, c1, c2, c3);
-}
-
-vec4 texture(sampler2D sampler, vec2 P) {
-  if (sampler->filter == TextureFilter::LINEAR) {
-    if (sampler->format == TextureFormat::RGBA32F) {
-      return textureLinearRGBA32F(sampler, P);
-    } else if (sampler->format == TextureFormat::RGBA8) {
-      return textureLinearRGBA8(sampler, P);
-    } else {
-      assert(sampler->format == TextureFormat::R8);
-      return textureLinearR8(sampler, P);
-    }
-  } else {
-    ivec2 coord(roundzero(P.x, sampler->width), roundzero(P.y, sampler->height));
-    return texelFetch(sampler, coord, 0);
-  }
-}
-
-vec4 texture(sampler2DRect sampler, vec2 P) {
-  assert(sampler->format == TextureFormat::RGBA8);
-  if (sampler->filter == TextureFilter::LINEAR) {
-    return textureLinearRGBA8(sampler,
-                              P * vec2_scalar{1.0f / sampler->width, 1.0f / sampler->height});
-  } else {
-    ivec2 coord(roundzero(P.x, 1.0f), roundzero(P.y, 1.0f));
-    return texelFetch(sampler, coord);
-  }
-}
-
-vec4 texture(sampler2DArray sampler, vec3 P) {
-  if (sampler->filter == TextureFilter::LINEAR) {
-    I32 zoffset =
-        clampCoord(roundeven(P.z, 1.0f), sampler->depth) * sampler->height_stride;
-    if (sampler->format == TextureFormat::RGBA32F) {
-      return textureLinearRGBA32F(sampler, vec2(P.x, P.y), zoffset);
-    } else if (sampler->format == TextureFormat::RGBA8) {
-      return textureLinearRGBA8(sampler, vec2(P.x, P.y), zoffset);
-    } else {
-      assert(sampler->format == TextureFormat::R8);
-      return textureLinearR8(sampler, vec2(P.x, P.y), zoffset);
-    }
-  } else {
-    // just do nearest for now
-    ivec3 coord(roundzero(P.x, sampler->width), roundzero(P.y, sampler->height),
-                roundeven(P.z, 1.0f));
-    return texelFetch(sampler, coord, 0);
-  }
-}
-
-vec4 texture(sampler2DArray sampler, vec3 P, float bias) {
-  assert(bias == 0.0f);
-  return texture(sampler, P);
-}
-
-vec4 textureLod(sampler2DArray sampler, vec3 P, float lod) {
-  assert(lod == 0.0f);
-  return texture(sampler, P);
-}
-
-ivec3_scalar textureSize(sampler2DArray sampler, int) {
-  return ivec3_scalar{int32_t(sampler->width), int32_t(sampler->height),
-                      int32_t(sampler->depth)};
-}
-
-ivec2_scalar textureSize(sampler2D sampler, int) {
-  return ivec2_scalar{int32_t(sampler->width), int32_t(sampler->height)};
-}
-
-ivec2_scalar textureSize(sampler2DRect sampler) {
-  return ivec2_scalar{int32_t(sampler->width), int32_t(sampler->height)};
 }
 
 ivec4 ivec2::sel(XYZW c1, XYZW c2, XYZW c3, XYZW c4) {
@@ -3150,17 +2645,5 @@ Array<vec2, SIZE> if_then_else(I32 c, Array<vec2, SIZE> t,
   }
   return r;
 }
-
-#if USE_SSE2
-bool test_all(Bool cond) { return _mm_movemask_ps(cond) == 0xF; }
-bool test_any(Bool cond) { return _mm_movemask_ps(cond) != 0; }
-bool test_none(Bool cond) { return _mm_movemask_ps(cond) == 0; }
-#else
-bool test_all(Bool cond) {
-  return bit_cast<uint32_t>(CONVERT(cond, U8)) == 0xFFFFFFFFU;
-}
-bool test_any(Bool cond) { return bit_cast<uint32_t>(CONVERT(cond, U8)) != 0; }
-bool test_none(Bool cond) { return bit_cast<uint32_t>(CONVERT(cond, U8)) == 0; }
-#endif
 
 }  // namespace glsl

@@ -250,6 +250,7 @@ export type Frame = {
   index: number,
   asyncCause: null | string,
   state: "on-stack" | "suspended" | "dead",
+  type?: "call" | "eval" | "global" | "module" | "wasmcall" | "debugger",
 };
 
 export type ChromeFrame = {
@@ -382,6 +383,16 @@ export type Grip = {
   fileName?: string,
   message?: string,
   name?: string,
+  displayClass: string,
+  displayName?: string,
+  parameterNames?: string[],
+  userDisplayName?: string,
+  location?: {
+    url: string,
+    line: number,
+    column: number,
+  },
+  optimizedOut: boolean,
 };
 
 export type TextSourceContent = {|
@@ -417,12 +428,14 @@ export type Source = {
   +isBlackBoxed: boolean,
   +isPrettyPrinted: boolean,
   +relativeUrl: URL,
-  +introductionUrl: ?URL,
-  +introductionType: ?string,
   +extensionName: ?string,
   +isExtension: boolean,
   +isWasm: boolean,
   +isOriginal: boolean,
+};
+
+export type DisplaySource = Source & {
+  +displayURL: string,
 };
 
 /**
@@ -474,11 +487,11 @@ export type Scope = {|
   scopeKind: string,
 |};
 
-export type ThreadType = "mainThread" | "worker" | "contentProcess";
 export type Thread = {
   +actor: ThreadId,
   +url: URL,
-  +type: ThreadType,
+  +isTopLevel: boolean,
+  +targetType: string,
   +name: string,
   serviceWorkerStatus?: string,
 };
@@ -518,4 +531,38 @@ export type Preview = {
   value: any,
   column: number,
   line: number,
+};
+
+export type Exception = {
+  columnNumber: number,
+  errorMessage: string,
+  lineNumber: number,
+  sourceActorId: SourceActorId,
+  stacktrace: Array<StacktraceFrame>,
+};
+
+export type StacktraceFrame = {
+  columnNumber: number,
+  filename: URL,
+  functionName: string,
+  lineNumber: number,
+  sourceId: SourceActorId,
+};
+
+// ObjectInspector types
+export type OINodeContents = {
+  value: Object | number | string | boolean | null | typeof undefined,
+};
+
+export type OINodeMeta = {
+  startIndex: number,
+  endIndex: number,
+};
+
+export type OINode = {
+  contents: Array<OINode> | OINodeContents,
+  name: string,
+  path: string,
+  type?: Symbol,
+  meta?: OINodeMeta,
 };

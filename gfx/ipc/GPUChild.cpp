@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "GPUChild.h"
 #include "gfxConfig.h"
+#include "GfxInfoBase.h"
 #include "gfxPlatform.h"
 #include "GPUProcessHost.h"
 #include "GPUProcessManager.h"
@@ -18,10 +19,12 @@
 #if defined(XP_WIN)
 #  include "mozilla/gfx/DeviceManagerDx.h"
 #endif
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/APZInputBridgeChild.h"
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
 #include "mozilla/Unused.h"
 #include "mozilla/HangDetails.h"
+#include "nsIGfxInfo.h"
 #include "nsIObserverService.h"
 
 #ifdef MOZ_GECKO_PROFILER
@@ -51,6 +54,7 @@ void GPUChild::Init() {
   devicePrefs.advancedLayers() = gfxConfig::GetValue(Feature::ADVANCED_LAYERS);
   devicePrefs.useD2D1() = gfxConfig::GetValue(Feature::DIRECT2D);
   devicePrefs.webGPU() = gfxConfig::GetValue(Feature::WEBGPU);
+  devicePrefs.d3d11HwAngle() = gfxConfig::GetValue(Feature::D3D11_HW_ANGLE);
 
   nsTArray<LayerTreeIdMapping> mappings;
   LayerTreeOwnerTracker::Get()->Iterate(
@@ -58,7 +62,14 @@ void GPUChild::Init() {
         mappings.AppendElement(LayerTreeIdMapping(aLayersId, aProcessId));
       });
 
-  SendInit(updates, devicePrefs, mappings);
+  nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+  nsTArray<GfxInfoFeatureStatus> features;
+  if (gfxInfo) {
+    auto* gfxInfoRaw = static_cast<widget::GfxInfoBase*>(gfxInfo.get());
+    features = gfxInfoRaw->GetAllFeatures();
+  }
+
+  SendInit(updates, devicePrefs, mappings, features);
 
   gfxVars::AddReceiver(this);
 
@@ -206,8 +217,27 @@ bool GPUChild::SendRequestMemoryReport(const uint32_t& aGeneration,
                                        const bool& aMinimizeMemoryUsage,
                                        const Maybe<FileDescriptor>& aDMDFile) {
   mMemoryReportRequest = MakeUnique<MemoryReportRequestHost>(aGeneration);
-  Unused << PGPUChild::SendRequestMemoryReport(aGeneration, aAnonymize,
-                                               aMinimizeMemoryUsage, aDMDFile);
+
+  PGPUChild::SendRequestMemoryReport(
+      aGeneration, aAnonymize, aMinimizeMemoryUsage, aDMDFile,
+      [&](const uint32_t& aGeneration2) {
+        if (GPUProcessManager* gpm = GPUProcessManager::Get()) {
+          if (GPUChild* child = gpm->GetGPUChild()) {
+            if (child->mMemoryReportRequest) {
+              child->mMemoryReportRequest->Finish(aGeneration2);
+              child->mMemoryReportRequest = nullptr;
+            }
+          }
+        }
+      },
+      [&](mozilla::ipc::ResponseRejectReason) {
+        if (GPUProcessManager* gpm = GPUProcessManager::Get()) {
+          if (GPUChild* child = gpm->GetGPUChild()) {
+            child->mMemoryReportRequest = nullptr;
+          }
+        }
+      });
+
   return true;
 }
 
@@ -215,15 +245,6 @@ mozilla::ipc::IPCResult GPUChild::RecvAddMemoryReport(
     const MemoryReport& aReport) {
   if (mMemoryReportRequest) {
     mMemoryReportRequest->RecvReport(aReport);
-  }
-  return IPC_OK();
-}
-
-mozilla::ipc::IPCResult GPUChild::RecvFinishMemoryReport(
-    const uint32_t& aGeneration) {
-  if (mMemoryReportRequest) {
-    mMemoryReportRequest->Finish(aGeneration);
-    mMemoryReportRequest = nullptr;
   }
   return IPC_OK();
 }

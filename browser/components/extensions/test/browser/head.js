@@ -32,16 +32,22 @@
  */
 
 // There are shutdown issues for which multiple rejections are left uncaught.
-// This bug should be fixed, but for the moment this directory is whitelisted.
+// This bug should be fixed, but for the moment all tests in this directory
+// allow various classes of promise rejections.
 //
-// NOTE: Entire directory whitelisting should be kept to a minimum. Normally you
-//       should use "expectUncaughtRejection" to flag individual failures.
+// NOTE: Allowing rejections on an entire directory should be avoided.
+//       Normally you should use "expectUncaughtRejection" to flag individual
+//       failures.
 const { PromiseTestUtils } = ChromeUtils.import(
   "resource://testing-common/PromiseTestUtils.jsm"
 );
-PromiseTestUtils.whitelistRejectionsGlobally(/Message manager disconnected/);
-PromiseTestUtils.whitelistRejectionsGlobally(/No matching message handler/);
-PromiseTestUtils.whitelistRejectionsGlobally(/Receiving end does not exist/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Message manager disconnected/
+);
+PromiseTestUtils.allowMatchingRejectionsGlobally(/No matching message handler/);
+PromiseTestUtils.allowMatchingRejectionsGlobally(
+  /Receiving end does not exist/
+);
 
 const { AppConstants } = ChromeUtils.import(
   "resource://gre/modules/AppConstants.jsm"
@@ -70,10 +76,14 @@ function loadTestSubscript(filePath) {
   Services.scriptloader.loadSubScript(new URL(filePath, gTestPath).href, this);
 }
 
-// Don't try to create screenshots of sites we load during tests.
+// Leaving Top Sites enabled during these tests would create site screenshots
+// and update pinned Top Sites unnecessarily.
 Services.prefs
   .getDefaultBranch("browser.newtabpage.activity-stream.")
   .setBoolPref("feeds.topsites", false);
+Services.prefs
+  .getDefaultBranch("browser.newtabpage.activity-stream.")
+  .setBoolPref("feeds.system.topsites", false);
 
 {
   // Touch the recipeParentPromise lazy getter so we don't get
@@ -259,8 +269,8 @@ async function promiseContentDimensions(browser) {
 
   let dims = await promisePossiblyInaccurateContentDimensions(browser);
   while (
-    browser.clientWidth !== dims.window.innerWidth ||
-    browser.clientHeight !== dims.window.innerHeight
+    browser.clientWidth !== Math.round(dims.window.innerWidth) ||
+    browser.clientHeight !== Math.round(dims.window.innerHeight)
   ) {
     await delay(50);
     dims = await promisePossiblyInaccurateContentDimensions(browser);
@@ -426,14 +436,12 @@ function openBrowserActionPanel(extension, win = window, awaitLoad = false) {
 
 async function toggleBookmarksToolbar(visible = true) {
   let bookmarksToolbar = document.getElementById("PersonalToolbar");
-  let transitionPromise = BrowserTestUtils.waitForEvent(
-    bookmarksToolbar,
-    "transitionend",
-    e => e.propertyName == "max-height"
-  );
+  let visibilityToggledPromise = TestUtils.waitForCondition(() => {
+    return visible ? !bookmarksToolbar.collapsed : bookmarksToolbar.collapsed;
+  }, "waiting for toolbar to become " + (visible ? "visible" : "hidden"));
 
   setToolbarVisibility(bookmarksToolbar, visible);
-  await transitionPromise;
+  await visibilityToggledPromise;
 }
 
 async function openContextMenuInPopup(extension, selector = "body") {
@@ -488,6 +496,9 @@ async function openContextMenuInSidebar(selector = "body") {
   return contentAreaContextMenu;
 }
 
+// `selector` should refer to the content in the frame. If invalid the test can
+// fail intermittently because the click could inadvertently be registered on
+// the upper-left corner of the frame (instead of inside the frame).
 async function openContextMenuInFrame(selector = "body", frameIndex = 0) {
   let contentAreaContextMenu = document.getElementById(
     "contentAreaContextMenu"
@@ -666,14 +677,15 @@ function closeActionContextMenu(itemToSelect, kind, win = window) {
   return closeChromeContextMenu(menuID, itemToSelect, win);
 }
 
-function openTabContextMenu(win = window) {
+function openTabContextMenu(tab = gBrowser.selectedTab) {
   // The TabContextMenu initializes its strings only on a focus or mouseover event.
   // Calls focus event on the TabContextMenu before opening.
-  gBrowser.selectedTab.focus();
+  tab.focus();
+  let indexOfTab = Array.prototype.indexOf.call(tab.parentNode.children, tab);
   return openChromeContextMenu(
     "tabContextMenu",
-    ".tabbrowser-tab[selected]",
-    win
+    `.tabbrowser-tab:nth-child(${indexOfTab + 1})`,
+    tab.ownerGlobal
   );
 }
 

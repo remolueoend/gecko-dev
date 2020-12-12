@@ -15,7 +15,8 @@
 #include "nsIDirectoryEnumerator.h"
 #include "mozilla/Base64.h"
 #include "mozilla/IntegerPrintfMacros.h"
-#include "mozilla/net/MozURL.h"
+#include "nsContentUtils.h"
+#include "nsNetUtil.h"
 
 namespace mozilla {
 namespace net {
@@ -51,7 +52,7 @@ nsresult CacheFileContextEvictor::Init(nsIFile* aCacheDirectory) {
     return rv;
   }
 
-  rv = mEntriesDir->AppendNative(NS_LITERAL_CSTRING(ENTRIES_DIR));
+  rv = mEntriesDir->AppendNative(nsLiteralCString(ENTRIES_DIR));
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -368,7 +369,7 @@ nsresult CacheFileContextEvictor::LoadEvictInfoFromDisk() {
       continue;
     }
 
-    if (!StringBeginsWith(leaf, NS_LITERAL_CSTRING(CONTEXT_EVICTION_PREFIX))) {
+    if (!StringBeginsWith(leaf, nsLiteralCString(CONTEXT_EVICTION_PREFIX))) {
       continue;
     }
 
@@ -403,7 +404,7 @@ nsresult CacheFileContextEvictor::LoadEvictInfoFromDisk() {
     }
 
     nsCOMPtr<nsILoadContextInfo> info;
-    if (!NS_LITERAL_CSTRING("*").Equals(decoded)) {
+    if (!"*"_ns.Equals(decoded)) {
       // "*" is indication of 'delete all', info left null will pass
       // to CacheFileContextEvictor::AddContext and clear all the cache data.
       info = CacheFileUtils::ParseKey(decoded);
@@ -439,9 +440,6 @@ nsresult CacheFileContextEvictor::GetContextFile(
     const nsAString& aOrigin, nsIFile** _retval) {
   nsresult rv;
 
-  nsAutoCString leafName;
-  leafName.AssignLiteral(CONTEXT_EVICTION_PREFIX);
-
   nsAutoCString keyPrefix;
   if (aPinned) {
     // Mark pinned context files with a tab char at the start.
@@ -458,16 +456,16 @@ nsresult CacheFileContextEvictor::GetContextFile(
     keyPrefix.Append(NS_ConvertUTF16toUTF8(aOrigin));
   }
 
-  nsAutoCString data64;
-  rv = Base64Encode(keyPrefix, data64);
+  nsAutoCString leafName;
+  leafName.AssignLiteral(CONTEXT_EVICTION_PREFIX);
+
+  rv = Base64EncodeAppend(keyPrefix, leafName);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
 
   // Replace '/' with '-' since '/' cannot be part of the filename.
-  data64.ReplaceChar('/', '-');
-
-  leafName.Append(data64);
+  leafName.ReplaceChar('/', '-');
 
   nsCOMPtr<nsIFile> file;
   rv = mCacheDirectory->Clone(getter_AddRefs(file));
@@ -675,19 +673,25 @@ void CacheFileContextEvictor::EvictEntries() {
         continue;
       }
 
-      RefPtr<MozURL> url;
-      rv = MozURL::Init(getter_AddRefs(url), uriSpec);
+      nsCOMPtr<nsIURI> uri;
+      rv = NS_NewURI(getter_AddRefs(uri), uriSpec);
       if (NS_FAILED(rv)) {
         LOG(
             ("CacheFileContextEvictor::EvictEntries() - Skipping entry since "
-             "MozURL "
-             "fails in the parsing of the uriSpec"));
+             "NS_NewURI failed to parse the uriSpec"));
         continue;
       }
 
-      nsAutoCString urlOrigin;
-      url->Origin(urlOrigin);
-      if (!urlOrigin.Equals(NS_ConvertUTF16toUTF8(mEntries[0]->mOrigin))) {
+      nsAutoString urlOrigin;
+      rv = nsContentUtils::GetUTFOrigin(uri, urlOrigin);
+      if (NS_FAILED(rv)) {
+        LOG(
+            ("CacheFileContextEvictor::EvictEntries() - Skipping entry since "
+             "We failed to extract an origin"));
+        continue;
+      }
+
+      if (!urlOrigin.Equals(mEntries[0]->mOrigin)) {
         LOG(
             ("CacheFileContextEvictor::EvictEntries() - Skipping entry since "
              "origin "

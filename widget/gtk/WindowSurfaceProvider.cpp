@@ -7,7 +7,9 @@
 #include "WindowSurfaceProvider.h"
 
 #include "gfxPlatformGtk.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/layers/LayersTypes.h"
+#include "nsWindow.h"
 #include "WindowSurfaceX11Image.h"
 #include "WindowSurfaceX11SHM.h"
 #include "WindowSurfaceXRender.h"

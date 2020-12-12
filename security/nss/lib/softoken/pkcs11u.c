@@ -716,7 +716,6 @@ sftk_modifyType(CK_ATTRIBUTE_TYPE type, CK_OBJECT_CLASS inClass)
         case CKA_PUBLIC_EXPONENT:
         case CKA_PRIVATE_EXPONENT:
         case CKA_PRIME:
-        case CKA_SUBPRIME:
         case CKA_BASE:
         case CKA_PRIME_1:
         case CKA_PRIME_2:
@@ -765,6 +764,11 @@ sftk_modifyType(CK_ATTRIBUTE_TYPE type, CK_OBJECT_CLASS inClass)
         /* DEPENDS ON CLASS */
         case CKA_VALUE:
             mtype = (inClass == CKO_DATA) ? SFTK_ALWAYS : SFTK_NEVER;
+            break;
+
+        case CKA_SUBPRIME:
+            /* allow the CKA_SUBPRIME to be added to dh private keys */
+            mtype = (inClass == CKO_PRIVATE_KEY) ? SFTK_ALWAYS : SFTK_NEVER;
             break;
 
         case CKA_SUBJECT:
@@ -2051,7 +2055,7 @@ unsigned int
 sftk_CKRVToMask(CK_RV rv)
 {
     PR_STATIC_ASSERT(CKR_OK == 0);
-    return ~CT_NOT_ZERO(rv);
+    return ~PORT_CT_NOT_ZERO(rv);
 }
 
 /* sftk_CheckCBCPadding checks, in constant time, the padding validity and
@@ -2065,18 +2069,18 @@ sftk_CheckCBCPadding(CK_BYTE_PTR pBuf, unsigned int bufLen,
     unsigned int padSize = (unsigned int)pBuf[bufLen - 1];
 
     /* If padSize <= blockSize, set goodPad to all-1s and all-0s otherwise.*/
-    unsigned int goodPad = CT_DUPLICATE_MSB_TO_ALL(~(blockSize - padSize));
+    unsigned int goodPad = PORT_CT_DUPLICATE_MSB_TO_ALL(~(blockSize - padSize));
     /* padSize should not be 0 */
-    goodPad &= CT_NOT_ZERO(padSize);
+    goodPad &= PORT_CT_NOT_ZERO(padSize);
 
     unsigned int i;
     for (i = 0; i < blockSize; i++) {
         /* If i < padSize, set loopMask to all-1s and all-0s otherwise.*/
-        unsigned int loopMask = CT_DUPLICATE_MSB_TO_ALL(~(padSize - 1 - i));
+        unsigned int loopMask = PORT_CT_DUPLICATE_MSB_TO_ALL(~(padSize - 1 - i));
         /* Get the padding value (should be padSize) from buffer */
         unsigned int padVal = pBuf[bufLen - 1 - i];
         /* Update goodPad only if i < padSize */
-        goodPad &= CT_SEL(loopMask, ~(padVal ^ padSize), goodPad);
+        goodPad &= PORT_CT_SEL(loopMask, ~(padVal ^ padSize), goodPad);
     }
 
     /* If any of the final padding bytes had the wrong value, one or more
@@ -2086,12 +2090,12 @@ sftk_CheckCBCPadding(CK_BYTE_PTR pBuf, unsigned int bufLen,
     goodPad &= goodPad >> 2;
     goodPad &= goodPad >> 1;
     goodPad <<= sizeof(goodPad) * 8 - 1;
-    goodPad = CT_DUPLICATE_MSB_TO_ALL(goodPad);
+    goodPad = PORT_CT_DUPLICATE_MSB_TO_ALL(goodPad);
 
     /* Set outPadSize to padSize or 0 */
-    *outPadSize = CT_SEL(goodPad, padSize, 0);
+    *outPadSize = PORT_CT_SEL(goodPad, padSize, 0);
     /* Return OK if the pad is valid */
-    return CT_SEL(goodPad, CKR_OK, CKR_ENCRYPTED_DATA_INVALID);
+    return PORT_CT_SEL(goodPad, CKR_OK, CKR_ENCRYPTED_DATA_INVALID);
 }
 
 void

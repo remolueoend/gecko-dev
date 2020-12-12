@@ -5,6 +5,9 @@
 "use strict";
 
 const { TIMING_KEYS } = require("devtools/client/netmonitor/src/constants");
+const {
+  getUrlDetails,
+} = require("devtools/client/netmonitor/src/utils/request-utils");
 
 var guid = 0;
 
@@ -47,6 +50,7 @@ HarImporter.prototype = {
           startedMs: startedMs,
           method: entry.request.method,
           url: entry.request.url,
+          urlDetails: getUrlDetails(entry.request.url),
           isXHR: false,
           cause: {
             loadingDocumentUri: "",
@@ -86,7 +90,7 @@ HarImporter.prototype = {
         },
         totalTime: TIMING_KEYS.reduce((sum, type) => {
           const time = entry.timings[type];
-          return time != -1 ? sum + time : sum;
+          return typeof time != "undefined" && time != -1 ? sum + time : sum;
         }, 0),
 
         httpVersion: entry.request.httpVersion,
@@ -112,7 +116,7 @@ HarImporter.prototype = {
       };
 
       if (entry.cache.afterRequest) {
-        const afterRequest = entry.cache.afterRequest;
+        const { afterRequest } = entry.cache;
         data.responseCache = {
           cache: {
             expires: afterRequest.expires,

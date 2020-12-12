@@ -10,21 +10,33 @@
 #define mozilla_dom_ScriptSettings_h
 
 #include "MainThreadUtils.h"
-#include "nsIGlobalObject.h"
-#include "nsIPrincipal.h"
 #include "xpcpublic.h"
 
 #include "mozilla/dom/JSExecutionManager.h"
 #include "mozilla/Maybe.h"
 
 #include "jsapi.h"
-#include "js/Exception.h"
 #include "js/Debug.h"
 #include "js/Warnings.h"  // JS::WarningReporter
 
+#ifdef MOZ_GECKO_PROFILER
+#  include "GeckoProfiler.h"
+#endif
+
+class JSFunction;
+class JSObject;
+class JSScript;
+class nsIGlobalObject;
+class nsIPrincipal;
 class nsPIDOMWindowInner;
 class nsGlobalWindowInner;
 class nsIScriptContext;
+struct JSContext;
+
+namespace JS {
+class ExceptionStack;
+class Value;
+}  // namespace JS
 
 namespace mozilla {
 namespace dom {
@@ -436,13 +448,12 @@ class AutoNoJSAPI : protected ScriptSettingsStackEntry,
  */
 class MOZ_RAII AutoJSContext {
  public:
-  explicit AutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
+  explicit AutoJSContext();
   operator JSContext*() const;
 
  protected:
   JSContext* mCx;
   dom::AutoJSAPI mJSAPI;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /**
@@ -454,11 +465,10 @@ class MOZ_RAII AutoJSContext {
  */
 class MOZ_RAII AutoSafeJSContext : public dom::AutoJSAPI {
  public:
-  explicit AutoSafeJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
+  explicit AutoSafeJSContext();
   operator JSContext*() const { return cx(); }
 
  private:
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /**
@@ -473,11 +483,10 @@ class MOZ_RAII AutoSafeJSContext : public dom::AutoJSAPI {
  */
 class MOZ_RAII AutoSlowOperation {
  public:
-  explicit AutoSlowOperation(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
+  explicit AutoSlowOperation();
   void CheckForInterrupt();
 
  private:
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
   bool mIsMainThread;
   Maybe<xpc::AutoScriptActivity> mScriptActivity;
 };
@@ -495,6 +504,22 @@ class MOZ_RAII AutoDisableJSInterruptCallback {
  private:
   JSContext* mCx;
   bool mOld;
+};
+
+/**
+ * A helper class which allows to allow-list legacy callers executing script
+ * in the AutoEntryScript constructor. The goal is to remove these exceptions
+ * one by one. Do not add a new one without review from a DOM peer.
+ */
+class MOZ_RAII AutoAllowLegacyScriptExecution {
+ public:
+  AutoAllowLegacyScriptExecution();
+  ~AutoAllowLegacyScriptExecution();
+
+  static bool IsAllowed();
+
+ private:
+  static int sAutoAllowLegacyScriptExecution;
 };
 
 }  // namespace mozilla

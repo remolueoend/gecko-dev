@@ -78,10 +78,10 @@ export function getTabMenuItems(): Object {
       accesskey: L10N.getStr("sourceTabs.revealInTree.accesskey"),
       disabled: false,
     },
-    copyToClipboard: {
-      id: "node-menu-copy-to-clipboard",
-      label: L10N.getStr("copyToClipboard.label"),
-      accesskey: L10N.getStr("copyToClipboard.accesskey"),
+    copySource: {
+      id: "node-menu-copy-source",
+      label: L10N.getStr("copySource.label"),
+      accesskey: L10N.getStr("copySource.accesskey"),
       disabled: false,
     },
     copySourceUri2: {
@@ -92,8 +92,8 @@ export function getTabMenuItems(): Object {
     },
     toggleBlackBox: {
       id: "node-menu-blackbox",
-      label: L10N.getStr("blackboxContextItem.blackbox"),
-      accesskey: L10N.getStr("blackboxContextItem.blackbox.accesskey"),
+      label: L10N.getStr("ignoreContextItem.ignore"),
+      accesskey: L10N.getStr("ignoreContextItem.ignore.accesskey"),
       disabled: false,
     },
     prettyPrint: {

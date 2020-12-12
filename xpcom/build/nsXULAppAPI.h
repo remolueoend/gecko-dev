@@ -7,24 +7,30 @@
 #ifndef _nsXULAppAPI_h__
 #define _nsXULAppAPI_h__
 
-#include "nsID.h"
-#include "xrecore.h"
-#include "nsXPCOM.h"
-#include "nsISupports.h"
-#include "mozilla/Logging.h"
-#include "mozilla/XREAppData.h"
 #include "js/TypeDecls.h"
-
 #include "mozilla/ArrayUtils.h"
-#include "mozilla/Assertions.h"
-#include "mozilla/Vector.h"
 #include "mozilla/TimeStamp.h"
-#include "XREChildData.h"
-#include "XREShellData.h"
+#include "nscore.h"
+#include "xrecore.h"
 
 #if defined(MOZ_WIDGET_ANDROID)
 #  include <jni.h>
 #endif
+
+class JSString;
+class MessageLoop;
+class nsIDirectoryServiceProvider;
+class nsIFile;
+class nsISupports;
+struct JSContext;
+struct XREChildData;
+struct XREShellData;
+
+namespace mozilla {
+class XREAppData;
+struct BootstrapConfig;
+struct Module;
+}  // namespace mozilla
 
 /**
  * A directory service key which provides the platform-correct "application
@@ -205,9 +211,6 @@
  * @note           If the binary is linked against the standalone XPCOM glue,
  *                 XPCOMGlueStartup() should be called before this method.
  */
-namespace mozilla {
-struct BootstrapConfig;
-}
 XRE_API(int, XRE_main,
         (int argc, char* argv[], const mozilla::BootstrapConfig& aConfig))
 
@@ -440,14 +443,6 @@ XRE_API(bool, XRE_IsSocketProcess, ())
  */
 XRE_API(bool, XRE_UseNativeEventProcessing, ())
 
-#if defined(XP_WIN)
-/**
- * @returns true if win32k calls are allowed in this process type, false if
- *          win32k is (or should be) disabled.
- */
-XRE_API(bool, XRE_Win32kCallsAllowed, ())
-#endif
-
 typedef void (*MainFunction)(void* aData);
 
 XRE_API(nsresult, XRE_InitParentProcess,
@@ -461,8 +456,6 @@ XRE_API(nsresult, XRE_RunAppShell, ())
 XRE_API(nsresult, XRE_InitCommandLine, (int aArgc, char* aArgv[]))
 
 XRE_API(nsresult, XRE_DeinitCommandLine, ())
-
-class MessageLoop;
 
 XRE_API(void, XRE_ShutdownChildProcess, ())
 

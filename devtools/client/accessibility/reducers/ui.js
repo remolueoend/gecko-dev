@@ -9,7 +9,6 @@ const Services = require("Services");
 const {
   AUDIT,
   ENABLE,
-  DISABLE,
   RESET,
   SELECT,
   HIGHLIGHT,
@@ -20,6 +19,7 @@ const {
   UPDATE_DETAILS,
   PREF_KEYS,
   PREFS,
+  UPDATE_DISPLAY_TABBING_ORDER,
 } = require("devtools/client/accessibility/constants");
 
 const TreeView = require("devtools/client/shared/components/tree/TreeView");
@@ -39,6 +39,7 @@ function getInitialState() {
       PREF_KEYS[PREFS.SCROLL_INTO_VIEW],
       false
     ),
+    tabbingOrderDisplayed: false,
     supports: {},
   };
 }
@@ -50,8 +51,6 @@ function ui(state = getInitialState(), action) {
   switch (action.type) {
     case ENABLE:
       return onToggle(state, action, true);
-    case DISABLE:
-      return onToggle(state, action, false);
     case UPDATE_CAN_BE_DISABLED:
       return onCanBeDisabledChange(state, action);
     case UPDATE_CAN_BE_ENABLED:
@@ -70,6 +69,8 @@ function ui(state = getInitialState(), action) {
       return onSelect(state, action);
     case RESET:
       return onReset(state, action);
+    case UPDATE_DISPLAY_TABBING_ORDER:
+      return onUpdateDisplayTabbingOrder(state, action);
     default:
       return state;
   }
@@ -119,7 +120,7 @@ function onAudit(state, { response: ancestries, error }) {
 
 function onHighlight(state, { accessible, response: ancestry, error }) {
   if (error) {
-    console.warn("Error fetching ancestry", accessible, error);
+    console.warn("Error fetching ancestry", error);
     return state;
   }
 
@@ -129,7 +130,7 @@ function onHighlight(state, { accessible, response: ancestry, error }) {
 
 function onSelect(state, { accessible, response: ancestry, error }) {
   if (error) {
-    console.warn("Error fetching ancestry", accessible, error);
+    console.warn("Error fetching ancestry", error);
     return state;
   }
 
@@ -204,6 +205,15 @@ function onToggle(state, { error }, enabled) {
   }
 
   return Object.assign({}, state, { enabled });
+}
+
+function onUpdateDisplayTabbingOrder(state, { error, tabbingOrderDisplayed }) {
+  if (error) {
+    console.warn("Error updating displaying tabbing order: ", error);
+    return state;
+  }
+
+  return Object.assign({}, state, { tabbingOrderDisplayed });
 }
 
 exports.ui = ui;

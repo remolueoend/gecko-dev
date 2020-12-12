@@ -1,4 +1,3 @@
-# %ARG DOCKER_IMAGE_PARENT
 FROM $DOCKER_IMAGE_PARENT
 LABEL maintainer="Andi-Bogdan Postelnicu <andi@mozilla.com>"
 
@@ -8,8 +7,12 @@ VOLUME /builds/worker/tooltool-cache
 
 ENV XZ_OPT=-T0
 
-# %ARG TASKCLUSTER_ROOT_URL
-# %ARG DOCKER_IMAGE_PACKAGES
+# %include taskcluster/docker/recipes/prepare_openjdk.sh
+COPY topsrcdir/taskcluster/docker/recipes/prepare_openjdk.sh /tmp/prepare_openjdk.sh
+RUN /tmp/prepare_openjdk.sh && rm /tmp/prepare_openjdk.sh
+
+ARG TASKCLUSTER_ROOT_URL
+ARG DOCKER_IMAGE_PACKAGES
 RUN /usr/local/sbin/setup_packages.sh $TASKCLUSTER_ROOT_URL $DOCKER_IMAGE_PACKAGES
 
 RUN apt-get update && \
@@ -28,6 +31,7 @@ RUN apt-get update && \
       gnupg \
       jq \
       libc6-dev \
+      libstdc++-8-dev \
       libmpfr-dev \
       nasm \
       openjdk-8-jdk-headless \
@@ -35,9 +39,11 @@ RUN apt-get update && \
       patch \
       p7zip-full \
       procps \
+      python-dev \
       python-pip \
       python-setuptools \
       python-virtualenv \
+      python3-dev \
       rsync \
       screen \
       tar \

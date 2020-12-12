@@ -6,7 +6,6 @@
 
 #include "VRParent.h"
 #include "VRGPUParent.h"
-#include "VRManager.h"
 #include "gfxConfig.h"
 #include "nsDebugImpl.h"
 #include "nsThreadManager.h"
@@ -66,12 +65,6 @@ IPCResult VRParent::RecvInit(nsTArray<GfxVarUpdate>&& vars,
   return IPC_OK();
 }
 
-IPCResult VRParent::RecvNotifyVsync(const TimeStamp& vsyncTimestamp) {
-  VRManager* vm = VRManager::Get();
-  vm->NotifyVsync(vsyncTimestamp);
-  return IPC_OK();
-}
-
 IPCResult VRParent::RecvUpdateVar(const GfxVarUpdate& aUpdate) {
   gfxVars::ApplyUpdate(aUpdate);
   return IPC_OK();
@@ -96,7 +89,8 @@ mozilla::ipc::IPCResult VRParent::RecvOpenVRControllerManifestPathToVR(
 
 mozilla::ipc::IPCResult VRParent::RecvRequestMemoryReport(
     const uint32_t& aGeneration, const bool& aAnonymize,
-    const bool& aMinimizeMemoryUsage, const Maybe<FileDescriptor>& aDMDFile) {
+    const bool& aMinimizeMemoryUsage, const Maybe<FileDescriptor>& aDMDFile,
+    const RequestMemoryReportResolver& aResolver) {
   MOZ_ASSERT(XRE_IsVRProcess());
   nsPrintfCString processName("VR (pid %u)", (unsigned)getpid());
 
@@ -105,9 +99,7 @@ mozilla::ipc::IPCResult VRParent::RecvRequestMemoryReport(
       [&](const MemoryReport& aReport) {
         Unused << SendAddMemoryReport(aReport);
       },
-      [&](const uint32_t& aGeneration) {
-        return SendFinishMemoryReport(aGeneration);
-      });
+      aResolver);
   return IPC_OK();
 }
 

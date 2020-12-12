@@ -6,19 +6,12 @@
 #ifndef nsIContent_h___
 #define nsIContent_h___
 
-#include "mozilla/Attributes.h"
 #include "mozilla/FlushType.h"
-#include "mozilla/dom/BorrowedAttrInfo.h"
-#include "nsCaseTreatment.h"  // for enum, cannot be forward-declared
 #include "nsINode.h"
 #include "nsStringFwd.h"
-#include "nsISupportsImpl.h"
 
 // Forward declarations
-class nsAtom;
 class nsIURI;
-class nsAttrValue;
-class nsAttrName;
 class nsTextFragment;
 class nsIFrame;
 
@@ -188,16 +181,6 @@ class nsIContent : public nsINode {
   nsIContent* FindFirstNonChromeOnlyAccessContent() const;
 
   /**
-   * Returns true if and only if this node has a parent, but is not in
-   * its parent's child list.
-   *
-   * FIXME(emilio): Remove along nsINode::IsInAnonymousSubtree.
-   */
-  bool IsRootOfAnonymousSubtree() const {
-    return IsRootOfNativeAnonymousSubtree();
-  }
-
-  /**
    * Return true iff this node is in an HTML document (in the HTML5 sense of
    * the term, i.e. not in an XHTML/XML document).
    */
@@ -346,8 +329,8 @@ class nsIContent : public nsINode {
    *                          execution is trusted.
    * @return true if the focus was changed.
    */
-  virtual bool PerformAccesskey(bool aKeyCausesActivation,
-                                bool aIsTrustedEvent) {
+  MOZ_CAN_RUN_SCRIPT virtual bool PerformAccesskey(bool aKeyCausesActivation,
+                                                   bool aIsTrustedEvent) {
     return false;
   }
 

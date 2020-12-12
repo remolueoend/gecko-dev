@@ -7,6 +7,7 @@
 #ifndef AudioContext_h_
 #define AudioContext_h_
 
+#include "X11UndefineNone.h"
 #include "AudioParamDescriptorMap.h"
 #include "mozilla/dom/OfflineAudioContextBinding.h"
 #include "mozilla/dom/AudioContextBinding.h"
@@ -20,16 +21,11 @@
 #include "mozilla/UniquePtr.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsDataHashtable.h"
 #include "nsHashKeys.h"
 #include "nsTHashtable.h"
 #include "js/TypeDecls.h"
 #include "nsIMemoryReporter.h"
-
-// X11 has a #define for CurrentTime. Unbelievable :-(.
-// See dom/media/DOMMediaStream.h for more fun!
-#ifdef CurrentTime
-#  undef CurrentTime
-#endif
 
 namespace WebCore {
 class PeriodicWave;
@@ -141,8 +137,6 @@ class AudioContext final : public DOMEventTargetHelper,
                float aSampleRate = 0.0f);
   ~AudioContext();
 
-  nsresult Init();
-
  public:
   typedef uint64_t AudioContextId;
 
@@ -155,9 +149,8 @@ class AudioContext final : public DOMEventTargetHelper,
   nsISerialEventTarget* GetMainThread() const;
 
   virtual void DisconnectFromOwner() override;
-  virtual void BindToOwner(nsIGlobalObject* aNew) override;
 
-  void Shutdown();  // idempotent
+  void OnWindowDestroy();  // idempotent
 
   JSObject* WrapObject(JSContext* aCx,
                        JS::Handle<JSObject*> aGivenProto) override;
@@ -351,6 +344,7 @@ class AudioContext final : public DOMEventTargetHelper,
 
  private:
   void DisconnectFromWindow();
+  already_AddRefed<Promise> CreatePromise(ErrorResult& aRv);
   void RemoveFromDecodeQueue(WebAudioDecodeJob* aDecodeJob);
   void ShutdownDecoder();
 
@@ -359,7 +353,7 @@ class AudioContext final : public DOMEventTargetHelper,
 
   friend struct ::mozilla::WebAudioDecodeJob;
 
-  nsTArray<mozilla::MediaTrack*> GetAllTracks() const;
+  nsTArray<RefPtr<mozilla::MediaTrack>> GetAllTracks() const;
 
   void ResumeInternal(AudioContextOperationFlags aFlags);
   void SuspendInternal(void* aPromise, AudioContextOperationFlags aFlags);

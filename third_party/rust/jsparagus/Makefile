@@ -35,9 +35,13 @@ EXTENSION_FILES = \
 SOURCE_FILES = $(EXTENSION_FILES) \
 jsparagus/gen.py \
 jsparagus/grammar.py \
+jsparagus/rewrites.py \
+jsparagus/lr0.py \
+jsparagus/parse_table.py \
 jsparagus/extension.py \
 jsparagus/utils.py \
 jsparagus/actions.py \
+jsparagus/aps.py \
 jsparagus/types.py \
 js_parser/esgrammar.pgen \
 js_parser/generate_js_parser_tables.py \
@@ -78,7 +82,9 @@ rust: $(RS_AST_OUT) $(RS_TABLES_OUT)
 jsparagus/parse_pgen_generated.py:
 	$(PYTHON) -m jsparagus.parse_pgen --regenerate > $@
 
-check: all static-check
+check: all static-check dyn-check
+
+dyn-check:
 	./test.sh
 	cargo fmt
 	cargo test --all
@@ -89,8 +95,17 @@ static-check:
 jsdemo: $(PY_OUT)
 	$(PYTHON) -m js_parser.try_it
 
-update-opcodes-m-u:
-	$(PYTHON) crates/emitter/scripts/update_opcodes.py \
+update-stencil:
+	$(PYTHON) update_stencil.py \
 		../mozilla-unified ./
 
-.PHONY: all check static-check jsdemo rust update-opcodes-m-u
+update-unicode:
+	$(PYTHON) update_unicode.py UNIDATA ./
+
+smoosh-status:
+	$(PYTHON) smoosh_status.py
+
+smoosh-status-ci:
+	$(PYTHON) smoosh_status.py ci
+
+.PHONY: all check static-check dyn-check jsdemo rust update-opcodes-m-u smoosh-status smoosh-status-ci

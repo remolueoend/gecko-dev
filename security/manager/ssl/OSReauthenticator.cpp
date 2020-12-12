@@ -10,26 +10,47 @@
 #include "nsNetCID.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/Logging.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/Preferences.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIBaseWindow.h"
 #include "nsIDocShell.h"
 #include "nsISupportsUtils.h"
 #include "nsIWidget.h"
+#include "nsPIDOMWindow.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
-#include "ipc/IPCMessageUtils.h"
+#include "mozilla/ipc/IPCTypes.h"
 
 NS_IMPL_ISUPPORTS(OSReauthenticator, nsIOSReauthenticator)
 
 extern mozilla::LazyLogModule gCredentialManagerSecretLog;
 
-using namespace mozilla;
-using dom::Promise;
+using mozilla::LogLevel;
+using mozilla::Maybe;
+using mozilla::Preferences;
+using mozilla::WindowsHandle;
+using mozilla::dom::Promise;
+
+#define PREF_BLANK_PASSWORD "security.osreauthenticator.blank_password"
+#define PREF_PASSWORD_LAST_CHANGED_LO \
+  "security.osreauthenticator.password_last_changed_lo"
+#define PREF_PASSWORD_LAST_CHANGED_HI \
+  "security.osreauthenticator.password_last_changed_hi"
 
 #if defined(XP_WIN)
 #  include <combaseapi.h>
 #  include <ntsecapi.h>
 #  include <wincred.h>
 #  include <windows.h>
+#  include "nsIWindowsRegKey.h"  // Must be included after <windows.h> for HKEY definition
+#  define SECURITY_WIN32
+#  include <security.h>
+#  include <shlwapi.h>
+#  if !defined(__MINGW32__)
+#    include <Lm.h>
+#    undef ACCESS_READ  // nsWindowsRegKey defines its own ACCESS_READ
+#  endif                // !defined(__MINGW32__)
 struct HandleCloser {
   typedef HANDLE pointer;
   void operator()(HANDLE h) {
@@ -40,10 +61,26 @@ struct HandleCloser {
 };
 struct BufferFreer {
   typedef LPVOID pointer;
-  void operator()(LPVOID b) { CoTaskMemFree(b); }
+  ULONG mSize;
+  explicit BufferFreer(ULONG size) : mSize(size) {}
+  void operator()(LPVOID b) {
+    SecureZeroMemory(b, mSize);
+    CoTaskMemFree(b);
+  }
+};
+struct LsaDeregistrator {
+  typedef HANDLE pointer;
+  void operator()(HANDLE h) {
+    if (h != INVALID_HANDLE_VALUE) {
+      LsaDeregisterLogonProcess(h);
+    }
+  }
 };
 typedef std::unique_ptr<HANDLE, HandleCloser> ScopedHANDLE;
 typedef std::unique_ptr<LPVOID, BufferFreer> ScopedBuffer;
+typedef std::unique_ptr<HANDLE, LsaDeregistrator> ScopedLsaHANDLE;
+
+constexpr int64_t Int32Modulo = 2147483648;
 
 // Get the token info holding the sid.
 std::unique_ptr<char[]> GetTokenInfo(ScopedHANDLE& token) {
@@ -80,40 +117,183 @@ std::unique_ptr<char[]> GetUserTokenInfo() {
   return GetTokenInfo(scopedToken);
 }
 
+Maybe<int64_t> GetPasswordLastChanged(const WCHAR* username) {
+#  if defined(__MINGW32__)
+  // NetUserGetInfo requires Lm.h which is not provided in MinGW builds
+  return mozilla::Nothing();
+#  else
+  LPUSER_INFO_1 user_info = NULL;
+  DWORD passwordAgeInSeconds = 0;
+
+  NET_API_STATUS ret =
+      NetUserGetInfo(NULL, username, 1, reinterpret_cast<LPBYTE*>(&user_info));
+
+  if (ret == NERR_Success) {
+    // Returns seconds since last password change.
+    passwordAgeInSeconds = user_info->usri1_password_age;
+    NetApiBufferFree(user_info);
+  } else {
+    return mozilla::Nothing();
+  }
+
+  // Return the time that the password was changed so we can use this
+  // for future comparisons.
+  return mozilla::Some(PR_Now() - passwordAgeInSeconds * PR_USEC_PER_SEC);
+#  endif
+}
+
+bool IsAutoAdminLogonEnabled() {
+  // https://support.microsoft.com/en-us/help/324737/how-to-turn-on-automatic-logon-in-windows
+  nsresult rv;
+  nsCOMPtr<nsIWindowsRegKey> regKey =
+      do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  rv = regKey->Open(
+      nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
+      nsLiteralString(
+          u"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"),
+      nsIWindowsRegKey::ACCESS_READ);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  nsAutoString value;
+  rv = regKey->ReadStringValue(u"AutoAdminLogon"_ns, value);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+  regKey->Close();
+
+  return value.Equals(u"1"_ns);
+}
+
+bool IsRequireSignonEnabled() {
+  // https://docs.microsoft.com/en-us/windows-hardware/customize/power-settings/no-subgroup-settings-prompt-for-password-on-resume
+  nsresult rv;
+  nsCOMPtr<nsIWindowsRegKey> regKey =
+      do_CreateInstance("@mozilla.org/windows-registry-key;1", &rv);
+  if (NS_FAILED(rv)) {
+    return true;
+  }
+
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
+                    u"System\\CurrentControlSet\\Control\\Power\\User\\Power"
+                    "Schemes"_ns,
+                    nsIWindowsRegKey::ACCESS_READ);
+  if (NS_FAILED(rv)) {
+    return true;
+  }
+
+  nsAutoString activePowerScheme;
+  rv = regKey->ReadStringValue(u"ActivePowerScheme"_ns, activePowerScheme);
+  if (NS_FAILED(rv)) {
+    return true;
+  }
+  regKey->Close();
+
+  rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_LOCAL_MACHINE,
+                    u"System\\CurrentControlSet\\Control\\Power\\User\\Power"
+                    "Schemes\\"_ns +
+                        activePowerScheme +
+                        u"\\0e796bdb-100d-47d6-a2d5-f7d2daa51f51"_ns,
+                    nsIWindowsRegKey::ACCESS_READ);
+  if (NS_FAILED(rv)) {
+    return true;
+  }
+
+  uint32_t value;
+  rv = regKey->ReadIntValue(u"ACSettingIndex"_ns, &value);
+  if (NS_FAILED(rv)) {
+    return true;
+  }
+  regKey->Close();
+
+  return !!value;
+}
+
 // Use the Windows credential prompt to ask the user to authenticate the
 // currently used account.
-static nsresult ReauthenticateUserWindows(const nsAString& aMessageText,
-                                          const nsAString& aCaptionText,
-                                          const WindowsHandle& hwndParent,
-                                          /* out */ bool& reauthenticated,
-                                          /* out */ bool& isBlankPassword) {
+static nsresult ReauthenticateUserWindows(
+    const nsAString& aMessageText, const nsAString& aCaptionText,
+    const WindowsHandle& hwndParent,
+    /* out */ bool& reauthenticated,
+    /* inout */ bool& isBlankPassword,
+    /* inout */ int64_t& prefLastChanged,
+    /* out */ bool& isAutoAdminLogonEnabled,
+    /* out */ bool& isRequireSignonEnabled) {
   reauthenticated = false;
-  isBlankPassword = false;
+  isAutoAdminLogonEnabled = false;
+  isRequireSignonEnabled = true;
 
   // Check if the user has a blank password before proceeding
   DWORD usernameLength = CREDUI_MAX_USERNAME_LENGTH + 1;
   WCHAR username[CREDUI_MAX_USERNAME_LENGTH + 1] = {0};
-  if (GetUserName(username, &usernameLength)) {
-    HANDLE logonUserHandle = nullptr;
-    bool result = LogonUser(username, L".", L"", LOGON32_LOGON_INTERACTIVE,
-                            LOGON32_PROVIDER_DEFAULT, &logonUserHandle);
-    // ERROR_ACCOUNT_RESTRICTION: Indicates a referenced user name and
-    // authentication information are valid, but some user account restriction
-    // has prevented successful authentication (such as time-of-day
-    // restrictions).
-    if (result || GetLastError() == ERROR_ACCOUNT_RESTRICTION) {
-      if (logonUserHandle && logonUserHandle != INVALID_HANDLE_VALUE) {
-        CloseHandle(logonUserHandle);
-      }
-      reauthenticated = true;
-      isBlankPassword = true;
-      return NS_OK;
-    }
+
+  if (!GetUserNameEx(NameSamCompatible, username, &usernameLength)) {
+    MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
+            ("Error getting username"));
+    return NS_ERROR_FAILURE;
   }
+
+#  ifdef OS_DOMAINMEMBER
+  bool isDomainMember = IsOS(OS_DOMAINMEMBER);
+#  else
+  // Bug 1633097
+  bool isDomainMember = false;
+#  endif
+  if (!isDomainMember) {
+    const WCHAR* usernameNoDomain = username;
+    // Don't include the domain portion of the username when calling LogonUser.
+    LPCWSTR backslash = wcschr(username, L'\\');
+    if (backslash) {
+      usernameNoDomain = backslash + 1;
+    }
+
+    Maybe<int64_t> lastChanged = GetPasswordLastChanged(usernameNoDomain);
+    if (lastChanged.isSome()) {
+      bool shouldCheckAgain = lastChanged.value() > prefLastChanged;
+      // Update the value stored in preferences
+      prefLastChanged = lastChanged.value();
+
+      if (shouldCheckAgain) {
+        HANDLE logonUserHandle = INVALID_HANDLE_VALUE;
+        bool result =
+            LogonUser(usernameNoDomain, L".", L"", LOGON32_LOGON_INTERACTIVE,
+                      LOGON32_PROVIDER_DEFAULT, &logonUserHandle);
+        if (result) {
+          CloseHandle(logonUserHandle);
+        }
+        // ERROR_ACCOUNT_RESTRICTION: Indicates a referenced user name and
+        // authentication information are valid, but some user account
+        // restriction has prevented successful authentication (such as
+        // time-of-day restrictions).
+        reauthenticated = isBlankPassword =
+            (result || GetLastError() == ERROR_ACCOUNT_RESTRICTION);
+      } else if (isBlankPassword) {
+        reauthenticated = true;
+      }
+
+      if (reauthenticated) {
+        return NS_OK;
+      }
+    } else {
+      isBlankPassword = false;
+    }
+  } else {
+    // Update any preferences, assuming domain members do not have blank
+    // passwords
+    isBlankPassword = false;
+  }
+
+  isAutoAdminLogonEnabled = IsAutoAdminLogonEnabled();
+
+  isRequireSignonEnabled = IsRequireSignonEnabled();
 
   // Is used in next iteration if the previous login failed.
   DWORD err = 0;
-  uint8_t numAttempts = 3;
   std::unique_ptr<char[]> userTokenInfo = GetUserTokenInfo();
 
   // CredUI prompt.
@@ -126,18 +306,16 @@ static nsresult ReauthenticateUserWindows(const nsAString& aMessageText,
   credui.pszCaptionText = captionText.get();
   credui.hbmBanner = nullptr;  // ignored
 
-  while (!reauthenticated && numAttempts > 0) {
-    --numAttempts;
-
-    HANDLE lsa;
+  while (!reauthenticated) {
+    HANDLE lsa = INVALID_HANDLE_VALUE;
     // Get authentication handle for future user authentications.
     // https://docs.microsoft.com/en-us/windows/desktop/api/ntsecapi/nf-ntsecapi-lsaconnectuntrusted
     if (LsaConnectUntrusted(&lsa) != ERROR_SUCCESS) {
       MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
-              ("Error aquiring lsa. Authentication attempts will fail."));
+              ("Error acquiring lsa. Authentication attempts will fail."));
       return NS_ERROR_FAILURE;
     }
-    ScopedHANDLE scopedLsa(lsa);
+    ScopedLsaHANDLE scopedLsa(lsa);
 
     if (!userTokenInfo || lsa == INVALID_HANDLE_VALUE) {
       MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
@@ -148,14 +326,13 @@ static nsresult ReauthenticateUserWindows(const nsAString& aMessageText,
     ULONG authPackage = 0;
     ULONG outCredSize = 0;
     LPVOID outCredBuffer = nullptr;
-    BOOL save = false;
 
     // Get user's Windows credentials.
     // https://docs.microsoft.com/en-us/windows/desktop/api/wincred/nf-wincred-creduipromptforwindowscredentialsw
     err = CredUIPromptForWindowsCredentialsW(
         &credui, err, &authPackage, nullptr, 0, &outCredBuffer, &outCredSize,
-        &save, CREDUIWIN_ENUMERATE_CURRENT_USER);
-    ScopedBuffer scopedOutCredBuffer(outCredBuffer);
+        nullptr, CREDUIWIN_ENUMERATE_CURRENT_USER);
+    ScopedBuffer scopedOutCredBuffer(outCredBuffer, BufferFreer(outCredSize));
     if (err == ERROR_CANCELLED) {
       MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
               ("Error getting authPackage for user login, user cancel."));
@@ -186,7 +363,7 @@ static nsresult ReauthenticateUserWindows(const nsAString& aMessageText,
     ULONG profileBufferLength = 0;
     QUOTA_LIMITS limits = {0};
     LUID luid;
-    HANDLE token;
+    HANDLE token = INVALID_HANDLE_VALUE;
     LSA_STRING name;
     name.Buffer = contextName;
     name.Length = strlen(name.Buffer);
@@ -198,14 +375,13 @@ static nsresult ReauthenticateUserWindows(const nsAString& aMessageText,
         &profileBuffer, &profileBufferLength, &luid, &token, &limits, &substs);
     ScopedHANDLE scopedToken(token);
     LsaFreeReturnBuffer(profileBuffer);
-    LsaDeregisterLogonProcess(scopedLsa.get());
     if (sts == ERROR_SUCCESS) {
       MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
               ("User logged in successfully."));
     } else {
-      MOZ_LOG(
-          gCredentialManagerSecretLog, LogLevel::Debug,
-          ("Login failed with %lx (%lx).", sts, LsaNtStatusToWinError(sts)));
+      err = LsaNtStatusToWinError(sts);
+      MOZ_LOG(gCredentialManagerSecretLog, LogLevel::Debug,
+              ("Login failed with %lx (%lx).", sts, err));
       continue;
     }
 
@@ -225,6 +401,8 @@ static nsresult ReauthenticateUserWindows(const nsAString& aMessageText,
               ("Login successfully (correct user)."));
       reauthenticated = true;
       break;
+    } else {
+      err = ERROR_LOGON_FAILURE;
     }
   }
   return NS_OK;
@@ -235,12 +413,15 @@ static nsresult ReauthenticateUser(const nsAString& prompt,
                                    const nsAString& caption,
                                    const WindowsHandle& hwndParent,
                                    /* out */ bool& reauthenticated,
-                                   /* out */ bool& isBlankPassword) {
+                                   /* inout */ bool& isBlankPassword,
+                                   /* inout */ int64_t& prefLastChanged,
+                                   /* out */ bool& isAutoAdminLogonEnabled,
+                                   /* out */ bool& isRequireSignonEnabled) {
   reauthenticated = false;
-  isBlankPassword = false;
 #if defined(XP_WIN)
-  return ReauthenticateUserWindows(prompt, caption, hwndParent, reauthenticated,
-                                   isBlankPassword);
+  return ReauthenticateUserWindows(
+      prompt, caption, hwndParent, reauthenticated, isBlankPassword,
+      prefLastChanged, isAutoAdminLogonEnabled, isRequireSignonEnabled);
 #elif defined(XP_MACOSX)
   return ReauthenticateUserMacOS(prompt, reauthenticated, isBlankPassword);
 #endif  // Reauthentication is not implemented for this platform.
@@ -250,22 +431,59 @@ static nsresult ReauthenticateUser(const nsAString& prompt,
 static void BackgroundReauthenticateUser(RefPtr<Promise>& aPromise,
                                          const nsAString& aMessageText,
                                          const nsAString& aCaptionText,
-                                         const WindowsHandle& hwndParent) {
+                                         const WindowsHandle& hwndParent,
+                                         bool isBlankPassword,
+                                         int64_t prefLastChanged) {
   nsAutoCString recovery;
   bool reauthenticated;
-  bool isBlankPassword;
-  nsresult rv = ReauthenticateUser(aMessageText, aCaptionText, hwndParent,
-                                   reauthenticated, isBlankPassword);
-  nsTArray<bool> results(2);
+  bool isAutoAdminLogonEnabled;
+  bool isRequireSignonEnabled;
+  nsresult rv = ReauthenticateUser(
+      aMessageText, aCaptionText, hwndParent, reauthenticated, isBlankPassword,
+      prefLastChanged, isAutoAdminLogonEnabled, isRequireSignonEnabled);
+
+  nsTArray<int32_t> prefLastChangedUpdates;
+#if defined(XP_WIN)
+  // Increase the lastChanged time to account for clock skew.
+  prefLastChanged += PR_USEC_PER_SEC;
+  // Need to split the 64bit integer to its hi and lo bits before sending it
+  // back to JS.
+  int32_t prefLastChangedHi = prefLastChanged / Int32Modulo;
+  int32_t prefLastChangedLo = prefLastChanged % Int32Modulo;
+  prefLastChangedUpdates.AppendElement(prefLastChangedHi);
+  prefLastChangedUpdates.AppendElement(prefLastChangedLo);
+#endif
+
+  nsTArray<int32_t> results;
   results.AppendElement(reauthenticated);
   results.AppendElement(isBlankPassword);
+#if defined(XP_WIN)
+  results.AppendElement(isAutoAdminLogonEnabled);
+  results.AppendElement(isRequireSignonEnabled);
+#endif
   nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
       "BackgroundReauthenticateUserResolve",
-      [rv, results = std::move(results), aPromise = std::move(aPromise)]() {
+      [rv, results = std::move(results),
+       prefLastChangedUpdates = std::move(prefLastChangedUpdates),
+       aPromise = std::move(aPromise)]() {
         if (NS_FAILED(rv)) {
           aPromise->MaybeReject(rv);
         } else {
           aPromise->MaybeResolve(results);
+        }
+
+        nsresult rv = Preferences::SetBool(PREF_BLANK_PASSWORD, results[1]);
+        if (NS_FAILED(rv)) {
+          return;
+        }
+        if (prefLastChangedUpdates.Length() > 1) {
+          rv = Preferences::SetInt(PREF_PASSWORD_LAST_CHANGED_HI,
+                                   prefLastChangedUpdates[0]);
+          if (NS_FAILED(rv)) {
+            return;
+          }
+          Preferences::SetInt(PREF_PASSWORD_LAST_CHANGED_LO,
+                              prefLastChangedUpdates[1]);
         }
       }));
   NS_DispatchToMainThread(runnable.forget());
@@ -302,12 +520,36 @@ OSReauthenticator::AsyncReauthenticateUser(const nsAString& aMessageText,
     }
   }
 
+  int64_t prefLastChanged = 0;
+  bool isBlankPassword = false;
+#if defined(XP_WIN)
+  // These preferences are only supported on Windows.
+  // Preferences are read/write main-thread only.
+  int32_t prefLastChangedLo;
+  int32_t prefLastChangedHi;
+  rv = Preferences::GetBool(PREF_BLANK_PASSWORD, &isBlankPassword);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  rv = Preferences::GetInt(PREF_PASSWORD_LAST_CHANGED_LO, &prefLastChangedLo);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  rv = Preferences::GetInt(PREF_PASSWORD_LAST_CHANGED_HI, &prefLastChangedHi);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  prefLastChanged = prefLastChangedHi * Int32Modulo + prefLastChangedLo;
+#endif
+
   nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(
       "BackgroundReauthenticateUser",
       [promiseHandle, aMessageText = nsAutoString(aMessageText),
-       aCaptionText = nsAutoString(aCaptionText), hwndParent]() mutable {
+       aCaptionText = nsAutoString(aCaptionText), hwndParent, isBlankPassword,
+       prefLastChanged]() mutable {
         BackgroundReauthenticateUser(promiseHandle, aMessageText, aCaptionText,
-                                     hwndParent);
+                                     hwndParent, isBlankPassword,
+                                     prefLastChanged);
       }));
 
   nsCOMPtr<nsIEventTarget> target(

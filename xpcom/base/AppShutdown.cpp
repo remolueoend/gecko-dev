@@ -17,20 +17,28 @@
 #include "mozilla/PoisonIOInterposer.h"
 #include "mozilla/Printf.h"
 #include "mozilla/scache/StartupCache.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/StartupTimeline.h"
 #include "mozilla/StaticPrefs_toolkit.h"
 #include "mozilla/LateWriteChecks.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsAppRunner.h"
 #include "nsDirectoryServiceUtils.h"
+#include "nsICertStorage.h"
+#include "nsThreadUtils.h"
 #include "prenv.h"
+
+#ifdef MOZ_NEW_XULSTORE
+#  include "mozilla/XULStore.h"
+#endif
 
 namespace mozilla {
 
 static ShutdownPhase sFastShutdownPhase = ShutdownPhase::NotInShutdown;
 static ShutdownPhase sLateWriteChecksPhase = ShutdownPhase::NotInShutdown;
 static AppShutdownMode sShutdownMode = AppShutdownMode::Normal;
-static bool sIsShuttingDown = false;
+static Atomic<bool, MemoryOrdering::Relaxed> sIsShuttingDown;
+static int sExitCode = 0;
 
 // These environment variable strings are all deliberately copied and leaked
 // due to requirements of PR_SetEnv and similar.
@@ -59,6 +67,8 @@ ShutdownPhase GetShutdownPhaseFromPrefValue(int32_t aPrefValue) {
 }
 
 bool AppShutdown::IsShuttingDown() { return sIsShuttingDown; }
+
+int AppShutdown::GetExitCode() { return sExitCode; }
 
 void AppShutdown::SaveEnvVarsForPotentialRestart() {
   const char* s = PR_GetEnv("XUL_APP_FILE");
@@ -118,10 +128,12 @@ wchar_t* CopyPathIntoNewWCString(nsIFile* aFile) {
 }
 #endif
 
-void AppShutdown::Init(AppShutdownMode aMode) {
+void AppShutdown::Init(AppShutdownMode aMode, int aExitCode) {
   if (sShutdownMode == AppShutdownMode::Normal) {
     sShutdownMode = aMode;
   }
+
+  sExitCode = aExitCode;
 
   // Late-write checks needs to find the profile directory, so it has to
   // be initialized before services::Shutdown or (because of
@@ -142,11 +154,35 @@ void AppShutdown::Init(AppShutdownMode aMode) {
 }
 
 void AppShutdown::MaybeFastShutdown(ShutdownPhase aPhase) {
-  if (aPhase == sFastShutdownPhase) {
-    StopLateWriteChecks();
+  // For writes which we want to ensure are recorded, we don't want to trip
+  // the late write checking code. Anything that writes to disk and which
+  // we don't want to skip should be listed out explicitly in this section.
+  if (aPhase == sFastShutdownPhase || aPhase == sLateWriteChecksPhase) {
     if (auto* cache = scache::StartupCache::GetSingletonNoInit()) {
       cache->EnsureShutdownWriteComplete();
     }
+
+    nsresult rv;
+#ifdef MOZ_NEW_XULSTORE
+    rv = XULStore::Shutdown();
+    NS_ASSERTION(NS_SUCCEEDED(rv), "XULStore::Shutdown() failed.");
+#endif
+
+    nsCOMPtr<nsICertStorage> certStorage =
+        do_GetService("@mozilla.org/security/certstorage;1", &rv);
+    if (NS_SUCCEEDED(rv)) {
+      SpinEventLoopUntil([&]() {
+        int32_t remainingOps;
+        nsresult rv = certStorage->GetRemainingOperationCount(&remainingOps);
+        NS_ASSERTION(NS_SUCCEEDED(rv),
+                     "nsICertStorage::getRemainingOperationCount failed during "
+                     "shutdown");
+        return NS_FAILED(rv) || remainingOps <= 0;
+      });
+    }
+  }
+  if (aPhase == sFastShutdownPhase) {
+    StopLateWriteChecks();
     RecordShutdownEndTimeStamp();
     MaybeDoRestart();
 
@@ -154,7 +190,7 @@ void AppShutdown::MaybeFastShutdown(ShutdownPhase aPhase) {
     profiler_shutdown(IsFastShutdown::Yes);
 #endif
 
-    DoImmediateExit();
+    DoImmediateExit(sExitCode);
   } else if (aPhase == sLateWriteChecksPhase) {
 #ifdef XP_MACOSX
     OnlyReportDirtyWrites();
@@ -191,15 +227,15 @@ void AppShutdown::OnShutdownConfirmed() {
   }
 }
 
-void AppShutdown::DoImmediateExit() {
+void AppShutdown::DoImmediateExit(int aExitCode) {
 #ifdef XP_WIN
   HANDLE process = ::GetCurrentProcess();
-  if (::TerminateProcess(process, 0)) {
+  if (::TerminateProcess(process, aExitCode)) {
     ::WaitForSingleObject(process, INFINITE);
   }
   MOZ_CRASH("TerminateProcess failed.");
 #else
-  _exit(0);
+  _exit(aExitCode);
 #endif
 }
 

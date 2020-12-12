@@ -15,9 +15,8 @@
 #include "nscore.h"
 #include "nsDebug.h"
 
-#include "ipc/IPCMessageUtils.h"
 #include "mozilla/ipc/SharedMemory.h"
-#include "mozilla/ipc/IPDLParamTraits.h"
+#include "mozilla/UniquePtr.h"
 
 /**
  * |Shmem| is one agent in the IPDL shared memory scheme.  The way it
@@ -59,6 +58,9 @@ class ShadowLayerForwarder;
 }  // namespace layers
 
 namespace ipc {
+
+template <typename P>
+struct IPDLParamTraits;
 
 class Shmem final {
   friend struct IPDLParamTraits<mozilla::ipc::Shmem>;
@@ -158,14 +160,14 @@ class Shmem final {
   // that contains enough information for the other process to map
   // this segment in OpenExisting() below.  Return a new message if
   // successful (owned by the caller), nullptr if not.
-  IPC::Message* ShareTo(PrivateIPDLCaller, base::ProcessId aTargetPid,
-                        int32_t routingId);
+  UniquePtr<IPC::Message> ShareTo(PrivateIPDLCaller, base::ProcessId aTargetPid,
+                                  int32_t routingId);
 
   // Stop sharing this with |aTargetPid|.  Return an IPC message that
   // contains enough information for the other process to unmap this
   // segment.  Return a new message if successful (owned by the
   // caller), nullptr if not.
-  IPC::Message* UnshareFrom(PrivateIPDLCaller, int32_t routingId);
+  UniquePtr<IPC::Message> UnshareFrom(PrivateIPDLCaller, int32_t routingId);
 
   // Return a SharedMemory instance in this process using the
   // descriptor shared to us by the process that created the
@@ -200,19 +202,6 @@ class Shmem final {
   void* mData;
   size_t mSize;
   id_t mId;
-};
-
-template <>
-struct IPDLParamTraits<Shmem> {
-  typedef Shmem paramType;
-
-  static void Write(IPC::Message* aMsg, IProtocol* aActor, paramType&& aParam);
-  static bool Read(const IPC::Message* aMsg, PickleIterator* aIter,
-                   IProtocol* aActor, paramType* aResult);
-
-  static void Log(const paramType& aParam, std::wstring* aLog) {
-    aLog->append(L"(shmem segment)");
-  }
 };
 
 }  // namespace ipc

@@ -52,17 +52,15 @@ class LayoutApp extends PureComponent {
   static get propTypes() {
     return {
       boxModel: PropTypes.shape(BoxModelTypes.boxModel).isRequired,
+      dispatch: PropTypes.func.isRequired,
       flexbox: PropTypes.shape(FlexboxTypes.flexbox).isRequired,
       getSwatchColorPickerTooltip: PropTypes.func.isRequired,
       grids: PropTypes.arrayOf(PropTypes.shape(GridTypes.grid)).isRequired,
       highlighterSettings: PropTypes.shape(GridTypes.highlighterSettings)
         .isRequired,
-      onHideBoxModelHighlighter: PropTypes.func.isRequired,
       onSetFlexboxOverlayColor: PropTypes.func.isRequired,
       onSetGridOverlayColor: PropTypes.func.isRequired,
       onShowBoxModelEditor: PropTypes.func.isRequired,
-      onShowBoxModelHighlighter: PropTypes.func.isRequired,
-      onShowBoxModelHighlighterForNode: PropTypes.func.isRequired,
       onShowGridOutlineHighlight: PropTypes.func.isRequired,
       onToggleFlexboxHighlighter: PropTypes.func.isRequired,
       onToggleGeometryEditor: PropTypes.func.isRequired,
@@ -191,7 +189,11 @@ class LayoutApp extends PureComponent {
     }
 
     return dom.div(
-      { className: "layout-container", ref: this.containerRef },
+      {
+        className: "layout-container",
+        ref: this.containerRef,
+        role: "document",
+      },
       Accordion({ items })
     );
   }

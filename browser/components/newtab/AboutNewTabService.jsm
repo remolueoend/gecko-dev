@@ -41,6 +41,10 @@ const { E10SUtils } = ChromeUtils.import(
   "resource://gre/modules/E10SUtils.jsm"
 );
 
+const { ExperimentAPI } = ChromeUtils.import(
+  "resource://messaging-system/experiments/ExperimentAPI.jsm"
+);
+
 /**
  * BEWARE: Do not add variables for holding state in the global scope.
  * Any state variables should be properties of the appropriate class
@@ -52,8 +56,10 @@ const { E10SUtils } = ChromeUtils.import(
 
 const PREF_ABOUT_HOME_CACHE_ENABLED =
   "browser.startup.homepage.abouthome_cache.enabled";
-const PREF_SEPARATE_ABOUT_WELCOME = "browser.aboutwelcome.enabled";
-const SEPARATE_ABOUT_WELCOME_URL =
+const PREF_ABOUT_HOME_CACHE_TESTING =
+  "browser.startup.homepage.abouthome_cache.testing";
+const PREF_ABOUT_WELCOME_ENABLED = "browser.aboutwelcome.enabled";
+const ABOUT_WELCOME_URL =
   "resource://activity-stream/aboutwelcome/aboutwelcome.html";
 
 ChromeUtils.defineModuleGetter(
@@ -62,13 +68,7 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/PromiseWorker.jsm"
 );
 
-const TOPIC_APP_QUIT = "quit-application-granted";
-const TOPIC_CONTENT_DOCUMENT_INTERACTIVE = "content-document-interactive";
-
-const BASE_URL = "resource://activity-stream/";
 const CACHE_WORKER_URL = "resource://activity-stream/lib/cache-worker.js";
-
-const ACTIVITY_STREAM_PAGES = new Set(["home", "newtab", "welcome"]);
 
 const IS_PRIVILEGED_PROCESS =
   Services.appinfo.remoteType === E10SUtils.PRIVILEGEDABOUT_REMOTE_TYPE;
@@ -90,8 +90,22 @@ const PREF_ACTIVITY_STREAM_DEBUG = "browser.newtabpage.activity-stream.debug";
  */
 const AboutHomeStartupCacheChild = {
   _initted: false,
-  STATE_RESPONSE_MESSAGE: "AboutHomeStartupCache:State:Response",
-  STATE_REQUEST_MESSAGE: "AboutHomeStartupCache:State:Request",
+  CACHE_REQUEST_MESSAGE: "AboutHomeStartupCache:CacheRequest",
+  CACHE_RESPONSE_MESSAGE: "AboutHomeStartupCache:CacheResponse",
+  CACHE_USAGE_RESULT_MESSAGE: "AboutHomeStartupCache:UsageResult",
+  STATES: {
+    UNAVAILABLE: 0,
+    UNCONSUMED: 1,
+    PAGE_CONSUMED: 2,
+    PAGE_AND_SCRIPT_CONSUMED: 3,
+    FAILED: 4,
+  },
+  REQUEST_TYPE: {
+    PAGE: 0,
+    SCRIPT: 1,
+  },
+  _state: 0,
+  _consumerBCID: null,
 
   /**
    * Called via a process script very early on in the process lifetime. This
@@ -105,7 +119,10 @@ const AboutHomeStartupCacheChild = {
    *   The stream for the cached script to run on the page.
    */
   init(pageInputStream, scriptInputStream) {
-    if (!IS_PRIVILEGED_PROCESS) {
+    if (
+      !IS_PRIVILEGED_PROCESS &&
+      !Services.prefs.getBoolPref(PREF_ABOUT_HOME_CACHE_TESTING, false)
+    ) {
       throw new Error(
         "Can only instantiate in the privileged about content processes."
       );
@@ -119,9 +136,45 @@ const AboutHomeStartupCacheChild = {
       throw new Error("AboutHomeStartupCacheChild already initted.");
     }
 
+    Services.obs.addObserver(this, "memory-pressure");
+    Services.cpmm.addMessageListener(this.CACHE_REQUEST_MESSAGE, this);
+
     this._pageInputStream = pageInputStream;
     this._scriptInputStream = scriptInputStream;
     this._initted = true;
+    this.setState(this.STATES.UNCONSUMED);
+  },
+
+  /**
+   * A function that lets us put the AboutHomeStartupCacheChild back into
+   * its initial state. This is used by tests to let us simulate the startup
+   * behaviour of the module without having to manually launch a new privileged
+   * about content process every time.
+   */
+  uninit() {
+    if (!Services.prefs.getBoolPref(PREF_ABOUT_HOME_CACHE_TESTING, false)) {
+      throw new Error(
+        "Cannot uninit AboutHomeStartupCacheChild unless testing."
+      );
+    }
+
+    if (!this._initted) {
+      return;
+    }
+
+    Services.obs.removeObserver(this, "memory-pressure");
+    Services.cpmm.removeMessageListener(this.CACHE_REQUEST_MESSAGE, this);
+
+    if (this._cacheWorker) {
+      this._cacheWorker.terminate();
+      this._cacheWorker = null;
+    }
+
+    this._pageInputStream = null;
+    this._scriptInputStream = null;
+    this._initted = false;
+    this._state = this.STATES.UNAVAILABLE;
+    this._consumerBCID = null;
   },
 
   /**
@@ -129,11 +182,14 @@ const AboutHomeStartupCacheChild = {
    * return an nsIChannel for a cached about:home document that we
    * were initialized with. If we failed to be initted with the
    * cache, or the input streams that we were sent have no data
-   * yet available, this function returns null. The caller should =
+   * yet available, this function returns null. The caller should
    * fall back to generating the page dynamically.
    *
    * This function will be called when loading about:home, or
    * about:home?jscache - the latter returns the cached script.
+   *
+   * It is expected that the same BrowsingContext that loads the cached
+   * page will also load the cached script.
    *
    * @param uri (nsIURI)
    *   The URI for the requested page, as passed by nsIAboutNewTabService.
@@ -147,7 +203,27 @@ const AboutHomeStartupCacheChild = {
       return null;
     }
 
-    let isScriptRequest = uri.query === "jscache";
+    if (this._state >= this.STATES.PAGE_AND_SCRIPT_CONSUMED) {
+      return null;
+    }
+
+    let requestType =
+      uri.query === "jscache"
+        ? this.REQUEST_TYPE.SCRIPT
+        : this.REQUEST_TYPE.PAGE;
+
+    // If this is a page request, then we need to be in the UNCONSUMED state,
+    // since we expect the page request to come first. If this is a script
+    // request, we expect to be in PAGE_CONSUMED state, since the page cache
+    // stream should he been consumed already.
+    if (
+      (requestType === this.REQUEST_TYPE.PAGE &&
+        this._state !== this.STATES.UNCONSUMED) ||
+      (requestType === this.REQUEST_TYPE_SCRIPT &&
+        this._state !== this.STATES.PAGE_CONSUMED)
+    ) {
+      return null;
+    }
 
     // If by this point, we don't have anything in the streams,
     // then either the cache was too slow to give us data, or the cache
@@ -157,20 +233,34 @@ const AboutHomeStartupCacheChild = {
     // We only do this on the page request, because by the time
     // we get to the script request, we should have already drained
     // the page input stream.
-    if (!isScriptRequest) {
+    if (requestType === this.REQUEST_TYPE.PAGE) {
       try {
         if (
           !this._scriptInputStream.available() ||
           !this._pageInputStream.available()
         ) {
+          this.setState(this.STATES.FAILED);
+          this.reportUsageResult(false /* success */);
           return null;
         }
       } catch (e) {
+        this.setState(this.STATES.FAILED);
         if (e.result === Cr.NS_BASE_STREAM_CLOSED) {
+          this.reportUsageResult(false /* success */);
           return null;
         }
         throw e;
       }
+    }
+
+    if (
+      requestType === this.REQUEST_TYPE.SCRIPT &&
+      this._consumerBCID !== loadInfo.browsingContextID
+    ) {
+      // Some other document is somehow requesting the script - one
+      // that didn't originally request the page. This is not allowed.
+      this.setState(this.STATES.FAILED);
+      return null;
     }
 
     let channel = Cc[
@@ -179,80 +269,70 @@ const AboutHomeStartupCacheChild = {
     channel.QueryInterface(Ci.nsIChannel);
     channel.setURI(uri);
     channel.loadInfo = loadInfo;
-    channel.contentStream = isScriptRequest
-      ? this._scriptInputStream
-      : this._pageInputStream;
+    channel.contentStream =
+      requestType === this.REQUEST_TYPE.PAGE
+        ? this._pageInputStream
+        : this._scriptInputStream;
+
+    if (requestType === this.REQUEST_TYPE.SCRIPT) {
+      this.setState(this.STATES.PAGE_AND_SCRIPT_CONSUMED);
+      this.reportUsageResult(true /* success */);
+    } else {
+      this.setState(this.STATES.PAGE_CONSUMED);
+      // Stash the BrowsingContext ID so that when the script stream
+      // attempts to be consumed, we ensure that it's from the same
+      // BrowsingContext that loaded the page.
+      this._consumerBCID = loadInfo.browsingContextID;
+    }
 
     return channel;
   },
 
-  getAboutHomeState() {
-    return new Promise(resolve => {
-      Services.cpmm.addMessageListener(this.STATE_RESPONSE_MESSAGE, m => {
-        Services.cpmm.removeMessageListener(this.STATE_RESPONSE_MESSAGE, this);
-        resolve(m.data.state);
-      });
-
-      Services.cpmm.sendAsyncMessage(this.STATE_REQUEST_MESSAGE);
-    });
-  },
-
-  _constructionPromise: null,
-
   /**
-   * This function gets the state information required to generate
+   * This function takes the state information required to generate
    * the about:home cache markup and script, and then generates that
    * markup in script asynchronously. Once that's done, a message
    * is sent to the parent process with the nsIInputStream's for the
    * markup and script contents.
    *
-   * If a cache is already in the midst of being constructed, this
-   * does not queue a new construction job - instead, the returned
-   * Promise will resolve as soon as the currently processing
-   * construction job completes. However, once the construction job
-   * is done, subsequent calls will start a new job.
-   *
+   * @param state (Object)
+   *   The Redux state of the about:home document to render.
    * @return Promise
-   * @resolves
+   * @resolves undefined
    *   After the message with the nsIInputStream's have been sent to
    *   the parent.
    */
-  constructAndSendCache() {
+  async constructAndSendCache(state) {
     if (!IS_PRIVILEGED_PROCESS) {
       throw new Error("Wrong process type.");
     }
 
-    if (this._constructionPromise) {
-      return this._constructionPromise;
-    }
+    let worker = this.getOrCreateWorker();
 
-    return (this._constructionPromise = (async () => {
-      try {
-        let worker = this.getOrCreateWorker();
-        let state = await this.getAboutHomeState();
+    TelemetryStopwatch.start("FX_ABOUTHOME_CACHE_CONSTRUCTION");
 
-        let { page, script } = await worker.post("construct", [state]);
+    let { page, script } = await worker
+      .post("construct", [state])
+      .finally(() => {
+        TelemetryStopwatch.finish("FX_ABOUTHOME_CACHE_CONSTRUCTION");
+      });
 
-        let pageInputStream = Cc[
-          "@mozilla.org/io/string-input-stream;1"
-        ].createInstance(Ci.nsIStringInputStream);
+    let pageInputStream = Cc[
+      "@mozilla.org/io/string-input-stream;1"
+    ].createInstance(Ci.nsIStringInputStream);
 
-        pageInputStream.setUTF8Data(page);
+    pageInputStream.setUTF8Data(page);
 
-        let scriptInputStream = Cc[
-          "@mozilla.org/io/string-input-stream;1"
-        ].createInstance(Ci.nsIStringInputStream);
+    let scriptInputStream = Cc[
+      "@mozilla.org/io/string-input-stream;1"
+    ].createInstance(Ci.nsIStringInputStream);
 
-        scriptInputStream.setUTF8Data(script);
+    scriptInputStream.setUTF8Data(script);
 
-        Services.cpmm.sendAsyncMessage("AboutHomeStartupCache:PopulateCache", {
-          pageInputStream,
-          scriptInputStream,
-        });
-      } finally {
-        this._constructionPromise = null;
-      }
-    })());
+    Services.cpmm.sendAsyncMessage(this.CACHE_RESPONSE_MESSAGE, {
+      pageInputStream,
+      scriptInputStream,
+    });
   },
 
   _cacheWorker: null,
@@ -263,6 +343,45 @@ const AboutHomeStartupCacheChild = {
 
     this._cacheWorker = new BasePromiseWorker(CACHE_WORKER_URL);
     return this._cacheWorker;
+  },
+
+  receiveMessage(message) {
+    if (message.name === this.CACHE_REQUEST_MESSAGE) {
+      let { state } = message.data;
+      this.constructAndSendCache(state);
+    }
+  },
+
+  reportUsageResult(success) {
+    Services.cpmm.sendAsyncMessage(this.CACHE_USAGE_RESULT_MESSAGE, {
+      success,
+    });
+  },
+
+  observe(subject, topic, data) {
+    if (topic === "memory-pressure" && this._cacheWorker) {
+      this._cacheWorker.terminate();
+      this._cacheWorker = null;
+    }
+  },
+
+  /**
+   * Transitions the AboutHomeStartupCacheChild from one state
+   * to the next, where each state is defined in this.STATES.
+   *
+   * States can only be transitioned in increasing order, otherwise
+   * an error is logged.
+   */
+  setState(state) {
+    if (state > this._state) {
+      this._state = state;
+    } else {
+      console.error(
+        "AboutHomeStartupCacheChild could not transition from state " +
+          `${this._state} to ${state}`,
+        new Error().stack
+      );
+    }
   },
 };
 
@@ -285,8 +404,8 @@ class BaseAboutNewTabService {
 
     XPCOMUtils.defineLazyPreferenceGetter(
       this,
-      "isSeparateAboutWelcome",
-      PREF_SEPARATE_ABOUT_WELCOME,
+      "isAboutWelcomePrefEnabled",
+      PREF_ABOUT_WELCOME_ENABLED,
       false
     );
 
@@ -299,8 +418,8 @@ class BaseAboutNewTabService {
 
     this.classID = Components.ID("{cb36c925-3adc-49b3-b720-a5cc49d8a40e}");
     this.QueryInterface = ChromeUtils.generateQI([
-      Ci.nsIAboutNewTabService,
-      Ci.nsIObserver,
+      "nsIAboutNewTabService",
+      "nsIObserver",
     ]);
   }
 
@@ -327,14 +446,19 @@ class BaseAboutNewTabService {
     ].join("");
   }
 
-  /*
-   * Returns the about:welcome URL
-   *
-   * This is calculated in the same way the default URL is.
-   */
   get welcomeURL() {
-    if (this.isSeparateAboutWelcome) {
-      return SEPARATE_ABOUT_WELCOME_URL;
+    /*
+     * Returns the about:welcome URL
+     *
+     * This is calculated in the same way the default URL is.
+     */
+
+    if (
+      this.isAboutWelcomePrefEnabled &&
+      // about:welcome should be enabled by default if no experiment exists.
+      ExperimentAPI.isFeatureEnabled("aboutwelcome", true)
+    ) {
+      return ABOUT_WELCOME_URL;
     }
     return this.defaultURL;
   }
@@ -349,107 +473,10 @@ class BaseAboutNewTabService {
 
 /**
  * The child-process implementation of nsIAboutNewTabService,
- * which also does the work of loading scripts from the ScriptPreloader
- * cache when using the privileged about content process.
+ * which also does the work of redirecting about:home loads to
+ * the about:home startup cache if its available.
  */
 class AboutNewTabChildService extends BaseAboutNewTabService {
-  constructor() {
-    super();
-    if (this.privilegedAboutProcessEnabled) {
-      Services.obs.addObserver(this, TOPIC_CONTENT_DOCUMENT_INTERACTIVE);
-      Services.obs.addObserver(this, TOPIC_APP_QUIT);
-    }
-  }
-
-  observe(subject, topic, data) {
-    switch (topic) {
-      case TOPIC_APP_QUIT: {
-        Services.obs.removeObserver(this, TOPIC_CONTENT_DOCUMENT_INTERACTIVE);
-        Services.obs.removeObserver(this, TOPIC_APP_QUIT);
-        break;
-      }
-      case TOPIC_CONTENT_DOCUMENT_INTERACTIVE: {
-        if (!this.privilegedAboutProcessEnabled || !IS_PRIVILEGED_PROCESS) {
-          return;
-        }
-
-        const win = subject.defaultView;
-
-        // It seems like "content-document-interactive" is triggered multiple
-        // times for a single window. The first event always seems to be an
-        // HTMLDocument object that contains a non-null window reference
-        // whereas the remaining ones seem to be proxied objects.
-        // https://searchfox.org/mozilla-central/rev/d2966246905102b36ef5221b0e3cbccf7ea15a86/devtools/server/actors/object.js#100-102
-        if (win === null) {
-          return;
-        }
-
-        if (win.location.protocol !== "about:") {
-          // If we're somehow not an about: page, explode - something has gone
-          // horribly wrong.
-          let debug = Cc["@mozilla.org/xpcom/debug;1"].getService(Ci.nsIDebug2);
-          debug.abort("AboutNewTabService.jsm", 0);
-          // And return just in case something went wrong trying to explode.
-          return;
-        }
-
-        // We use win.location.pathname instead of win.location.toString()
-        // because we want to account for URLs that contain the location hash
-        // property or query strings (e.g. about:newtab#foo, about:home?bar).
-        // Asserting here would be ideal, but this code path is also taken
-        // by the view-source:// scheme, so we should probably just bail out
-        // and do nothing.
-        if (!ACTIVITY_STREAM_PAGES.has(win.location.pathname)) {
-          return;
-        }
-
-        // In the event that the document that was loaded here was the cached
-        // about:home document, then there's nothing further to do - the page
-        // will load its scripts itself.
-        //
-        // Note that it's okay to waive the xray wrappers here since we know
-        // from the above condition that we're on one of our about: pages,
-        // plus we're in the privileged about content process.
-        if (ChromeUtils.waiveXrays(win).__FROM_STARTUP_CACHE__) {
-          return;
-        }
-
-        // Bail out early for separate about:welcome URL
-        if (
-          this.isSeparateAboutWelcome &&
-          win.location.pathname.includes("welcome")
-        ) {
-          return;
-        }
-
-        const onLoaded = () => {
-          const debugString = this.activityStreamDebug ? "-dev" : "";
-
-          // This list must match any similar ones in render-activity-stream-html.js.
-          const scripts = [
-            "chrome://browser/content/contentSearchUI.js",
-            "chrome://browser/content/contentSearchHandoffUI.js",
-            "chrome://browser/content/contentTheme.js",
-            `${BASE_URL}vendor/react${debugString}.js`,
-            `${BASE_URL}vendor/react-dom${debugString}.js`,
-            `${BASE_URL}vendor/prop-types.js`,
-            `${BASE_URL}vendor/react-transition-group.js`,
-            `${BASE_URL}vendor/redux.js`,
-            `${BASE_URL}vendor/react-redux.js`,
-            `${BASE_URL}data/content/activity-stream.bundle.js`,
-            `${BASE_URL}data/content/newtab-render.js`,
-          ];
-
-          for (let script of scripts) {
-            Services.scriptloader.loadSubScript(script, win); // Synchronous call
-          }
-        };
-        win.addEventListener("DOMContentLoaded", onLoaded, { once: true });
-        break;
-      }
-    }
-  }
-
   aboutHomeChannel(uri, loadInfo) {
     if (IS_PRIVILEGED_PROCESS) {
       let cacheChannel = AboutHomeStartupCacheChild.maybeGetCachedPageChannel(

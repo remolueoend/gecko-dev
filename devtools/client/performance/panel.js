@@ -90,7 +90,7 @@ PerformancePanel.prototype = {
       this._checkRecordingStatus
     );
 
-    await this.toolbox.targetList.unwatchTargets(
+    this.toolbox.targetList.unwatchTargets(
       [this.toolbox.targetList.TYPES.FRAME],
       this._onTargetAvailable
     );
@@ -116,16 +116,18 @@ PerformancePanel.prototype = {
    * @param {TargetFront} - targetFront
    *        As we are watching only FRAME type for this panel,
    *        the target should be a instance of BrowsingContextTarget.
-   * @param {Boolean} - isTopLevel
-   *        true if the target is a full page.
    */
-  async _handleTargetAvailable({ targetFront, isTopLevel }) {
-    if (isTopLevel) {
+  async _handleTargetAvailable({ targetFront }) {
+    if (targetFront.isTopLevel) {
       const { PerformanceController, PerformanceView } = this.panelWin;
       const performanceFront = await targetFront.getFront("performance");
 
       if (!this._isPanelInitialized) {
-        await PerformanceController.initialize(targetFront, performanceFront);
+        await PerformanceController.initialize(
+          this.toolbox,
+          targetFront,
+          performanceFront
+        );
         await PerformanceView.initialize();
         PerformanceController.enableFrontEventListeners();
         this._isPanelInitialized = true;

@@ -15,6 +15,7 @@
 #include "gfx2DGlue.h"
 #include "nsNPAPIPluginInstance.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Logging.h"
 #ifdef MOZ_X11
 #  include "gfxXlibSurface.h"
 #endif
@@ -49,7 +50,6 @@ using namespace mozilla::widget;
 #  include <gtk/gtk.h>
 #  include <gdk/gdkx.h>
 #  include <gdk/gdk.h>
-#  include "gtk2xtbin.h"
 
 #elif defined(OS_WIN)
 
@@ -124,8 +124,8 @@ PluginInstanceChild::PluginInstanceChild(const NPPluginFuncs* aPluginIface,
                                          const nsTArray<nsCString>& aValues)
     : mPluginIface(aPluginIface),
       mMimeType(aMimeType),
-      mNames(aNames),
-      mValues(aValues)
+      mNames(aNames.Clone()),
+      mValues(aValues.Clone())
 #if defined(XP_DARWIN) || defined(XP_WIN)
       ,
       mContentsScaleFactor(1.0)
@@ -1248,7 +1248,7 @@ mozilla::ipc::IPCResult PluginInstanceChild::AnswerNPP_SetWindow(
 
 #elif defined(ANDROID)
   // TODO: Need Android impl
-#elif defined(MOZ_WIDGET_UIKIT)
+#elif defined(MOZ_WIDGET_UIKIT) || defined(MOZ_WAYLAND)
   // Don't care
 #else
 #  error Implement me for your OS
@@ -1258,7 +1258,7 @@ mozilla::ipc::IPCResult PluginInstanceChild::AnswerNPP_SetWindow(
 }
 
 bool PluginInstanceChild::Initialize() {
-#ifdef MOZ_WIDGET_GTK
+#if defined(MOZ_WIDGET_GTK) && defined(MOZ_X11)
   if (mWsInfo.display) {
     // Already initialized
     return true;
@@ -3992,12 +3992,9 @@ void PluginInstanceChild::Destroy() {
   ManagedPBrowserStreamChild(streams);
 
   // First make sure none of these streams become deleted
-  for (uint32_t i = 0; i < streams.Length();) {
-    if (static_cast<BrowserStreamChild*>(streams[i])->InstanceDying())
-      ++i;
-    else
-      streams.RemoveElementAt(i);
-  }
+  streams.RemoveElementsBy([](const auto& stream) {
+    return !static_cast<BrowserStreamChild*>(stream)->InstanceDying();
+  });
   for (uint32_t i = 0; i < streams.Length(); ++i)
     static_cast<BrowserStreamChild*>(streams[i])->FinishDelivery();
 

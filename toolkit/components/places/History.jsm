@@ -73,16 +73,12 @@ var EXPORTED_SYMBOLS = ["History"];
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "NetUtil",
-  "resource://gre/modules/NetUtil.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PlacesUtils",
-  "resource://gre/modules/PlacesUtils.jsm"
-);
+
+XPCOMUtils.defineLazyModuleGetters(this, {
+  AppConstants: "resource://gre/modules/AppConstants.jsm",
+  PlacesUtils: "resource://gre/modules/PlacesUtils.jsm",
+  Services: "resource://gre/modules/Services.jsm",
+});
 
 XPCOMUtils.defineLazyServiceGetter(
   this,
@@ -119,11 +115,23 @@ function notify(observers, notification, args = []) {
   for (let observer of observers) {
     try {
       observer[notification](...args);
-    } catch (ex) {}
+    } catch (ex) {
+      if (
+        ex.result != Cr.NS_ERROR_XPC_JSOBJECT_HAS_NO_FUNCTION_NAMED &&
+        (AppConstants.DEBUG || Cu.isInAutomation)
+      ) {
+        Cu.reportError(ex);
+      }
+    }
   }
 }
 
 var History = Object.freeze({
+  ANNOTATION_EXPIRE_NEVER: 4,
+  // Constants for the type of annotation.
+  ANNOTATION_TYPE_STRING: 3,
+  ANNOTATION_TYPE_INT64: 5,
+
   /**
    * Fetch the available information for one page.
    *
@@ -1029,11 +1037,12 @@ function removeOrphanIcons(db) {
 var notifyCleanup = async function(db, pages, transition = -1) {
   let notifiedCount = 0;
   let observers = PlacesUtils.history.getObservers();
+  let bookmarkObservers = PlacesUtils.bookmarks.getObservers();
 
   let reason = Ci.nsINavHistoryObserver.REASON_DELETED;
 
   for (let page of pages) {
-    let uri = NetUtil.newURI(page.url.href);
+    let uri = Services.io.newURI(page.url.href);
     let guid = page.guid;
     if (page.hasVisits || page.hasForeign) {
       // We have removed all visits, but the page is still alive, e.g.
@@ -1045,6 +1054,34 @@ var notifyCleanup = async function(db, pages, transition = -1) {
         reason,
         transition,
       ]);
+      // Also asynchronously notify bookmarks for this uri if all the visits
+      // have been removed.
+      if (!page.hasVisits) {
+        PlacesUtils.bookmarks
+          .fetch({ url: page.url }, async bookmark => {
+            let itemId = await PlacesUtils.promiseItemId(bookmark.guid);
+            let parentId = await PlacesUtils.promiseItemId(bookmark.parentGuid);
+            notify(
+              bookmarkObservers,
+              "onItemChanged",
+              [
+                itemId,
+                "cleartime",
+                false,
+                "",
+                0,
+                PlacesUtils.bookmarks.TYPE_BOOKMARK,
+                parentId,
+                bookmark.guid,
+                bookmark.parentGuid,
+                "",
+                PlacesUtils.bookmarks.SOURCES.DEFAULT,
+              ],
+              { concurrent: true }
+            );
+          })
+          .catch(Cu.reportError);
+      }
     } else {
       // The page has been entirely removed.
       notify(observers, "onDeleteURI", [uri, guid, reason]);
@@ -1685,8 +1722,8 @@ var update = async function(db, pageInfo) {
           // accessing page annotations via the annotation service.
           let type =
             typeof content == "string"
-              ? Ci.nsIAnnotationService.TYPE_STRING
-              : Ci.nsIAnnotationService.TYPE_INT64;
+              ? History.ANNOTATION_TYPE_STRING
+              : History.ANNOTATION_TYPE_INT64;
           let date = PlacesUtils.toPRTime(new Date());
 
           // This will replace the id every time an annotation is updated. This is
@@ -1705,7 +1742,7 @@ var update = async function(db, pageInfo) {
               id,
               anno_name: anno,
               content,
-              expiration: PlacesUtils.annotations.EXPIRE_NEVER,
+              expiration: History.ANNOTATION_EXPIRE_NEVER,
               type,
               // The date fields are unused, so we just set them both to the latest.
               date_added: date,

@@ -12,8 +12,7 @@
 #include "mozilla/dom/GridArea.h"
 #include "nsGridContainerFrame.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(GridLines, mParent, mLines)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(GridLines)
@@ -264,11 +263,11 @@ void GridLines::SetLineInfo(const ComputedGridTrackInfo* aTrackInfo,
         RefPtr<GridLine> dummyLine = new GridLine(this);
         RefPtr<GridLine> areaStartLine =
             startIndex > -1 ? mLines[startIndex] : dummyLine;
-        nsTArray<RefPtr<nsAtom>> startLineNames(areaStartLine->Names());
+        nsTArray<RefPtr<nsAtom>> startLineNames(areaStartLine->Names().Clone());
 
         RefPtr<GridLine> areaEndLine =
             endIndex > -1 ? mLines[endIndex] : dummyLine;
-        nsTArray<RefPtr<nsAtom>> endLineNames(areaEndLine->Names());
+        nsTArray<RefPtr<nsAtom>> endLineNames(areaEndLine->Names().Clone());
 
         RefPtr<nsAtom> start = NS_Atomize(startLineName);
         RefPtr<nsAtom> end = NS_Atomize(endLineName);
@@ -347,7 +346,7 @@ uint32_t GridLines::AppendRemovedAutoFits(
     // No matter what, the next line should have the after names associated
     // with it. If we go through the loop again, the before names will also
     // be added.
-    aLineNames = aLineInfo->mNamesAfter;
+    aLineNames = aLineInfo->mNamesAfter.Clone();
     aRepeatIndex++;
 
     linesAdded++;
@@ -369,5 +368,4 @@ uint32_t GridLines::AppendRemovedAutoFits(
   return linesAdded;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

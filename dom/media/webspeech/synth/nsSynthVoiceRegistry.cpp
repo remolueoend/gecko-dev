@@ -10,6 +10,7 @@
 
 #include "SpeechSynthesisUtterance.h"
 #include "SpeechSynthesisVoice.h"
+#include "nsContentUtils.h"
 #include "nsSynthVoiceRegistry.h"
 #include "nsSpeechTask.h"
 #include "AudioChannelService.h"
@@ -18,6 +19,7 @@
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/intl/LocaleService.h"
 #include "mozilla/StaticPrefs_media.h"
 #include "mozilla/StaticPtr.h"
@@ -64,8 +66,7 @@ void GetAllSpeechSynthActors(
 
 }  // namespace
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 // VoiceData
 
@@ -535,7 +536,7 @@ bool nsSynthVoiceRegistry::FindVoiceByLang(const nsAString& aLang,
     dashPos = end;
     end = start;
 
-    if (!RFindInReadable(NS_LITERAL_STRING("-"), end, dashPos)) {
+    if (!RFindInReadable(u"-"_ns, end, dashPos)) {
       break;
     }
   }
@@ -582,7 +583,7 @@ VoiceData* nsSynthVoiceRegistry::FindBestMatch(const nsAString& aUri,
   }
 
   // Try en-US, the language of locale "C"
-  if (FindVoiceByLang(NS_LITERAL_STRING("en-US"), &retval)) {
+  if (FindVoiceByLang(u"en-US"_ns, &retval)) {
     LOG(LogLevel::Debug, ("nsSynthVoiceRegistry::FindBestMatch - Matched C "
                           "locale language (en-US ~= %s)",
                           NS_ConvertUTF16toUTF8(retval->mLang).get()));
@@ -762,5 +763,4 @@ void nsSynthVoiceRegistry::SpeakImpl(VoiceData* aVoice, nsSpeechTask* aTask,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

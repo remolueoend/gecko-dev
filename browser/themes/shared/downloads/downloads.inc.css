@@ -16,7 +16,7 @@
 #downloadsListBox {
   background: transparent;
   color: inherit;
-  -moz-appearance: none;
+  appearance: none;
   margin: 0;
 }
 
@@ -31,7 +31,7 @@
   border: 0;
   min-width: 0;
   border-inline-start: 1px solid var(--panel-separator-color);
-  -moz-appearance: none;
+  appearance: none;
 }
 
 .downloadsPanelFooterButton:hover {
@@ -159,7 +159,7 @@
 }
 
 .downloadButton {
-  -moz-appearance: none;
+  appearance: none;
   min-width: 58px;
   margin: 0;
   border: none;
@@ -206,11 +206,7 @@
 }
 
 .downloadIconShow > .button-box > .button-icon {
-%ifdef XP_MACOSX
-  list-style-image: url("chrome://browser/skin/panel-icon-magnifier.svg");
-%else
-  list-style-image: url("chrome://browser/skin/panel-icon-folder.svg");
-%endif
+  list-style-image: url("chrome://global/skin/icons/findFile.svg");
 }
 
 .downloadIconRetry > .button-box > .button-icon {

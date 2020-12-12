@@ -13,9 +13,7 @@
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/ipc/PBackgroundParent.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 using mozilla::dom::quota::QuotaManager;
 using mozilla::ipc::PBackgroundParent;
@@ -108,8 +106,8 @@ mozilla::ipc::IPCResult CacheStorageParent::RecvTeardown() {
   return IPC_OK();
 }
 
-void CacheStorageParent::OnPrincipalVerified(nsresult aRv,
-                                             ManagerId* aManagerId) {
+void CacheStorageParent::OnPrincipalVerified(
+    nsresult aRv, const SafeRefPtr<ManagerId>& aManagerId) {
   MOZ_DIAGNOSTIC_ASSERT(mVerifier);
   MOZ_DIAGNOSTIC_ASSERT(!mManagerId);
   MOZ_DIAGNOSTIC_ASSERT(NS_SUCCEEDED(mVerifiedStatus));
@@ -118,11 +116,9 @@ void CacheStorageParent::OnPrincipalVerified(nsresult aRv,
     mVerifiedStatus = aRv;
   }
 
-  mManagerId = aManagerId;
+  mManagerId = aManagerId.clonePtr();
   mVerifier->RemoveListener(this);
   mVerifier = nullptr;
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

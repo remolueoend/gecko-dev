@@ -52,7 +52,6 @@ add_task(async function actionURILosslessDecode() {
   let url = "http://" + urlNoScheme;
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: url,
   });
 
@@ -84,12 +83,12 @@ add_task(async function actionURILosslessDecode() {
 
 add_task(async function test_resultsDisplayDecoded() {
   await PlacesUtils.history.clear();
+  await UrlbarTestUtils.formHistory.clear();
 
   await PlacesTestUtils.addVisits("http://example.com/%E9%A1%B5");
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "example",
   });
 
@@ -104,7 +103,6 @@ add_task(async function test_resultsDisplayDecoded() {
 async function checkInput(inputStr) {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: inputStr,
   });
 
@@ -135,9 +133,12 @@ async function checkInput(inputStr) {
     inputStr.replace("\\", "/"),
     "Should be displaying the correct text"
   );
+  let [action] = await document.l10n.formatValues([
+    { id: "urlbar-result-action-visit" },
+  ]);
   Assert.equal(
     result.displayed.action,
-    UrlbarUtils.strings.GetStringFromName("visit"),
+    action,
     "Should be displaying the correct action text"
   );
 }

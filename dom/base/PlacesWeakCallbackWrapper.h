@@ -7,18 +7,17 @@
 #ifndef mozilla_dom_PlacesWeakCallbackWrapper_h
 #define mozilla_dom_PlacesWeakCallbackWrapper_h
 
+#include "mozilla/WeakPtr.h"
 #include "mozilla/dom/PlacesObserversBinding.h"
-#include "mozilla/ErrorResult.h"
+#include "nsIWeakReferenceUtils.h"
 #include "nsWrapperCache.h"
 
 namespace mozilla {
 namespace dom {
 
-class PlacesWeakCallbackWrapper final
-    : public nsWrapperCache,
-      public SupportsWeakPtr<PlacesWeakCallbackWrapper> {
+class PlacesWeakCallbackWrapper final : public nsWrapperCache,
+                                        public SupportsWeakPtr {
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(PlacesWeakCallbackWrapper)
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(PlacesWeakCallbackWrapper)
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(PlacesWeakCallbackWrapper)
 

@@ -13,6 +13,7 @@
 #include "nsIThreadRetargetableStreamListener.h"
 #include "mozilla/ConsoleReportCollector.h"
 #include "mozilla/dom/AbortSignal.h"
+#include "mozilla/dom/SafeRefPtr.h"
 #include "mozilla/dom/SerializedStackHolder.h"
 #include "mozilla/dom/SRIMetadata.h"
 #include "mozilla/RefPtr.h"
@@ -29,6 +30,8 @@ class nsILoadGroup;
 class nsIPrincipal;
 
 namespace mozilla {
+class PreloaderBase;
+
 namespace dom {
 
 class Document;
@@ -100,7 +103,7 @@ class FetchDriver final : public nsIStreamListener,
   NS_DECL_NSIINTERFACEREQUESTOR
   NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
 
-  FetchDriver(InternalRequest* aRequest, nsIPrincipal* aPrincipal,
+  FetchDriver(SafeRefPtr<InternalRequest> aRequest, nsIPrincipal* aPrincipal,
               nsILoadGroup* aLoadGroup, nsIEventTarget* aMainThreadEventTarget,
               nsICookieJarSettings* aCookieJarSettings,
               PerformanceStorage* aPerformanceStorage, bool aIsTrackingFetch);
@@ -125,12 +128,12 @@ class FetchDriver final : public nsIStreamListener,
   }
 
   // AbortFollower
-  void Abort() override;
+  void RunAbortAlgorithm() override;
 
  private:
   nsCOMPtr<nsIPrincipal> mPrincipal;
   nsCOMPtr<nsILoadGroup> mLoadGroup;
-  RefPtr<InternalRequest> mRequest;
+  SafeRefPtr<InternalRequest> mRequest;
   RefPtr<InternalResponse> mResponse;
   nsCOMPtr<nsIOutputStream> mPipeOutputStream;
   RefPtr<FetchDriverObserver> mObserver;
@@ -161,6 +164,16 @@ class FetchDriver final : public nsIStreamListener,
   RefPtr<AlternativeDataStreamListener> mAltDataListener;
   bool mOnStopRequestCalled;
 
+  // This flag is true when this fetch has found a matching preload and is being
+  // satisfied by a its response.
+  bool mFromPreload = false;
+  // This flag is set in call to Abort() and spans the possible window this
+  // fetch doesn't have mChannel (to be cancelled) between reuse of the matching
+  // preload, that has already finished and dropped reference to its channel,
+  // and OnStartRequest notification.  It let's us cancel the load when we get
+  // the channel in OnStartRequest.
+  bool mAborted = false;
+
 #ifdef DEBUG
   bool mResponseAvailableCalled;
   bool mFetchCalled;
@@ -173,8 +186,11 @@ class FetchDriver final : public nsIStreamListener,
   FetchDriver& operator=(const FetchDriver&) = delete;
   ~FetchDriver();
 
-  nsresult HttpFetch(
-      const nsACString& aPreferredAlternativeDataType = EmptyCString());
+  already_AddRefed<PreloaderBase> FindPreload(nsIURI* aURI);
+
+  void UpdateReferrerInfoFromNewChannel(nsIChannel* aChannel);
+
+  nsresult HttpFetch(const nsACString& aPreferredAlternativeDataType = ""_ns);
   // Returns the filtered response sent to the observer.
   already_AddRefed<InternalResponse> BeginAndGetFilteredResponse(
       InternalResponse* aResponse, bool aFoundOpaqueRedirect);

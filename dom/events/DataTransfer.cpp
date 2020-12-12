@@ -41,11 +41,11 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/OSFileSystem.h"
 #include "mozilla/dom/Promise.h"
+#include "nsComponentManagerUtils.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(DataTransfer)
 
@@ -190,8 +190,8 @@ DataTransfer::DataTransfer(nsISupports* aParent, EventMessage aEventMessage,
 
   RefPtr<nsVariantCC> variant = new nsVariantCC();
   variant->SetAsAString(aString);
-  DebugOnly<nsresult> rvIgnored = SetDataWithPrincipal(
-      NS_LITERAL_STRING("text/plain"), variant, 0, sysPrincipal, false);
+  DebugOnly<nsresult> rvIgnored =
+      SetDataWithPrincipal(u"text/plain"_ns, variant, 0, sysPrincipal, false);
   NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
                        "Failed to set given string to the DataTransfer object");
 }
@@ -336,7 +336,8 @@ bool DataTransfer::HasType(const nsAString& aType) const {
 bool DataTransfer::HasFile() const { return mItems->HasFile(); }
 
 void DataTransfer::GetData(const nsAString& aFormat, nsAString& aData,
-                           nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
+                           nsIPrincipal& aSubjectPrincipal,
+                           ErrorResult& aRv) const {
   // return an empty string if data for the format was not found
   aData.Truncate();
 
@@ -410,7 +411,7 @@ void DataTransfer::ClearData(const Optional<nsAString>& aFormat,
   if (aFormat.WasPassed()) {
     MozClearDataAtHelper(aFormat.Value(), 0, aSubjectPrincipal, aRv);
   } else {
-    MozClearDataAtHelper(EmptyString(), 0, aSubjectPrincipal, aRv);
+    MozClearDataAtHelper(u""_ns, 0, aSubjectPrincipal, aRv);
   }
 }
 
@@ -472,7 +473,7 @@ already_AddRefed<DOMStringList> DataTransfer::MozTypesAt(
     }
 
     if (addFile) {
-      types->Add(NS_LITERAL_STRING("Files"));
+      types->Add(u"Files"_ns);
     }
   }
 
@@ -481,7 +482,7 @@ already_AddRefed<DOMStringList> DataTransfer::MozTypesAt(
 
 nsresult DataTransfer::GetDataAtNoSecurityCheck(const nsAString& aFormat,
                                                 uint32_t aIndex,
-                                                nsIVariant** aData) {
+                                                nsIVariant** aData) const {
   return GetDataAtInternal(aFormat, aIndex,
                            nsContentUtils::GetSystemPrincipal(), aData);
 }
@@ -489,7 +490,7 @@ nsresult DataTransfer::GetDataAtNoSecurityCheck(const nsAString& aFormat,
 nsresult DataTransfer::GetDataAtInternal(const nsAString& aFormat,
                                          uint32_t aIndex,
                                          nsIPrincipal* aSubjectPrincipal,
-                                         nsIVariant** aData) {
+                                         nsIVariant** aData) const {
   *aData = nullptr;
 
   if (aFormat.IsEmpty()) {
@@ -581,7 +582,7 @@ bool DataTransfer::PrincipalMaySetData(const nsAString& aType,
     // pass to WebExtensions.
     auto principal = BasePrincipal::Cast(aPrincipal);
     if (!principal->AddonPolicy() &&
-        StringBeginsWith(aType, NS_LITERAL_STRING("text/x-moz-place"))) {
+        StringBeginsWith(aType, u"text/x-moz-place"_ns)) {
       NS_WARNING("Disallowing adding moz-place types to DataTransfer");
       return false;
     }
@@ -674,9 +675,9 @@ void DataTransfer::GetExternalTransferableFormats(
   aTransferable->FlavorsTransferableCanExport(flavors);
 
   if (aPlainTextOnly) {
-    auto index = flavors.IndexOf(NS_LITERAL_CSTRING(kUnicodeMime));
+    auto index = flavors.IndexOf(nsLiteralCString(kUnicodeMime));
     if (index != flavors.NoIndex) {
-      aResult->AppendElement(NS_LITERAL_CSTRING(kUnicodeMime));
+      aResult->AppendElement(nsLiteralCString(kUnicodeMime));
     }
     return;
   }
@@ -1062,7 +1063,7 @@ already_AddRefed<nsITransferable> DataTransfer::GetTransferable(
                                  type.Length() * sizeof(nsString::char_type),
                          "Why is formatLength off?");
               rv = stream->WriteBytes(
-                  AsBytes(MakeSpan(type.BeginReading(), type.Length())));
+                  AsBytes(Span(type.BeginReading(), type.Length())));
               if (NS_WARN_IF(NS_FAILED(rv))) {
                 totalCustomLength = 0;
                 continue;
@@ -1076,9 +1077,9 @@ already_AddRefed<nsITransferable> DataTransfer::GetTransferable(
               // length of "data" if the variant contained an nsISupportsString
               // as VTYPE_INTERFACE, say.  We used lengthInBytes above for
               // sizing, so just keep doing that.
-              rv = stream->WriteBytes(MakeSpan(
-                  reinterpret_cast<const uint8_t*>(data.BeginReading()),
-                  lengthInBytes));
+              rv = stream->WriteBytes(
+                  Span(reinterpret_cast<const uint8_t*>(data.BeginReading()),
+                       lengthInBytes));
               if (NS_WARN_IF(NS_FAILED(rv))) {
                 totalCustomLength = 0;
                 continue;
@@ -1300,9 +1301,8 @@ nsresult DataTransfer::CacheExternalData(const char* aFormat, uint32_t aIndex,
   RefPtr<DataTransferItem> item;
 
   if (strcmp(aFormat, kUnicodeMime) == 0) {
-    item =
-        mItems->SetDataWithPrincipal(NS_LITERAL_STRING("text/plain"), nullptr,
-                                     aIndex, aPrincipal, false, aHidden, rv);
+    item = mItems->SetDataWithPrincipal(u"text/plain"_ns, nullptr, aIndex,
+                                        aPrincipal, false, aHidden, rv);
     if (NS_WARN_IF(rv.Failed())) {
       return rv.StealNSResult();
     }
@@ -1310,9 +1310,8 @@ nsresult DataTransfer::CacheExternalData(const char* aFormat, uint32_t aIndex,
   }
 
   if (strcmp(aFormat, kURLDataMime) == 0) {
-    item = mItems->SetDataWithPrincipal(NS_LITERAL_STRING("text/uri-list"),
-                                        nullptr, aIndex, aPrincipal, false,
-                                        aHidden, rv);
+    item = mItems->SetDataWithPrincipal(u"text/uri-list"_ns, nullptr, aIndex,
+                                        aPrincipal, false, aHidden, rv);
     if (NS_WARN_IF(rv.Failed())) {
       return rv.StealNSResult();
     }
@@ -1466,7 +1465,8 @@ void DataTransfer::FillAllExternalData() {
 void DataTransfer::FillInExternalCustomTypes(uint32_t aIndex,
                                              nsIPrincipal* aPrincipal) {
   RefPtr<DataTransferItem> item = new DataTransferItem(
-      this, NS_LITERAL_STRING(kCustomTypesMime), DataTransferItem::KIND_STRING);
+      this, NS_LITERAL_STRING_FROM_CSTRING(kCustomTypesMime),
+      DataTransferItem::KIND_STRING);
   item->SetIndex(aIndex);
 
   nsCOMPtr<nsIVariant> variant = item->DataNoSecurityCheck();
@@ -1493,8 +1493,7 @@ void DataTransfer::FillInExternalCustomTypes(nsIVariant* aData, uint32_t aIndex,
 
   nsCOMPtr<nsIInputStream> stringStream;
   NS_NewByteInputStream(getter_AddRefs(stringStream),
-                        MakeSpan(chrs, checkedLen.value()),
-                        NS_ASSIGNMENT_ADOPT);
+                        Span(chrs, checkedLen.value()), NS_ASSIGNMENT_ADOPT);
 
   nsCOMPtr<nsIObjectInputStream> stream = NS_NewObjectInputStream(stringStream);
 
@@ -1541,12 +1540,4 @@ void DataTransfer::SetMode(DataTransfer::Mode aMode) {
   }
 }
 
-/* static */
-bool DataTransfer::MozAtAPIsEnabled(JSContext* aCx, JSObject* aObj /*unused*/) {
-  // We can expose moz* APIs if we are chrome code or if pref is enabled
-  return nsContentUtils::IsSystemCaller(aCx) ||
-         StaticPrefs::dom_datatransfer_mozAtAPIs_DoNotUseDirectly();
-}
-
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

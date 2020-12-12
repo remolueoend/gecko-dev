@@ -91,7 +91,7 @@ ifdef FUZZING_INTERFACES
   JSSHELL_BINS += fuzz-tests$(BIN_SUFFIX)
 endif
 
-MAKE_JSSHELL  = $(call py3_action,zip,-C $(DIST)/bin --strip $(abspath $(PKG_JSSHELL)) $(JSSHELL_BINS))
+MAKE_JSSHELL  = $(call py_action,zip,-C $(DIST)/bin --strip $(abspath $(PKG_JSSHELL)) $(JSSHELL_BINS))
 
 ifneq (,$(PGO_JARLOG_PATH))
   # The backslash subst is to work around an issue with our version of mozmake,
@@ -134,14 +134,14 @@ endif
 
 ifeq ($(MOZ_PKG_FORMAT),ZIP)
   PKG_SUFFIX	= .zip
-  INNER_MAKE_PACKAGE = $(call py3_action,make_zip,'$(MOZ_PKG_DIR)' '$(PACKAGE)')
-  INNER_UNMAKE_PACKAGE = $(call py3_action,make_unzip,$(UNPACKAGE))
+  INNER_MAKE_PACKAGE = $(call py_action,make_zip,'$(MOZ_PKG_DIR)' '$(PACKAGE)')
+  INNER_UNMAKE_PACKAGE = $(call py_action,make_unzip,$(UNPACKAGE))
 endif
 
 ifeq ($(MOZ_PKG_FORMAT),SFX7Z)
   PKG_SUFFIX	= .exe
-  INNER_MAKE_PACKAGE = $(call py3_action,exe_7z_archive,'$(MOZ_PKG_DIR)' '$(MOZ_INSTALLER_PATH)/app.tag' '$(MOZ_SFX_PACKAGE)' '$(PACKAGE)')
-  INNER_UNMAKE_PACKAGE = $(call py3_action,exe_7z_extract,$(UNPACKAGE) $(MOZ_PKG_DIR))
+  INNER_MAKE_PACKAGE = $(call py_action,exe_7z_archive,'$(MOZ_PKG_DIR)' '$(MOZ_INSTALLER_PATH)/app.tag' '$(MOZ_SFX_PACKAGE)' '$(PACKAGE)')
+  INNER_UNMAKE_PACKAGE = $(call py_action,exe_7z_extract,$(UNPACKAGE) $(MOZ_PKG_DIR))
 endif
 
 #Create an RPM file
@@ -162,7 +162,7 @@ ifeq ($(MOZ_PKG_FORMAT),RPM)
 
   RPM_CMD = \
     echo Creating RPM && \
-    $(PYTHON) -m mozbuild.action.preprocessor \
+    $(PYTHON3) -m mozbuild.action.preprocessor \
       -DMOZ_APP_NAME=$(MOZ_APP_NAME) \
       -DMOZ_APP_DISPLAYNAME='$(MOZ_APP_DISPLAYNAME)' \
       -DMOZ_APP_REMOTINGNAME='$(MOZ_APP_REMOTINGNAME)' \
@@ -231,7 +231,7 @@ ifeq ($(MOZ_PKG_FORMAT),DMG)
   _ABS_MOZSRCDIR = $(shell cd $(MOZILLA_DIR) && pwd)
   PKG_DMG_SOURCE = $(MOZ_PKG_DIR)
   INNER_MAKE_PACKAGE = \
-    $(call py3_action,make_dmg, \
+    $(call py_action,make_dmg, \
         $(if $(MOZ_PKG_MAC_DSSTORE),--dsstore '$(MOZ_PKG_MAC_DSSTORE)') \
         $(if $(MOZ_PKG_MAC_BACKGROUND),--background '$(MOZ_PKG_MAC_BACKGROUND)') \
         $(if $(MOZ_PKG_MAC_ICON),--icon '$(MOZ_PKG_MAC_ICON)') \
@@ -239,7 +239,7 @@ ifeq ($(MOZ_PKG_FORMAT),DMG)
         '$(PKG_DMG_SOURCE)' '$(PACKAGE)' \
         )
   INNER_UNMAKE_PACKAGE = \
-    $(call py3_action,unpack_dmg, \
+    $(call py_action,unpack_dmg, \
         $(if $(MOZ_PKG_MAC_DSSTORE),--dsstore '$(MOZ_PKG_MAC_DSSTORE)') \
         $(if $(MOZ_PKG_MAC_BACKGROUND),--background '$(MOZ_PKG_MAC_BACKGROUND)') \
         $(if $(MOZ_PKG_MAC_ICON),--icon '$(MOZ_PKG_MAC_ICON)') \
@@ -273,6 +273,7 @@ NO_PKG_FILES += \
 	pk12util* \
 	BadCertAndPinningServer* \
 	DelegatedCredentialsServer* \
+	EncryptedClientHelloServer* \
 	OCSPStaplingServer* \
 	SanctionsTestServer* \
 	GenerateOCSPResponse* \
@@ -307,8 +308,6 @@ endif
 ifdef MOZ_FOLD_LIBS
   DEFINES += -DMOZ_FOLD_LIBS=1
 endif
-
-GARBAGE		+= $(DIST)/$(PACKAGE) $(PACKAGE)
 
 # The following target stages files into two directories: one directory for
 # core files, and one for optional extensions based on the information in
@@ -380,7 +379,7 @@ UPLOAD_FILES= \
   $(call QUOTED_WILDCARD,$(MOZ_MOZINFO_FILE)) \
   $(call QUOTED_WILDCARD,$(MOZ_TEST_PACKAGES_FILE)) \
   $(call QUOTED_WILDCARD,$(PKG_JSSHELL)) \
-  $(call QUOTED_WILDCARD,$(DIST)/$(PKG_PATH)$(SYMBOL_FULL_ARCHIVE_BASENAME).zip) \
+  $(call QUOTED_WILDCARD,$(DIST)/$(PKG_PATH)$(SYMBOL_FULL_ARCHIVE_BASENAME).tar.zst) \
   $(call QUOTED_WILDCARD,$(topobjdir)/$(MOZ_BUILD_APP)/installer/windows/instgen/setup.exe) \
   $(call QUOTED_WILDCARD,$(topobjdir)/$(MOZ_BUILD_APP)/installer/windows/instgen/setup-stub.exe) \
   $(call QUOTED_WILDCARD,$(topsrcdir)/toolchains.json) \

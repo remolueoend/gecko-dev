@@ -8,12 +8,15 @@
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventListenerManager.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/JSEventHandler.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/EventListenerBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "nsArrayUtils.h"
 #include "nsCOMArray.h"
+#include "nsINode.h"
 #include "nsJSUtils.h"
 #include "nsMemory.h"
 #include "nsServiceManagerUtils.h"
@@ -385,10 +388,8 @@ void EventListenerService::NotifyPendingChanges() {
   mPendingListenerChanges.swap(changes);
   mPendingListenerChangesSet.Clear();
 
-  nsTObserverArray<nsCOMPtr<nsIListenerChangeListener>>::EndLimitedIterator
-      iter(mChangeListeners);
-  while (iter.HasMore()) {
-    nsCOMPtr<nsIListenerChangeListener> listener = iter.GetNext();
+  for (nsCOMPtr<nsIListenerChangeListener> listener :
+       mChangeListeners.EndLimitedRange()) {
     listener->ListenersChanged(changes);
   }
 }

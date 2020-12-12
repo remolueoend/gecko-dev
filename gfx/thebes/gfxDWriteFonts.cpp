@@ -9,6 +9,7 @@
 #include "gfxDWriteFontList.h"
 #include "gfxContext.h"
 #include "gfxTextRun.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/gfxVars.h"
 
 #include "harfbuzz/hb.h"
@@ -95,17 +96,6 @@ gfxDWriteFont::gfxDWriteFont(const RefPtr<UnscaledFontDWrite>& aUnscaledFont,
 
 gfxDWriteFont::~gfxDWriteFont() { delete mMetrics; }
 
-static void ForceFontUpdate() {
-  // update device context font cache
-  // Dirty but easiest way:
-  // Changing nsIPrefBranch entry which triggers callbacks
-  // and flows into calling mDeviceContext->FlushFontCache()
-  // to update the font cache in all the instance of Browsers
-  static const char kPrefName[] = "font.internaluseonly.changed";
-  bool fontInternalChange = Preferences::GetBool(kPrefName, false);
-  Preferences::SetBool(kPrefName, !fontInternalChange);
-}
-
 void gfxDWriteFont::UpdateSystemTextQuality() {
   BYTE newQuality = GetSystemTextQuality();
   if (gfxVars::SystemTextQuality() != newQuality) {
@@ -115,10 +105,9 @@ void gfxDWriteFont::UpdateSystemTextQuality() {
 
 void gfxDWriteFont::SystemTextQualityChanged() {
   // If ClearType status has changed, update our value,
+  Factory::SetSystemTextQuality(gfxVars::SystemTextQuality());
   // flush cached stuff that depended on the old setting, and force
   // reflow everywhere to ensure we are using correct glyph metrics.
-  ForceFontUpdate();
-  Factory::SetSystemTextQuality(gfxVars::SystemTextQuality());
   gfxPlatform::FlushFontAndWordCaches();
   gfxPlatform::ForceGlobalReflow();
 }
@@ -142,7 +131,7 @@ bool gfxDWriteFont::GetFakeMetricsForArialBlack(
   style.weight = FontWeight(700);
 
   gfxFontEntry* fe = gfxPlatformFontList::PlatformFontList()->FindFontForFamily(
-      NS_LITERAL_CSTRING("Arial"), &style);
+      "Arial"_ns, &style);
   if (!fe || fe == mFontEntry) {
     return false;
   }
@@ -604,6 +593,7 @@ already_AddRefed<ScaledFont> gfxDWriteFont::GetScaledFont(
     gfxDWriteFontEntry* fe = static_cast<gfxDWriteFontEntry*>(mFontEntry.get());
     bool forceGDI = GetForceGDIClassic();
 
+    // params may be null, if initialization failed
     IDWriteRenderingParams* params =
         gfxWindowsPlatform::GetPlatform()->GetRenderingParams(
             UsingClearType()
@@ -611,10 +601,11 @@ already_AddRefed<ScaledFont> gfxDWriteFont::GetScaledFont(
                             : gfxWindowsPlatform::TEXT_RENDERING_NORMAL)
                 : gfxWindowsPlatform::TEXT_RENDERING_NO_CLEARTYPE);
 
-    DWRITE_RENDERING_MODE renderingMode = params->GetRenderingMode();
-    FLOAT gamma = params->GetGamma();
-    FLOAT contrast = params->GetEnhancedContrast();
-    FLOAT clearTypeLevel = params->GetClearTypeLevel();
+    DWRITE_RENDERING_MODE renderingMode =
+        params ? params->GetRenderingMode() : DWRITE_RENDERING_MODE_DEFAULT;
+    FLOAT gamma = params ? params->GetGamma() : 2.2;
+    FLOAT contrast = params ? params->GetEnhancedContrast() : 1.0;
+    FLOAT clearTypeLevel = params ? params->GetClearTypeLevel() : 1.0;
     if (forceGDI || renderingMode == DWRITE_RENDERING_MODE_GDI_CLASSIC) {
       renderingMode = DWRITE_RENDERING_MODE_GDI_CLASSIC;
       gamma = GetSystemGDIGamma();

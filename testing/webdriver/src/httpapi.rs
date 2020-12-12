@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use http::Method;
 use serde_json::Value;
 
@@ -279,6 +283,7 @@ pub(crate) fn standard_routes<U: WebDriverExtensionRoute>() -> Vec<(Method, &'st
             "/session/{sessionId}/actions",
             Route::ReleaseActions,
         ),
+        (Method::POST, "/session/{sessionId}/print", Route::Print),
         (Method::GET, "/status", Route::Status),
     ];
 }
@@ -344,6 +349,7 @@ pub enum Route<U: WebDriverExtensionRoute> {
     SendAlertText,
     TakeScreenshot,
     TakeElementScreenshot,
+    Print,
     Status,
     Extension(U),
 }

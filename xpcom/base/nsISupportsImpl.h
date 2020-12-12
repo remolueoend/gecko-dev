@@ -68,15 +68,38 @@ class nsAutoOwningThread {
   void* mThread;
 };
 
+class nsISerialEventTarget;
+class nsAutoOwningEventTarget {
+ public:
+  nsAutoOwningEventTarget();
+  ~nsAutoOwningEventTarget();
+
+  // We move the actual assertion checks out-of-line to minimize code bloat,
+  // but that means we have to pass a non-literal string to MOZ_CRASH_UNSAFE.
+  // To make that more safe, the public interface requires a literal string
+  // and passes that to the private interface; we can then be assured that we
+  // effectively are passing a literal string to MOZ_CRASH_UNSAFE.
+  template <int N>
+  void AssertOwnership(const char (&aMsg)[N]) const {
+    AssertCurrentThreadOwnsMe(aMsg);
+  }
+
+  bool IsCurrentThread() const;
+
+ private:
+  void AssertCurrentThreadOwnsMe(const char* aMsg) const;
+
+  nsISerialEventTarget* mTarget;
+};
+
 #  define NS_DECL_OWNINGTHREAD nsAutoOwningThread _mOwningThread;
-#  define NS_ASSERT_OWNINGTHREAD_AGGREGATE(agg, _class) \
-    agg->_mOwningThread.AssertOwnership(#_class " not thread-safe")
+#  define NS_DECL_OWNINGEVENTTARGET nsAutoOwningEventTarget _mOwningThread;
 #  define NS_ASSERT_OWNINGTHREAD(_class) \
-    NS_ASSERT_OWNINGTHREAD_AGGREGATE(this, _class)
+    _mOwningThread.AssertOwnership(#_class " not thread-safe")
 #else  // !MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
 
-#  define NS_DECL_OWNINGTHREAD /* nothing */
-#  define NS_ASSERT_OWNINGTHREAD_AGGREGATE(agg, _class) ((void)0)
+#  define NS_DECL_OWNINGTHREAD      /* nothing */
+#  define NS_DECL_OWNINGEVENTTARGET /* nothing */
 #  define NS_ASSERT_OWNINGTHREAD(_class) ((void)0)
 
 #endif  // MOZ_THREAD_SAFETY_OWNERSHIP_CHECKS_SUPPORTED
@@ -567,37 +590,36 @@ class ThreadSafeAutoRefCnt {
  * @param _destroy A statement that is executed when the object's
  *   refcount drops to zero.
  * @param _decl Name of the macro to be used for the return type of the
- *   AddRef & Releas methods (typically NS_IMETHOD_ or NS_METHOD_).
+ *   AddRef & Release methods (typically NS_IMETHOD_ or NS_METHOD_).
  * @param optional override Mark the AddRef & Release methods as overrides.
  */
-#define NS_INLINE_DECL_REFCOUNTING_META(_class, _decl, _destroy, ...) \
- public:                                                              \
-  _decl(MozExternalRefCountType) AddRef(void) __VA_ARGS__ {           \
-    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                        \
-    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");              \
-    NS_ASSERT_OWNINGTHREAD(_class);                                   \
-    ++mRefCnt;                                                        \
-    NS_LOG_ADDREF(this, mRefCnt, #_class, sizeof(*this));             \
-    return mRefCnt;                                                   \
-  }                                                                   \
-  _decl(MozExternalRefCountType) Release(void) __VA_ARGS__ {          \
-    MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                  \
-    NS_ASSERT_OWNINGTHREAD(_class);                                   \
-    --mRefCnt;                                                        \
-    NS_LOG_RELEASE(this, mRefCnt, #_class);                           \
-    if (mRefCnt == 0) {                                               \
-      mRefCnt = 1; /* stabilize */                                    \
-      _destroy;                                                       \
-      return 0;                                                       \
-    }                                                                 \
-    return mRefCnt;                                                   \
-  }                                                                   \
-  using HasThreadSafeRefCnt = std::false_type;                        \
-                                                                      \
- protected:                                                           \
-  nsAutoRefCnt mRefCnt;                                               \
-  NS_DECL_OWNINGTHREAD                                                \
- public:
+#define NS_INLINE_DECL_REFCOUNTING_META(_class, _decl, _destroy, _owning, ...) \
+ public:                                                                       \
+  _decl(MozExternalRefCountType) AddRef(void) __VA_ARGS__ {                    \
+    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                                 \
+    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                       \
+    NS_ASSERT_OWNINGTHREAD(_class);                                            \
+    ++mRefCnt;                                                                 \
+    NS_LOG_ADDREF(this, mRefCnt, #_class, sizeof(*this));                      \
+    return mRefCnt;                                                            \
+  }                                                                            \
+  _decl(MozExternalRefCountType) Release(void) __VA_ARGS__ {                   \
+    MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                           \
+    NS_ASSERT_OWNINGTHREAD(_class);                                            \
+    --mRefCnt;                                                                 \
+    NS_LOG_RELEASE(this, mRefCnt, #_class);                                    \
+    if (mRefCnt == 0) {                                                        \
+      mRefCnt = 1; /* stabilize */                                             \
+      _destroy;                                                                \
+      return 0;                                                                \
+    }                                                                          \
+    return mRefCnt;                                                            \
+  }                                                                            \
+  using HasThreadSafeRefCnt = std::false_type;                                 \
+                                                                               \
+ protected:                                                                    \
+  nsAutoRefCnt mRefCnt;                                                        \
+  _owning public:
 
 /**
  * Use this macro to declare and implement the AddRef & Release methods for a
@@ -609,14 +631,16 @@ class ThreadSafeAutoRefCnt {
  * @param optional override Mark the AddRef & Release methods as overrides.
  */
 #define NS_INLINE_DECL_REFCOUNTING_WITH_DESTROY(_class, _destroy, ...) \
-  NS_INLINE_DECL_REFCOUNTING_META(_class, NS_METHOD_, _destroy, __VA_ARGS__)
+  NS_INLINE_DECL_REFCOUNTING_META(_class, NS_METHOD_, _destroy,        \
+                                  NS_DECL_OWNINGTHREAD, __VA_ARGS__)
 
 /**
  * Like NS_INLINE_DECL_REFCOUNTING_WITH_DESTROY with AddRef & Release declared
  * virtual.
  */
 #define NS_INLINE_DECL_VIRTUAL_REFCOUNTING_WITH_DESTROY(_class, _destroy, ...) \
-  NS_INLINE_DECL_REFCOUNTING_META(_class, NS_IMETHOD_, _destroy, __VA_ARGS__)
+  NS_INLINE_DECL_REFCOUNTING_META(_class, NS_IMETHOD_, _destroy,               \
+                                  NS_DECL_OWNINGTHREAD, __VA_ARGS__)
 
 /**
  * Use this macro to declare and implement the AddRef & Release methods for a
@@ -628,30 +652,41 @@ class ThreadSafeAutoRefCnt {
 #define NS_INLINE_DECL_REFCOUNTING(_class, ...) \
   NS_INLINE_DECL_REFCOUNTING_WITH_DESTROY(_class, delete (this), __VA_ARGS__)
 
-#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING_META(_class, _decl, ...) \
- public:                                                               \
-  _decl(MozExternalRefCountType) AddRef(void) __VA_ARGS__ {            \
-    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                         \
-    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");               \
-    nsrefcnt count = ++mRefCnt;                                        \
-    NS_LOG_ADDREF(this, count, #_class, sizeof(*this));                \
-    return (nsrefcnt)count;                                            \
-  }                                                                    \
-  _decl(MozExternalRefCountType) Release(void) __VA_ARGS__ {           \
-    MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                   \
-    nsrefcnt count = --mRefCnt;                                        \
-    NS_LOG_RELEASE(this, count, #_class);                              \
-    if (count == 0) {                                                  \
-      delete (this);                                                   \
-      return 0;                                                        \
-    }                                                                  \
-    return count;                                                      \
-  }                                                                    \
-  using HasThreadSafeRefCnt = std::true_type;                          \
-                                                                       \
- protected:                                                            \
-  ::mozilla::ThreadSafeAutoRefCnt mRefCnt;                             \
-                                                                       \
+/**
+ * Like NS_INLINE_DECL_REFCOUNTING, however the thread safety check will work
+ * with any nsISerialEventTarget. This is a workaround until bug 1648031 is
+ * properly resolved. Once this is done, it will be possible to use
+ * NS_INLINE_DECL_REFCOUNTING under all circumstances.
+ */
+#define NS_INLINE_DECL_REFCOUNTING_ONEVENTTARGET(_class, ...)        \
+  NS_INLINE_DECL_REFCOUNTING_META(_class, NS_METHOD_, delete (this), \
+                                  NS_DECL_OWNINGEVENTTARGET, __VA_ARGS__)
+
+#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING_META(_class, _decl, _destroy, \
+                                                   ...)                     \
+ public:                                                                    \
+  _decl(MozExternalRefCountType) AddRef(void) __VA_ARGS__ {                 \
+    MOZ_ASSERT_TYPE_OK_FOR_REFCOUNTING(_class)                              \
+    MOZ_ASSERT(int32_t(mRefCnt) >= 0, "illegal refcnt");                    \
+    nsrefcnt count = ++mRefCnt;                                             \
+    NS_LOG_ADDREF(this, count, #_class, sizeof(*this));                     \
+    return (nsrefcnt)count;                                                 \
+  }                                                                         \
+  _decl(MozExternalRefCountType) Release(void) __VA_ARGS__ {                \
+    MOZ_ASSERT(int32_t(mRefCnt) > 0, "dup release");                        \
+    nsrefcnt count = --mRefCnt;                                             \
+    NS_LOG_RELEASE(this, count, #_class);                                   \
+    if (count == 0) {                                                       \
+      _destroy;                                                             \
+      return 0;                                                             \
+    }                                                                       \
+    return count;                                                           \
+  }                                                                         \
+  using HasThreadSafeRefCnt = std::true_type;                               \
+                                                                            \
+ protected:                                                                 \
+  ::mozilla::ThreadSafeAutoRefCnt mRefCnt;                                  \
+                                                                            \
  public:
 
 /**
@@ -661,16 +696,44 @@ class ThreadSafeAutoRefCnt {
  * DOES NOT DO REFCOUNT STABILIZATION!
  *
  * @param _class The name of the class implementing the method
+ * @param _destroy A statement that is executed when the object's
+ *   refcount drops to zero.
+ * @param optional override Mark the AddRef & Release methods as overrides.
  */
-#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING(_class, ...) \
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_META(_class, NS_METHOD_, __VA_ARGS__)
+#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DESTROY(_class, _destroy, \
+                                                           ...)              \
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_META(_class, NS_METHOD_, _destroy,   \
+                                             __VA_ARGS__)
+
+/**
+ * Like NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DESTROY with AddRef & Release
+ * declared virtual.
+ */
+#define NS_INLINE_DECL_THREADSAFE_VIRTUAL_REFCOUNTING_WITH_DESTROY(         \
+    _class, _destroy, ...)                                                  \
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_META(_class, NS_IMETHOD_, _destroy, \
+                                             __VA_ARGS__)
+
+/**
+ * Use this macro to declare and implement the AddRef & Release methods for a
+ * given non-XPCOM <i>_class</i> in a threadsafe manner.
+ *
+ * DOES NOT DO REFCOUNT STABILIZATION!
+ *
+ * @param _class The name of the class implementing the method
+ * @param optional override Mark the AddRef & Release methods as overrides.
+ */
+#define NS_INLINE_DECL_THREADSAFE_REFCOUNTING(_class, ...)                  \
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_DESTROY(_class, delete (this), \
+                                                     __VA_ARGS__)
 
 /**
  * Like NS_INLINE_DECL_THREADSAFE_REFCOUNTING with AddRef & Release declared
  * virtual.
  */
 #define NS_INLINE_DECL_THREADSAFE_VIRTUAL_REFCOUNTING(_class, ...) \
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_META(_class, NS_IMETHOD_, __VA_ARGS__)
+  NS_INLINE_DECL_THREADSAFE_VIRTUAL_REFCOUNTING_WITH_DESTROY(      \
+      _class, delete (this), __VA_ARGS__)
 
 /**
  * Use this macro in interface classes that you want to be able to reference
@@ -1325,9 +1388,6 @@ class Runnable;
 /**
  * A macro to declare and implement addref/release for a class that does not
  * need to QI to any interfaces other than the ones its parent class QIs to.
- * This can be a no-op when we're not building with refcount logging, because in
- * that case there's no real reason to have a separate addref/release on this
- * class.
  */
 #if defined(NS_BUILD_REFCNT_LOGGING)
 #  define NS_INLINE_DECL_REFCOUNTING_INHERITED(Class, Super)  \
@@ -1338,8 +1398,16 @@ class Runnable;
       NS_IMPL_RELEASE_INHERITED_GUTS(Class, Super);           \
     }
 #else  // NS_BUILD_REFCNT_LOGGING
-#  define NS_INLINE_DECL_REFCOUNTING_INHERITED(Class, Super)
-#endif  // NS_BUILD_REFCNT_LOGGINGx
+   // Defining inheriting versions of functions in the refcount logging case has
+   // the side effect of making qualified references to |AddRef| and |Release|
+   // on the containing class unambiguous, if |Super| isn't the only base class
+   // that provides these members.  So if we're building without refcount
+   // logging, |using| in |Super|'s declarations to make the names similarly
+   // unambiguous.
+#  define NS_INLINE_DECL_REFCOUNTING_INHERITED(Class, Super) \
+    using Super::AddRef;                                     \
+    using Super::Release;
+#endif  // NS_BUILD_REFCNT_LOGGING
 
 /*
  * Macro to glue together a QI that starts with an interface table

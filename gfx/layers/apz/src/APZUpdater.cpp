@@ -219,7 +219,7 @@ void APZUpdater::UpdateScrollOffsets(LayersId aRootLayerTreeId,
           "APZUpdater::UpdateScrollOffsets",
           [=, updates = std::move(aUpdates)]() mutable {
             self->mScrollData[aOriginatingLayersId].ApplyUpdates(
-                updates, aPaintSequenceNumber);
+                std::move(updates), aPaintSequenceNumber);
             auto root = self->mScrollData.find(aRootLayerTreeId);
             if (root == self->mScrollData.end()) {
               return;
@@ -358,8 +358,7 @@ void APZUpdater::RunOnUpdaterThread(LayersId aLayersId,
       mUpdaterQueue.push_back(QueuedTask{aLayersId, task});
     }
     if (sendWakeMessage) {
-      RefPtr<wr::WebRenderAPI> api =
-          mApz->GetWebRenderAPI(wr::RenderRoot::Default);
+      RefPtr<wr::WebRenderAPI> api = mApz->GetWebRenderAPI();
       if (api) {
         api->WakeSceneBuilder();
       } else {
@@ -374,8 +373,8 @@ void APZUpdater::RunOnUpdaterThread(LayersId aLayersId,
     return;
   }
 
-  if (MessageLoop* loop = CompositorThreadHolder::Loop()) {
-    loop->PostTask(task.forget());
+  if (CompositorThread()) {
+    CompositorThread()->Dispatch(task.forget());
   } else {
     // Could happen during startup
     NS_WARNING("Dropping task posted to updater thread");

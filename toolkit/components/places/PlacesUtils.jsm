@@ -21,6 +21,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   Bookmarks: "resource://gre/modules/Bookmarks.jsm",
   History: "resource://gre/modules/History.jsm",
   PlacesSyncUtils: "resource://gre/modules/PlacesSyncUtils.jsm",
+  PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
 });
 
 XPCOMUtils.defineLazyGetter(this, "MOZ_ACTION_REGEX", () => {
@@ -827,7 +828,7 @@ var PlacesUtils = {
   SYNC_BOOKMARK_VALIDATORS,
   SYNC_CHANGE_RECORD_VALIDATORS,
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
 
   _shutdownFunctions: [],
   registerShutdownFunction: function PU_registerShutdownFunction(aFunc) {
@@ -1199,7 +1200,7 @@ var PlacesUtils = {
         break;
       }
       default:
-        throw Cr.NS_ERROR_INVALID_ARG;
+        throw Components.Exception("", Cr.NS_ERROR_INVALID_ARG);
     }
     return nodes;
   },
@@ -1339,7 +1340,7 @@ var PlacesUtils = {
     aExpandQueries
   ) {
     if (!this.nodeIsContainer(aNode)) {
-      throw Cr.NS_ERROR_INVALID_ARG;
+      throw Components.Exception("", Cr.NS_ERROR_INVALID_ARG);
     }
 
     // excludeItems is inherited by child containers in an excludeItems view.
@@ -1405,6 +1406,13 @@ var PlacesUtils = {
       }
     }
     return found;
+  },
+
+  getChildCountForFolder(guid) {
+    let folder = PlacesUtils.getFolderContents(guid).root;
+    let childCount = folder.childCount;
+    folder.containerOpen = false;
+    return childCount;
   },
 
   /**
@@ -1476,6 +1484,9 @@ var PlacesUtils = {
    * @see promiseDBConnection
    */
   promiseLargeCacheDBConnection: () => gAsyncDBLargeCacheConnPromised,
+  get largeCacheDBConnDeferred() {
+    return gAsyncDBLargeCacheConnDeferred;
+  },
 
   /**
    * Returns a Sqlite.jsm wrapper for the main Places connection. Most callers
@@ -1967,13 +1978,6 @@ XPCOMUtils.defineLazyGetter(PlacesUtils, "bookmarks", () => {
 
 XPCOMUtils.defineLazyServiceGetter(
   PlacesUtils,
-  "annotations",
-  "@mozilla.org/browser/annotation-service;1",
-  "nsIAnnotationService"
-);
-
-XPCOMUtils.defineLazyServiceGetter(
-  PlacesUtils,
   "tagging",
   "@mozilla.org/browser/tagging-service;1",
   "nsITaggingService"
@@ -2014,10 +2018,14 @@ function setupDbForShutdown(conn, name) {
 
             // At this stage, all external clients have finished using the
             // database. We just need to close the high-level connection.
-            await conn.close();
-            state = "2. Closed Sqlite.jsm connection.";
-
-            resolve();
+            try {
+              await conn.close();
+              state = "2. Closed Sqlite.jsm connection.";
+              resolve();
+            } catch (ex) {
+              state = "2. Failed to closed Sqlite.jsm connection: " + ex;
+              reject(ex);
+            }
           },
           () => state
         );
@@ -2026,13 +2034,13 @@ function setupDbForShutdown(conn, name) {
         conn.close();
         reject(ex);
       }
-    });
+    }).catch(Cu.reportError);
 
     // Make sure that Sqlite.jsm doesn't close until we are done
     // with the high-level connection.
     Sqlite.shutdown.addBlocker(
       `${name} must be closed before Sqlite.jsm`,
-      () => promiseClosed.catch(Cu.reportError),
+      () => promiseClosed,
       () => state
     );
   } catch (ex) {
@@ -2065,6 +2073,7 @@ XPCOMUtils.defineLazyGetter(this, "gAsyncDBWrapperPromised", () =>
     .catch(Cu.reportError)
 );
 
+var gAsyncDBLargeCacheConnDeferred = PromiseUtils.defer();
 XPCOMUtils.defineLazyGetter(this, "gAsyncDBLargeCacheConnPromised", () =>
   Sqlite.cloneStorageConnection({
     connection: PlacesUtils.history.DBConnection,
@@ -2078,6 +2087,24 @@ XPCOMUtils.defineLazyGetter(this, "gAsyncDBLargeCacheConnPromised", () =>
       // mozStorage value defined as MAX_CACHE_SIZE_BYTES in
       // storage/mozStorageConnection.cpp.
       await conn.execute("PRAGMA cache_size = -6144"); // 6MiB
+      // These should be kept in sync with nsPlacesTables.h.
+      await conn.execute(`
+        CREATE TEMP TABLE IF NOT EXISTS moz_openpages_temp (
+          url TEXT,
+          userContextId INTEGER,
+          open_count INTEGER,
+          PRIMARY KEY (url, userContextId)
+        )`);
+      await conn.execute(`
+        CREATE TEMP TRIGGER IF NOT EXISTS moz_openpages_temp_afterupdate_trigger
+        AFTER UPDATE OF open_count ON moz_openpages_temp FOR EACH ROW
+        WHEN NEW.open_count = 0
+        BEGIN
+          DELETE FROM moz_openpages_temp
+          WHERE url = NEW.url
+            AND userContextId = NEW.userContextId;
+        END`);
+      gAsyncDBLargeCacheConnDeferred.resolve(conn);
       return conn;
     })
     .catch(Cu.reportError)

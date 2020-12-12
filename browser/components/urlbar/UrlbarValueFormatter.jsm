@@ -46,7 +46,35 @@ class UrlbarValueFormatter {
     return this.urlbarInput.querySelector("#urlbar-scheme");
   }
 
-  update() {
+  async update() {
+    // _getUrlMetaData does URI fixup, which depends on the search service, so
+    // make sure it's initialized.  It can be uninitialized here on session
+    // restore.  Skip this if the service is already initialized in order to
+    // avoid the async call in the common case.  However, we can't access
+    // Service.search before first paint (delayed startup) because there's a
+    // performance test that prohibits it, so first bail if delayed startup
+    // isn't finished.
+    if (!this.window.gBrowserInit.delayedStartupFinished) {
+      return;
+    }
+    if (!Services.search.isInitialized) {
+      let instance = (this._updateInstance = {});
+      await Services.search.init();
+      if (this._updateInstance != instance) {
+        return;
+      }
+      delete this._updateInstance;
+    }
+
+    // If this window is being torn down, stop here
+    if (!this.window.docShell) {
+      return;
+    }
+
+    // Cleanup that must be done in any case, even if there's no value.
+    this.urlbarInput.removeAttribute("domaindir");
+    this.scheme.value = "";
+
     if (!this.inputField.value) {
       return;
     }
@@ -81,6 +109,7 @@ class UrlbarValueFormatter {
       // scroll to the left.
       urlMetaData = urlMetaData || this._getUrlMetaData();
       if (!urlMetaData) {
+        this.urlbarInput.removeAttribute("domaindir");
         return;
       }
       let { url, preDomain, domain } = urlMetaData;
@@ -89,10 +118,10 @@ class UrlbarValueFormatter {
         directionality == this.window.windowUtils.DIRECTION_RTL &&
         url[preDomain.length + domain.length] != "\u200E"
       ) {
-        this.urlbarInput.setAttribute("hasrtldomain", "true");
+        this.urlbarInput.setAttribute("domaindir", "rtl");
         this.inputField.scrollLeft = this.inputField.scrollLeftMax;
       } else {
-        this.urlbarInput.removeAttribute("hasrtldomain");
+        this.urlbarInput.setAttribute("domaindir", "ltr");
         this.inputField.scrollLeft = 0;
       }
     });
@@ -195,7 +224,6 @@ class UrlbarValueFormatter {
   }
 
   _removeURLFormat() {
-    this.scheme.value = "";
     if (!this._formattingApplied) {
       return;
     }
@@ -417,13 +445,18 @@ class UrlbarValueFormatter {
   }
 
   _getSearchAlias() {
-    // To determine whether the input contains a valid alias, check the value of
-    // the selected result -- whether it's a search result with an alias.  The
-    // selected result is null when the popup is closed, but we want to continue
-    // highlighting the alias when the popup is closed, and that's why we keep
-    // around the previously selected result in _selectedResult.
+    // To determine whether the input contains a valid alias, check if the
+    // selected result is a search result with an alias. If there is no selected
+    // result, we check the first result in the view, for cases when we do not
+    // highlight token alias results. The selected result is null when the popup
+    // is closed, but we want to continue highlighting the alias when the popup
+    // is closed, and that's why we keep around the previously selected result
+    // in _selectedResult.
     this._selectedResult =
-      this.urlbarInput.view.selectedResult || this._selectedResult;
+      this.urlbarInput.view.selectedResult ||
+      this.urlbarInput.view.getResultAtIndex(0) ||
+      this._selectedResult;
+
     if (
       this._selectedResult &&
       this._selectedResult.type == UrlbarUtils.RESULT_TYPE.SEARCH

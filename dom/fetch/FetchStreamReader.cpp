@@ -6,15 +6,23 @@
 
 #include "FetchStreamReader.h"
 #include "InternalResponse.h"
+#include "js/Stream.h"
+#include "mozilla/ConsoleReportCollector.h"
+#include "mozilla/dom/DOMException.h"
+#include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PromiseBinding.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerRef.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/TaskCategory.h"
 #include "nsContentUtils.h"
+#include "nsIAsyncInputStream.h"
+#include "nsIPipe.h"
 #include "nsIScriptError.h"
 #include "nsPIDOMWindow.h"
 #include "jsapi.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(FetchStreamReader)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(FetchStreamReader)
@@ -344,11 +352,10 @@ void FetchStreamReader::ReportErrorToConsole(JSContext* aCx,
   params.AppendElement(valueString);
 
   RefPtr<ConsoleReportCollector> reporter = new ConsoleReportCollector();
-  reporter->AddConsoleReport(
-      nsIScriptError::errorFlag,
-      NS_LITERAL_CSTRING("ReadableStreamReader.read"),
-      nsContentUtils::eDOM_PROPERTIES, sourceSpec, line, column,
-      NS_LITERAL_CSTRING("ReadableStreamReadingFailed"), params);
+  reporter->AddConsoleReport(nsIScriptError::errorFlag,
+                             "ReadableStreamReader.read"_ns,
+                             nsContentUtils::eDOM_PROPERTIES, sourceSpec, line,
+                             column, "ReadableStreamReadingFailed"_ns, params);
 
   uint64_t innerWindowId = 0;
 
@@ -374,5 +381,4 @@ void FetchStreamReader::ReportErrorToConsole(JSContext* aCx,
   workerPrivate->DispatchToMainThread(r.forget());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

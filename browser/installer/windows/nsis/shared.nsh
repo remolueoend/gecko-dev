@@ -193,11 +193,16 @@ ${If} $TmpVal == "HKCU"
                     "DidRegisterDefaultBrowserAgent"
   ${If} $0 != 0
   ${OrIf} ${Errors}
-    Exec '"$INSTDIR\default-browser-agent.exe" update-task $AppUserModelID'
+    ExecWait '"$INSTDIR\default-browser-agent.exe" register-task $AppUserModelID'
   ${EndIf}
+${ElseIf} $TmpVal == "HKLM"
+  ; If we're the privileged PostUpdate, make sure that the unprivileged one
+  ; will have permission to create a task by clearing out the old one first.
+  ExecWait '"$INSTDIR\default-browser-agent.exe" unregister-task $AppUserModelID'
 ${EndIf}
 !endif
 
+${RemoveDefaultBrowserAgentShortcut}
 !macroend
 !define PostUpdate "!insertmacro PostUpdate"
 
@@ -421,6 +426,43 @@ ${EndIf}
 !macroend
 !define UpdateOneShortcutBranding "!insertmacro UpdateOneShortcutBranding"
 
+; Remove a shortcut unintentionally added by the default browser agent (bug 1672957, 1681207)
+!macro RemoveDefaultBrowserAgentShortcut
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+
+  ; 2 is CSIDL_PROGRAMS, it's simpler to use this to get the user's Start Menu Programs than
+  ; to use $SMPROGRAMS and rely on SetShellVarContext current.
+  System::Call "Shell32::SHGetSpecialFolderPathW(p 0, t.r1, i 2, i 0)"
+
+  ; The shortcut would have been named MOZ_BASE_NAME regardless of branding.
+  ; According to defines.nsi.in AppName should match application.ini, and application.ini.in sets
+  ; [App] Name from MOZ_BASE_NAME.
+  StrCpy $1 "$1\${AppName}.lnk"
+  ShellLink::GetShortCutTarget $1
+  Pop $0
+
+  ; ShellLink::GetShortCutTarget, and the underlying IShellLink::GetPath(), have an issue
+  ; where "C:\Program Files" becomes "C:\Program Files (x86)" in some cases.
+  ; It should be OK to remove the shortcut (which matches our app name) even if it isn't from this
+  ; install, as long as the file name portion of the target path matches.
+  StrCpy $2 "\default-browser-agent.exe"
+  StrLen $3 $2
+  ; Select the substring to match from the end of the target path.
+  StrCpy $0 $0 $3 -$3
+  ${If} $0 == $2
+    Delete $1
+  ${EndIf}
+
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+!macroend
+!define RemoveDefaultBrowserAgentShortcut "!insertmacro RemoveDefaultBrowserAgentShortcut"
+
 !macro AddAssociationIfNoneExist FILE_TYPE KEY
   ClearErrors
   EnumRegKey $7 HKCR "${FILE_TYPE}" 0
@@ -499,7 +541,11 @@ ${EndIf}
   ; An empty string is used for the 4th & 5th params because the following
   ; protocol handlers already have a display name and the additional keys
   ; required for a protocol handler.
+!ifndef NIGHTLY_BUILD
+  ; Keep the compile-time conditional synchronized with the
+  ; "network.ftp.enabled" compile-time conditional.
   ${AddDisabledDDEHandlerValues} "ftp" "$2" "$8,1" "" ""
+!endif ; !NIGHTLY_BUILD
   ${AddDisabledDDEHandlerValues} "http" "$2" "$8,1" "" ""
   ${AddDisabledDDEHandlerValues} "https" "$2" "$8,1" "" ""
   ${AddDisabledDDEHandlerValues} "mailto" "$2" "$8,1" "" ""
@@ -574,6 +620,7 @@ ${EndIf}
 
   WriteRegStr ${RegKey} "$0\Capabilities\FileAssociations" ".htm"   "FirefoxHTML$2"
   WriteRegStr ${RegKey} "$0\Capabilities\FileAssociations" ".html"  "FirefoxHTML$2"
+  WriteRegStr ${RegKey} "$0\Capabilities\FileAssociations" ".pdf"   "FirefoxHTML$2"
   WriteRegStr ${RegKey} "$0\Capabilities\FileAssociations" ".shtml" "FirefoxHTML$2"
   WriteRegStr ${RegKey} "$0\Capabilities\FileAssociations" ".xht"   "FirefoxHTML$2"
   WriteRegStr ${RegKey} "$0\Capabilities\FileAssociations" ".xhtml" "FirefoxHTML$2"
@@ -582,7 +629,16 @@ ${EndIf}
 
   WriteRegStr ${RegKey} "$0\Capabilities\StartMenu" "StartMenuInternet" "$1"
 
+!ifndef NIGHTLY_BUILD
+  ; Keep the compile-time conditional synchronized with the
+  ; "network.ftp.enabled" compile-time conditional.
   WriteRegStr ${RegKey} "$0\Capabilities\URLAssociations" "ftp"    "FirefoxURL$2"
+!else
+  ; We don't delete and re-create the entire key, so we need to remove
+  ; any existing registration.
+  DeleteRegValue ${RegKey} "$0\Capabilities\URLAssociations" "ftp"
+!endif ; !NIGHTLY_BUILD
+
   WriteRegStr ${RegKey} "$0\Capabilities\URLAssociations" "http"   "FirefoxURL$2"
   WriteRegStr ${RegKey} "$0\Capabilities\URLAssociations" "https"  "FirefoxURL$2"
   WriteRegStr ${RegKey} "$0\Capabilities\URLAssociations" "mailto" "FirefoxURL$2"
@@ -979,9 +1035,16 @@ ${EndIf}
   ; An empty string is used for the 4th & 5th params because the following
   ; protocol handlers already have a display name and the additional keys
   ; required for a protocol handler.
+
   ${IsHandlerForInstallDir} "ftp" $R9
   ${If} "$R9" == "true"
+!ifndef NIGHTLY_BUILD
+    ; Keep the compile-time conditional synchronized with the
+    ; "network.ftp.enabled" compile-time conditional.
     ${AddDisabledDDEHandlerValues} "ftp" "$2" "$8,1" "" ""
+!else
+    ${AddDisabledDDEHandlerValues} "ftp" "$2" "$8,1" "" "delete"
+!endif ; !NIGHTLY_BUILD
   ${EndIf}
 
   ${IsHandlerForInstallDir} "http" $R9
@@ -1584,7 +1647,22 @@ Function SetAsDefaultAppUserHKCU
   ${Unless} ${Errors}
     ; This is all protected by a user choice hash in Windows 8 so it won't
     ; help, but it also won't hurt.
-    AppAssocReg::SetAppAsDefaultAll "$R9"
+    AppAssocReg::SetAppAsDefault "$R9" ".htm" "file"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" ".html" "file"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" ".shtml" "file"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" ".webp" "file"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" ".xht" "file"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" ".xhtml" "file"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" "http" "protocol"
+    Pop $0
+    AppAssocReg::SetAppAsDefault "$R9" "https" "protocol"
+    Pop $0
   ${EndUnless}
   ${RemoveDeprecatedKeys}
   ${MigrateTaskBarShortcut}

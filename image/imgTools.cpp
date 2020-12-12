@@ -18,6 +18,7 @@
 #include "imgICache.h"
 #include "imgIContainer.h"
 #include "imgIEncoder.h"
+#include "nsComponentManagerUtils.h"
 #include "nsNetUtil.h"  // for NS_NewBufferedInputStream
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
@@ -110,17 +111,14 @@ class ImageDecoderListener final : public nsIStreamListener,
 
   NS_IMETHOD
   OnStopRequest(nsIRequest* aRequest, nsresult aStatus) override {
-    // Depending on the error, we might not have received any data yet, in which
-    // case we would not have an |mImage|
-    if (mImage) {
-      mImage->OnImageDataComplete(aRequest, nullptr, aStatus, true);
+    // Encouter a fetch error, or no data could be fetched.
+    if (!mImage || NS_FAILED(aStatus)) {
+      mCallback->OnImageReady(nullptr, mImage ? aStatus : NS_ERROR_FAILURE);
+      return NS_OK;
     }
 
-    nsCOMPtr<imgIContainer> container;
-    if (NS_SUCCEEDED(aStatus)) {
-      container = this;
-    }
-
+    mImage->OnImageDataComplete(aRequest, nullptr, aStatus, true);
+    nsCOMPtr<imgIContainer> container = this;
     mCallback->OnImageReady(container, aStatus);
     return NS_OK;
   }
@@ -262,7 +260,7 @@ class ImageDecoderHelper final : public Runnable,
 
  private:
   ~ImageDecoderHelper() {
-    NS_ReleaseOnMainThread("ImageDecoderHelper::mImage", mImage.forget());
+    SurfaceCache::ReleaseImageOnMainThread(mImage.forget());
     NS_ReleaseOnMainThread("ImageDecoderHelper::mCallback", mCallback.forget());
   }
 
@@ -337,7 +335,7 @@ imgTools::DecodeImageFromBuffer(const char* aBuffer, uint32_t aSize,
   // Let's create a temporary inputStream.
   nsCOMPtr<nsIInputStream> stream;
   nsresult rv = NS_NewByteInputStream(
-      getter_AddRefs(stream), MakeSpan(aBuffer, aSize), NS_ASSIGNMENT_DEPEND);
+      getter_AddRefs(stream), Span(aBuffer, aSize), NS_ASSIGNMENT_DEPEND);
   NS_ENSURE_SUCCESS(rv, rv);
   MOZ_ASSERT(stream);
   MOZ_ASSERT(NS_InputStreamIsBuffered(stream));
@@ -433,8 +431,7 @@ static nsresult EncodeImageData(DataSourceSurface* aDataSurface,
              "We're assuming B8G8R8A8/X8");
 
   // Get an image encoder for the media type
-  nsAutoCString encoderCID(
-      NS_LITERAL_CSTRING("@mozilla.org/image/encoder;2?type=") + aMimeType);
+  nsAutoCString encoderCID("@mozilla.org/image/encoder;2?type="_ns + aMimeType);
 
   nsCOMPtr<imgIEncoder> encoder = do_CreateInstance(encoderCID.get());
   if (!encoder) {

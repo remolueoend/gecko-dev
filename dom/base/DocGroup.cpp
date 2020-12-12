@@ -5,16 +5,22 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/DocGroup.h"
-#include "mozilla/dom/DOMTypes.h"
-#include "mozilla/dom/JSExecutionManager.h"
+
 #include "mozilla/AbstractThread.h"
 #include "mozilla/PerformanceUtils.h"
 #include "mozilla/SchedulerGroup.h"
-#include "mozilla/ThrottledEventQueue.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/ThrottledEventQueue.h"
+#include "mozilla/dom/BrowsingContext.h"
+#include "mozilla/dom/CustomElementRegistry.h"
+#include "mozilla/dom/DOMTypes.h"
+#include "mozilla/dom/JSExecutionManager.h"
+#include "mozilla/dom/WindowContext.h"
 #include "nsDOMMutationObserver.h"
+#include "nsIDirectTaskDispatcher.h"
 #include "nsProxyRelease.h"
+#include "nsThread.h"
 #if defined(XP_WIN)
 #  include <processthreadsapi.h>  // for GetCurrentProcessId()
 #else
@@ -32,7 +38,8 @@ namespace {
 
 // LabellingEventTarget labels all dispatches with the DocGroup that
 // created it.
-class LabellingEventTarget final : public nsISerialEventTarget {
+class LabellingEventTarget final : public nsISerialEventTarget,
+                                   public nsIDirectTaskDispatcher {
   // This creates a cycle with DocGroup. Therefore, when DocGroup
   // looses its last Document, the DocGroup of the
   // LabellingEventTarget needs to be cleared.
@@ -42,13 +49,18 @@ class LabellingEventTarget final : public nsISerialEventTarget {
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_LABELLINGEVENTTARGET_IID)
 
   explicit LabellingEventTarget(mozilla::dom::DocGroup* aDocGroup)
-      : mDocGroup(aDocGroup) {}
+      : mDocGroup(aDocGroup),
+        mMainThread(
+            static_cast<nsThread*>(mozilla::GetMainThreadSerialEventTarget())) {
+  }
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIEVENTTARGET_FULL
+  NS_DECL_NSIDIRECTTASKDISPATCHER
 
  private:
   ~LabellingEventTarget() = default;
+  const RefPtr<nsThread> mMainThread;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(LabellingEventTarget, NS_LABELLINGEVENTTARGET_IID)
@@ -88,11 +100,28 @@ LabellingEventTarget::IsOnCurrentThreadInfallible() {
   return NS_IsMainThread();
 }
 
-NS_IMPL_ISUPPORTS(LabellingEventTarget, LabellingEventTarget, nsIEventTarget,
-                  nsISerialEventTarget)
+//-----------------------------------------------------------------------------
+// nsIDirectTaskDispatcher
+//-----------------------------------------------------------------------------
+// We are always running on the main thread, forward to the nsThread's
+// MainThread
+NS_IMETHODIMP
+LabellingEventTarget::DispatchDirectTask(already_AddRefed<nsIRunnable> aEvent) {
+  return mMainThread->DispatchDirectTask(std::move(aEvent));
+}
 
-namespace mozilla {
-namespace dom {
+NS_IMETHODIMP LabellingEventTarget::DrainDirectTasks() {
+  return mMainThread->DrainDirectTasks();
+}
+
+NS_IMETHODIMP LabellingEventTarget::HaveDirectTasks(bool* aValue) {
+  return mMainThread->HaveDirectTasks(aValue);
+}
+
+NS_IMPL_ISUPPORTS(LabellingEventTarget, nsIEventTarget, nsISerialEventTarget,
+                  nsIDirectTaskDispatcher)
+
+namespace mozilla::dom {
 
 AutoTArray<RefPtr<DocGroup>, 2>* DocGroup::sPendingDocGroups = nullptr;
 
@@ -105,16 +134,13 @@ already_AddRefed<DocGroup> DocGroup::Create(
 }
 
 /* static */
-nsresult DocGroup::GetKey(nsIPrincipal* aPrincipal, nsACString& aKey) {
+nsresult DocGroup::GetKey(nsIPrincipal* aPrincipal, bool aCrossOriginIsolated,
+                          nsACString& aKey) {
   // Use GetBaseDomain() to handle things like file URIs, IP address URIs,
   // etc. correctly.
-  nsresult rv = aPrincipal->GetBaseDomain(aKey);
+  nsresult rv = aCrossOriginIsolated ? aPrincipal->GetOrigin(aKey)
+                                     : aPrincipal->GetSiteOrigin(aKey);
   if (NS_FAILED(rv)) {
-    // We don't really know what to do here.  But we should be conservative,
-    // otherwise it would be possible to reorder two events incorrectly in the
-    // future if we interrupt at the DocGroup level, so to be safe, use an
-    // empty string to classify all such documents as belonging to the same
-    // DocGroup.
     aKey.Truncate();
   }
 
@@ -123,6 +149,16 @@ nsresult DocGroup::GetKey(nsIPrincipal* aPrincipal, nsACString& aKey) {
 
 void DocGroup::SetExecutionManager(JSExecutionManager* aManager) {
   mExecutionManager = aManager;
+}
+
+mozilla::dom::CustomElementReactionsStack*
+DocGroup::CustomElementReactionsStack() {
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!mReactionsStack) {
+    mReactionsStack = new mozilla::dom::CustomElementReactionsStack();
+  }
+
+  return mReactionsStack;
 }
 
 void DocGroup::AddDocument(Document* aDocument) {
@@ -141,7 +177,6 @@ void DocGroup::RemoveDocument(Document* aDocument) {
     mBrowsingContextGroup = nullptr;
     // This clears the cycle DocGroup has with LabellingEventTarget.
     mEventTarget = nullptr;
-    mAbstractThread = nullptr;
   }
 }
 
@@ -157,8 +192,7 @@ DocGroup::DocGroup(BrowsingContextGroup* aBrowsingContextGroup,
     mArena = new mozilla::dom::DOMArena();
   }
 
-  mPerformanceCounter =
-      new mozilla::PerformanceCounter(NS_LITERAL_CSTRING("DocGroup:") + aKey);
+  mPerformanceCounter = new mozilla::PerformanceCounter("DocGroup:"_ns + aKey);
 }
 
 DocGroup::~DocGroup() {
@@ -166,9 +200,10 @@ DocGroup::~DocGroup() {
   MOZ_RELEASE_ASSERT(!mBrowsingContextGroup);
 
   if (!NS_IsMainThread()) {
-    nsIEventTarget* target = EventTargetFor(TaskCategory::Other);
-    NS_ProxyRelease("DocGroup::mReactionsStack", target,
-                    mReactionsStack.forget());
+    NS_ReleaseOnMainThread("DocGroup::mReactionsStack",
+                           mReactionsStack.forget());
+
+    NS_ReleaseOnMainThread("DocGroup::mArena", mArena.forget());
   }
 
   if (mIframePostMessageQueue) {
@@ -187,38 +222,35 @@ RefPtr<PerformanceInfoPromise> DocGroup::ReportPerformanceInfo() {
   uint64_t windowID = 0;
   uint16_t count = 0;
   uint64_t duration = 0;
-  bool isTopLevel = false;
   nsCString host;
-  nsCOMPtr<nsPIDOMWindowOuter> top;
-  RefPtr<AbstractThread> mainThread;
+  bool isTopLevel = false;
+  RefPtr<BrowsingContext> top;
+  RefPtr<AbstractThread> mainThread =
+      AbstractMainThreadFor(TaskCategory::Performance);
 
-  // iterating on documents until we find the top window
   for (const auto& document : *this) {
-    nsCOMPtr<Document> doc = document;
-    MOZ_ASSERT(doc);
-    nsCOMPtr<nsIURI> docURI = doc->GetDocumentURI();
-    if (!docURI) {
-      continue;
-    }
-    docURI->GetHost(host);
-    // If the host is empty, using the url
     if (host.IsEmpty()) {
-      host = docURI->GetSpecOrDefault();
+      nsCOMPtr<nsIURI> docURI = document->GetDocumentURI();
+      if (!docURI) {
+        continue;
+      }
+
+      docURI->GetHost(host);
+      if (host.IsEmpty()) {
+        host = docURI->GetSpecOrDefault();
+      }
     }
-    // looking for the top level document URI
-    nsPIDOMWindowOuter* win = doc->GetWindow();
-    if (!win) {
+
+    BrowsingContext* context = document->GetBrowsingContext();
+    if (!context) {
       continue;
     }
-    top = win->GetInProcessTop();
-    if (!top) {
-      continue;
-    }
-    windowID = top->WindowID();
-    isTopLevel = win->IsTopLevelWindow();
-    mainThread = AbstractMainThreadFor(TaskCategory::Performance);
+
+    top = context->Top();
+    isTopLevel = context->IsTop();
+    windowID = top->GetCurrentWindowContext()->OuterWindowId();
     break;
-  }
+  };
 
   MOZ_ASSERT(!host.IsEmpty());
   duration = mPerformanceCounter->GetExecutionDuration();
@@ -235,7 +267,7 @@ RefPtr<PerformanceInfoPromise> DocGroup::ReportPerformanceInfo() {
     }
   }
 
-  if (!isTopLevel) {
+  if (!isTopLevel && top && top->IsInProcess()) {
     return PerformanceInfoPromise::CreateAndResolve(
         PerformanceInfo(host, pid, windowID, duration,
                         mPerformanceCounter->GetID(), false, isTopLevel,
@@ -246,12 +278,12 @@ RefPtr<PerformanceInfoPromise> DocGroup::ReportPerformanceInfo() {
 
   MOZ_ASSERT(mainThread);
   RefPtr<DocGroup> self = this;
-
-  return CollectMemoryInfo(top, mainThread)
+  return (isTopLevel ? CollectMemoryInfo(top, mainThread)
+                     : CollectMemoryInfo(self, mainThread))
       ->Then(
           mainThread, __func__,
           [self, host, pid, windowID, duration, isTopLevel,
-           items](const PerformanceMemoryInfo& aMemoryInfo) {
+           items = std::move(items)](const PerformanceMemoryInfo& aMemoryInfo) {
             PerformanceInfo info =
                 PerformanceInfo(host, pid, windowID, duration,
                                 self->mPerformanceCounter->GetID(), false,
@@ -290,20 +322,10 @@ AbstractThread* DocGroup::AbstractMainThreadFor(TaskCategory aCategory) {
   MOZ_RELEASE_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mDocuments.IsEmpty());
 
-  if (!mEventTarget) {
-    return AbstractThread::MainThread();
-  }
-
   // Here we have the same thread for every TaskCategory. The reason
   // for that is that currently TaskCategory isn't used, and it's
   // unsure if it ever will be (See Bug 1624819).
-  if (!mAbstractThread) {
-    mAbstractThread = AbstractThread::CreateEventTargetWrapper(
-        mEventTarget,
-        /* aRequireTailDispatch = */ true);
-  }
-
-  return mAbstractThread;
+  return AbstractThread::MainThread();
 }
 
 void DocGroup::SignalSlotChange(HTMLSlotElement& aSlot) {
@@ -370,13 +392,11 @@ void DocGroup::FlushIframePostMessageQueue() {
   }
 }
 
-void DocGroup::MoveSignalSlotListTo(nsTArray<RefPtr<HTMLSlotElement>>& aDest) {
-  aDest.SetCapacity(aDest.Length() + mSignalSlotList.Length());
-  for (RefPtr<HTMLSlotElement>& slot : mSignalSlotList) {
+nsTArray<RefPtr<HTMLSlotElement>> DocGroup::MoveSignalSlotList() {
+  for (const RefPtr<HTMLSlotElement>& slot : mSignalSlotList) {
     slot->RemovedFromSignalSlotList();
-    aDest.AppendElement(std::move(slot));
   }
-  mSignalSlotList.Clear();
+  return std::move(mSignalSlotList);
 }
 
 bool DocGroup::IsActive() const {
@@ -389,5 +409,4 @@ bool DocGroup::IsActive() const {
   return false;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

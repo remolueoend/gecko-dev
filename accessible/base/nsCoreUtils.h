@@ -7,11 +7,10 @@
 #define nsCoreUtils_h_
 
 #include "mozilla/EventForwards.h"
-#include "mozilla/dom/Element.h"
 #include "nsIAccessibleEvent.h"
 #include "nsIContent.h"
-#include "mozilla/dom/Document.h"  // for GetPresShell()
 #include "mozilla/FlushType.h"
+#include "mozilla/PresShellForwards.h"
 
 #include "nsPoint.h"
 #include "nsTArray.h"
@@ -25,8 +24,9 @@ class nsIWidget;
 namespace mozilla {
 class PresShell;
 namespace dom {
+class Document;
 class XULTreeElement;
-}
+}  // namespace dom
 }  // namespace mozilla
 
 /**
@@ -60,7 +60,7 @@ class nsCoreUtils {
   MOZ_CAN_RUN_SCRIPT
   static void DispatchClickEvent(mozilla::dom::XULTreeElement* aTree,
                                  int32_t aRowIndex, nsTreeColumn* aColumn,
-                                 const nsAString& aPseudoElt = EmptyString());
+                                 const nsAString& aPseudoElt = u""_ns);
 
   /**
    * Send mouse event to the given element.
@@ -204,9 +204,11 @@ class nsCoreUtils {
   static bool IsContentDocument(Document* aDocument);
 
   /**
-   * Return true if the given document node is for tab document accessible.
+   * Return true if the given document is a top level content document in this
+   * process.
+   * This will be true for tab documents and out-of-process iframe documents.
    */
-  static bool IsTabDocument(Document* aDocumentNode);
+  static bool IsTopLevelContentDocInProcess(Document* aDocumentNode);
 
   /**
    * Return true if the given document is an error page.
@@ -216,9 +218,7 @@ class nsCoreUtils {
   /**
    * Return presShell for the document containing the given DOM node.
    */
-  static PresShell* GetPresShellFor(nsINode* aNode) {
-    return aNode->OwnerDoc()->GetPresShell();
-  }
+  static PresShell* GetPresShellFor(nsINode* aNode);
 
   /**
    * Get the ID for an element, in some types of XML this may not be the ID
@@ -295,11 +295,7 @@ class nsCoreUtils {
   /**
    * Return true if the given node is table header element.
    */
-  static bool IsHTMLTableHeader(nsIContent* aContent) {
-    return aContent->NodeInfo()->Equals(nsGkAtoms::th) ||
-           (aContent->IsElement() && aContent->AsElement()->HasAttr(
-                                         kNameSpaceID_None, nsGkAtoms::scope));
-  }
+  static bool IsHTMLTableHeader(nsIContent* aContent);
 
   /**
    * Returns true if the given string is empty or contains whitespace symbols

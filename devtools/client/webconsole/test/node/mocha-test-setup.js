@@ -46,12 +46,7 @@ global.loader = {
       global[name] = fn();
     } catch (_) {}
   },
-  lazyRequireGetter: (context, name, path, destruct) => {
-    if (path === "devtools/shared/async-storage") {
-      global[
-        name
-      ] = require("devtools/client/webconsole/test/node/fixtures/async-storage");
-    }
+  lazyRequireGetter: (context, names, path, destruct) => {
     const excluded = [
       "Debugger",
       "devtools/shared/event-emitter",
@@ -64,8 +59,14 @@ global.loader = {
       "devtools/client/shared/focus",
     ];
     if (!excluded.includes(path)) {
-      const module = require(path);
-      global[name] = destruct ? module[name] : module;
+      if (!Array.isArray(names)) {
+        names = [names];
+      }
+
+      for (const name of names) {
+        const module = require(path);
+        global[name] = destruct ? module[name] : module;
+      }
     }
   },
 };
@@ -96,10 +97,18 @@ global.ChromeUtils = {
 
 global.define = function() {};
 
+// Used for the HTMLTooltip component.
+// And set "isSystemPrincipal: false" because can't support XUL element in node.
+global.document.nodePrincipal = {
+  isSystemPrincipal: false,
+};
+
 // Point to vendored-in files and mocks when needed.
 const requireHacker = require("require-hacker");
 requireHacker.global_hook("default", (path, module) => {
   const paths = {
+    "acorn/acorn": () => getModule("devtools/shared/acorn/acorn"),
+
     // For Enzyme
     "react-dom": () => getModule("devtools/client/shared/vendor/react-dom"),
     "react-dom/server": () =>
@@ -117,20 +126,16 @@ requireHacker.global_hook("default", (path, module) => {
       ),
 
     chrome: () =>
-      `module.exports = { Cc: {}, Ci: {}, Cu: {}, components: {stack: {caller: ""}} }`,
-    ChromeUtils: () => `module.exports = { import: () => ({}) }`,
+      `module.exports = { Cc: {}, Ci: {}, Cu: { now: () => {}}, components: {stack: {caller: ""}} }`,
+    ChromeUtils: () =>
+      `module.exports = { addProfilerMarker: () => {}, import: () => ({}) }`,
     // Some modules depend on Chrome APIs which don't work in mocha. When such a module
     // is required, replace it with a mock version.
-    "devtools/shared/l10n": () =>
-      getModule(
-        "devtools/client/webconsole/test/node/fixtures/LocalizationHelper"
-      ),
-    "devtools/shared/plural-form": () =>
-      getModule("devtools/client/webconsole/test/node/fixtures/PluralForm"),
     Services: () => `module.exports = require("devtools-services")`,
     "devtools/server/devtools-server": () =>
       `module.exports = {DevToolsServer: {}}`,
-    "devtools/client/shared/components/SmartTrace": () => "{}",
+    "devtools/client/shared/components/SmartTrace": () =>
+      "module.exports = () => null;",
     "devtools/client/netmonitor/src/components/TabboxPanel": () => "{}",
     "devtools/client/webconsole/utils/context-menu": () => "{}",
     "devtools/client/shared/telemetry": () => `module.exports = function() {
@@ -146,6 +151,11 @@ requireHacker.global_hook("default", (path, module) => {
     "devtools/server/actors/reflow": () => "{}",
     "devtools/shared/layout/utils": () => "{getCurrentZoom = () => {}}",
     "resource://gre/modules/AppConstants.jsm": () => "module.exports = {};",
+    "devtools/client/framework/devtools": () => `module.exports = {
+      gDevTools: {}
+    };`,
+    "devtools/shared/async-storage": () =>
+      getModule("devtools/client/webconsole/test/node/fixtures/async-storage"),
   };
 
   if (paths.hasOwnProperty(path)) {

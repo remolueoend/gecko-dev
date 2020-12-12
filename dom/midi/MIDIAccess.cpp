@@ -25,8 +25,7 @@
 #include "nsISupportsImpl.h"  // for MOZ_COUNT_CTOR, MOZ_COUNT_DTOR
 #include "IPCMessageUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MIDIAccess)
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(MIDIAccess, DOMEventTargetHelper)
@@ -126,8 +125,8 @@ void MIDIAccess::FireConnectionEvent(MIDIPort* aPort) {
       }
     }
   }
-  RefPtr<MIDIConnectionEvent> event = MIDIConnectionEvent::Constructor(
-      this, NS_LITERAL_STRING("statechange"), init);
+  RefPtr<MIDIConnectionEvent> event =
+      MIDIConnectionEvent::Constructor(this, u"statechange"_ns, init);
   DispatchTrustedEvent(event);
 }
 
@@ -219,5 +218,4 @@ void MIDIAccess::RemovePortListener(MIDIAccessDestructionObserver* aObs) {
   mDestructionObservers.RemoveObserver(aObs);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

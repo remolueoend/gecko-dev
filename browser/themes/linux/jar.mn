@@ -11,11 +11,12 @@ browser.jar:
 * skin/classic/browser/compacttheme.css
   skin/classic/browser/monitor-base.png
   skin/classic/browser/monitor-border.png
-* skin/classic/browser/pageInfo.css
+  skin/classic/browser/pageInfo.css
   skin/classic/browser/pageInfo.png
 * skin/classic/browser/searchbar.css
   skin/classic/browser/slowStartup-16.png
-  skin/classic/browser/webRTC-indicator.css  (../shared/webRTC-indicator.css)
+* skin/classic/browser/webRTC-indicator.css
+  skin/classic/browser/webRTC-legacy-indicator.css  (../shared/webRTC-legacy-indicator.css)
 * skin/classic/browser/controlcenter/panel.css        (controlcenter/panel.css)
 * skin/classic/browser/customizableui/panelUI.css (customizableui/panelUI.css)
 * skin/classic/browser/downloads/allDownloadsView.css   (downloads/allDownloadsView.css)

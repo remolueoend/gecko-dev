@@ -155,6 +155,14 @@ struct FeaturesD3D : FeatureSetBase
                               "On some Intel drivers, using clear() may not take effect", &members,
                               "https://crbug.com/655534"};
 
+    // On Sandybridge, calling ClearView after using dual source blending causes the hardware to hang.
+    // See: https://bugzilla.mozilla.org/show_bug.cgi?id=1633628
+    Feature emulateClearViewAfterDualSourceBlending = {"emulate_clear_view_after_dual_source_blending",
+                              FeatureCategory::D3DWorkarounds,
+                              "On Sandybridge, calling ClearView after using dual source blending causes "
+                              "the hardware to hang", &members,
+                              "https://bugzilla.mozilla.org/show_bug.cgi?id=1633628"};
+
     // On some Intel drivers, copying from staging storage to constant buffer storage does not
     // seem to work. Work around this by keeping system memory storage as a canonical reference
     // for buffer data.
@@ -216,6 +224,10 @@ struct FeaturesD3D : FeatureSetBase
         "allow_clear_for_robust_resource_init", FeatureCategory::D3DWorkarounds,
         "Some drivers corrupt texture data when clearing for robust resource initialization.",
         &members, "http://crbug.com/941620"};
+
+    Feature allowES3OnFL10_0 = {
+        "allowES3OnFL10_0", FeatureCategory::D3DWorkarounds,
+        "Allow ES3 on 10.0 devices", &members};
 };
 
 inline FeaturesD3D::FeaturesD3D()  = default;

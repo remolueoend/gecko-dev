@@ -107,7 +107,7 @@ std::string VersionString(uint16_t version) {
 }
 
 // The default anti-replay window for tests.  Tests that rely on a different
-// value call SSL_InitAntiReplay directly.
+// value call ResetAntiReplay directly.
 static PRTime kAntiReplayWindow = 100 * PR_USEC_PER_SEC;
 
 TlsConnectTestBase::TlsConnectTestBase(SSLProtocolVariant variant,
@@ -246,6 +246,91 @@ void TlsConnectTestBase::ResetAntiReplay(PRTime window) {
             SSL_CreateAntiReplayContext(now_, window, 1, 3, &p_anti_replay));
   EXPECT_NE(nullptr, p_anti_replay);
   anti_replay_.reset(p_anti_replay);
+}
+
+void TlsConnectTestBase::MakeEcKeyParams(SECItem* params, SSLNamedGroup group) {
+  auto groupDef = ssl_LookupNamedGroup(group);
+  ASSERT_NE(nullptr, groupDef);
+
+  auto oidData = SECOID_FindOIDByTag(groupDef->oidTag);
+  ASSERT_NE(nullptr, oidData);
+  ASSERT_NE(nullptr,
+            SECITEM_AllocItem(nullptr, params, (2 + oidData->oid.len)));
+  params->data[0] = SEC_ASN1_OBJECT_ID;
+  params->data[1] = oidData->oid.len;
+  memcpy(params->data + 2, oidData->oid.data, oidData->oid.len);
+}
+
+void TlsConnectTestBase::GenerateEchConfig(
+    HpkeKemId kem_id, const std::vector<uint32_t>& cipher_suites,
+    const std::string& public_name, uint16_t max_name_len, DataBuffer& record,
+    ScopedSECKEYPublicKey& pubKey, ScopedSECKEYPrivateKey& privKey) {
+  bool gen_keys = !pubKey && !privKey;
+  SECKEYECParams ecParams = {siBuffer, NULL, 0};
+  MakeEcKeyParams(&ecParams, ssl_grp_ec_curve25519);
+
+  SECKEYPublicKey* pub = nullptr;
+  SECKEYPrivateKey* priv = nullptr;
+
+  if (gen_keys) {
+    priv = SECKEY_CreateECPrivateKey(&ecParams, &pub, nullptr);
+  } else {
+    priv = privKey.get();
+    pub = pubKey.get();
+  }
+  ASSERT_NE(nullptr, priv);
+  SECITEM_FreeItem(&ecParams, PR_FALSE);
+  PRUint8 encoded[1024];
+  unsigned int encoded_len = 0;
+  SECStatus rv = SSL_EncodeEchConfig(
+      public_name.c_str(), cipher_suites.data(), cipher_suites.size(), kem_id,
+      pub, max_name_len, encoded, &encoded_len, sizeof(encoded));
+  EXPECT_EQ(SECSuccess, rv);
+  EXPECT_GT(encoded_len, 0U);
+
+  if (gen_keys) {
+    pubKey.reset(pub);
+    privKey.reset(priv);
+  }
+  record.Truncate(0);
+  record.Write(0, encoded, encoded_len);
+}
+
+void TlsConnectTestBase::SetupEch(std::shared_ptr<TlsAgent>& client,
+                                  std::shared_ptr<TlsAgent>& server,
+                                  HpkeKemId kem_id, bool expect_ech,
+                                  bool set_client_config,
+                                  bool set_server_config) {
+  EXPECT_TRUE(set_server_config || set_client_config);
+  ScopedSECKEYPublicKey pub;
+  ScopedSECKEYPrivateKey priv;
+  DataBuffer record;
+  static const std::vector<uint32_t> kDefaultSuites = {
+      (static_cast<uint16_t>(HpkeKdfHkdfSha256) << 16) |
+          HpkeAeadChaCha20Poly1305,
+      (static_cast<uint16_t>(HpkeKdfHkdfSha256) << 16) | HpkeAeadAes128Gcm};
+
+  GenerateEchConfig(kem_id, kDefaultSuites, "public.name", 100, record, pub,
+                    priv);
+  ASSERT_NE(0U, record.len());
+  SECStatus rv;
+  if (set_server_config) {
+    rv = SSL_SetServerEchConfigs(server->ssl_fd(), pub.get(), priv.get(),
+                                 record.data(), record.len());
+    ASSERT_EQ(SECSuccess, rv);
+  }
+  if (set_client_config) {
+    rv = SSL_SetClientEchConfigs(client->ssl_fd(), record.data(), record.len());
+    ASSERT_EQ(SECSuccess, rv);
+  }
+
+  /* Filter expect_ech, which typically defaults to true. Parameterized tests
+   * running DTLS or TLS < 1.3 should expect only a non-ECH result. */
+  bool expect = expect_ech && variant_ != ssl_variant_datagram &&
+                version_ >= SSL_LIBRARY_VERSION_TLS_1_3 && set_client_config &&
+                set_server_config;
+  client->ExpectEch(expect);
+  server->ExpectEch(expect);
 }
 
 void TlsConnectTestBase::Reset() {
@@ -401,6 +486,15 @@ void TlsConnectTestBase::CheckConnected() {
   server_->CheckSecretsDestroyed();
 }
 
+void TlsConnectTestBase::CheckEarlyDataLimit(
+    const std::shared_ptr<TlsAgent>& agent, size_t expected_size) {
+  SSLPreliminaryChannelInfo preinfo;
+  SECStatus rv =
+      SSL_GetPreliminaryChannelInfo(agent->ssl_fd(), &preinfo, sizeof(preinfo));
+  EXPECT_EQ(SECSuccess, rv);
+  EXPECT_EQ(expected_size, static_cast<size_t>(preinfo.maxEarlyDataSize));
+}
+
 void TlsConnectTestBase::CheckKeys(SSLKEAType kea_type, SSLNamedGroup kea_group,
                                    SSLAuthType auth_type,
                                    SSLSignatureScheme sig_scheme) const {
@@ -518,6 +612,14 @@ void TlsConnectTestBase::ConfigureVersion(uint16_t version) {
 void TlsConnectTestBase::SetExpectedVersion(uint16_t version) {
   client_->SetExpectedVersion(version);
   server_->SetExpectedVersion(version);
+}
+
+void TlsConnectTestBase::AddPsk(const ScopedPK11SymKey& psk, std::string label,
+                                SSLHashType hash, uint16_t zeroRttSuite) {
+  client_->AddPsk(psk, label, hash, zeroRttSuite);
+  server_->AddPsk(psk, label, hash, zeroRttSuite);
+  client_->ExpectPsk();
+  server_->ExpectPsk();
 }
 
 void TlsConnectTestBase::DisableAllCiphers() {
@@ -756,7 +858,7 @@ void TlsConnectTestBase::ZeroRttSendReceive(
         << "Unexpected error: " << PORT_ErrorToName(PORT_GetError());
   }
 
-  // Do a second read. this should fail.
+  // Do a second read. This should fail.
   rv = PR_Read(server_->ssl_fd(), buf.data(), k0RttDataLen);
   EXPECT_EQ(SECFailure, rv);
   EXPECT_EQ(PR_WOULD_BLOCK_ERROR, PORT_GetError());

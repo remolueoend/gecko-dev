@@ -9,6 +9,7 @@
 #include "ServoCSSParser.h"
 #include "MainThreadUtils.h"
 #include "mozilla/Encoding.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_devtools.h"
 #include "mozilla/Telemetry.h"
@@ -61,7 +62,7 @@ bool PreferenceSheet::ShouldUseChromePrefs(const Document& aDoc) {
 
 static bool UseAccessibilityTheme(bool aIsChrome) {
   return !aIsChrome &&
-         !!LookAndFeel::GetInt(LookAndFeel::eIntID_UseAccessibilityTheme, 0);
+         !!LookAndFeel::GetInt(LookAndFeel::IntID::UseAccessibilityTheme, 0);
 }
 
 static bool UseDocumentColors(bool aIsChrome, bool aUseAcccessibilityTheme) {

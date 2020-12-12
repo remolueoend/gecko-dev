@@ -15,8 +15,10 @@ add_task(async function() {
 
   let { gIdentityHandler } = gBrowser.ownerGlobal;
   let promisePanelOpen = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    gBrowser.ownerGlobal,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
   gIdentityHandler._identityBox.click();
   await promisePanelOpen;
@@ -51,21 +53,21 @@ add_task(async function() {
     .getPropertyValue("background-image");
   is(
     identityIconImage,
-    'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+    'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
     "Using expected icon image in the identity block"
   );
   is(
     securityViewBG,
-    'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+    'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
     "Using expected icon image in the Control Center main view"
   );
   is(
     securityContentBG,
-    'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+    'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
     "Using expected icon image in the Control Center subview"
   );
 
-  gIdentityHandler._identityPopup.hidden = true;
+  gIdentityHandler._identityPopup.hidePopup();
 
   let certOverrideService = Cc[
     "@mozilla.org/security/certoverride;1"

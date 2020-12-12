@@ -9,7 +9,7 @@
 #include "nsISupports.h"
 #include "TimingStruct.h"
 #include "nsInputStreamPump.h"
-
+#include "mozilla/Maybe.h"
 #include "mozilla/UniquePtr.h"
 
 class nsIEventTraget;
@@ -96,8 +96,6 @@ class HttpTransactionShell : public nsISupports {
   virtual nsresult AsyncRead(nsIStreamListener* listener,
                              nsIRequest** pump) = 0;
 
-  virtual void SetClassOfService(uint32_t classOfService) = 0;
-
   // Called to take ownership of the response headers; the transaction
   // will drop any reference to the response headers after this call.
   virtual UniquePtr<nsHttpResponseHead> TakeResponseHead() = 0;
@@ -106,7 +104,7 @@ class HttpTransactionShell : public nsISupports {
   // Returning null if there is no trailer.
   virtual UniquePtr<nsHttpHeaderArray> TakeResponseTrailers() = 0;
 
-  virtual nsISupports* SecurityInfo() = 0;
+  virtual already_AddRefed<nsISupports> SecurityInfo() = 0;
   virtual void SetSecurityCallbacks(nsIInterfaceRequestor* aCallbacks) = 0;
 
   virtual void GetNetworkAddresses(NetAddr& self, NetAddr& peer,
@@ -135,6 +133,7 @@ class HttpTransactionShell : public nsISupports {
   virtual bool ResponseIsComplete() = 0;
   virtual int64_t GetTransferSize() = 0;
   virtual int64_t GetRequestSize() = 0;
+  virtual bool IsHttp3Used() = 0;
 
   // Called to notify that a requested DNS cache entry was refreshed.
   virtual void SetDNSWasRefreshed() = 0;
@@ -147,8 +146,19 @@ class HttpTransactionShell : public nsISupports {
   virtual bool ProxyConnectFailed() = 0;
   virtual int32_t GetProxyConnectResponseCode() = 0;
 
+  virtual bool DataSentToChildProcess() = 0;
+
   virtual nsHttpTransaction* AsHttpTransaction() = 0;
   virtual HttpTransactionParent* AsHttpTransactionParent() = 0;
+
+  virtual bool TakeRestartedState() = 0;
+  virtual Maybe<uint32_t> HTTPSSVCReceivedStage() = 0;
+
+  virtual bool Http2Disabled() const = 0;
+  virtual bool Http3Disabled() const = 0;
+  virtual already_AddRefed<nsHttpConnectionInfo> GetConnInfo() const = 0;
+
+  virtual bool GetSupportsHTTP3() = 0;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(HttpTransactionShell, HTTPTRANSACTIONSHELL_IID)
@@ -169,10 +179,9 @@ NS_DEFINE_STATIC_IID_ACCESSOR(HttpTransactionShell, HTTPTRANSACTIONSHELL_IID)
       override;                                                                \
   virtual nsresult AsyncRead(nsIStreamListener* listener, nsIRequest** pump)   \
       override;                                                                \
-  virtual void SetClassOfService(uint32_t classOfService) override;            \
   virtual UniquePtr<nsHttpResponseHead> TakeResponseHead() override;           \
   virtual UniquePtr<nsHttpHeaderArray> TakeResponseTrailers() override;        \
-  virtual nsISupports* SecurityInfo() override;                                \
+  virtual already_AddRefed<nsISupports> SecurityInfo() override;               \
   virtual void SetSecurityCallbacks(nsIInterfaceRequestor* aCallbacks)         \
       override;                                                                \
   virtual void GetNetworkAddresses(NetAddr& self, NetAddr& peer,               \
@@ -194,14 +203,22 @@ NS_DEFINE_STATIC_IID_ACCESSOR(HttpTransactionShell, HTTPTRANSACTIONSHELL_IID)
   virtual bool ResponseIsComplete() override;                                  \
   virtual int64_t GetTransferSize() override;                                  \
   virtual int64_t GetRequestSize() override;                                   \
+  virtual bool IsHttp3Used() override;                                         \
   virtual void SetDNSWasRefreshed() override;                                  \
   virtual void DontReuseConnection() override;                                 \
   virtual bool HasStickyConnection() const override;                           \
   virtual void SetH2WSConnRefTaken() override;                                 \
   virtual bool ProxyConnectFailed() override;                                  \
   virtual int32_t GetProxyConnectResponseCode() override;                      \
+  virtual bool DataSentToChildProcess() override;                              \
   virtual nsHttpTransaction* AsHttpTransaction() override;                     \
-  virtual HttpTransactionParent* AsHttpTransactionParent() override;
+  virtual HttpTransactionParent* AsHttpTransactionParent() override;           \
+  virtual bool TakeRestartedState() override;                                  \
+  virtual Maybe<uint32_t> HTTPSSVCReceivedStage() override;                    \
+  virtual bool Http2Disabled() const override;                                 \
+  virtual bool Http3Disabled() const override;                                 \
+  virtual already_AddRefed<nsHttpConnectionInfo> GetConnInfo() const override; \
+  virtual bool GetSupportsHTTP3() override;
 }  // namespace net
 }  // namespace mozilla
 

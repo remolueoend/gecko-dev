@@ -11,12 +11,14 @@
 #include "nsIGlobalObject.h"
 #include "mozilla/Encoding.h"
 
+#include "nsCRT.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "nsDOMString.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 #include "nsStreamUtils.h"
 #include "nsStringStream.h"
+#include "nsURLHelper.h"
 
 #include "js/ArrayBuffer.h"  // JS::NewArrayBufferWithContents
 #include "js/JSON.h"
@@ -27,10 +29,8 @@
 #include "mozilla/dom/FormData.h"
 #include "mozilla/dom/Headers.h"
 #include "mozilla/dom/Promise.h"
-#include "mozilla/dom/URLSearchParams.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -44,25 +44,6 @@ static bool PushOverLine(nsACString::const_iterator& aStart,
 
   return false;
 }
-
-class MOZ_STACK_CLASS FillFormIterator final
-    : public URLParams::ForEachIterator {
- public:
-  explicit FillFormIterator(FormData* aFormData) : mFormData(aFormData) {
-    MOZ_ASSERT(aFormData);
-  }
-
-  bool URLParamsIterator(const nsAString& aName,
-                         const nsAString& aValue) override {
-    ErrorResult rv;
-    mFormData->Append(aName, aValue, rv);
-    MOZ_ASSERT(!rv.Failed());
-    return true;
-  }
-
- private:
-  FormData* mFormData;
-};
 
 /**
  * A simple multipart/form-data parser as defined in RFC 2388 and RFC 2046.
@@ -155,15 +136,13 @@ class MOZ_STACK_CLASS FormDataParser {
           continue;
         }
 
-        if (seenFormData &&
-            StringBeginsWith(token, NS_LITERAL_CSTRING("name="))) {
+        if (seenFormData && StringBeginsWith(token, "name="_ns)) {
           mName = StringTail(token, token.Length() - 5);
           mName.Trim(" \"");
           continue;
         }
 
-        if (seenFormData &&
-            StringBeginsWith(token, NS_LITERAL_CSTRING("filename="))) {
+        if (seenFormData && StringBeginsWith(token, "filename="_ns)) {
           mFilename = StringTail(token, token.Length() - 9);
           mFilename.Trim(" \"");
           continue;
@@ -323,7 +302,7 @@ class MOZ_STACK_CLASS FormDataParser {
         case START_PART:
           mName.SetIsVoid(true);
           mFilename.SetIsVoid(true);
-          mContentType = NS_LITERAL_CSTRING("text/plain");
+          mContentType = "text/plain"_ns;
 
           // MUST start with boundary.
           if (!PushOverBoundary(boundaryString, start, end)) {
@@ -422,7 +401,7 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
                                                      const nsCString& aMimeType,
                                                      const nsCString& aStr,
                                                      ErrorResult& aRv) {
-  NS_NAMED_LITERAL_CSTRING(formDataMimeType, "multipart/form-data");
+  constexpr auto formDataMimeType = "multipart/form-data"_ns;
 
   // Allow semicolon separated boundary/encoding suffix like
   // multipart/form-data; boundary= but disallow multipart/form-datafoobar.
@@ -445,8 +424,7 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
     return fd.forget();
   }
 
-  NS_NAMED_LITERAL_CSTRING(urlDataMimeType,
-                           "application/x-www-form-urlencoded");
+  constexpr auto urlDataMimeType = "application/x-www-form-urlencoded"_ns;
   bool isValidUrlEncodedMimeType = StringBeginsWith(aMimeType, urlDataMimeType);
 
   if (isValidUrlEncodedMimeType &&
@@ -456,8 +434,13 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
 
   if (isValidUrlEncodedMimeType) {
     RefPtr<FormData> fd = new FormData(aParent);
-    FillFormIterator iterator(fd);
-    DebugOnly<bool> status = URLParams::Parse(aStr, iterator);
+    DebugOnly<bool> status = URLParams::Parse(
+        aStr, [&fd](const nsAString& aName, const nsAString& aValue) {
+          ErrorResult rv;
+          fd->Append(aName, aValue, rv);
+          MOZ_ASSERT(!rv.Failed());
+          return true;
+        });
     MOZ_ASSERT(status);
 
     return fd.forget();
@@ -470,8 +453,8 @@ already_AddRefed<FormData> BodyUtil::ConsumeFormData(nsIGlobalObject* aParent,
 // static
 nsresult BodyUtil::ConsumeText(uint32_t aInputLength, uint8_t* aInput,
                                nsString& aText) {
-  nsresult rv = UTF_8_ENCODING->DecodeWithBOMRemoval(
-      MakeSpan(aInput, aInputLength), aText);
+  nsresult rv =
+      UTF_8_ENCODING->DecodeWithBOMRemoval(Span(aInput, aInputLength), aText);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -502,5 +485,4 @@ void BodyUtil::ConsumeJson(JSContext* aCx, JS::MutableHandle<JS::Value> aValue,
   aValue.set(json);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

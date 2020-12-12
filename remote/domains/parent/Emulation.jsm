@@ -16,7 +16,7 @@ const MAX_WINDOW_SIZE = 10000000;
 
 class Emulation extends Domain {
   destructor() {
-    this.setUserAgentOverride({ userAgent: "" });
+    this.setUserAgentOverride({ userAgent: "", platform: "" });
 
     super.destructor();
   }
@@ -94,6 +94,32 @@ class Emulation extends Domain {
   }
 
   /**
+   * Enables touch on platforms which do not support them.
+   *
+   * @param {Object} options
+   * @param {boolean} options.enabled
+   *     Whether the touch event emulation should be enabled.
+   * @param {number=} options.maxTouchPoints [not yet supported]
+   *     Maximum touch points supported. Defaults to one.
+   */
+  async setTouchEmulationEnabled(options = {}) {
+    const { enabled } = options;
+
+    if (typeof enabled != "boolean") {
+      throw new TypeError(
+        "Invalid parameters (enabled: boolean value expected)"
+      );
+    }
+
+    const { browsingContext } = this.session.target;
+    if (enabled) {
+      browsingContext.touchEventsOverride = "enabled";
+    } else {
+      browsingContext.touchEventsOverride = "none";
+    }
+  }
+
+  /**
    * Allows overriding user agent with the given string.
    *
    * @param {Object} options
@@ -101,11 +127,11 @@ class Emulation extends Domain {
    *     User agent to use.
    * @param {string=} options.acceptLanguage [not yet supported]
    *     Browser langugage to emulate.
-   * @param {number=} options.platform [not yet supported]
+   * @param {string=} options.platform
    *     The platform navigator.platform should return.
    */
   async setUserAgentOverride(options = {}) {
-    const { userAgent } = options;
+    const { userAgent, platform } = options;
 
     if (typeof userAgent != "string") {
       throw new TypeError(
@@ -113,12 +139,24 @@ class Emulation extends Domain {
       );
     }
 
+    if (!["undefined", "string"].includes(typeof platform)) {
+      throw new TypeError("platform: string value expected");
+    }
+
+    const { browsingContext } = this.session.target;
+
     if (userAgent.length == 0) {
-      await this.executeInChild("_setCustomUserAgent", null);
+      browsingContext.customUserAgent = null;
     } else if (this._isValidHTTPRequestHeaderValue(userAgent)) {
-      await this.executeInChild("_setCustomUserAgent", userAgent);
+      browsingContext.customUserAgent = userAgent;
     } else {
       throw new TypeError("Invalid characters found in userAgent");
+    }
+
+    if (platform?.length > 0) {
+      browsingContext.customPlatform = platform;
+    } else {
+      browsingContext.customPlatform = null;
     }
   }
 

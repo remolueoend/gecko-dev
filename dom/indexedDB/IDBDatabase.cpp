@@ -16,9 +16,11 @@
 #include "IDBFactory.h"
 #include "IndexedDatabaseInlines.h"
 #include "IndexedDatabaseManager.h"
+#include "IndexedDBCommon.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/EventDispatcher.h"
 #include "MainThreadUtils.h"
+#include "mozilla/ResultExtensions.h"
 #include "mozilla/Services.h"
 #include "mozilla/storage.h"
 #include "mozilla/dom/BindingDeclarations.h"
@@ -52,8 +54,7 @@
 // Include this last to avoid path problems on Windows.
 #include "ActorsChild.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::dom::indexedDB;
 using namespace mozilla::dom::quota;
@@ -313,7 +314,8 @@ void IDBDatabase::RefreshSpec(bool aMayDelete) {
   AssertIsOnOwningThread();
 
   for (auto iter = mTransactions.Iter(); !iter.Done(); iter.Next()) {
-    RefPtr<IDBTransaction> transaction = iter.Get()->GetKey();
+    const auto transaction =
+        SafeRefPtr{iter.Get()->GetKey(), AcquireStrongRefFromRawPtr{}};
     MOZ_ASSERT(transaction);
     transaction->AssertIsOnOwningThread();
     transaction->RefreshSpec(aMayDelete);
@@ -355,7 +357,7 @@ RefPtr<IDBObjectStore> IDBDatabase::CreateObjectStore(
     ErrorResult& aRv) {
   AssertIsOnOwningThread();
 
-  IDBTransaction* transaction = IDBTransaction::GetCurrent();
+  const auto transaction = IDBTransaction::MaybeCurrent();
   if (!transaction || transaction->Database() != this ||
       transaction->GetMode() != IDBTransaction::Mode::VersionChange) {
     aRv.Throw(NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR);
@@ -367,11 +369,11 @@ RefPtr<IDBObjectStore> IDBDatabase::CreateObjectStore(
     return nullptr;
   }
 
-  KeyPath keyPath(0);
-  if (NS_FAILED(KeyPath::Parse(aOptionalParameters.mKeyPath, &keyPath))) {
-    aRv.Throw(NS_ERROR_DOM_SYNTAX_ERR);
-    return nullptr;
-  }
+  // XXX This didn't use to warn before in case of a error. Should we remove the
+  // warning again?
+  IDB_TRY_INSPECT(const auto& keyPath,
+                  KeyPath::Parse(aOptionalParameters.mKeyPath), nullptr,
+                  [&aRv](const auto&) { aRv.Throw(NS_ERROR_DOM_SYNTAX_ERR); });
 
   auto& objectStores = mSpec->objectStores();
   const auto end = objectStores.cend();
@@ -416,9 +418,10 @@ RefPtr<IDBObjectStore> IDBDatabase::CreateObjectStore(
 
   IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
       "database(%s).transaction(%s).createObjectStore(%s)",
-      "IDBDatabase.createObjectStore()", transaction->LoggingSerialNumber(),
-      requestSerialNumber, IDB_LOG_STRINGIFY(this),
-      IDB_LOG_STRINGIFY(transaction), IDB_LOG_STRINGIFY(objectStore));
+      "IDBDatabase.createObjectStore(%.0s%.0s%.0s)",
+      transaction->LoggingSerialNumber(), requestSerialNumber,
+      IDB_LOG_STRINGIFY(this), IDB_LOG_STRINGIFY(*transaction),
+      IDB_LOG_STRINGIFY(objectStore));
 
   return objectStore;
 }
@@ -426,7 +429,7 @@ RefPtr<IDBObjectStore> IDBDatabase::CreateObjectStore(
 void IDBDatabase::DeleteObjectStore(const nsAString& aName, ErrorResult& aRv) {
   AssertIsOnOwningThread();
 
-  IDBTransaction* transaction = IDBTransaction::GetCurrent();
+  const auto transaction = IDBTransaction::MaybeCurrent();
   if (!transaction || transaction->Database() != this ||
       transaction->GetMode() != IDBTransaction::Mode::VersionChange) {
     aRv.Throw(NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR);
@@ -465,9 +468,10 @@ void IDBDatabase::DeleteObjectStore(const nsAString& aName, ErrorResult& aRv) {
 
   IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
       "database(%s).transaction(%s).deleteObjectStore(\"%s\")",
-      "IDBDatabase.deleteObjectStore()", transaction->LoggingSerialNumber(),
-      requestSerialNumber, IDB_LOG_STRINGIFY(this),
-      IDB_LOG_STRINGIFY(transaction), NS_ConvertUTF16toUTF8(aName).get());
+      "IDBDatabase.deleteObjectStore(%.0s%.0s%.0s)",
+      transaction->LoggingSerialNumber(), requestSerialNumber,
+      IDB_LOG_STRINGIFY(this), IDB_LOG_STRINGIFY(*transaction),
+      NS_ConvertUTF16toUTF8(aName).get());
 }
 
 RefPtr<IDBTransaction> IDBDatabase::Transaction(
@@ -546,9 +550,8 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
         });
     if (foundIt == end) {
       // Not using nsPrintfCString in case "name" has embedded nulls.
-      aRv.ThrowNotFoundError(
-          NS_LITERAL_CSTRING("'") + NS_ConvertUTF16toUTF8(name) +
-          NS_LITERAL_CSTRING("' is not a known object store name"));
+      aRv.ThrowNotFoundError("'"_ns + NS_ConvertUTF16toUTF8(name) +
+                             "' is not a known object store name"_ns);
       return nullptr;
     }
 
@@ -589,7 +592,7 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
       MOZ_CRASH("Unknown mode!");
   }
 
-  RefPtr<IDBTransaction> transaction =
+  SafeRefPtr<IDBTransaction> transaction =
       IDBTransaction::Create(aCx, this, sortedStoreNames, mode);
   if (NS_WARN_IF(!transaction)) {
     IDB_REPORT_INTERNAL_ERR();
@@ -600,12 +603,12 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
   }
 
   BackgroundTransactionChild* actor =
-      new BackgroundTransactionChild(transaction);
+      new BackgroundTransactionChild(transaction.clonePtr());
 
   IDB_LOG_MARK_CHILD_TRANSACTION(
-      "database(%s).transaction(%s)", "IDBDatabase.transaction()",
+      "database(%s).transaction(%s)", "IDBDatabase.transaction(%.0s%.0s)",
       transaction->LoggingSerialNumber(), IDB_LOG_STRINGIFY(this),
-      IDB_LOG_STRINGIFY(transaction));
+      IDB_LOG_STRINGIFY(*transaction));
 
   MOZ_ALWAYS_TRUE(mBackgroundActor->SendPBackgroundIDBTransactionConstructor(
       actor, sortedStoreNames, mode));
@@ -618,7 +621,7 @@ RefPtr<IDBTransaction> IDBDatabase::Transaction(
     ExpireFileActors(/* aExpireAll */ true);
   }
 
-  return transaction;
+  return AsRefPtr(std::move(transaction));
 }
 
 StorageType IDBDatabase::Storage() const {
@@ -656,16 +659,15 @@ RefPtr<IDBRequest> IDBDatabase::CreateMutableFile(
 
   CreateFileParams params(nsString(aName), type);
 
-  auto request = IDBRequest::Create(aCx, this, nullptr);
-  MOZ_ASSERT(request);
+  auto request = IDBRequest::Create(aCx, this, nullptr).unwrap();
 
   BackgroundDatabaseRequestChild* actor =
       new BackgroundDatabaseRequestChild(this, request);
 
   IDB_LOG_MARK_CHILD_REQUEST(
-      "database(%s).createMutableFile(%s)", "IDBDatabase.createMutableFile()",
-      request->LoggingSerialNumber(), IDB_LOG_STRINGIFY(this),
-      NS_ConvertUTF16toUTF8(aName).get());
+      "database(%s).createMutableFile(%s)",
+      "IDBDatabase.createMutableFile(%.0s%.0s)", request->LoggingSerialNumber(),
+      IDB_LOG_STRINGIFY(this), NS_ConvertUTF16toUTF8(aName).get());
 
   mBackgroundActor->SendPBackgroundIDBDatabaseRequestConstructor(actor, params);
 
@@ -675,22 +677,20 @@ RefPtr<IDBRequest> IDBDatabase::CreateMutableFile(
   return request;
 }
 
-void IDBDatabase::RegisterTransaction(IDBTransaction* aTransaction) {
+void IDBDatabase::RegisterTransaction(IDBTransaction& aTransaction) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aTransaction);
-  aTransaction->AssertIsOnOwningThread();
-  MOZ_ASSERT(!mTransactions.Contains(aTransaction));
+  aTransaction.AssertIsOnOwningThread();
+  MOZ_ASSERT(!mTransactions.Contains(&aTransaction));
 
-  mTransactions.PutEntry(aTransaction);
+  mTransactions.PutEntry(&aTransaction);
 }
 
-void IDBDatabase::UnregisterTransaction(IDBTransaction* aTransaction) {
+void IDBDatabase::UnregisterTransaction(IDBTransaction& aTransaction) {
   AssertIsOnOwningThread();
-  MOZ_ASSERT(aTransaction);
-  aTransaction->AssertIsOnOwningThread();
-  MOZ_ASSERT(mTransactions.Contains(aTransaction));
+  aTransaction.AssertIsOnOwningThread();
+  MOZ_ASSERT(mTransactions.Contains(&aTransaction));
 
-  mTransactions.RemoveEntry(aTransaction);
+  mTransactions.RemoveEntry(&aTransaction);
 }
 
 void IDBDatabase::AbortTransactions(bool aShouldWarn) {
@@ -698,7 +698,7 @@ void IDBDatabase::AbortTransactions(bool aShouldWarn) {
 
   constexpr size_t StackExceptionLimit = 20;
   using StrongTransactionArray =
-      AutoTArray<RefPtr<IDBTransaction>, StackExceptionLimit>;
+      AutoTArray<SafeRefPtr<IDBTransaction>, StackExceptionLimit>;
   using WeakTransactionArray = AutoTArray<IDBTransaction*, StackExceptionLimit>;
 
   if (!mTransactions.Count()) {
@@ -707,11 +707,14 @@ void IDBDatabase::AbortTransactions(bool aShouldWarn) {
     return;
   }
 
+  // XXX TransformIfIntoNewArray might be generalized to allow specifying the
+  // type of nsTArray to create, so that it can create an AutoTArray as well; an
+  // TransformIf (without AbortOnErr) might be added, which could be used here.
   StrongTransactionArray transactionsToAbort;
   transactionsToAbort.SetCapacity(mTransactions.Count());
 
-  for (auto iter = mTransactions.ConstIter(); !iter.Done(); iter.Next()) {
-    IDBTransaction* transaction = iter.Get()->GetKey();
+  for (const auto& entry : mTransactions) {
+    IDBTransaction* transaction = entry.GetKey();
     MOZ_ASSERT(transaction);
 
     transaction->AssertIsOnOwningThread();
@@ -720,7 +723,8 @@ void IDBDatabase::AbortTransactions(bool aShouldWarn) {
     // there is a race here and it's possible that the transaction has not
     // been successfully committed yet so we will warn the user.
     if (!transaction->IsFinished()) {
-      transactionsToAbort.AppendElement(transaction);
+      transactionsToAbort.EmplaceBack(transaction,
+                                      AcquireStrongRefFromRawPtr{});
     }
   }
   MOZ_ASSERT(transactionsToAbort.Length() <= mTransactions.Count());
@@ -745,7 +749,7 @@ void IDBDatabase::AbortTransactions(bool aShouldWarn) {
     // We warn for any transactions that could have written data, but
     // ignore read-only transactions.
     if (aShouldWarn && transaction->IsWriteAllowed()) {
-      transactionsThatNeedWarning.AppendElement(transaction);
+      transactionsThatNeedWarning.AppendElement(transaction.unsafeGetRawPtr());
     }
 
     transaction->Abort(NS_ERROR_DOM_INDEXEDDB_ABORT_ERR);
@@ -874,22 +878,13 @@ nsresult IDBDatabase::GetQuotaInfo(nsACString& aOrigin,
       MOZ_CRASH("Is this needed?!");
 
     case PrincipalInfo::TSystemPrincipalInfo:
-      QuotaManager::GetInfoForChrome(nullptr, nullptr, &aOrigin);
+      aOrigin = QuotaManager::GetOriginForChrome();
       return NS_OK;
 
     case PrincipalInfo::TContentPrincipalInfo: {
-      nsresult rv;
-      nsCOMPtr<nsIPrincipal> principal =
-          PrincipalInfoToPrincipal(*principalInfo, &rv);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return rv;
-      }
+      IDB_TRY_UNWRAP(auto principal, PrincipalInfoToPrincipal(*principalInfo));
 
-      rv = QuotaManager::GetInfoFromPrincipal(principal, nullptr, nullptr,
-                                              &aOrigin);
-      if (NS_WARN_IF(NS_FAILED(rv))) {
-        return rv;
-      }
+      IDB_TRY_UNWRAP(aOrigin, QuotaManager::GetOriginFromPrincipal(principal));
 
       return NS_OK;
     }
@@ -1215,5 +1210,4 @@ void IDBDatabase::MaybeDecreaseActiveDatabaseCount() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

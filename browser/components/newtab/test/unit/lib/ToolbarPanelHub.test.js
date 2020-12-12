@@ -8,10 +8,11 @@ describe("ToolbarPanelHub", () => {
   let sandbox;
   let instance;
   let everyWindowStub;
+  let preferencesStub;
   let fakeDocument;
   let fakeWindow;
   let fakeElementById;
-  let createdElements = [];
+  let fakeElementByTagName;
   let createdCustomElements = [];
   let eventListeners = {};
   let addObserverStub;
@@ -20,12 +21,13 @@ describe("ToolbarPanelHub", () => {
   let setBoolPrefStub;
   let waitForInitializedStub;
   let isBrowserPrivateStub;
-  let fakeDispatch;
+  let fakeSendTelemetry;
   let getEarliestRecordedDateStub;
   let getEventsByDateRangeStub;
-  let handleUserActionStub;
   let defaultSearchStub;
   let scriptloaderStub;
+  let fakeRemoteL10n;
+  let getViewNodeStub;
 
   beforeEach(async () => {
     sandbox = sinon.createSandbox();
@@ -44,25 +46,22 @@ describe("ToolbarPanelHub", () => {
       remove: sandbox.stub(),
       removeChild: sandbox.stub(),
     };
+    fakeElementByTagName = {
+      setAttribute: sandbox.stub(),
+      removeAttribute: sandbox.stub(),
+      querySelector: sandbox.stub().returns(null),
+      querySelectorAll: sandbox.stub().returns([]),
+      appendChild: sandbox.stub(),
+      addEventListener: sandbox.stub(),
+      hasAttribute: sandbox.stub(),
+      toggleAttribute: sandbox.stub(),
+      remove: sandbox.stub(),
+      removeChild: sandbox.stub(),
+    };
     fakeDocument = {
       getElementById: sandbox.stub().returns(fakeElementById),
+      getElementsByTagName: sandbox.stub().returns(fakeElementByTagName),
       querySelector: sandbox.stub().returns({}),
-      createElementNS: (ns, tagName) => {
-        const element = {
-          tagName,
-          classList: {
-            add: sandbox.stub(),
-          },
-          addEventListener: (ev, fn) => {
-            eventListeners[ev] = fn;
-          },
-          appendChild: sandbox.stub(),
-          setAttribute: sandbox.stub(),
-          textContent: "",
-        };
-        createdElements.push(element);
-        return element;
-      },
       createElement: tagName => {
         const element = {
           tagName,
@@ -111,20 +110,31 @@ describe("ToolbarPanelHub", () => {
       registerCallback: sandbox.stub(),
       unregisterCallback: sandbox.stub(),
     };
+    preferencesStub = {
+      get: sandbox.stub(),
+      set: sandbox.stub(),
+    };
     scriptloaderStub = { loadSubScript: sandbox.stub() };
     addObserverStub = sandbox.stub();
     removeObserverStub = sandbox.stub();
     getBoolPrefStub = sandbox.stub();
     setBoolPrefStub = sandbox.stub();
-    fakeDispatch = sandbox.stub();
+    fakeSendTelemetry = sandbox.stub();
     isBrowserPrivateStub = sandbox.stub();
     getEarliestRecordedDateStub = sandbox.stub().returns(
       // A random date that's not the current timestamp
       new Date() - 500
     );
     getEventsByDateRangeStub = sandbox.stub().returns([]);
-    handleUserActionStub = sandbox.stub();
+    getViewNodeStub = sandbox.stub().returns(fakeElementById);
     defaultSearchStub = { defaultEngine: { name: "DDG" } };
+    fakeRemoteL10n = {
+      l10n: {},
+      reloadL10n: sandbox.stub(),
+      createElement: sandbox
+        .stub()
+        .callsFake((doc, el) => fakeDocument.createElement(el)),
+    };
     globals.set({
       EveryWindow: everyWindowStub,
       Services: {
@@ -141,9 +151,17 @@ describe("ToolbarPanelHub", () => {
       PrivateBrowsingUtils: {
         isBrowserPrivate: isBrowserPrivateStub,
       },
+      Preferences: preferencesStub,
       TrackingDBService: {
         getEarliestRecordedDate: getEarliestRecordedDateStub,
         getEventsByDateRange: getEventsByDateRangeStub,
+      },
+      SpecialMessageActions: {
+        handleAction: sandbox.stub(),
+      },
+      RemoteL10n: fakeRemoteL10n,
+      PanelMultiView: {
+        getViewNode: getViewNodeStub,
       },
     });
   });
@@ -152,20 +170,12 @@ describe("ToolbarPanelHub", () => {
     sandbox.restore();
     globals.restore();
     eventListeners = {};
-    createdElements = [];
     createdCustomElements = [];
   });
   it("should create an instance", () => {
     assert.ok(instance);
   });
-  it("should not enableAppmenuButton() on init() if pref is not enabled", async () => {
-    getBoolPrefStub.returns(false);
-    instance.enableAppmenuButton = sandbox.stub();
-    await instance.init(waitForInitializedStub, { getMessages: () => {} });
-    assert.notCalled(instance.enableAppmenuButton);
-  });
-  it("should enableAppmenuButton() on init() if pref is enabled", async () => {
-    getBoolPrefStub.returns(true);
+  it("should enableAppmenuButton() on init()", async () => {
     instance.enableAppmenuButton = sandbox.stub();
 
     await instance.init(waitForInitializedStub, { getMessages: () => {} });
@@ -176,55 +186,55 @@ describe("ToolbarPanelHub", () => {
     instance.uninit();
     assert.calledTwice(everyWindowStub.unregisterCallback);
   });
-  it("should observe pref changes on init", async () => {
-    await instance.init(waitForInitializedStub, {});
+  describe("#maybeLoadCustomElement", () => {
+    it("should not load customElements a second time", () => {
+      instance.maybeLoadCustomElement({ customElements: new Map() });
+      instance.maybeLoadCustomElement({
+        customElements: new Map([["remote-text", true]]),
+      });
 
-    assert.calledOnce(addObserverStub);
-    assert.calledWithExactly(
-      addObserverStub,
-      "browser.messaging-system.whatsNewPanel.enabled",
-      instance
-    );
-  });
-  it("should remove the observer on uninit", () => {
-    instance.uninit();
-
-    assert.calledOnce(removeObserverStub);
-    assert.calledWithExactly(
-      removeObserverStub,
-      "browser.messaging-system.whatsNewPanel.enabled",
-      instance
-    );
-  });
-  describe("#observe", () => {
-    it("should uninit if the pref is turned off", () => {
-      sandbox.stub(instance, "uninit");
-      getBoolPrefStub.returns(false);
-
-      instance.observe(
-        "",
-        "",
-        "browser.messaging-system.whatsNewPanel.enabled"
-      );
-
-      assert.calledOnce(instance.uninit);
+      assert.calledOnce(scriptloaderStub.loadSubScript);
     });
-    it("shouldn't do anything if the pref is true", () => {
-      sandbox.stub(instance, "uninit");
-      getBoolPrefStub.returns(true);
+  });
+  describe("#toggleWhatsNewPref", () => {
+    it("should call Preferences.set() with the opposite value", () => {
+      let checkbox = {};
+      let event = { target: checkbox };
+      // checkbox starts false
+      checkbox.checked = false;
 
-      instance.observe(
-        "",
-        "",
-        "browser.messaging-system.whatsNewPanel.enabled"
+      // toggling the checkbox to set the value to true;
+      // Preferences.set() gets called before the checkbox changes,
+      // so we have to call it with the opposite value.
+      instance.toggleWhatsNewPref(event);
+
+      assert.calledOnce(preferencesStub.set);
+      assert.calledWith(
+        preferencesStub.set,
+        "browser.messaging-system.whatsNewPanel.enabled",
+        !checkbox.checked
       );
+    });
+    it("should report telemetry with the opposite value", () => {
+      let sendUserEventTelemetryStub = sandbox.stub(
+        instance,
+        "sendUserEventTelemetry"
+      );
+      let event = {
+        target: { checked: true, ownerGlobal: fakeWindow },
+      };
 
-      assert.notCalled(instance.uninit);
+      instance.toggleWhatsNewPref(event);
+
+      assert.calledOnce(sendUserEventTelemetryStub);
+      const { args } = sendUserEventTelemetryStub.firstCall;
+      assert.equal(args[1], "WNP_PREF_TOGGLE");
+      assert.propertyVal(args[3].value, "prefValue", false);
     });
   });
   describe("#enableAppmenuButton", () => {
     it("should registerCallback on enableAppmenuButton() if there are messages", async () => {
-      instance.init(waitForInitializedStub, {
+      await instance.init(waitForInitializedStub, {
         getMessages: sandbox.stub().resolves([{}, {}]),
       });
       // init calls `enableAppmenuButton`
@@ -267,16 +277,24 @@ describe("ToolbarPanelHub", () => {
   });
   describe("#enableToolbarButton", () => {
     it("should registerCallback on enableToolbarButton if messages.length", async () => {
-      instance.init(waitForInitializedStub, {
+      await instance.init(waitForInitializedStub, {
         getMessages: sandbox.stub().resolves([{}, {}]),
       });
+      // init calls `enableAppmenuButton`
+      everyWindowStub.registerCallback.resetHistory();
 
       await instance.enableToolbarButton();
 
       assert.calledOnce(everyWindowStub.registerCallback);
+      assert.calledWithExactly(
+        everyWindowStub.registerCallback,
+        "whats-new-menu-button",
+        sinon.match.func,
+        sinon.match.func
+      );
     });
     it("should not registerCallback on enableToolbarButton if no messages", async () => {
-      instance.init(waitForInitializedStub, {
+      await instance.init(waitForInitializedStub, {
         getMessages: sandbox.stub().resolves([]),
       });
 
@@ -285,23 +303,36 @@ describe("ToolbarPanelHub", () => {
       assert.notCalled(everyWindowStub.registerCallback);
     });
   });
-  it("should unhide appmenu button on _showAppmenuButton()", async () => {
-    await instance._showAppmenuButton(fakeWindow);
+  describe("Show/Hide functions", () => {
+    it("should unhide appmenu button on _showAppmenuButton()", async () => {
+      await instance._showAppmenuButton(fakeWindow);
 
-    assert.calledWith(fakeElementById.removeAttribute, "hidden");
-  });
-  it("should hide appmenu button on _hideAppmenuButton()", () => {
-    instance._hideAppmenuButton(fakeWindow);
-    assert.calledWith(fakeElementById.setAttribute, "hidden", true);
-  });
-  it("should unhide toolbar button on _showToolbarButton()", async () => {
-    await instance._showToolbarButton(fakeWindow);
+      assert.calledWith(fakeElementById.removeAttribute, "hidden");
+    });
+    it("should hide appmenu button on _hideAppmenuButton()", () => {
+      instance._hideAppmenuButton(fakeWindow);
+      assert.calledWith(fakeElementById.setAttribute, "hidden", true);
+    });
+    it("should not do anything if the window is closed", () => {
+      instance._hideAppmenuButton(fakeWindow, true);
+      assert.notCalled(PanelMultiView.getViewNode);
+    });
+    it("should not throw if the element does not exist", () => {
+      let fn = instance._hideAppmenuButton.bind(null, {
+        browser: { ownerDocument: {} },
+      });
+      getViewNodeStub.returns(undefined);
+      assert.doesNotThrow(fn);
+    });
+    it("should unhide toolbar button on _showToolbarButton()", async () => {
+      await instance._showToolbarButton(fakeWindow);
 
-    assert.calledWith(fakeElementById.removeAttribute, "hidden");
-  });
-  it("should hide toolbar button on _hideToolbarButton()", () => {
-    instance._hideToolbarButton(fakeWindow);
-    assert.calledWith(fakeElementById.setAttribute, "hidden", true);
+      assert.calledWith(fakeElementById.removeAttribute, "hidden");
+    });
+    it("should hide toolbar button on _hideToolbarButton()", () => {
+      instance._hideToolbarButton(fakeWindow);
+      assert.calledWith(fakeElementById.setAttribute, "hidden", true);
+    });
   });
   describe("#renderMessages", () => {
     let getMessagesStub;
@@ -309,8 +340,7 @@ describe("ToolbarPanelHub", () => {
       getMessagesStub = sandbox.stub();
       instance.init(waitForInitializedStub, {
         getMessages: getMessagesStub,
-        dispatch: fakeDispatch,
-        handleUserAction: handleUserActionStub,
+        sendTelemetry: fakeSendTelemetry,
       });
     });
     it("should have correct state", async () => {
@@ -361,33 +391,36 @@ describe("ToolbarPanelHub", () => {
 
       for (let message of messages) {
         assert.ok(
-          createdCustomElements.find(el =>
-            el.classList.includes("whatsNew-message-title")
+          fakeRemoteL10n.createElement.args.find(
+            ([doc, el, args]) =>
+              args && args.classList === "whatsNew-message-title"
           )
         );
         if (message.content.layout === "tracking-protections") {
           assert.ok(
-            createdCustomElements.find(el =>
-              el.classList.includes("whatsNew-message-subtitle")
+            fakeRemoteL10n.createElement.args.find(
+              ([doc, el, args]) =>
+                args && args.classList === "whatsNew-message-subtitle"
             )
           );
         }
         if (message.id === "WHATS_NEW_FINGERPRINTER_COUNTER_72") {
           assert.ok(
-            createdElements.find(
-              el => el.tagName === "h2" && el.textContent === 3
+            fakeRemoteL10n.createElement.args.find(
+              ([doc, el, args]) => el === "h2" && args.content === 3
             )
           );
         }
         assert.ok(
-          createdCustomElements.find(el =>
-            el.classList.includes("whatsNew-message-content")
+          fakeRemoteL10n.createElement.args.find(
+            ([doc, el, args]) =>
+              args && args.classList === "whatsNew-message-content"
           )
         );
       }
       // Call the click handler to make coverage happy.
       eventListeners.mouseup();
-      assert.calledOnce(handleUserActionStub);
+      assert.calledOnce(global.SpecialMessageActions.handleAction);
     });
     it("should clear previous messages on 2nd renderMessages()", async () => {
       const messages = (await PanelTestProvider.getMessages()).filter(
@@ -421,13 +454,12 @@ describe("ToolbarPanelHub", () => {
 
       // Select the title elements that are supposed to be set to the same
       // value as the `order` field of the message
-      const titleEls = createdElements
+      const titleEls = fakeRemoteL10n.createElement.args
         .filter(
-          el =>
-            el.classList.add.firstCall &&
-            el.classList.add.firstCall.args[0] === "whatsNew-message-title"
+          ([doc, el, args]) =>
+            args && args.classList === "whatsNew-message-title"
         )
-        .map(el => el.textContent);
+        .map(([doc, el, args]) => args.content);
       assert.deepEqual(titleEls, [1, 2, 3]);
     });
     it("should accept string for image attributes", async () => {
@@ -438,7 +470,7 @@ describe("ToolbarPanelHub", () => {
 
       await instance.renderMessages(fakeWindow, fakeDocument, "container-id");
 
-      const imageEl = createdElements.find(el => el.tagName === "img");
+      const imageEl = createdCustomElements.find(el => el.tagName === "img");
       assert.calledOnce(imageEl.setAttribute);
       assert.calledWithExactly(
         imageEl.setAttribute,
@@ -457,11 +489,14 @@ describe("ToolbarPanelHub", () => {
 
       await instance.renderMessages(fakeWindow, fakeDocument, "container-id");
 
-      // Currently this.state.contentArguments has 9 different entries
-      assert.callCount(createdCustomElements[0].setAttribute, 9);
-      assert.calledWithExactly(
-        createdCustomElements[0].setAttribute,
-        "fluent-variable-searchEngineName",
+      const [, , args] = fakeRemoteL10n.createElement.args.find(
+        ([doc, el, elArgs]) => elArgs && elArgs.attributes
+      );
+      assert.ok(args);
+      // Currently this.state.contentArguments has 8 different entries
+      assert.lengthOf(Object.keys(args.attributes), 8);
+      assert.equal(
+        args.attributes.searchEngineName,
         defaultSearchStub.defaultEngine.name
       );
     });
@@ -476,11 +511,9 @@ describe("ToolbarPanelHub", () => {
 
       await instance.renderMessages(fakeWindow, fakeDocument, "container-id");
 
-      const dateElements = createdElements.filter(
-        el =>
-          el.tagName === "p" &&
-          el.classList.add.firstCall &&
-          el.classList.add.firstCall.args[0] === "whatsNew-message-date"
+      const dateElements = fakeRemoteL10n.createElement.args.filter(
+        ([doc, el, args]) =>
+          el === "p" && args.classList === "whatsNew-message-date"
       );
       assert.lengthOf(dateElements, uniqueDates.length);
     });
@@ -502,15 +535,17 @@ describe("ToolbarPanelHub", () => {
 
       await instance.renderMessages(fakeWindow, fakeDocument, "container-id");
 
-      const buttonEl = createdElements.find(el => el.tagName === "button");
-      const anchorEl = createdElements.find(el => el.tagName === "a");
+      const buttonEl = createdCustomElements.find(
+        el => el.tagName === "button"
+      );
+      const anchorEl = createdCustomElements.find(el => el.tagName === "a");
 
-      assert.notCalled(handleUserActionStub);
+      assert.notCalled(global.SpecialMessageActions.handleAction);
 
       buttonEl.doCommand();
       anchorEl.doCommand();
 
-      assert.calledTwice(handleUserActionStub);
+      assert.calledTwice(global.SpecialMessageActions.handleAction);
     });
     it("should listen for panelhidden and remove the toolbar button", async () => {
       getMessagesStub.returns([]);
@@ -551,7 +586,7 @@ describe("ToolbarPanelHub", () => {
         await instance.renderMessages(fakeWindow, fakeDocument, "container-id");
 
         assert.calledOnce(spy);
-        assert.calledOnce(fakeDispatch);
+        assert.calledOnce(fakeSendTelemetry);
         assert.propertyVal(
           spy.firstCall.args[2],
           "id",
@@ -575,7 +610,7 @@ describe("ToolbarPanelHub", () => {
         await instance.renderMessages(fakeWindow, fakeDocument, "container-id");
 
         assert.calledOnce(spy);
-        assert.calledOnce(fakeDispatch);
+        assert.calledOnce(fakeSendTelemetry);
 
         spy.resetHistory();
 
@@ -614,10 +649,10 @@ describe("ToolbarPanelHub", () => {
             },
           }
         );
-        assert.calledOnce(fakeDispatch);
+        assert.calledOnce(fakeSendTelemetry);
         const {
           args: [dispatchPayload],
-        } = fakeDispatch.lastCall;
+        } = fakeSendTelemetry.lastCall;
         assert.propertyVal(dispatchPayload, "type", "TOOLBAR_PANEL_TELEMETRY");
         assert.propertyVal(dispatchPayload.data, "message_id", panelPingId);
         assert.deepEqual(dispatchPayload.data.event_context, {
@@ -653,10 +688,10 @@ describe("ToolbarPanelHub", () => {
             },
           }
         );
-        assert.calledOnce(fakeDispatch);
+        assert.calledOnce(fakeSendTelemetry);
         const {
           args: [dispatchPayload],
-        } = fakeDispatch.lastCall;
+        } = fakeSendTelemetry.lastCall;
         assert.propertyVal(dispatchPayload, "type", "TOOLBAR_PANEL_TELEMETRY");
         assert.propertyVal(dispatchPayload.data, "message_id", panelPingId);
         assert.deepEqual(dispatchPayload.data.event_context, {
@@ -678,9 +713,7 @@ describe("ToolbarPanelHub", () => {
         removeMessagesSpy = sandbox.spy(instance, "removeMessages");
         renderMessagesStub = sandbox.spy(instance, "renderMessages");
         addEventListenerStub = fakeElementById.addEventListener;
-        browser = {
-          browser: { ownerGlobal: fakeWindow, ownerDocument: fakeDocument },
-        };
+        browser = { ownerGlobal: fakeWindow, ownerDocument: fakeDocument };
         fakeElementById.querySelectorAll.returns([fakeElementById]);
       });
       it("should call removeMessages when forcing a message to show", () => {
@@ -737,9 +770,8 @@ describe("ToolbarPanelHub", () => {
           onboardingMsgs.find(msg => msg.template === "protections_panel")
         );
       await instance.init(waitForInitializedStub, {
-        dispatch: fakeDispatch,
+        sendTelemetry: fakeSendTelemetry,
         getMessages: getMessagesStub,
-        handleUserAction: handleUserActionStub,
       });
     });
     it("should remember it showed", async () => {
@@ -785,17 +817,18 @@ describe("ToolbarPanelHub", () => {
 
       eventListeners.mouseup();
 
-      assert.calledOnce(handleUserActionStub);
-      assert.calledWithExactly(handleUserActionStub, {
-        target: fakeWindow,
-        data: {
+      assert.calledOnce(global.SpecialMessageActions.handleAction);
+      assert.calledWithExactly(
+        global.SpecialMessageActions.handleAction,
+        {
           type: "OPEN_URL",
           data: {
             args: sinon.match.string,
             where: "tabshifted",
           },
         },
-      });
+        fakeWindow.browser
+      );
     });
     it("should format the url", async () => {
       const stub = sandbox
@@ -810,17 +843,18 @@ describe("ToolbarPanelHub", () => {
 
       assert.calledOnce(stub);
       assert.calledWithExactly(stub, msg.content.cta_url);
-      assert.calledOnce(handleUserActionStub);
-      assert.calledWithExactly(handleUserActionStub, {
-        target: fakeWindow,
-        data: {
+      assert.calledOnce(global.SpecialMessageActions.handleAction);
+      assert.calledWithExactly(
+        global.SpecialMessageActions.handleAction,
+        {
           type: "OPEN_URL",
           data: {
             args: "formattedURL",
             where: "tabshifted",
           },
         },
-      });
+        fakeWindow.browser
+      );
     });
     it("should report format url errors", async () => {
       const stub = sandbox
@@ -836,17 +870,18 @@ describe("ToolbarPanelHub", () => {
 
       assert.calledOnce(stub);
       assert.calledOnce(global.Cu.reportError);
-      assert.calledOnce(handleUserActionStub);
-      assert.calledWithExactly(handleUserActionStub, {
-        target: fakeWindow,
-        data: {
+      assert.calledOnce(global.SpecialMessageActions.handleAction);
+      assert.calledWithExactly(
+        global.SpecialMessageActions.handleAction,
+        {
           type: "OPEN_URL",
           data: {
             args: msg.content.cta_url,
             where: "tabshifted",
           },
         },
-      });
+        fakeWindow.browser
+      );
     });
     it("should open link on click (directly attached to the message)", async () => {
       const onboardingMsgs = await OnboardingMessageProvider.getUntranslatedMessages();
@@ -859,25 +894,26 @@ describe("ToolbarPanelHub", () => {
 
       eventListeners.mouseup();
 
-      assert.calledOnce(handleUserActionStub);
-      assert.calledWithExactly(handleUserActionStub, {
-        target: fakeWindow,
-        data: {
+      assert.calledOnce(global.SpecialMessageActions.handleAction);
+      assert.calledWithExactly(
+        global.SpecialMessageActions.handleAction,
+        {
           type: "OPEN_URL",
           data: {
             args: sinon.match.string,
             where: "tabshifted",
           },
         },
-      });
+        fakeWindow.browser
+      );
     });
-    it("should handleUserAction from mouseup and keyup", async () => {
+    it("should handle user actions from mouseup and keyup", async () => {
       await fakeInsert();
 
       eventListeners.mouseup();
       eventListeners.keyup({ key: "Enter" });
       eventListeners.keyup({ key: " " });
-      assert.calledThrice(handleUserActionStub);
+      assert.calledThrice(global.SpecialMessageActions.handleAction);
     });
   });
 });

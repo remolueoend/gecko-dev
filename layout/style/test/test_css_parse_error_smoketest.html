@@ -24,6 +24,10 @@
       error: "Expected ‘none’, URL, or filter function but found ‘alpha(’.  Error in parsing value for ‘filter’.  Declaration dropped.",
       cssSelectors: "x",
     }, {
+      css: "x { color: red; abc; }",
+      error: "Unknown property ‘abc;’.  Declaration dropped.",
+      cssSelectors: "x",
+    }, {
       css: "x { filter: 5; }",
       error: "Expected ‘none’, URL, or filter function but found ‘5’.  Error in parsing value for ‘filter’.  Declaration dropped.",
       cssSelectors: "x",
@@ -74,7 +78,7 @@
       error: "Expected identifier for class selector but found ‘ ’.  Ruleset ignored due to bad selector.",
     }, {
       css: ":not() {}",
-      error: "Missing argument in negation pseudo-class ‘)’.  Ruleset ignored due to bad selector.",
+      error: "Selector expected.  Ruleset ignored due to bad selector.",
     }, {
       css: "* { -webkit-text-size-adjust: 100% }",
       error: "Error in parsing value for ‘-webkit-text-size-adjust’.  Declaration dropped.",
@@ -105,7 +109,7 @@
       error: "Found invalid value for media feature.",
     }, {
       css: "@media (min-aspect-ratio: 1 invalid) {}",
-      error: "Found invalid value for media feature.",
+      error: "Unexpected token ‘invalid’ in media list.",
     }, {
       css: "@media (min-aspect-ratio: 1 / invalid) {}",
       error: "Found invalid value for media feature.",

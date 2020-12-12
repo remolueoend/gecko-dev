@@ -7,8 +7,7 @@
 #include "mozilla/dom/PaymentAddress.h"
 #include "mozilla/dom/PaymentAddressBinding.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PaymentAddress, mOwner)
 
@@ -28,7 +27,7 @@ PaymentAddress::PaymentAddress(
     const nsAString& aSortingCode, const nsAString& aOrganization,
     const nsAString& aRecipient, const nsAString& aPhone)
     : mCountry(aCountry),
-      mAddressLine(aAddressLine),
+      mAddressLine(aAddressLine.Clone()),
       mRegion(aRegion),
       mRegionCode(aRegionCode),
       mCity(aCity),
@@ -45,7 +44,7 @@ void PaymentAddress::GetCountry(nsAString& aRetVal) const {
 }
 
 void PaymentAddress::GetAddressLine(nsTArray<nsString>& aRetVal) const {
-  aRetVal = mAddressLine;
+  aRetVal = mAddressLine.Clone();
 }
 
 void PaymentAddress::GetRegion(nsAString& aRetVal) const { aRetVal = mRegion; }
@@ -85,5 +84,4 @@ JSObject* PaymentAddress::WrapObject(JSContext* aCx,
   return PaymentAddress_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

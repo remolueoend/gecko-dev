@@ -7,7 +7,8 @@
 menu,
 menuitem,
 menucaption {
-  -moz-appearance: menuitem;
+  appearance: auto;
+  -moz-default-appearance: menuitem;
   -moz-font-smoothing-background-color: -moz-mac-menuitem;
   -moz-box-align: center;
   list-style-image: none;
@@ -72,13 +73,14 @@ menuitem[image] > .menu-iconic-left > .menu-iconic-icon {
 
 .menu-right {
   list-style-image: none;
-  -moz-appearance: menuarrow;
+  appearance: auto;
+  -moz-default-appearance: menuarrow;
 }
 
 /* menu/menuitems in menubar */
 
 menubar > menu {
-  -moz-appearance: none;
+  appearance: none;
   padding-block: 2px;
   padding-inline: 7px 5px;
   margin: 1px 0;
@@ -90,7 +92,8 @@ menubar > menu[_moz-menuactive="true"] {
 }
 
 menubar > menu[_moz-menuactive="true"][open="true"] {
-  -moz-appearance: menuitem;
+  appearance: auto;
+  -moz-default-appearance: menuitem;
   -moz-font-smoothing-background-color: -moz-mac-active-menuitem;
   color: -moz-mac-menutextselect;
 }
@@ -125,8 +128,7 @@ menuitem[_moz-menuactive="true"] {
 }
 
 menuitem[customoptionstyling="true"] {
-  -moz-appearance: none;
-  padding-block: 0;
+  appearance: none;
 }
 
 /* menu/menuitems in menulist popups */
@@ -139,14 +141,15 @@ menulist > menupopup > menuitem,
 menulist > menupopup > menucaption,
 menulist > menupopup > menu {
   max-width: none;
-  color: -moz-FieldText;
+  color: FieldText;
 }
 
 /* checked menuitems */
 
 :not(menulist) > menupopup > menuitem[checked="true"],
 :not(menulist) > menupopup > menuitem[selected="true"] {
-  -moz-appearance: checkmenuitem;
+  appearance: auto;
+  -moz-default-appearance: checkmenuitem;
 }
 
 menulist > menupopup > menuitem[checked="true"]::before,
@@ -160,37 +163,10 @@ menulist > menupopup > menuitem[selected="true"]::before {
 /* menuseparator */
 
 menuseparator {
-  -moz-appearance: menuseparator;
+  appearance: auto;
+  -moz-default-appearance: menuseparator;
   margin: 5px 0;
   padding: 1px 0;
 }
 
-/* Scroll buttons */
-
-.menupopup-arrowscrollbox:not(:-moz-lwtheme)::part(scrollbutton-up),
-.menupopup-arrowscrollbox:not(:-moz-lwtheme)::part(scrollbutton-down) {
-  position: relative;
-  /* Here we're using a little magic.
-   * The arrow button is supposed to overlay the scrollbox, blocking
-   * everything under it from reaching the screen. However, the menu background
-   * is slightly transparent, so how can we block something completely without
-   * messing up the transparency? It's easy: The native theming of the
-   * "menuitem" appearance uses CGContextClearRect before drawing, which
-   * clears everything under it.
-   * Without help from native theming this effect wouldn't be achievable.
-   */
-  -moz-appearance: menuitem;
-}
-
-.menupopup-arrowscrollbox:not(:-moz-lwtheme)::part(scrollbutton-up) {
-  margin-bottom: -16px;
-}
-
-.menupopup-arrowscrollbox:not(:-moz-lwtheme)::part(scrollbutton-down) {
-  margin-top: -16px;
-}
-
-.menupopup-arrowscrollbox:not(:-moz-lwtheme)[scrolledtostart="true"]::part(scrollbutton-up),
-.menupopup-arrowscrollbox:not(:-moz-lwtheme)[scrolledtoend="true"]::part(scrollbutton-down) {
-  visibility: collapse;
-}
+%include ../../shared/menu-scrolling.inc.css

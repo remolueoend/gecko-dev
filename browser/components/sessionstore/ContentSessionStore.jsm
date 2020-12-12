@@ -125,7 +125,7 @@ class SessionHistoryListener extends Handler {
     // a delay.
     this.mm.docShell
       .QueryInterface(Ci.nsIWebNavigation)
-      .sessionHistory.legacySHistory.addSHistoryListener(this);
+      .sessionHistory.legacySHistory.addSHistoryListener(this); // OK in non-geckoview
 
     let webProgress = this.mm.docShell
       .QueryInterface(Ci.nsIInterfaceRequestor)
@@ -160,7 +160,7 @@ class SessionHistoryListener extends Handler {
     let sessionHistory = this.mm.docShell.QueryInterface(Ci.nsIWebNavigation)
       .sessionHistory;
     if (sessionHistory) {
-      sessionHistory.legacySHistory.removeSHistoryListener(this);
+      sessionHistory.legacySHistory.removeSHistoryListener(this); // OK in non-geckoview
     }
   }
 
@@ -208,8 +208,9 @@ class SessionHistoryListener extends Handler {
   }
 
   OnHistoryNewEntry(newURI, oldIndex) {
-    // We ought to collect the previously current entry as well, see bug 1350567.
-    this.collectFrom(oldIndex);
+    // Collect the current entry as well, to make sure to collect any changes
+    // that were made to the entry while the document was active.
+    this.collectFrom(oldIndex == -1 ? oldIndex : oldIndex - 1);
   }
 
   OnHistoryGotoIndex() {
@@ -257,9 +258,9 @@ class SessionHistoryListener extends Handler {
   }
 }
 SessionHistoryListener.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIWebProgressListener,
-  Ci.nsISHistoryListener,
-  Ci.nsISupportsWeakReference,
+  "nsIWebProgressListener",
+  "nsISHistoryListener",
+  "nsISupportsWeakReference",
 ]);
 
 /**
@@ -509,6 +510,7 @@ const MESSAGES = [
   "SessionStore:resetRestore",
   "SessionStore:flush",
   "SessionStore:becomeActiveProcess",
+  "SessionStore:prepareForProcessChange",
 ];
 
 class ContentSessionStore {
@@ -530,10 +532,7 @@ class ContentSessionStore {
 
     this.handlers = [new EventListener(this), this.messageQueue];
 
-    this._shistoryInParent = Services.prefs.getBoolPref(
-      "fission.sessionHistoryInParent",
-      false
-    );
+    this._shistoryInParent = Services.appinfo.sessionHistoryInParent;
     if (this._shistoryInParent) {
       this.mm.sendAsyncMessage("SessionStore:addSHistoryListener");
     } else {
@@ -617,6 +616,15 @@ class ContentSessionStore {
         if (!this._shistoryInParent) {
           SessionHistoryListener.collect();
         }
+        break;
+      case "SessionStore:prepareForProcessChange":
+        // During normal in-process navigations, the DocShell would take
+        // care of automatically persisting layout history state to record
+        // scroll positions on the nsSHEntry. Unfortunately, process switching
+        // is not a normal navigation, so for now we do this ourselves. This
+        // is a workaround until session history state finally lives in the
+        // parent process.
+        this.mm.docShell.persistLayoutHistoryState();
         break;
       default:
         debug("received unknown message '" + name + "'");

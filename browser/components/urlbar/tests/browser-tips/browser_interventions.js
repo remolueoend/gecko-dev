@@ -10,9 +10,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 
 add_task(async function init() {
   makeProfileResettable();
-  await SpecialPowers.pushPrefEnv({
-    set: [["browser.urlbar.update1.interventions", true]],
-  });
 });
 
 // Tests the refresh tip.
@@ -97,7 +94,7 @@ add_task(async function multipleInterventionsInOneEngagement() {
   );
 
   // Blur the urlbar so that the engagement is ended.
-  await UrlbarTestUtils.promisePopupClose(window, () => window.gURLBar.blur());
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
 
   const scalars = TelemetryTestUtils.getProcessScalars("parent", true, true);
   // We should only record one impression for the Refresh tip. Although it was
@@ -123,11 +120,11 @@ add_task(async function tipsAreEnglishOnly() {
     result.payload.type,
     UrlbarProviderInterventions.TIP_TYPE.REFRESH
   );
-  await UrlbarTestUtils.promisePopupClose(window, () => window.gURLBar.blur());
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
 
   // We will need to fetch new engines when we switch locales.
-  let searchReinit = SearchTestUtils.promiseSearchNotification(
-    "reinit-complete"
+  let enginesReloaded = SearchTestUtils.promiseSearchNotification(
+    "engines-reloaded"
   );
 
   const originalAvailable = Services.locale.availableLocales;
@@ -136,22 +133,22 @@ add_task(async function tipsAreEnglishOnly() {
   Services.locale.requestedLocales = ["de"];
 
   registerCleanupFunction(async () => {
-    let searchReinit2 = SearchTestUtils.promiseSearchNotification(
-      "reinit-complete"
+    let enginesReloaded2 = SearchTestUtils.promiseSearchNotification(
+      "engines-reloaded"
     );
     Services.locale.requestedLocales = originalRequested;
     Services.locale.availableLocales = originalAvailable;
-    await searchReinit2;
+    await enginesReloaded2;
   });
 
   let appLocales = Services.locale.appLocalesAsBCP47;
   Assert.equal(appLocales[0], "de");
 
-  await searchReinit;
+  await enginesReloaded;
 
   // Interventions should no longer work in the new locale.
   await awaitNoTip(SEARCH_STRINGS.CLEAR, window);
-  await UrlbarTestUtils.promisePopupClose(window, () => window.gURLBar.blur());
+  await UrlbarTestUtils.promisePopupClose(window, () => gURLBar.blur());
 });
 
 /**
@@ -198,7 +195,7 @@ add_task(async function pickHelpButton() {
     Assert.ok(BrowserTestUtils.is_visible(helpButton));
     EventUtils.synthesizeMouseAtCenter(helpButton, {});
 
-    await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, helpUrl);
+    BrowserTestUtils.loadURI(gBrowser.selectedBrowser, helpUrl);
     await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 
     const scalars = TelemetryTestUtils.getProcessScalars("parent", true, true);

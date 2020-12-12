@@ -5,6 +5,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "UDPSocketChild.h"
+#include "UDPSocket.h"
 #include "mozilla/Unused.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 #include "mozilla/net/NeckoChild.h"
@@ -17,8 +18,7 @@
 
 using mozilla::net::gNeckoChild;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ISUPPORTS(UDPSocketChildBase, nsISupports)
 
@@ -68,7 +68,7 @@ nsresult UDPSocketChild::Bind(nsIUDPSocketInternal* aSocket,
                               uint16_t aPort, bool aAddressReuse,
                               bool aLoopback, uint32_t recvBufferSize,
                               uint32_t sendBufferSize,
-                              nsIEventTarget* aMainThreadEventTarget) {
+                              nsISerialEventTarget* aMainThreadEventTarget) {
   UDPSOCKET_LOG(
       ("%s: %s:%u", __FUNCTION__, PromiseFlatCString(aHost).get(), aPort));
 
@@ -136,10 +136,7 @@ nsresult UDPSocketChild::SendDataInternal(const UDPSocketAddr& aAddr,
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  nsTArray<uint8_t> array;
-  array.SwapElements(fallibleArray);
-
-  SendOutgoingData(array, aAddr);
+  SendOutgoingData(UDPData{std::move(fallibleArray)}, aAddr);
 
   return NS_OK;
 }
@@ -236,5 +233,4 @@ mozilla::ipc::IPCResult UDPSocketChild::RecvCallbackError(
   return IPC_OK();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

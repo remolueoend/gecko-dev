@@ -7,15 +7,28 @@
 #ifndef mozilla_dom_PerformanceNavigationTiming_h___
 #define mozilla_dom_PerformanceNavigationTiming_h___
 
-#include "nsCOMPtr.h"
-#include "nsITimedChannel.h"
-#include "nsRFPService.h"
-#include "mozilla/dom/PerformanceResourceTiming.h"
+#include <stdint.h>
+#include <utility>
+#include "js/RootingAPI.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/PerformanceNavigationTimingBinding.h"
-#include "nsIHttpChannel.h"
+#include "mozilla/dom/PerformanceResourceTiming.h"
+#include "nsDOMNavigationTiming.h"
+#include "nsISupports.h"
+#include "nsLiteralString.h"
+#include "nsString.h"
+#include "nsTLiteralString.h"
+
+class JSObject;
+class nsIHttpChannel;
+class nsITimedChannel;
+struct JSContext;
 
 namespace mozilla {
 namespace dom {
+
+class Performance;
+class PerformanceTimingData;
 
 // https://www.w3.org/TR/navigation-timing-2/#sec-PerformanceNavigationTiming
 class PerformanceNavigationTiming final : public PerformanceResourceTiming {
@@ -31,8 +44,8 @@ class PerformanceNavigationTiming final : public PerformanceResourceTiming {
       Performance* aPerformance, const nsAString& aName)
       : PerformanceResourceTiming(std::move(aPerformanceTiming), aPerformance,
                                   aName) {
-    SetEntryType(NS_LITERAL_STRING("navigation"));
-    SetInitiatorType(NS_LITERAL_STRING("navigation"));
+    SetEntryType(u"navigation"_ns);
+    SetInitiatorType(u"navigation"_ns);
   }
 
   DOMHighResTimeStamp Duration() const override {
@@ -58,6 +71,12 @@ class PerformanceNavigationTiming final : public PerformanceResourceTiming {
 
   void UpdatePropertiesFromHttpChannel(nsIHttpChannel* aHttpChannel,
                                        nsITimedChannel* aChannel);
+
+  /*
+   * For use with the WebIDL Func attribute to determine whether
+   * window.PerformanceNavigationTiming is exposed.
+   */
+  static bool Enabled(JSContext* aCx, JSObject* aGlobal);
 
  private:
   ~PerformanceNavigationTiming() = default;

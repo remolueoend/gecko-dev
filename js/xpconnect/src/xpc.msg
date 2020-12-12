@@ -62,7 +62,6 @@ XPC_MSG_DEF(NS_ERROR_XPC_BAD_INITIALIZER_NAME           , "Bad initializer name 
 XPC_MSG_DEF(NS_ERROR_XPC_HAS_BEEN_SHUTDOWN              , "Operation failed because the XPConnect subsystem has been shutdown")
 XPC_MSG_DEF(NS_ERROR_XPC_CANT_MODIFY_PROP_ON_WN         , "Cannot modify properties of a WrappedNative")
 XPC_MSG_DEF(NS_ERROR_XPC_BAD_CONVERT_JS_ZERO_ISNOT_NULL , "Could not convert JavaScript argument - 0 was passed, expected object. Did you mean null?")
-XPC_MSG_DEF(NS_ERROR_XPC_CANT_PASS_CPOW_TO_NATIVE       , "It's illegal to pass a CPOW to native code")
 
 
 /* common global codes (from nsError.h) */
@@ -162,6 +161,7 @@ XPC_MSG_DEF(NS_ERROR_PORT_ACCESS_NOT_ALLOWED        , "Establishing a connection
 XPC_MSG_DEF(NS_ERROR_NET_RESET                      , "The connection was established, but no data was ever received")
 XPC_MSG_DEF(NS_ERROR_NET_INTERRUPT                  , "The connection was established, but the data transfer was interrupted")
 XPC_MSG_DEF(NS_ERROR_NET_PARTIAL_TRANSFER           , "A transfer was only partially done when it completed")
+XPC_MSG_DEF(NS_ERROR_NET_HTTP3_PROTOCOL_ERROR       , "There has been a http3 protocol error")
 XPC_MSG_DEF(NS_ERROR_NOT_RESUMABLE                  , "This request is not resumable, but it was tried to resume it, or to request resume-specific data")
 XPC_MSG_DEF(NS_ERROR_ENTITY_CHANGED                 , "It was attempted to resume the request, but the entity has changed in the meantime")
 XPC_MSG_DEF(NS_ERROR_REDIRECT_LOOP                  , "The request failed as a result of a detected redirection loop")

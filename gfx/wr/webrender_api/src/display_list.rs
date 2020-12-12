@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use euclid::SideOffsets2D;
-use peek_poke::{ensure_red_zone, peek_from_slice, poke_extend_vec};
+use peek_poke::{ensure_red_zone, peek_from_slice, poke_extend_vec, strip_red_zone};
 use peek_poke::{poke_inplace_slice, poke_into_vec, Poke};
 #[cfg(feature = "deserialize")]
 use serde::de::Deserializer;
@@ -20,7 +20,7 @@ use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 // local imports
 use crate::display_item as di;
 use crate::display_item_cache::*;
-use crate::api::{PipelineId, PropertyBinding};
+use crate::{PipelineId, PropertyBinding};
 use crate::gradient_builder::GradientBuilder;
 use crate::color::ColorF;
 use crate::font::{FontInstanceKey, GlyphInstance, GlyphOptions};
@@ -359,8 +359,7 @@ impl BuiltDisplayList {
         BuiltDisplayList { data, descriptor }
     }
 
-    pub fn into_data(mut self) -> (Vec<u8>, BuiltDisplayListDescriptor) {
-        self.descriptor.send_start_time = precise_time_ns();
+    pub fn into_data(self) -> (Vec<u8>, BuiltDisplayListDescriptor) {
         (self.data, self.descriptor)
     }
 
@@ -378,6 +377,10 @@ impl BuiltDisplayList {
 
     pub fn descriptor(&self) -> &BuiltDisplayListDescriptor {
         &self.descriptor
+    }
+
+    pub fn set_send_time_ns(&mut self, time: u64) {
+        self.descriptor.send_start_time = time;
     }
 
     pub fn times(&self) -> (u64, u64, u64) {
@@ -435,10 +438,7 @@ impl BuiltDisplayList {
                     v,
                     item.iter.cur_clip_chain_items.iter().collect()
                 ),
-                Real::ScrollFrame(v) => Debug::ScrollFrame(
-                    v,
-                    item.iter.cur_complex_clip.iter().collect()
-                ),
+                Real::ScrollFrame(v) => Debug::ScrollFrame(v),
                 Real::Text(v) => Debug::Text(
                     v,
                     item.iter.cur_glyphs.iter().collect()
@@ -472,6 +472,9 @@ impl BuiltDisplayList {
                 Real::SetGradientStops => Debug::SetGradientStops(
                     item.iter.cur_stops.iter().collect()
                 ),
+                Real::RectClip(v) => Debug::RectClip(v),
+                Real::RoundedRectClip(v) => Debug::RoundedRectClip(v),
+                Real::ImageMaskClip(v) => Debug::ImageMaskClip(v),
                 Real::StickyFrame(v) => Debug::StickyFrame(v),
                 Real::Rectangle(v) => Debug::Rectangle(v),
                 Real::ClearRectangle(v) => Debug::ClearRectangle(v),
@@ -682,14 +685,9 @@ impl<'a> BuiltDisplayListIter<'a> {
                 self.cur_clip_chain_items = skip_slice::<di::ClipId>(&mut self.data);
                 self.debug_stats.log_slice("clip_chain.clip_ids", &self.cur_clip_chain_items);
             }
-            Clip(_) | ScrollFrame(_) => {
+            Clip(_) => {
                 self.cur_complex_clip = skip_slice::<di::ComplexClipRegion>(&mut self.data);
-                let name = if let Clip(_) = self.cur_item {
-                    "clip.complex_clips"
-                } else {
-                    "scroll_frame.complex_clips"
-                };
-                self.debug_stats.log_slice(name, &self.cur_complex_clip);
+                self.debug_stats.log_slice("clip.complex_clips", &self.cur_complex_clip);
             }
             Text(_) => {
                 self.cur_glyphs = skip_slice::<GlyphInstance>(&mut self.data);
@@ -850,10 +848,9 @@ impl<'de> Deserialize<'de> for BuiltDisplayList {
                     DisplayListBuilder::push_iter_impl(&mut temp, clip_chain_ids);
                     Real::ClipChain(v)
                 }
-                Debug::ScrollFrame(v, complex_clips) => {
+                Debug::ScrollFrame(v) => {
                     total_spatial_nodes += 1;
                     total_clip_nodes += 1;
-                    DisplayListBuilder::push_iter_impl(&mut temp, complex_clips);
                     Real::ScrollFrame(v)
                 }
                 Debug::StickyFrame(v) => {
@@ -897,7 +894,9 @@ impl<'de> Deserialize<'de> for BuiltDisplayList {
                     DisplayListBuilder::push_iter_impl(&mut temp, stops);
                     Real::SetGradientStops
                 },
-
+                Debug::RectClip(v) => Real::RectClip(v),
+                Debug::RoundedRectClip(v) => Real::RoundedRectClip(v),
+                Debug::ImageMaskClip(v) => Real::ImageMaskClip(v),
                 Debug::Rectangle(v) => Real::Rectangle(v),
                 Debug::ClearRectangle(v) => Real::ClearRectangle(v),
                 Debug::HitTest(v) => Real::HitTest(v),
@@ -934,7 +933,7 @@ impl<'de> Deserialize<'de> for BuiltDisplayList {
             descriptor: BuiltDisplayListDescriptor {
                 builder_start_time: 0,
                 builder_finish_time: 1,
-                send_start_time: 0,
+                send_start_time: 1,
                 total_clip_nodes,
                 total_spatial_nodes,
                 extra_data_offset,
@@ -977,9 +976,6 @@ pub struct DisplayListBuilder {
     next_clip_chain_id: u64,
     builder_start_time: u64,
 
-    /// The size of the content of this display list. This is used to allow scrolling
-    /// outside the bounds of the display list items themselves.
-    content_size: LayoutSize,
     save_state: Option<SaveState>,
 
     cache_size: usize,
@@ -987,13 +983,12 @@ pub struct DisplayListBuilder {
 }
 
 impl DisplayListBuilder {
-    pub fn new(pipeline_id: PipelineId, content_size: LayoutSize) -> Self {
-        Self::with_capacity(pipeline_id, content_size, 0)
+    pub fn new(pipeline_id: PipelineId) -> Self {
+        Self::with_capacity(pipeline_id, 0)
     }
 
     pub fn with_capacity(
         pipeline_id: PipelineId,
-        content_size: LayoutSize,
         capacity: usize,
     ) -> Self {
         let start_time = precise_time_ns();
@@ -1010,16 +1005,10 @@ impl DisplayListBuilder {
             next_spatial_index: FIRST_SPATIAL_NODE_INDEX,
             next_clip_chain_id: 0,
             builder_start_time: start_time,
-            content_size,
             save_state: None,
             cache_size: 0,
             serialized_content_buffer: None,
         }
-    }
-
-    /// Return the content size for this display list
-    pub fn content_size(&self) -> LayoutSize {
-        self.content_size
     }
 
     /// Saves the current display list state, so it may be `restore()`'d.
@@ -1076,11 +1065,15 @@ impl DisplayListBuilder {
         W: Write
     {
         let mut temp = BuiltDisplayList::default();
+        ensure_red_zone::<di::DisplayItem>(&mut self.data);
+        temp.descriptor.extra_data_offset = self.data.len();
         mem::swap(&mut temp.data, &mut self.data);
 
         let mut index: usize = 0;
         {
-            let mut iter = temp.iter();
+            let mut cache = DisplayItemCache::new();
+            cache.update(&temp);
+            let mut iter = temp.iter_with_cache(&cache);
             while let Some(item) = iter.next_raw() {
                 if index >= range.start.unwrap_or(0) && range.end.map_or(true, |e| index < e) {
                     writeln!(sink, "{}{:?}", "  ".repeat(indent), item.item()).unwrap();
@@ -1090,6 +1083,7 @@ impl DisplayListBuilder {
         }
 
         self.data = temp.data;
+        strip_red_zone::<di::DisplayItem>(&mut self.data);
         index
     }
 
@@ -1236,9 +1230,11 @@ impl DisplayListBuilder {
     pub fn push_hit_test(
         &mut self,
         common: &di::CommonItemProperties,
+        tag: di::ItemTag,
     ) {
         let item = di::DisplayItem::HitTest(di::HitTestDisplayItem {
             common: *common,
+            tag,
         });
         self.push_item(&item);
     }
@@ -1535,8 +1531,39 @@ impl DisplayListBuilder {
             origin,
             reference_frame: di::ReferenceFrame {
                 transform_style,
-                transform,
+                transform: di::ReferenceTransformBinding::Static {
+                    binding: transform,
+                },
                 kind,
+                id,
+            },
+        });
+
+        self.push_item(&item);
+        id
+    }
+
+    pub fn push_computed_frame(
+        &mut self,
+        origin: LayoutPoint,
+        parent_spatial_id: di::SpatialId,
+        scale_from: Option<LayoutSize>,
+        vertical_flip: bool,
+        rotation: di::Rotation,
+    ) -> di::SpatialId {
+        let id = self.generate_spatial_index();
+
+        let item = di::DisplayItem::PushReferenceFrame(di::ReferenceFrameDisplayListItem {
+            parent_spatial_id,
+            origin,
+            reference_frame: di::ReferenceFrame {
+                transform_style: di::TransformStyle::Flat,
+                transform: di::ReferenceTransformBinding::Computed {
+                    scale_from,
+                    vertical_flip,
+                    rotation,
+                },
+                kind: di::ReferenceFrameKind::Transform,
                 id,
             },
         });
@@ -1561,8 +1588,7 @@ impl DisplayListBuilder {
         filter_datas: &[di::FilterData],
         filter_primitives: &[di::FilterPrimitive],
         raster_space: di::RasterSpace,
-        cache_tiles: bool,
-        is_backdrop_root: bool,
+        flags: di::StackingContextFlags,
     ) {
         self.push_filters(filters, filter_datas, filter_primitives);
 
@@ -1575,8 +1601,7 @@ impl DisplayListBuilder {
                 mix_blend_mode,
                 clip_id,
                 raster_space,
-                cache_tiles,
-                is_backdrop_root,
+                flags,
             },
         });
 
@@ -1621,8 +1646,7 @@ impl DisplayListBuilder {
             filter_datas,
             filter_primitives,
             di::RasterSpace::Screen,
-            /* cache_tiles = */ false,
-            /* is_backdrop_root = */ false,
+            di::StackingContextFlags::empty(),
         );
     }
 
@@ -1697,21 +1721,15 @@ impl DisplayListBuilder {
         di::ClipChainId(self.next_clip_chain_id - 1, self.pipeline_id)
     }
 
-    pub fn define_scroll_frame<I>(
+    pub fn define_scroll_frame(
         &mut self,
         parent_space_and_clip: &di::SpaceAndClipInfo,
         external_id: Option<di::ExternalScrollId>,
         content_rect: LayoutRect,
         clip_rect: LayoutRect,
-        complex_clips: I,
-        image_mask: Option<di::ImageMask>,
         scroll_sensitivity: di::ScrollSensitivity,
         external_scroll_offset: LayoutVector2D,
-    ) -> di::SpaceAndClipInfo
-    where
-        I: IntoIterator<Item = di::ComplexClipRegion>,
-        I::IntoIter: ExactSizeIterator + Clone,
-    {
+    ) -> di::SpaceAndClipInfo {
         let clip_id = self.generate_clip_index();
         let scroll_frame_id = self.generate_spatial_index();
         let item = di::DisplayItem::ScrollFrame(di::ScrollFrameDisplayItem {
@@ -1721,13 +1739,11 @@ impl DisplayListBuilder {
             clip_id,
             scroll_frame_id,
             external_id,
-            image_mask,
             scroll_sensitivity,
             external_scroll_offset,
         });
 
         self.push_item(&item);
-        self.push_iter(complex_clips);
 
         di::SpaceAndClipInfo {
             spatial_id: scroll_frame_id,
@@ -1750,12 +1766,59 @@ impl DisplayListBuilder {
         id
     }
 
+    pub fn define_clip_image_mask(
+        &mut self,
+        parent_space_and_clip: &di::SpaceAndClipInfo,
+        image_mask: di::ImageMask,
+    ) -> di::ClipId {
+        let id = self.generate_clip_index();
+        let item = di::DisplayItem::ImageMaskClip(di::ImageMaskClipDisplayItem {
+            id,
+            parent_space_and_clip: *parent_space_and_clip,
+            image_mask,
+        });
+
+        self.push_item(&item);
+        id
+    }
+
+    pub fn define_clip_rect(
+        &mut self,
+        parent_space_and_clip: &di::SpaceAndClipInfo,
+        clip_rect: LayoutRect,
+    ) -> di::ClipId {
+        let id = self.generate_clip_index();
+        let item = di::DisplayItem::RectClip(di::RectClipDisplayItem {
+            id,
+            parent_space_and_clip: *parent_space_and_clip,
+            clip_rect,
+        });
+
+        self.push_item(&item);
+        id
+    }
+
+    pub fn define_clip_rounded_rect(
+        &mut self,
+        parent_space_and_clip: &di::SpaceAndClipInfo,
+        clip: di::ComplexClipRegion,
+    ) -> di::ClipId {
+        let id = self.generate_clip_index();
+        let item = di::DisplayItem::RoundedRectClip(di::RoundedRectClipDisplayItem {
+            id,
+            parent_space_and_clip: *parent_space_and_clip,
+            clip,
+        });
+
+        self.push_item(&item);
+        id
+    }
+
     pub fn define_clip<I>(
         &mut self,
         parent_space_and_clip: &di::SpaceAndClipInfo,
         clip_rect: LayoutRect,
         complex_clips: I,
-        image_mask: Option<di::ImageMask>,
     ) -> di::ClipId
     where
         I: IntoIterator<Item = di::ComplexClipRegion>,
@@ -1766,7 +1829,6 @@ impl DisplayListBuilder {
             id,
             parent_space_and_clip: *parent_space_and_clip,
             clip_rect,
-            image_mask,
         });
 
         self.push_item(&item);
@@ -1856,21 +1918,24 @@ impl DisplayListBuilder {
         debug_assert!(self.writing_to_chunk);
         self.writing_to_chunk = false;
 
-        if self.pending_chunk.len() > 0 {
-            self.flush_pending_item_group(key);
-            true
-        } else {
-            debug_assert!(self.pending_chunk.is_empty());
-            false
+        if self.pending_chunk.is_empty() {
+            return false;
         }
+
+        self.flush_pending_item_group(key);
+        true
     }
 
-    pub fn cancel_item_group(&mut self) {
+    pub fn cancel_item_group(&mut self, discard: bool) {
         debug_assert!(self.writing_to_chunk);
         self.writing_to_chunk = false;
 
-        // Push pending chunk to data section.
-        self.data.append(&mut self.pending_chunk);
+        if discard {
+            self.pending_chunk.clear();
+        } else {
+            // Push pending chunk to data section.
+            self.data.append(&mut self.pending_chunk);
+        }
     }
 
     pub fn push_reuse_items(&mut self, key: di::ItemKey) {
@@ -1891,7 +1956,7 @@ impl DisplayListBuilder {
         self.cache_size = cache_size;
     }
 
-    pub fn finalize(mut self) -> (PipelineId, LayoutSize, BuiltDisplayList) {
+    pub fn finalize(mut self) -> (PipelineId, BuiltDisplayList) {
         assert!(self.save_state.is_none(), "Finalized DisplayListBuilder with a pending save");
 
         if let Some(content) = self.serialized_content_buffer.take() {
@@ -1914,12 +1979,11 @@ impl DisplayListBuilder {
         let end_time = precise_time_ns();
         (
             self.pipeline_id,
-            self.content_size,
             BuiltDisplayList {
                 descriptor: BuiltDisplayListDescriptor {
                     builder_start_time: self.builder_start_time,
                     builder_finish_time: end_time,
-                    send_start_time: 0,
+                    send_start_time: end_time,
                     total_clip_nodes: self.next_clip_index,
                     total_spatial_nodes: self.next_spatial_index,
                     cache_size: self.cache_size,

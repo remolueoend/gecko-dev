@@ -26,6 +26,7 @@ this.globalImportContext = globalImportContext;
 // }
 const actionTypes = {};
 for (const type of [
+  "ABOUT_SPONSORED_TOP_SITES",
   "ADDONS_INFO_REQUEST",
   "ADDONS_INFO_RESPONSE",
   "ARCHIVE_FROM_POCKET",
@@ -89,6 +90,7 @@ for (const type of [
   "OPEN_NEW_WINDOW",
   "OPEN_PRIVATE_WINDOW",
   "OPEN_WEBEXT_SETTINGS",
+  "PARTNER_LINK_ATTRIBUTION",
   "PLACES_BOOKMARK_ADDED",
   "PLACES_BOOKMARK_REMOVED",
   "PLACES_HISTORY_CLEARED",
@@ -136,7 +138,6 @@ for (const type of [
   "SUBMIT_SIGNIN",
   "SYSTEM_TICK",
   "TELEMETRY_IMPRESSION_STATS",
-  "TELEMETRY_PERFORMANCE_EVENT",
   "TELEMETRY_UNDESIRED_EVENT",
   "TELEMETRY_USER_EVENT",
   "TOP_SITES_CANCEL_EDIT",
@@ -150,7 +151,6 @@ for (const type of [
   "TOP_SITES_UPDATED",
   "TOTAL_BOOKMARKS_REQUEST",
   "TOTAL_BOOKMARKS_RESPONSE",
-  "TRAILHEAD_ENROLL_EVENT",
   "UNINIT",
   "UPDATE_PINNED_SEARCH_SHORTCUTS",
   "UPDATE_SEARCH_SHORTCUTS",
@@ -159,28 +159,6 @@ for (const type of [
   "WEBEXT_DISMISS",
 ]) {
   actionTypes[type] = type;
-}
-
-// These are acceptable actions for AS Router messages to have. They can show up
-// as call-to-action buttons in snippets, onboarding tour, etc.
-const ASRouterActions = {};
-for (const type of [
-  "HIGHLIGHT_FEATURE",
-  "INSTALL_ADDON_FROM_URL",
-  "OPEN_APPLICATIONS_MENU",
-  "OPEN_PRIVATE_BROWSER_WINDOW",
-  "OPEN_URL",
-  "OPEN_ABOUT_PAGE",
-  "OPEN_PREFERENCES_PAGE",
-  "SHOW_FIREFOX_ACCOUNTS",
-  "PIN_CURRENT_TAB",
-  "ENABLE_FIREFOX_MONITOR",
-  "OPEN_PROTECTION_PANEL",
-  "OPEN_PROTECTION_REPORT",
-  "DISABLE_STP_DOORHANGERS",
-  "SHOW_MIGRATION_WIZARD",
-]) {
-  ASRouterActions[type] = type;
 }
 
 // Helper function for creating routed actions between content and main
@@ -356,21 +334,6 @@ function UndesiredEvent(data, importContext = globalImportContext) {
 }
 
 /**
- * PerfEvent - A telemetry ping indicating a performance-related event.
- *
- * @param  {object} data Fields to include in the ping (value, etc.)
- * @param  {int} importContext (For testing) Override the import context for testing.
- * @return {object} An action. For UI code, a AlsoToMain action.
- */
-function PerfEvent(data, importContext = globalImportContext) {
-  const action = {
-    type: actionTypes.TELEMETRY_PERFORMANCE_EVENT,
-    data,
-  };
-  return importContext === UI_CODE ? AlsoToMain(action) : action;
-}
-
-/**
  * ImpressionStats - A telemetry ping indicating an impression stats.
  *
  * @param  {object} data Fields to include in the ping
@@ -437,14 +400,12 @@ function WebExtEvent(type, data, importContext = globalImportContext) {
 }
 
 this.actionTypes = actionTypes;
-this.ASRouterActions = ASRouterActions;
 
 this.actionCreators = {
   BroadcastToContent,
   UserEvent,
   ASRouterUserEvent,
   UndesiredEvent,
-  PerfEvent,
   ImpressionStats,
   AlsoToOneContent,
   OnlyToOneContent,
@@ -515,7 +476,6 @@ const EXPORTED_SYMBOLS = [
   "actionTypes",
   "actionCreators",
   "actionUtils",
-  "ASRouterActions",
   "globalImportContext",
   "UI_CODE",
   "BACKGROUND_PROCESS",

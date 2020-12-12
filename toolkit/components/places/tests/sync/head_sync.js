@@ -66,7 +66,7 @@ const MobileBookmarksTitle = "mobile";
 
 function run_test() {
   let bufLog = Log.repository.getLogger("Sync.Engine.Bookmarks.Mirror");
-  bufLog.level = Log.Level.Error;
+  bufLog.level = Log.Level.All;
 
   let sqliteLog = Log.repository.getLogger("Sqlite");
   sqliteLog.level = Log.Level.Error;
@@ -379,7 +379,6 @@ BookmarkObserver.prototype = {
     }
     this.notifications.push({ name: "onItemChanged", params });
   },
-  onItemVisited() {},
   onItemMoved(
     itemId,
     oldParentId,
@@ -411,7 +410,7 @@ BookmarkObserver.prototype = {
     });
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsINavBookmarkObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsINavBookmarkObserver"]),
 
   check(expectedNotifications) {
     PlacesUtils.bookmarks.removeObserver(this);

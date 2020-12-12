@@ -2537,7 +2537,7 @@ void nsCSSBorderRenderer::DrawFallbackSolidCorner(mozilla::Side aSide,
     if (!mPresContext->HasWarnedAboutTooLargeDashedOrDottedRadius()) {
       mPresContext->SetHasWarnedAboutTooLargeDashedOrDottedRadius();
       nsContentUtils::ReportToConsole(
-          nsIScriptError::warningFlag, NS_LITERAL_CSTRING("CSS"), mDocument,
+          nsIScriptError::warningFlag, "CSS"_ns, mDocument,
           nsContentUtils::eCSS_PROPERTIES,
           mBorderStyles[aSide] == StyleBorderStyle::Dashed
               ? "TooLargeDashedRadius"
@@ -3623,13 +3623,7 @@ ImgDrawResult nsCSSBorderImageRenderer::CreateWebRenderCommands(
         return ImgDrawResult::NOT_SUPPORTED;
       }
 
-      uint32_t flags = imgIContainer::FLAG_ASYNC_NOTIFY;
-      if (aDisplayListBuilder->IsPaintingToWindow()) {
-        flags |= imgIContainer::FLAG_HIGH_QUALITY_SCALING;
-      }
-      if (aDisplayListBuilder->ShouldSyncDecodeImages()) {
-        flags |= imgIContainer::FLAG_SYNC_DECODE;
-      }
+      uint32_t flags = aDisplayListBuilder->GetImageDecodeFlags();
 
       LayoutDeviceRect imageRect = LayoutDeviceRect::FromAppUnits(
           nsRect(nsPoint(), mImageRenderer.GetSize()), appUnitsPerDevPixel);

@@ -20,10 +20,11 @@ const {
 } = require("devtools/server/actors/targets/browsing-context");
 
 const { extend } = require("devtools/shared/extend");
-const { ActorClassWithSpec } = require("devtools/shared/protocol");
 const {
   chromeWindowTargetSpec,
 } = require("devtools/shared/specs/targets/chrome-window");
+const Targets = require("devtools/server/actors/targets/index");
+const TargetActorMixin = require("devtools/server/actors/targets/target-actor-mixin");
 
 /**
  * Protocol.js expects only the prototype object, and does not maintain the
@@ -54,13 +55,11 @@ const chromeWindowTargetPrototype = extend({}, browsingContextTargetPrototype);
  *        The window.
  */
 chromeWindowTargetPrototype.initialize = function(connection, window) {
-  BrowsingContextTargetActor.prototype.initialize.call(this, connection);
-
-  const docShell = window.docShell;
-  Object.defineProperty(this, "docShell", {
-    value: docShell,
-    configurable: true,
-  });
+  BrowsingContextTargetActor.prototype.initialize.call(
+    this,
+    connection,
+    window.docShell
+  );
 };
 
 // Bug 1266561: This setting is mysteriously named, we should split up the
@@ -106,7 +105,8 @@ chromeWindowTargetPrototype._detach = function() {
   return true;
 };
 
-exports.ChromeWindowTargetActor = ActorClassWithSpec(
+exports.ChromeWindowTargetActor = TargetActorMixin(
+  Targets.TYPES.FRAME,
   chromeWindowTargetSpec,
   chromeWindowTargetPrototype
 );

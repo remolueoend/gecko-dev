@@ -34,6 +34,7 @@
 #include "nsIURL.h"
 #include "nsIURIMutator.h"
 #include "mozilla/dom/Document.h"
+#include "nsICookieJarSettings.h"
 #include "nsIPrincipal.h"
 #include "nsIWebBrowserPersist.h"
 #include "nsEscape.h"
@@ -64,7 +65,8 @@ class MOZ_STACK_CLASS DragDataProducer {
                    nsIContent* aSelectionTargetNode, bool aIsAltKeyPressed);
   nsresult Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
                    Selection** aSelection, nsIContent** aDragNode,
-                   nsIPrincipal** aPrincipal, nsIContentSecurityPolicy** aCsp);
+                   nsIPrincipal** aPrincipal, nsIContentSecurityPolicy** aCsp,
+                   nsICookieJarSettings** aCookieJarSettings);
 
  private:
   void AddString(DataTransfer* aDataTransfer, const nsAString& aFlavor,
@@ -110,7 +112,8 @@ nsresult nsContentAreaDragDrop::GetDragData(
     nsIContent* aSelectionTargetNode, bool aIsAltKeyPressed,
     DataTransfer* aDataTransfer, bool* aCanDrag, Selection** aSelection,
     nsIContent** aDragNode, nsIPrincipal** aPrincipal,
-    nsIContentSecurityPolicy** aCsp) {
+    nsIContentSecurityPolicy** aCsp,
+    nsICookieJarSettings** aCookieJarSettings) {
   NS_ENSURE_TRUE(aSelectionTargetNode, NS_ERROR_INVALID_ARG);
 
   *aCanDrag = true;
@@ -118,7 +121,7 @@ nsresult nsContentAreaDragDrop::GetDragData(
   DragDataProducer provider(aWindow, aTarget, aSelectionTargetNode,
                             aIsAltKeyPressed);
   return provider.Produce(aDataTransfer, aCanDrag, aSelection, aDragNode,
-                          aPrincipal, aCsp);
+                          aPrincipal, aCsp, aCookieJarSettings);
 }
 
 NS_IMPL_ISUPPORTS(nsContentAreaDragDropDataProvider, nsIFlavorDataProvider)
@@ -128,8 +131,8 @@ NS_IMPL_ISUPPORTS(nsContentAreaDragDropDataProvider, nsIFlavorDataProvider)
 // into the file system
 nsresult nsContentAreaDragDropDataProvider::SaveURIToFile(
     nsIURI* inSourceURI, nsIPrincipal* inTriggeringPrincipal,
-    nsIFile* inDestFile, nsContentPolicyType inContentPolicyType,
-    bool isPrivate) {
+    nsICookieJarSettings* inCookieJarSettings, nsIFile* inDestFile,
+    nsContentPolicyType inContentPolicyType, bool isPrivate) {
   nsCOMPtr<nsIURL> sourceURL = do_QueryInterface(inSourceURI);
   if (!sourceURL) {
     return NS_ERROR_NO_INTERFACE;
@@ -148,9 +151,9 @@ nsresult nsContentAreaDragDropDataProvider::SaveURIToFile(
       nsIWebBrowserPersist::PERSIST_FLAGS_AUTODETECT_APPLY_CONVERSION);
 
   // referrer policy can be anything since the referrer is nullptr
-  return persist->SavePrivacyAwareURI(inSourceURI, inTriggeringPrincipal, 0,
-                                      nullptr, nullptr, nullptr, inDestFile,
-                                      inContentPolicyType, isPrivate);
+  return persist->SavePrivacyAwareURI(
+      inSourceURI, inTriggeringPrincipal, 0, nullptr, inCookieJarSettings,
+      nullptr, nullptr, inDestFile, inContentPolicyType, isPrivate);
 }
 
 /*
@@ -177,7 +180,7 @@ nsresult CheckAndGetExtensionForMime(const nsCString& aExtension,
   }
 
   nsCOMPtr<nsIMIMEInfo> mimeInfo;
-  rv = mimeService->GetFromTypeAndExtension(aMimeType, EmptyCString(),
+  rv = mimeService->GetFromTypeAndExtension(aMimeType, ""_ns,
                                             getter_AddRefs(mimeInfo));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -287,7 +290,7 @@ nsContentAreaDragDropDataProvider::GetFlavorData(nsITransferable* aTransferable,
           NS_ENSURE_SUCCESS(rv, rv);
           newFileName.Append(".");
           newFileName.Append(primaryExtension);
-          targetFilename = NS_ConvertUTF8toUTF16(newFileName);
+          CopyUTF8toUTF16(newFileName, targetFilename);
         }
       }
     }
@@ -316,8 +319,10 @@ nsContentAreaDragDropDataProvider::GetFlavorData(nsITransferable* aTransferable,
     nsCOMPtr<nsIPrincipal> principal = aTransferable->GetRequestingPrincipal();
     nsContentPolicyType contentPolicyType =
         aTransferable->GetContentPolicyType();
-    rv =
-        SaveURIToFile(sourceURI, principal, file, contentPolicyType, isPrivate);
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings =
+        aTransferable->GetCookieJarSettings();
+    rv = SaveURIToFile(sourceURI, principal, cookieJarSettings, file,
+                       contentPolicyType, isPrivate);
     // send back an nsIFile
     if (NS_SUCCEEDED(rv)) {
       CallQueryInterface(file, aData);
@@ -392,9 +397,8 @@ void DragDataProducer::CreateLinkText(const nsAString& inURL,
   // use a temp var in case |inText| is the same string as
   // |outLinkText| to avoid overwriting it while building up the
   // string in pieces.
-  nsAutoString linkText(NS_LITERAL_STRING("<a href=\"") + inURL +
-                        NS_LITERAL_STRING("\">") + inText +
-                        NS_LITERAL_STRING("</a>"));
+  nsAutoString linkText(u"<a href=\""_ns + inURL + u"\">"_ns + inText +
+                        u"</a>"_ns);
 
   outLinkText = linkText;
 }
@@ -449,7 +453,7 @@ nsresult DragDataProducer::GetImageData(imgIContainer* aImage,
     }
 
     nsCOMPtr<nsIMIMEInfo> mimeInfo;
-    mimeService->GetFromTypeAndExtension(mimeType, EmptyCString(),
+    mimeService->GetFromTypeAndExtension(mimeType, ""_ns,
                                          getter_AddRefs(mimeInfo));
     if (mimeInfo) {
       nsAutoCString extension;
@@ -496,7 +500,8 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
                                    Selection** aSelection,
                                    nsIContent** aDragNode,
                                    nsIPrincipal** aPrincipal,
-                                   nsIContentSecurityPolicy** aCsp) {
+                                   nsIContentSecurityPolicy** aCsp,
+                                   nsICookieJarSettings** aCookieJarSettings) {
   MOZ_ASSERT(aCanDrag && aSelection && aDataTransfer && aDragNode,
              "null pointer passed to Produce");
   NS_ASSERTION(mWindow, "window not set");
@@ -729,6 +734,11 @@ nsresult DragDataProducer::Produce(DataTransfer* aDataTransfer, bool* aCanDrag,
       NS_IF_ADDREF(*aCsp = csp);
     }
 
+    nsCOMPtr<nsICookieJarSettings> cookieJarSettings = doc->CookieJarSettings();
+    if (cookieJarSettings) {
+      NS_IF_ADDREF(*aCookieJarSettings = cookieJarSettings);
+    }
+
     // if we have selected text, use it in preference to the node
     nsCOMPtr<nsITransferable> transferable;
     if (*aSelection) {
@@ -812,34 +822,35 @@ nsresult DragDataProducer::AddStringsToDataTransfer(
     title.ReplaceChar("\r\n", ' ');
     dragData += title;
 
-    AddString(aDataTransfer, NS_LITERAL_STRING(kURLMime), dragData, principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING(kURLDataMime), mUrlString,
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kURLMime), dragData,
               principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING(kURLDescriptionMime),
-              mTitleString, principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING("text/uri-list"), mUrlString,
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kURLDataMime),
+              mUrlString, principal);
+    AddString(aDataTransfer,
+              NS_LITERAL_STRING_FROM_CSTRING(kURLDescriptionMime), mTitleString,
               principal);
+    AddString(aDataTransfer, u"text/uri-list"_ns, mUrlString, principal);
   }
 
   // add a special flavor for the html context data
   if (!mContextString.IsEmpty())
-    AddString(aDataTransfer, NS_LITERAL_STRING(kHTMLContext), mContextString,
-              principal);
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kHTMLContext),
+              mContextString, principal);
 
   // add a special flavor if we have html info data
   if (!mInfoString.IsEmpty())
-    AddString(aDataTransfer, NS_LITERAL_STRING(kHTMLInfo), mInfoString,
-              principal);
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kHTMLInfo),
+              mInfoString, principal);
 
   // add the full html
   if (!mHtmlString.IsEmpty())
-    AddString(aDataTransfer, NS_LITERAL_STRING(kHTMLMime), mHtmlString,
-              principal);
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kHTMLMime),
+              mHtmlString, principal);
 
   // add the plain text. we use the url for text/plain data if an anchor is
   // being dragged, rather than the title text of the link or the alt text for
   // an anchor image.
-  AddString(aDataTransfer, NS_LITERAL_STRING(kTextMime),
+  AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kTextMime),
             mIsAnchor ? mUrlString : mTitleString, principal);
 
   // add image data, if present. For now, all we're going to do with
@@ -849,8 +860,9 @@ nsresult DragDataProducer::AddStringsToDataTransfer(
   if (mImage) {
     RefPtr<nsVariantCC> variant = new nsVariantCC();
     variant->SetAsISupports(mImage);
-    aDataTransfer->SetDataWithPrincipal(NS_LITERAL_STRING(kNativeImageMime),
-                                        variant, 0, principal);
+    aDataTransfer->SetDataWithPrincipal(
+        NS_LITERAL_STRING_FROM_CSTRING(kNativeImageMime), variant, 0,
+        principal);
 
     // assume the image comes from a file, and add a file promise. We
     // register ourselves as a nsIFlavorDataProvider, and will use the
@@ -861,25 +873,27 @@ nsresult DragDataProducer::AddStringsToDataTransfer(
     if (dataProvider) {
       RefPtr<nsVariantCC> variant = new nsVariantCC();
       variant->SetAsISupports(dataProvider);
-      aDataTransfer->SetDataWithPrincipal(NS_LITERAL_STRING(kFilePromiseMime),
-                                          variant, 0, principal);
+      aDataTransfer->SetDataWithPrincipal(
+          NS_LITERAL_STRING_FROM_CSTRING(kFilePromiseMime), variant, 0,
+          principal);
     }
 
-    AddString(aDataTransfer, NS_LITERAL_STRING(kFilePromiseURLMime),
+    AddString(aDataTransfer,
+              NS_LITERAL_STRING_FROM_CSTRING(kFilePromiseURLMime),
               mImageSourceString, principal);
-    AddString(aDataTransfer, NS_LITERAL_STRING(kFilePromiseDestFilename),
+    AddString(aDataTransfer,
+              NS_LITERAL_STRING_FROM_CSTRING(kFilePromiseDestFilename),
               mImageDestFileName, principal);
 #if defined(XP_MACOSX)
-    AddString(aDataTransfer, NS_LITERAL_STRING(kImageRequestMime),
+    AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kImageRequestMime),
               mImageRequestMime, principal, /* aHidden= */ true);
 #endif
 
     // if not an anchor, add the image url
     if (!mIsAnchor) {
-      AddString(aDataTransfer, NS_LITERAL_STRING(kURLDataMime), mUrlString,
-                principal);
-      AddString(aDataTransfer, NS_LITERAL_STRING("text/uri-list"), mUrlString,
-                principal);
+      AddString(aDataTransfer, NS_LITERAL_STRING_FROM_CSTRING(kURLDataMime),
+                mUrlString, principal);
+      AddString(aDataTransfer, u"text/uri-list"_ns, mUrlString, principal);
     }
   }
 

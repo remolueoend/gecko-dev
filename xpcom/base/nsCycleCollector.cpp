@@ -166,6 +166,7 @@
 #include <utility>
 
 #include "GeckoProfiler.h"
+#include "js/SliceBudget.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/AutoGlobalTimelineMarker.h"
 #include "mozilla/Likely.h"
@@ -1221,9 +1222,9 @@ class GraphWalker {
  private:
   Visitor mVisitor;
 
-  void DoWalk(nsDeque& aQueue);
+  void DoWalk(nsDeque<PtrInfo>& aQueue);
 
-  void CheckedPush(nsDeque& aQueue, PtrInfo* aPi) {
+  void CheckedPush(nsDeque<PtrInfo>& aQueue, PtrInfo* aPi) {
     if (!aPi) {
       MOZ_CRASH();
     }
@@ -1280,14 +1281,14 @@ static void ToParticipant(void* aParti, nsCycleCollectionParticipant** aCp) {
 
 template <class Visitor>
 MOZ_NEVER_INLINE void GraphWalker<Visitor>::Walk(PtrInfo* aPi) {
-  nsDeque queue;
+  nsDeque<PtrInfo> queue;
   CheckedPush(queue, aPi);
   DoWalk(queue);
 }
 
 template <class Visitor>
 MOZ_NEVER_INLINE void GraphWalker<Visitor>::WalkFromRoots(CCGraph& aGraph) {
-  nsDeque queue;
+  nsDeque<PtrInfo> queue;
   NodePool::Enumerator etor(aGraph.mNodes);
   for (uint32_t i = 0; i < aGraph.mRootCount; ++i) {
     CheckedPush(queue, etor.GetNext());
@@ -1296,11 +1297,11 @@ MOZ_NEVER_INLINE void GraphWalker<Visitor>::WalkFromRoots(CCGraph& aGraph) {
 }
 
 template <class Visitor>
-MOZ_NEVER_INLINE void GraphWalker<Visitor>::DoWalk(nsDeque& aQueue) {
+MOZ_NEVER_INLINE void GraphWalker<Visitor>::DoWalk(nsDeque<PtrInfo>& aQueue) {
   // Use a aQueue to match the breadth-first traversal used when we
   // built the graph, for hopefully-better locality.
   while (aQueue.GetSize() > 0) {
-    PtrInfo* pi = static_cast<PtrInfo*>(aQueue.PopFront());
+    PtrInfo* pi = aQueue.PopFront();
 
     if (pi->WasTraversed() && mVisitor.ShouldVisitNode(pi)) {
       mVisitor.VisitNode(pi);
@@ -1333,10 +1334,10 @@ struct CCGraphDescriber : public LinkedListElement<CCGraphDescriber> {
   Type mType;
 };
 
-class LogStringMessageAsync : public CancelableRunnable {
+class LogStringMessageAsync : public DiscardableRunnable {
  public:
   explicit LogStringMessageAsync(const nsAString& aMsg)
-      : mozilla::CancelableRunnable("LogStringMessageAsync"), mMsg(aMsg) {}
+      : mozilla::DiscardableRunnable("LogStringMessageAsync"), mMsg(aMsg) {}
 
   NS_IMETHOD Run() override {
     nsCOMPtr<nsIConsoleService> cs =
@@ -1412,7 +1413,7 @@ class nsCycleCollectorLogSinkToFile final : public nsICycleCollectorLogSink {
     if (!mGCLog.mStream) {
       return NS_ERROR_UNEXPECTED;
     }
-    CloseLog(&mGCLog, NS_LITERAL_STRING("Garbage"));
+    CloseLog(&mGCLog, u"Garbage"_ns);
     return NS_OK;
   }
 
@@ -1420,7 +1421,7 @@ class nsCycleCollectorLogSinkToFile final : public nsICycleCollectorLogSink {
     if (!mCCLog.mStream) {
       return NS_ERROR_UNEXPECTED;
     }
-    CloseLog(&mCCLog, NS_LITERAL_STRING("Cycle"));
+    CloseLog(&mCCLog, u"Cycle"_ns);
     return NS_OK;
   }
 
@@ -1470,8 +1471,8 @@ class nsCycleCollectorLogSinkToFile final : public nsICycleCollectorLogSink {
     // aFilename under a memory-reporting-specific folder
     // (/data/local/tmp/memory-reports). Otherwise, it will open a
     // file named aFilename under "NS_OS_TEMP_DIR".
-    nsresult rv = nsDumpUtils::OpenTempFile(
-        filename, &logFile, NS_LITERAL_CSTRING("memory-reports"));
+    nsresult rv =
+        nsDumpUtils::OpenTempFile(filename, &logFile, "memory-reports"_ns);
     if (NS_FAILED(rv)) {
       NS_IF_RELEASE(logFile);
       return nullptr;
@@ -1532,8 +1533,8 @@ class nsCycleCollectorLogSinkToFile final : public nsICycleCollectorLogSink {
     // Log to the error console.
     nsAutoString logPath;
     logFileFinalDestination->GetPath(logPath);
-    nsAutoString msg = aCollectorKind +
-                       NS_LITERAL_STRING(" Collector log dumped to ") + logPath;
+    nsAutoString msg =
+        aCollectorKind + u" Collector log dumped to "_ns + logPath;
 
     // We don't want any JS to run between ScanRoots and CollectWhite calls,
     // and since ScanRoots calls this method, better to log the message
@@ -3152,7 +3153,7 @@ nsCycleCollector::nsCycleCollector()
       mCCJSRuntime(nullptr),
       mIncrementalPhase(IdlePhase),
 #ifdef DEBUG
-      mEventTarget(GetCurrentThreadSerialEventTarget()),
+      mEventTarget(GetCurrentSerialEventTarget()),
 #endif
       mWhiteNodeCount(0),
       mBeforeUnlinkCB(nullptr),
@@ -3894,7 +3895,7 @@ already_AddRefed<nsICycleCollectorLogSink> nsCycleCollector_createLogSink() {
   return sink.forget();
 }
 
-void nsCycleCollector_collect(nsICycleCollectorListener* aManualListener) {
+bool nsCycleCollector_collect(nsICycleCollectorListener* aManualListener) {
   CollectorData* data = sCollectorData.get();
 
   // We should have started the cycle collector by now.
@@ -3904,7 +3905,7 @@ void nsCycleCollector_collect(nsICycleCollectorListener* aManualListener) {
   AUTO_PROFILER_LABEL("nsCycleCollector_collect", GCCC);
 
   SliceBudget unlimitedBudget = SliceBudget::unlimited();
-  data->mCollector->Collect(ManualCC, unlimitedBudget, aManualListener);
+  return data->mCollector->Collect(ManualCC, unlimitedBudget, aManualListener);
 }
 
 void nsCycleCollector_collectSlice(SliceBudget& budget,

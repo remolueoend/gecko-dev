@@ -127,10 +127,26 @@ HistoryDownloadElementShell.prototype = {
     );
   },
 
-  // Handles return keypress on the element (the keypress listener is
-  // set in the DownloadsPlacesView object).
-  doDefaultCommand() {
+  // Handles double-click and return keypress on the element (the keypress
+  // listener is set in the DownloadsPlacesView object).
+  doDefaultCommand(event) {
     let command = this.currentDefaultCommandName;
+    if (
+      command == "downloadsCmd_open" &&
+      event &&
+      (event.shiftKey || event.ctrlKey || event.metaKey || event.button == 1)
+    ) {
+      // We adjust the command for supported modifiers to suggest where the download may
+      // be opened.
+      let browserWin = BrowserWindowTracker.getTopWindow();
+      let openWhere = browserWin
+        ? browserWin.whereToOpenLink(event, false, true)
+        : "window";
+      if (["window", "tabshifted", "tab"].includes(openWhere)) {
+        command += ":" + openWhere;
+      }
+    }
+
     if (command && this.isCommandEnabled(command)) {
       this.doCommand(command);
     }
@@ -689,12 +705,40 @@ DownloadsPlacesView.prototype = {
     // Set the state attribute so that only the appropriate items are displayed.
     let contextMenu = document.getElementById("downloadsContextMenu");
     let download = element._shell.download;
+    let mimeInfo = DownloadsCommon.getMimeInfo(download);
+    let { preferredAction, useSystemDefault } = mimeInfo ? mimeInfo : {};
+
     contextMenu.setAttribute(
       "state",
       DownloadsCommon.stateOfDownload(download)
     );
     contextMenu.setAttribute("exists", "true");
     contextMenu.classList.toggle("temporary-block", !!download.hasBlockedData);
+
+    if (element.hasAttribute("viewable-internally")) {
+      contextMenu.setAttribute("viewable-internally", "true");
+      let alwaysUseSystemViewerItem = contextMenu.querySelector(
+        ".downloadAlwaysUseSystemDefaultMenuItem"
+      );
+      if (preferredAction === useSystemDefault) {
+        alwaysUseSystemViewerItem.setAttribute("checked", "true");
+      } else {
+        alwaysUseSystemViewerItem.removeAttribute("checked");
+      }
+      alwaysUseSystemViewerItem.toggleAttribute(
+        "enabled",
+        DownloadsCommon.alwaysOpenInSystemViewerItemEnabled
+      );
+      let useSystemViewerItem = contextMenu.querySelector(
+        ".downloadUseSystemDefaultMenuItem"
+      );
+      useSystemViewerItem.toggleAttribute(
+        "enabled",
+        DownloadsCommon.openInSystemViewerItemEnabled
+      );
+    } else {
+      contextMenu.removeAttribute("viewable-internally");
+    }
 
     if (!download.stopped) {
       // The hasPartialData property of a download may change at any time after
@@ -714,7 +758,7 @@ DownloadsPlacesView.prototype = {
       if (selectedElements.length == 1) {
         let element = selectedElements[0];
         if (element._shell) {
-          element._shell.doDefaultCommand();
+          element._shell.doDefaultCommand(aEvent);
         }
       }
     } else if (aEvent.charCode == " ".charCodeAt(0)) {
@@ -739,7 +783,7 @@ DownloadsPlacesView.prototype = {
 
     let element = selectedElements[0];
     if (element._shell) {
-      element._shell.doDefaultCommand();
+      element._shell.doDefaultCommand(aEvent);
     }
   },
 

@@ -52,18 +52,27 @@ var Fingerprinting = {
       false,
       this.updateCategoryItem.bind(this)
     );
-    this.updateCategoryItem();
   },
 
   get categoryItem() {
-    delete this.categoryItem;
-    return (this.categoryItem = document.getElementById(
+    let item = document.getElementById(
       "protections-popup-category-fingerprinters"
-    ));
+    );
+    if (item) {
+      delete this.categoryItem;
+      this.categoryItem = item;
+    }
+    return item;
   },
 
   updateCategoryItem() {
-    this.categoryItem.classList.toggle("blocked", this.enabled);
+    // Can't get `this.categoryItem` without the popup. Using the popup instead
+    // of `this.categoryItem` to guard access, because the category item getter
+    // can trigger bug 1543537. If there's no popup, we'll be called again the
+    // first time the popup shows.
+    if (gProtectionsHandler._protectionsPopup) {
+      this.categoryItem.classList.toggle("blocked", this.enabled);
+    }
   },
 
   get subView() {
@@ -99,6 +108,13 @@ var Fingerprinting = {
     return this.isBlocking(state) || this.isAllowing(state);
   },
 
+  isShimming(state) {
+    return (
+      state & Ci.nsIWebProgressListener.STATE_UNBLOCKED_TRACKING_CONTENT &&
+      this.isAllowing(state)
+    );
+  },
+
   updateSubView() {
     let contentBlockingLog = gBrowser.selectedBrowser.getContentBlockingLog();
     contentBlockingLog = JSON.parse(contentBlockingLog);
@@ -122,7 +138,9 @@ var Fingerprinting = {
   },
 
   _createListItem(origin, actions) {
-    let isAllowed = actions.some(([state]) => this.isAllowing(state));
+    let isAllowed = actions.some(
+      ([state]) => this.isAllowing(state) && !this.isShimming(state)
+    );
     let isDetected =
       isAllowed || actions.some(([state]) => this.isBlocking(state));
 
@@ -182,18 +200,27 @@ var Cryptomining = {
       false,
       this.updateCategoryItem.bind(this)
     );
-    this.updateCategoryItem();
   },
 
   get categoryItem() {
-    delete this.categoryItem;
-    return (this.categoryItem = document.getElementById(
+    let item = document.getElementById(
       "protections-popup-category-cryptominers"
-    ));
+    );
+    if (item) {
+      delete this.categoryItem;
+      this.categoryItem = item;
+    }
+    return item;
   },
 
   updateCategoryItem() {
-    this.categoryItem.classList.toggle("blocked", this.enabled);
+    // Can't get `this.categoryItem` without the popup. Using the popup instead
+    // of `this.categoryItem` to guard access, because the category item getter
+    // can trigger bug 1543537. If there's no popup, we'll be called again the
+    // first time the popup shows.
+    if (gProtectionsHandler._protectionsPopup) {
+      this.categoryItem.classList.toggle("blocked", this.enabled);
+    }
   },
 
   get subView() {
@@ -227,6 +254,13 @@ var Cryptomining = {
     return this.isBlocking(state) || this.isAllowing(state);
   },
 
+  isShimming(state) {
+    return (
+      state & Ci.nsIWebProgressListener.STATE_UNBLOCKED_TRACKING_CONTENT &&
+      this.isAllowing(state)
+    );
+  },
+
   updateSubView() {
     let contentBlockingLog = gBrowser.selectedBrowser.getContentBlockingLog();
     contentBlockingLog = JSON.parse(contentBlockingLog);
@@ -250,7 +284,9 @@ var Cryptomining = {
   },
 
   _createListItem(origin, actions) {
-    let isAllowed = actions.some(([state]) => this.isAllowing(state));
+    let isAllowed = actions.some(
+      ([state]) => this.isAllowing(state) && !this.isShimming(state)
+    );
     let isDetected =
       isAllowed || actions.some(([state]) => this.isBlocking(state));
 
@@ -287,10 +323,14 @@ var TrackingProtection = {
   enabledInPrivateWindows: false,
 
   get categoryItem() {
-    delete this.categoryItem;
-    return (this.categoryItem = document.getElementById(
+    let item = document.getElementById(
       "protections-popup-category-tracking-protection"
-    ));
+    );
+    if (item) {
+      delete this.categoryItem;
+      this.categoryItem = item;
+    }
+    return item;
   },
 
   get subView() {
@@ -363,6 +403,7 @@ var TrackingProtection = {
 
   observe() {
     this.updateEnabled();
+    this.updateCategoryItem();
   },
 
   get trackingProtectionLevel2Enabled() {
@@ -385,7 +426,12 @@ var TrackingProtection = {
     this.enabledInPrivateWindows = Services.prefs.getBoolPref(
       this.PREF_ENABLED_IN_PRIVATE_WINDOWS
     );
-    this.categoryItem.classList.toggle("blocked", this.enabled);
+  },
+
+  updateCategoryItem() {
+    if (this.categoryItem) {
+      this.categoryItem.classList.toggle("blocked", this.enabled);
+    }
   },
 
   isBlocking(state) {
@@ -416,6 +462,13 @@ var TrackingProtection = {
 
   isDetected(state) {
     return this.isBlocking(state) || this.isAllowing(state);
+  },
+
+  isShimming(state) {
+    return (
+      state & Ci.nsIWebProgressListener.STATE_UNBLOCKED_TRACKING_CONTENT &&
+      this.isAllowing(state)
+    );
   },
 
   async updateSubView() {
@@ -478,7 +531,9 @@ var TrackingProtection = {
 
   async _createListItem(origin, actions) {
     // Figure out if this list entry was actually detected by TP or something else.
-    let isAllowed = actions.some(([state]) => this.isAllowing(state));
+    let isAllowed = actions.some(
+      ([state]) => this.isAllowing(state) && !this.isShimming(state)
+    );
     let isDetected =
       isAllowed || actions.some(([state]) => this.isBlocking(state));
 
@@ -531,10 +586,12 @@ var ThirdPartyCookies = {
   ],
 
   get categoryItem() {
-    delete this.categoryItem;
-    return (this.categoryItem = document.getElementById(
-      "protections-popup-category-cookies"
-    ));
+    let item = document.getElementById("protections-popup-category-cookies");
+    if (item) {
+      delete this.categoryItem;
+      this.categoryItem = item;
+    }
+    return item;
   },
 
   get subView() {
@@ -611,7 +668,6 @@ var ThirdPartyCookies = {
       Ci.nsICookieService.BEHAVIOR_ACCEPT,
       this.updateCategoryItem.bind(this)
     );
-    this.updateCategoryItem();
   },
 
   get categoryLabel() {
@@ -622,6 +678,13 @@ var ThirdPartyCookies = {
   },
 
   updateCategoryItem() {
+    // Can't get `this.categoryItem` without the popup. Using the popup instead
+    // of `this.categoryItem` to guard access, because the category item getter
+    // can trigger bug 1543537. If there's no popup, we'll be called again the
+    // first time the popup shows.
+    if (!gProtectionsHandler._protectionsPopup) {
+      return;
+    }
     this.categoryItem.classList.toggle("blocked", this.enabled);
 
     let label;
@@ -813,7 +876,7 @@ var ThirdPartyCookies = {
     for (let perm of Services.perms.all) {
       if (
         perm.type == "cookie" &&
-        Services.eTLD.hasRootDomain(host, perm.principal.URI.host)
+        Services.eTLD.hasRootDomain(host, perm.principal.host)
       ) {
         Services.perms.removePermission(perm);
       }
@@ -1014,7 +1077,6 @@ var SocialTracking = {
       false,
       this.updateCategoryItem.bind(this)
     );
-    this.updateCategoryItem();
   },
 
   get blockingEnabled() {
@@ -1025,6 +1087,13 @@ var SocialTracking = {
   },
 
   updateCategoryItem() {
+    // Can't get `this.categoryItem` without the popup. Using the popup instead
+    // of `this.categoryItem` to guard access, because the category item getter
+    // can trigger bug 1543537. If there's no popup, we'll be called again the
+    // first time the popup shows.
+    if (!gProtectionsHandler._protectionsPopup) {
+      return;
+    }
     if (this.enabled) {
       this.categoryItem.removeAttribute("uidisabled");
     } else {
@@ -1063,11 +1132,22 @@ var SocialTracking = {
     return this.isBlocking(state) || this.isAllowing(state);
   },
 
+  isShimming(state) {
+    return (
+      state & Ci.nsIWebProgressListener.STATE_UNBLOCKED_TRACKING_CONTENT &&
+      this.isAllowing(state)
+    );
+  },
+
   get categoryItem() {
-    delete this.categoryItem;
-    return (this.categoryItem = document.getElementById(
+    let item = document.getElementById(
       "protections-popup-category-socialblock"
-    ));
+    );
+    if (item) {
+      delete this.categoryItem;
+      this.categoryItem = item;
+    }
+    return item;
   },
 
   get subView() {
@@ -1107,7 +1187,9 @@ var SocialTracking = {
   },
 
   _createListItem(origin, actions) {
-    let isAllowed = actions.some(([state]) => this.isAllowing(state));
+    let isAllowed = actions.some(
+      ([state]) => this.isAllowing(state) && !this.isShimming(state)
+    );
     let isDetected =
       isAllowed || actions.some(([state]) => this.isBlocking(state));
 
@@ -1136,17 +1218,36 @@ var SocialTracking = {
  * Utility object to handle manipulations of the protections indicators in the UI
  */
 var gProtectionsHandler = {
-  PREF_ANIMATIONS_ENABLED: "toolkit.cosmeticAnimations.enabled",
   PREF_REPORT_BREAKAGE_URL: "browser.contentblocking.reportBreakage.url",
   PREF_CB_CATEGORY: "browser.contentblocking.category",
 
-  // smart getters
-  get _protectionsPopup() {
-    delete this._protectionsPopup;
-    return (this._protectionsPopup = document.getElementById(
-      "protections-popup"
-    ));
+  _protectionsPopup: null,
+  _initializePopup() {
+    if (!this._protectionsPopup) {
+      let wrapper = document.getElementById("template-protections-popup");
+      this._protectionsPopup = wrapper.content.firstElementChild;
+      wrapper.replaceWith(wrapper.content);
+
+      this.maybeSetMilestoneCounterText();
+
+      for (let blocker of this.blockers) {
+        blocker.updateCategoryItem();
+      }
+
+      let baseURL = Services.urlFormatter.formatURLPref("app.support.baseURL");
+      document.getElementById(
+        "protections-popup-sendReportView-learn-more"
+      ).href = baseURL + "blocking-breakage";
+    }
   },
+
+  _hidePopup() {
+    if (this._protectionsPopup) {
+      PanelMultiView.hidePopup(this._protectionsPopup);
+    }
+  },
+
+  // smart getters
   get iconBox() {
     delete this.iconBox;
     return (this.iconBox = document.getElementById(
@@ -1249,6 +1350,12 @@ var gProtectionsHandler = {
       "protections-popup-trackers-blocked-counter-description"
     ));
   },
+  get _protectionsPopupFooterProtectionTypeLabel() {
+    delete this._protectionsPopupFooterProtectionTypeLabel;
+    return (this._protectionsPopupFooterProtectionTypeLabel = document.getElementById(
+      "protections-popup-footer-protection-type-label"
+    ));
+  },
   get _protectionsPopupSiteNotWorkingTPSwitch() {
     delete this._protectionsPopupSiteNotWorkingTPSwitch;
     return (this._protectionsPopupSiteNotWorkingTPSwitch = document.getElementById(
@@ -1259,12 +1366,6 @@ var gProtectionsHandler = {
     delete this._protectionsPopupSiteNotWorkingReportError;
     return (this._protectionsPopupSiteNotWorkingReportError = document.getElementById(
       "protections-popup-sendReportView-report-error"
-    ));
-  },
-  get _protectionsPopupSendReportLearnMore() {
-    delete this._protectionsPopupSendReportLearnMore;
-    return (this._protectionsPopupSendReportLearnMore = document.getElementById(
-      "protections-popup-sendReportView-learn-more"
     ));
   },
   get _protectionsPopupSendReportURL() {
@@ -1311,10 +1412,6 @@ var gProtectionsHandler = {
     return (this._notBlockingWhyLink = document.getElementById(
       "protections-popup-not-blocking-section-why"
     ));
-  },
-
-  get hasException() {
-    return this._protectionsPopup.hasAttribute("hasException");
   },
 
   strings: {
@@ -1365,13 +1462,6 @@ var gProtectionsHandler = {
       this.iconBox.removeAttribute("animate")
     );
 
-    this.updateAnimationsEnabled = () => {
-      this.iconBox.toggleAttribute(
-        "animationsenabled",
-        Services.prefs.getBoolPref(this.PREF_ANIMATIONS_ENABLED, false)
-      );
-    };
-
     XPCOMUtils.defineLazyPreferenceGetter(
       this,
       "_protectionsPopupToastTimeout",
@@ -1413,24 +1503,11 @@ var gProtectionsHandler = {
       () => this.maybeSetMilestoneCounterText()
     );
 
-    this.maybeSetMilestoneCounterText();
-
     for (let blocker of this.blockers) {
       if (blocker.init) {
         blocker.init();
       }
     }
-
-    this.updateAnimationsEnabled();
-
-    Services.prefs.addObserver(
-      this.PREF_ANIMATIONS_ENABLED,
-      this.updateAnimationsEnabled
-    );
-
-    let baseURL = Services.urlFormatter.formatURLPref("app.support.baseURL");
-    gProtectionsHandler._protectionsPopupSendReportLearnMore.href =
-      baseURL + "blocking-breakage";
 
     // Add an observer to observe that the history has been cleared.
     Services.obs.addObserver(this, "browser:purge-session-history");
@@ -1443,12 +1520,22 @@ var gProtectionsHandler = {
       }
     }
 
-    Services.prefs.removeObserver(
-      this.PREF_ANIMATIONS_ENABLED,
-      this.updateAnimationsEnabled
-    );
-
     Services.obs.removeObserver(this, "browser:purge-session-history");
+  },
+
+  getTrackingProtectionLabel() {
+    const value = Services.prefs.getStringPref(this.PREF_CB_CATEGORY);
+
+    switch (value) {
+      case "strict":
+        return "protections-popup-footer-protection-label-strict";
+      case "custom":
+        return "protections-popup-footer-protection-label-custom";
+      case "standard":
+      /* fall through */
+      default:
+        return "protections-popup-footer-protection-label-standard";
+    }
   },
 
   openPreferences(origin) {
@@ -1595,9 +1682,17 @@ var gProtectionsHandler = {
     }
     this._updatingFooter = true;
 
+    // Take the popup out of its template.
+    this._initializePopup();
+
     // Get the tracker count and set it to the counter in the footer.
     const trackerCount = await TrackingDBService.sumAllEvents();
     this.setTrackersBlockedCounter(trackerCount);
+
+    // Set tracking protection label
+    const l10nId = this.getTrackingProtectionLabel();
+    const elem = this._protectionsPopupFooterProtectionTypeLabel;
+    document.l10n.setAttributes(elem, l10nId);
 
     // Try to get the earliest recorded date in case that there was no record
     // during the initiation but new records come after that.
@@ -1636,12 +1731,14 @@ var gProtectionsHandler = {
     this._trackingProtectionIconContainer.hidden = false;
 
     // Check whether the user has added an exception for this site.
-    let hasException = ContentBlockingAllowList.includes(
+    this.hasException = ContentBlockingAllowList.includes(
       gBrowser.selectedBrowser
     );
 
-    this._protectionsPopup.toggleAttribute("hasException", hasException);
-    this.iconBox.toggleAttribute("hasException", hasException);
+    if (this._protectionsPopup) {
+      this._protectionsPopup.toggleAttribute("hasException", this.hasException);
+    }
+    this.iconBox.toggleAttribute("hasException", this.hasException);
 
     // Add to telemetry per page load as a baseline measurement.
     this.fingerprintersHistogramAdd("pageLoad");
@@ -1686,66 +1783,34 @@ var gProtectionsHandler = {
     );
   },
 
-  onContentBlockingEvent(event, webProgress, isSimulated, previousState) {
-    // Don't deal with about:, file: etc.
-    if (!ContentBlockingAllowList.canHandle(gBrowser.selectedBrowser)) {
-      this.iconBox.removeAttribute("animate");
-      this.iconBox.removeAttribute("active");
-      this.iconBox.removeAttribute("hasException");
-      return;
-    }
-
-    this.anyDetected = false;
-    let anyBlocking = false;
-    this.noTrackersDetectedDescription.hidden = false;
-
+  /**
+   * Update the in-panel UI given a blocking event. Called when the popup
+   * is being shown, or when the popup is open while a new event comes in.
+   */
+  updatePanelForBlockingEvent(event, isShown) {
+    // Update the categories:
     for (let blocker of this.blockers) {
       if (blocker.categoryItem.hasAttribute("uidisabled")) {
         continue;
       }
-      // Store data on whether the blocker is activated in the current document for
-      // reporting it using the "report breakage" dialog. Under normal circumstances this
-      // dialog should only be able to open in the currently selected tab and onSecurityChange
-      // runs on tab switch, so we can avoid associating the data with the document directly.
-      blocker.activated = blocker.isBlocking(event);
-      let detected = blocker.isDetected(event);
-      blocker.categoryItem.classList.toggle("notFound", !detected);
-      this.anyDetected = this.anyDetected || detected;
-      anyBlocking = anyBlocking || blocker.activated;
+      blocker.categoryItem.classList.toggle(
+        "notFound",
+        !blocker.isDetected(event)
+      );
     }
 
-    // Check whether the user has added an exception for this site.
-    let hasException = ContentBlockingAllowList.includes(
-      gBrowser.selectedBrowser
-    );
-
-    // Reset the animation in case the user is switching tabs or if no blockers were detected
-    // (this is most likely happening because the user navigated on to a different site). This
-    // allows us to play it from the start without choppiness next time.
-    if (isSimulated || !anyBlocking) {
-      this.iconBox.removeAttribute("animate");
-      // Only play the animation when the shield is not already shown on the page (the visibility
-      // of the shield based on this onSecurityChange be determined afterwards).
-    } else if (anyBlocking && !this.iconBox.hasAttribute("active")) {
-      this.iconBox.setAttribute("animate", "true");
-    }
-
-    // We consider the shield state "active" when some kind of blocking activity
-    // occurs on the page.  Note that merely allowing the loading of content that
-    // we could have blocked does not trigger the appearance of the shield.
-    // This state will be overriden later if there's an exception set for this site.
+    // And the popup attributes:
     this._protectionsPopup.toggleAttribute("detected", this.anyDetected);
-    this._protectionsPopup.toggleAttribute("blocking", anyBlocking);
-    this._protectionsPopup.toggleAttribute("hasException", hasException);
+    this._protectionsPopup.toggleAttribute("blocking", this.anyBlocking);
+    this._protectionsPopup.toggleAttribute("hasException", this.hasException);
 
-    this._categoryItemOrderInvalidated = true;
+    this.noTrackersDetectedDescription.hidden = this.anyDetected;
 
     if (this.anyDetected) {
-      this.noTrackersDetectedDescription.hidden = true;
+      // Reorder categories if any are in use.
+      this.reorderCategoryItems();
 
-      if (["showing", "open"].includes(this._protectionsPopup.state)) {
-        this.reorderCategoryItems();
-
+      if (isShown) {
         // Until we encounter a site that triggers them, category elements might
         // be invisible when descriptionHeightWorkaround gets called, i.e. they
         // are omitted from the workaround and the content overflows the panel.
@@ -1755,31 +1820,21 @@ var gProtectionsHandler = {
         ).descriptionHeightWorkaround();
       }
     }
+  },
 
-    this.iconBox.toggleAttribute("active", anyBlocking);
-    this.iconBox.toggleAttribute("hasException", hasException);
-
-    if (hasException) {
-      this.showDisabledTooltipForTPIcon();
-      if (!this.hadShieldState && !isSimulated) {
+  reportBlockingEventTelemetry(event, isSimulated, previousState) {
+    if (!isSimulated) {
+      if (this.hasException && !this.hadShieldState) {
         this.hadShieldState = true;
         this.shieldHistogramAdd(1);
-      }
-    } else if (anyBlocking) {
-      this.showActiveTooltipForTPIcon();
-      if (!this.hadShieldState && !isSimulated) {
+      } else if (
+        !this.hasException &&
+        this.anyBlocking &&
+        !this.hadShieldState
+      ) {
         this.hadShieldState = true;
         this.shieldHistogramAdd(2);
       }
-    } else {
-      this.showNoTrackerTooltipForTPIcon();
-    }
-
-    // Don't send a content blocking event to CFR for
-    // tab switches since this will already be done via
-    // onStateChange.
-    if (!isSimulated) {
-      this.notifyContentBlockingEvent(event);
     }
 
     // We report up to one instance of fingerprinting and cryptomining
@@ -1807,6 +1862,94 @@ var gProtectionsHandler = {
       this.cryptominersHistogramAdd("allowed");
     }
   },
+
+  onContentBlockingEvent(event, webProgress, isSimulated, previousState) {
+    // Don't deal with about:, file: etc.
+    if (!ContentBlockingAllowList.canHandle(gBrowser.selectedBrowser)) {
+      this.iconBox.removeAttribute("animate");
+      this.iconBox.removeAttribute("active");
+      this.iconBox.removeAttribute("hasException");
+      return;
+    }
+
+    // First update all our internal state based on the allowlist and the
+    // different blockers:
+    this.anyDetected = false;
+    this.anyBlocking = false;
+    this._lastEvent = event;
+
+    // Check whether the user has added an exception for this site.
+    this.hasException = ContentBlockingAllowList.includes(
+      gBrowser.selectedBrowser
+    );
+
+    // Update blocker state and find if they detected or blocked anything.
+    for (let blocker of this.blockers) {
+      if (blocker.categoryItem?.hasAttribute("uidisabled")) {
+        continue;
+      }
+      // Store data on whether the blocker is activated for reporting it
+      // using the "report breakage" dialog. Under normal circumstances this
+      // dialog should only be able to open in the currently selected tab
+      // and onSecurityChange runs on tab switch, so we can avoid associating
+      // the data with the document directly.
+      blocker.activated = blocker.isBlocking(event);
+      this.anyDetected = this.anyDetected || blocker.isDetected(event);
+      this.anyBlocking = this.anyBlocking || blocker.activated;
+    }
+
+    this._categoryItemOrderInvalidated = true;
+
+    // Now, update the icon UI:
+
+    // Reset the animation in case the user is switching tabs or if no blockers were detected
+    // (this is most likely happening because the user navigated on to a different site). This
+    // allows us to play it from the start without choppiness next time.
+    if (isSimulated || !this.anyBlocking) {
+      this.iconBox.removeAttribute("animate");
+      // Only play the animation when the shield is not already shown on the page (the visibility
+      // of the shield based on this onSecurityChange be determined afterwards).
+    } else if (this.anyBlocking && !this.iconBox.hasAttribute("active")) {
+      this.iconBox.setAttribute("animate", "true");
+    }
+
+    // We consider the shield state "active" when some kind of blocking activity
+    // occurs on the page.  Note that merely allowing the loading of content that
+    // we could have blocked does not trigger the appearance of the shield.
+    // This state will be overriden later if there's an exception set for this site.
+    this.iconBox.toggleAttribute("active", this.anyBlocking);
+    this.iconBox.toggleAttribute("hasException", this.hasException);
+
+    // Update the icon's tooltip:
+    if (this.hasException) {
+      this.showDisabledTooltipForTPIcon();
+    } else if (this.anyBlocking) {
+      this.showActiveTooltipForTPIcon();
+    } else {
+      this.showNoTrackerTooltipForTPIcon();
+    }
+
+    // Update the panel if it's open.
+    let isPanelOpen = ["showing", "open"].includes(
+      this._protectionsPopup?.state
+    );
+    if (isPanelOpen) {
+      this.updatePanelForBlockingEvent(event, true);
+    }
+
+    // Notify other consumers, like CFR.
+    // Don't send a content blocking event to CFR for
+    // tab switches since this will already be done via
+    // onStateChange.
+    if (!isSimulated) {
+      this.notifyContentBlockingEvent(event);
+    }
+
+    // Finally, report telemetry.
+    this.reportBlockingEventTelemetry(event, isSimulated, previousState);
+  },
+
+  // We handle focus here when the panel is shown.
   handleEvent(event) {
     let elem = document.activeElement;
     let position = elem.compareDocumentPosition(this._protectionsPopup);
@@ -1836,6 +1979,10 @@ var gProtectionsHandler = {
     }
   },
 
+  /**
+   * Update the popup contents. Only called when the popup has been taken
+   * out of the template and is shown or about to be shown.
+   */
   refreshProtectionsPopup() {
     let host = gIdentityHandler.getHostForDisplay();
 
@@ -1845,7 +1992,7 @@ var gProtectionsHandler = {
       [host]
     );
 
-    let currentlyEnabled = !this._protectionsPopup.hasAttribute("hasException");
+    let currentlyEnabled = !this.hasException;
 
     for (let tpSwitch of [
       this._protectionsPopupTPSwitch,
@@ -1904,6 +2051,10 @@ var gProtectionsHandler = {
     } else {
       this._protectionsPopup.removeAttribute("milestone");
     }
+
+    this._protectionsPopup.toggleAttribute("detected", this.anyDetected);
+    this._protectionsPopup.toggleAttribute("blocking", this.anyBlocking);
+    this._protectionsPopup.toggleAttribute("hasException", this.hasException);
   },
 
   /*
@@ -1970,7 +2121,7 @@ var gProtectionsHandler = {
   disableForCurrentPage(shouldReload = true) {
     ContentBlockingAllowList.add(gBrowser.selectedBrowser);
     if (shouldReload) {
-      PanelMultiView.hidePopup(this._protectionsPopup);
+      this._hidePopup();
       BrowserReload();
     }
   },
@@ -1978,7 +2129,7 @@ var gProtectionsHandler = {
   enableForCurrentPage(shouldReload = true) {
     ContentBlockingAllowList.remove(gBrowser.selectedBrowser);
     if (shouldReload) {
-      PanelMultiView.hidePopup(this._protectionsPopup);
+      this._hidePopup();
       BrowserReload();
     }
   },
@@ -2079,6 +2230,9 @@ var gProtectionsHandler = {
   // refreshProtectionsPopup.
   _milestoneTextSet: false,
   async maybeSetMilestoneCounterText() {
+    if (!this._protectionsPopup) {
+      return;
+    }
     let trackerCount = this.milestonePref;
     if (
       !this.milestonesEnabledPref ||
@@ -2150,16 +2304,20 @@ var gProtectionsHandler = {
   showProtectionsPopup(options = {}) {
     const { event, toast } = options;
 
+    this._initializePopup();
+
+    // Ensure we've updated category state based on the last blocking event:
+    if (this.hasOwnProperty("_lastEvent")) {
+      this.updatePanelForBlockingEvent(this._lastEvent);
+      delete this._lastEvent;
+    }
+
     // We need to clear the toast timer if it exists before showing the
     // protections popup.
     if (this._toastPanelTimer) {
       clearTimeout(this._toastPanelTimer);
       delete this._toastPanelTimer;
     }
-
-    // Make sure that the display:none style we set in xul is removed now that
-    // the popup is actually needed
-    this._protectionsPopup.hidden = false;
 
     this._protectionsPopup.toggleAttribute("toast", !!toast);
     if (!toast) {
@@ -2184,9 +2342,10 @@ var gProtectionsHandler = {
     // for styling.
     this._trackingProtectionIconContainer.setAttribute("open", "true");
 
-    // Check the panel state of the identity panel. Hide it if needed.
-    if (gIdentityHandler._identityPopup.state != "closed") {
-      PanelMultiView.hidePopup(gIdentityHandler._identityPopup);
+    // Check the panel state of other panels. Hide them if needed.
+    let openPanels = Array.from(document.querySelectorAll("panel[openpanel]"));
+    for (let panel of openPanels) {
+      PanelMultiView.hidePopup(panel);
     }
 
     // Now open the popup, anchored off the primary chrome element
@@ -2237,7 +2396,7 @@ var gProtectionsHandler = {
     // ContentBlockingAllowList here.
     this._protectionsPopupTPSwitchBreakageLink.hidden =
       ContentBlockingAllowList.includes(gBrowser.selectedBrowser) ||
-      !this._protectionsPopup.hasAttribute("blocking") ||
+      !this.anyBlocking ||
       !this._protectionsPopupTPSwitch.hasAttribute("enabled");
     // The "Site Fixed?" link behaves similarly but for the opposite state.
     this._protectionsPopupTPSwitchBreakageFixedLink.hidden =
@@ -2345,7 +2504,9 @@ var gProtectionsHandler = {
   },
 
   async maybeUpdateEarliestRecordedDateTooltip() {
-    if (this._hasEarliestRecord) {
+    // If we've already updated or the popup isn't in the DOM yet, don't bother
+    // doing this:
+    if (this._hasEarliestRecord || !this._protectionsPopup) {
       return;
     }
 

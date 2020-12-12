@@ -35,6 +35,7 @@ struct ScreenPixel;
 struct ParentLayerPixel;
 struct DesktopPixel;
 struct ImagePixel;
+struct ExternalPixel;
 
 template <>
 struct IsPixel<CSSPixel> : std::true_type {};
@@ -54,6 +55,8 @@ template <>
 struct IsPixel<ParentLayerPixel> : std::true_type {};
 template <>
 struct IsPixel<DesktopPixel> : std::true_type {};
+template <>
+struct IsPixel<ExternalPixel> : std::true_type {};
 
 typedef gfx::CoordTyped<CSSPixel> CSSCoord;
 typedef gfx::IntCoordTyped<CSSPixel> CSSIntCoord;
@@ -153,6 +156,18 @@ typedef gfx::IntSizeTyped<DesktopPixel> DesktopIntSize;
 typedef gfx::RectTyped<DesktopPixel> DesktopRect;
 typedef gfx::IntRectTyped<DesktopPixel> DesktopIntRect;
 
+typedef gfx::CoordTyped<ExternalPixel> ExternalCoord;
+typedef gfx::IntCoordTyped<ExternalPixel> ExternalIntCoord;
+typedef gfx::PointTyped<ExternalPixel> ExternalPoint;
+typedef gfx::IntPointTyped<ExternalPixel> ExternalIntPoint;
+typedef gfx::SizeTyped<ExternalPixel> ExternalSize;
+typedef gfx::IntSizeTyped<ExternalPixel> ExternalIntSize;
+typedef gfx::RectTyped<ExternalPixel> ExternalRect;
+typedef gfx::IntRectTyped<ExternalPixel> ExternalIntRect;
+typedef gfx::MarginTyped<ExternalPixel> ExternalMargin;
+typedef gfx::IntMarginTyped<ExternalPixel> ExternalIntMargin;
+typedef gfx::IntRegionTyped<ExternalPixel> ExternalIntRegion;
+
 typedef gfx::ScaleFactor<CSSPixel, CSSPixel> CSSToCSSScale;
 typedef gfx::ScaleFactor<CSSPixel, LayoutDevicePixel> CSSToLayoutDeviceScale;
 typedef gfx::ScaleFactor<CSSPixel, LayerPixel> CSSToLayerScale;
@@ -224,6 +239,7 @@ typedef gfx::ScaleFactors2D<ParentLayerPixel, ScreenPixel>
 typedef gfx::ScaleFactors2D<ParentLayerPixel, ParentLayerPixel>
     ParentLayerToParentLayerScale2D;
 
+typedef gfx::Matrix4x4Typed<CSSPixel, CSSPixel> CSSToCSSMatrix4x4;
 typedef gfx::Matrix4x4Typed<LayoutDevicePixel, LayoutDevicePixel>
     LayoutDeviceToLayoutDeviceMatrix4x4;
 typedef gfx::Matrix4x4Typed<LayoutDevicePixel, ParentLayerPixel>
@@ -242,13 +258,14 @@ typedef gfx::Matrix4x4Typed<ParentLayerPixel, ParentLayerPixel>
     ParentLayerToParentLayerMatrix4x4;
 typedef gfx::Matrix4x4Typed<ParentLayerPixel, RenderTargetPixel>
     ParentLayerToRenderTargetMatrix4x4;
+typedef gfx::Matrix4x4Typed<ExternalPixel, ParentLayerPixel>
+    ExternalToParentLayerMatrix4x4;
 
 /*
  * The pixels that content authors use to specify sizes in.
  */
 struct CSSPixel {
   // Conversions from app units
-
   static CSSCoord FromAppUnits(nscoord aCoord) {
     return NSAppUnitsToFloatPixels(aCoord, float(AppUnitsPerCSSPixel()));
   }
@@ -354,6 +371,12 @@ struct CSSPixel {
                                 float(AppUnitsPerCSSPixel())),
         NSToCoordRoundWithClamp(float(aRect.Height()) *
                                 float(AppUnitsPerCSSPixel())));
+  }
+
+  // Conversion from a given CSS point value.
+  static CSSCoord FromPoints(float aCoord) {
+    // One inch / 72.
+    return aCoord * 96.0f / 72.0f;
   }
 };
 
@@ -555,6 +578,8 @@ struct ParentLayerPixel {};
  *   desktop pixels may vary across multiple displays.
  */
 struct DesktopPixel {};
+
+struct ExternalPixel {};
 
 // Operators to apply ScaleFactors directly to Coords, Points, Rects, Sizes and
 // Margins
@@ -825,6 +850,11 @@ struct CoordOfImpl<gfx::RectTyped<Units>> {
 template <typename Units>
 struct CoordOfImpl<gfx::IntRectTyped<Units>> {
   typedef gfx::IntCoordTyped<Units> Type;
+};
+
+template <typename Units>
+struct CoordOfImpl<gfx::SizeTyped<Units>> {
+  typedef gfx::CoordTyped<Units> Type;
 };
 
 template <typename T>

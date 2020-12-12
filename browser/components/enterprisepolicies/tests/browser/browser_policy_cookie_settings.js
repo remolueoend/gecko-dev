@@ -5,18 +5,7 @@
 const { UrlClassifierTestUtils } = ChromeUtils.import(
   "resource://testing-common/UrlClassifierTestUtils.jsm"
 );
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookies",
-  "@mozilla.org/cookieService;1",
-  "nsICookieService"
-);
-XPCOMUtils.defineLazyServiceGetter(
-  Services,
-  "cookiemgr",
-  "@mozilla.org/cookiemanager;1",
-  "nsICookieManager"
-);
+Services.cookies.QueryInterface(Ci.nsICookieService);
 
 function restore_prefs() {
   Services.prefs.clearUserPref("network.cookie.cookieBehavior");
@@ -69,8 +58,8 @@ async function test_cookie_settings({
     Ci.nsIHttpChannelInternal
   ).forceAllowThirdPartyCookie = true;
   Services.cookies.removeAll();
-  Services.cookies.setCookieString(firstPartyURI, "key=value", channel);
-  Services.cookies.setCookieString(thirdPartyURI, "key=value", channel);
+  Services.cookies.setCookieStringFromHttp(firstPartyURI, "key=value", channel);
+  Services.cookies.setCookieStringFromHttp(thirdPartyURI, "key=value", channel);
 
   let expectedFirstPartyCookies = 1;
   let expectedThirdPartyCookies = 1;
@@ -81,12 +70,12 @@ async function test_cookie_settings({
     expectedThirdPartyCookies = 0;
   }
   is(
-    Services.cookiemgr.countCookiesFromHost(firstPartyURI.host),
+    Services.cookies.countCookiesFromHost(firstPartyURI.host),
     expectedFirstPartyCookies,
     "Number of first-party cookies should match expected"
   );
   is(
-    Services.cookiemgr.countCookiesFromHost(thirdPartyURI.host),
+    Services.cookies.countCookiesFromHost(thirdPartyURI.host),
     expectedThirdPartyCookies,
     "Number of third-party cookies should match expected"
   );
@@ -94,7 +83,7 @@ async function test_cookie_settings({
   // Add a cookie so we can check if it persists past the end of the session
   // but, first remove existing cookies set by this host to put us in a known state
   Services.cookies.removeAll();
-  Services.cookies.setCookieString(
+  Services.cookies.setCookieStringFromHttp(
     firstPartyURI,
     "key=value; max-age=1000",
     channel
@@ -190,7 +179,7 @@ async function test_cookie_settings({
     )
       .then(r => r.text())
       .then(text => {
-        is(text, 0, '"Reject Tracker" pref should match what is expected');
+        is(text, "0", '"Reject Tracker" pref should match what is expected');
       });
   }
 }

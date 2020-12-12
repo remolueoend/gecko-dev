@@ -15,6 +15,7 @@
 #include "nsContentPolicyUtils.h"
 #include "nsIStreamConverterService.h"
 #include "nsSyncLoadService.h"
+#include "nsIHttpChannel.h"
 #include "nsIURI.h"
 #include "nsIPrincipal.h"
 #include "nsIWindowWatcher.h"
@@ -28,6 +29,7 @@
 #include "txStylesheetCompiler.h"
 #include "txXMLUtils.h"
 #include "nsAttrName.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIScriptError.h"
 #include "nsError.h"
 #include "mozilla/Attributes.h"
@@ -399,13 +401,14 @@ nsresult txCompileObserver::startLoad(nsIURI* aUri,
   nsresult rv = NS_NewChannelWithTriggeringPrincipal(
       getter_AddRefs(channel), aUri, mLoaderDocument,
       aReferrerPrincipal,  // triggeringPrincipal
-      nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS, nsIContentPolicy::TYPE_XSLT,
+      nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT,
+      nsIContentPolicy::TYPE_XSLT,
       nullptr,  // aPerformanceStorage
       loadGroup);
 
   NS_ENSURE_SUCCESS(rv, rv);
 
-  channel->SetContentType(NS_LITERAL_CSTRING("text/xml"));
+  channel->SetContentType("text/xml"_ns);
 
   nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(channel));
   if (httpChannel) {
@@ -559,7 +562,7 @@ nsresult txSyncCompileObserver::loadURI(const nsAString& aUri,
 
   rv = nsSyncLoadService::LoadDocument(
       uri, nsIContentPolicy::TYPE_XSLT, referrerPrincipal,
-      nsILoadInfo::SEC_REQUIRE_CORS_DATA_INHERITS, nullptr,
+      nsILoadInfo::SEC_REQUIRE_CORS_INHERITS_SEC_CONTEXT, nullptr,
       source ? source->OwnerDoc()->CookieJarSettings() : nullptr, false,
       aReferrerPolicy, getter_AddRefs(document));
   NS_ENSURE_SUCCESS(rv, rv);

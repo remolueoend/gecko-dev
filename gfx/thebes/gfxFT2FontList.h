@@ -23,6 +23,8 @@ class WillShutdownObserver;
 class FTUserFontData;
 
 class FT2FontEntry final : public gfxFT2FontEntryBase {
+  friend class gfxFT2FontList;
+
   using FontListEntry = mozilla::dom::SystemFontListEntry;
 
  public:
@@ -59,8 +61,8 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
 
   hb_blob_t* GetFontTable(uint32_t aTableTag) override;
 
-  nsresult CopyFontTable(uint32_t aTableTag,
-                         nsTArray<uint8_t>& aBuffer) override;
+  bool HasFontTable(uint32_t aTableTag) override;
+  nsresult CopyFontTable(uint32_t aTableTag, nsTArray<uint8_t>&) override;
 
   bool HasVariations() override;
   void GetVariationAxes(
@@ -77,6 +79,12 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
   FTUserFontData* GetUserFontData();
 
   FT_MM_Var* GetMMVar() override;
+
+  // Get a harfbuzz face for this font, if possible. The caller is responsible
+  // to destroy the face when no longer needed.
+  // This may be a bit expensive, so avoid calling multiple times if the same
+  // face can be re-used for several purposes instead.
+  hb_face_t* CreateHBFace() const;
 
   /**
    * Append this face's metadata to aFaceList for storage in the FontNameCache
@@ -102,6 +110,8 @@ class FT2FontEntry final : public gfxFT2FontEntryBase {
   uint8_t mFTFontIndex;
 
   mozilla::ThreadSafeWeakPtr<mozilla::gfx::UnscaledFontFreeType> mUnscaledFont;
+
+  nsTHashtable<nsUint32HashKey> mAvailableTables;
 
   bool mHasVariations = false;
   bool mHasVariationsInitialized = false;
@@ -212,7 +222,8 @@ class gfxFT2FontList final : public gfxPlatformFontList {
 
   void FindFontsInDir(const nsCString& aDir, FontNameCache* aFNC);
 
-  FontFamily GetDefaultFontForPlatform(const gfxFontStyle* aStyle) override;
+  FontFamily GetDefaultFontForPlatform(const gfxFontStyle* aStyle,
+                                       nsAtom* aLanguage = nullptr) override;
 
   nsTHashtable<nsCStringHashKey> mSkipSpaceLookupCheckFamilies;
 

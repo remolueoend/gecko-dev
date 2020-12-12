@@ -17,7 +17,6 @@ from marionette_harness import (
 
 
 class TestSwitchToWindowContent(WindowManagerMixin, MarionetteTestCase):
-
     def setUp(self):
         super(TestSwitchToWindowContent, self).setUp()
 
@@ -35,7 +34,8 @@ class TestSwitchToWindowContent(WindowManagerMixin, MarionetteTestCase):
 
     def get_selected_tab_index(self):
         with self.marionette.using_context("chrome"):
-            return self.marionette.execute_script("""
+            return self.marionette.execute_script(
+                """
                 Components.utils.import("resource://gre/modules/AppConstants.jsm");
 
                 let win = null;
@@ -67,7 +67,8 @@ class TestSwitchToWindowContent(WindowManagerMixin, MarionetteTestCase):
                     return i;
                   }
                 }
-            """)
+            """
+            )
 
     def test_switch_tabs_with_focus_change(self):
         new_tab = self.open_tab(focus=True)
@@ -91,8 +92,10 @@ class TestSwitchToWindowContent(WindowManagerMixin, MarionetteTestCase):
         self.assertEqual(self.marionette.current_window_handle, self.start_tab)
         self.assertEqual(self.get_selected_tab_index(), self.selected_tab_index)
 
-    @skipIf(sys.platform.startswith("linux"),
-            "Bug 1557232 - Original window sometimes doesn't receive focus")
+    @skipIf(
+        sys.platform.startswith("linux"),
+        "Bug 1557232 - Original window sometimes doesn't receive focus",
+    )
     def test_switch_tabs_in_different_windows_with_focus_change(self):
         new_tab1 = self.open_tab(focus=True)
         self.assertEqual(self.marionette.current_window_handle, self.start_tab)
@@ -189,3 +192,22 @@ class TestSwitchToWindowContent(WindowManagerMixin, MarionetteTestCase):
         self.assertEqual(self.marionette.current_window_handle, new_pb_tab)
 
         self.marionette.execute_script(" return true; ")
+
+    def test_switch_to_window_after_remoteness_change(self):
+        # Test that after a remoteness change (and a browsing context swap)
+        # marionette can still switch to tabs correctly.
+        with self.marionette.using_context("content"):
+            # about:robots runs in a different process and will trigger a
+            # remoteness change with or without fission.
+            self.marionette.navigate("about:robots")
+
+        about_robots_tab = self.marionette.current_window_handle
+
+        # Open a new tab and switch to it before trying to switch back to the
+        # initial tab.
+        tab2 = self.open_tab(focus=True)
+        self.marionette.switch_to_window(tab2)
+        self.marionette.close()
+
+        self.marionette.switch_to_window(about_robots_tab)
+        self.assertEqual(self.marionette.current_window_handle, about_robots_tab)

@@ -268,6 +268,23 @@ nsresult nsCacheProfilePrefObserver::ReadPrefs(nsIPrefBranch* branch) {
     return NS_ERROR_FAILURE;
   }
 
+  if (!mOfflineStorageCacheEnabled) {
+    // Dispatch cleanup task
+    nsCOMPtr<nsIRunnable> runnable =
+        NS_NewRunnableFunction("Delete OfflineCache", []() {
+          nsCOMPtr<nsIFile> dir;
+          nsCacheService::GetAppCacheDirectory(getter_AddRefs(dir));
+          bool exists = false;
+          if (dir && NS_SUCCEEDED(dir->Exists(&exists)) && exists) {
+            // Delay delete by 1 minute to avoid IO thrash on startup.
+            CACHE_LOG_INFO(
+                ("Queuing Delete of AppCacheDirectory in 60 seconds"));
+            nsDeleteDir::DeleteDir(dir, false, 60000);
+          }
+        });
+    Unused << nsCacheService::DispatchToCacheIOThread(runnable);
+  }
+
   return NS_OK;
 }
 
@@ -357,7 +374,7 @@ class nsDoomEvent : public Runnable {
     mKey.Append(key);
     mStoragePolicy = session->StoragePolicy();
     mListener = listener;
-    mEventTarget = GetCurrentThreadEventTarget();
+    mEventTarget = GetCurrentEventTarget();
     // We addref the listener here and release it in nsNotifyDoomListener
     // on the callers thread. If posting of nsNotifyDoomListener event fails
     // we leak the listener which is better than releasing it on a wrong
@@ -554,7 +571,7 @@ void nsCacheService::Shutdown() {
   if (cacheIOThread) nsShutdownThread::BlockingShutdown(cacheIOThread);
 
   if (shouldSanitize) {
-    nsresult rv = parentDir->AppendNative(NS_LITERAL_CSTRING("Cache"));
+    nsresult rv = parentDir->AppendNative("Cache"_ns);
     if (NS_SUCCEEDED(rv)) {
       bool exists;
       if (NS_SUCCEEDED(parentDir->Exists(&exists)) && exists)
@@ -908,7 +925,7 @@ nsresult nsCacheService::CreateRequest(nsCacheSession* session,
   if (!listener) return NS_OK;  // we're sync, we're done.
 
   // get the request's thread
-  (*request)->mEventTarget = GetCurrentThreadEventTarget();
+  (*request)->mEventTarget = GetCurrentEventTarget();
 
   return NS_OK;
 }
@@ -1480,8 +1497,7 @@ void nsCacheService::Lock(mozilla::Telemetry::HistogramID mainThreadLockerID) {
 void nsCacheService::Unlock() {
   gService->mLock.AssertCurrentThreadOwns();
 
-  nsTArray<nsISupports*> doomed;
-  doomed.SwapElements(gService->mDoomedObjects);
+  nsTArray<nsISupports*> doomed = std::move(gService->mDoomedObjects);
 
   gService->LockReleased();
   gService->mLock.Unlock();
@@ -1800,7 +1816,7 @@ void nsCacheService::GetDiskCacheDirectory(nsIFile** result) {
   GetCacheBaseDirectoty(getter_AddRefs(directory));
   if (!directory) return;
 
-  nsresult rv = directory->AppendNative(NS_LITERAL_CSTRING("Cache"));
+  nsresult rv = directory->AppendNative("Cache"_ns);
   if (NS_FAILED(rv)) return;
 
   directory.forget(result);
@@ -1812,7 +1828,7 @@ void nsCacheService::GetAppCacheDirectory(nsIFile** result) {
   GetCacheBaseDirectoty(getter_AddRefs(directory));
   if (!directory) return;
 
-  nsresult rv = directory->AppendNative(NS_LITERAL_CSTRING("OfflineCache"));
+  nsresult rv = directory->AppendNative("OfflineCache"_ns);
   if (NS_FAILED(rv)) return;
 
   directory.forget(result);

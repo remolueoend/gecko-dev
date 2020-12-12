@@ -7,6 +7,7 @@
 #include "mozilla/Logging.h"
 #include "chrome/common/chrome_switches.h"
 #include "mozilla/BlockingResourceBase.h"
+#include "mozilla/ipc/ProtocolMessageUtils.h"
 #include "nsTraceRefcnt.h"
 
 #include <string.h>
@@ -291,8 +292,7 @@ bool ForkServer::RunForkServer(int* aArgc, char*** aArgv) {
   forkserver.mAppProcBuilder->InitAppProcess(aArgc, aArgv);
   forkserver.mAppProcBuilder.reset();
 
-  MOZ_ASSERT(NS_LITERAL_CSTRING("tab") == (*aArgv)[*aArgc - 1],
-             "Only |tab| is allowed!");
+  MOZ_ASSERT("tab"_ns == (*aArgv)[*aArgc - 1], "Only |tab| is allowed!");
 
   // Open log files again with right names and the new PID.
   nsTraceRefcnt::ResetLogFiles((*aArgv)[*aArgc - 1]);

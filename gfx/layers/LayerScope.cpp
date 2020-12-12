@@ -34,6 +34,7 @@
 #include "mozilla/Base64.h"
 #include "mozilla/SHA1.h"
 #include "mozilla/StaticPtr.h"
+#include "nsComponentManagerUtils.h"
 #include "nsThreadUtils.h"
 #include "nsISocketTransport.h"
 #include "nsIServerSocket.h"
@@ -1020,7 +1021,7 @@ void LayerScopeWebSocketManager::SocketHandler::OpenStream(
   nsCOMPtr<nsIInputStream> debugInputStream;
   mTransport->OpenInputStream(0, 0, 0, getter_AddRefs(debugInputStream));
   mInputStream = do_QueryInterface(debugInputStream);
-  mInputStream->AsyncWait(this, 0, 0, GetCurrentThreadEventTarget());
+  mInputStream->AsyncWait(this, 0, 0, GetCurrentEventTarget());
 }
 
 bool LayerScopeWebSocketManager::SocketHandler::WriteToStream(void* aPtr,
@@ -1091,7 +1092,7 @@ LayerScopeWebSocketManager::SocketHandler::OnInputStreamReady(
     if (WebSocketHandshake(protocolString)) {
       mState = HandshakeSuccess;
       mConnected = true;
-      mInputStream->AsyncWait(this, 0, 0, GetCurrentThreadEventTarget());
+      mInputStream->AsyncWait(this, 0, 0, GetCurrentEventTarget());
     } else {
       mState = HandshakeFailed;
     }
@@ -1178,15 +1179,15 @@ bool LayerScopeWebSocketManager::SocketHandler::WebSocketHandshake(
   uint8_t digest[SHA1Sum::kHashSize];  // SHA1 digests are 20 bytes long.
   sha1.finish(digest);
   nsCString newString(reinterpret_cast<char*>(digest), SHA1Sum::kHashSize);
-  rv = Base64Encode(newString, res);
-  if (NS_FAILED(rv)) {
-    return false;
-  }
   nsCString response("HTTP/1.1 101 Switching Protocols\r\n");
   response.AppendLiteral("Upgrade: websocket\r\n");
   response.AppendLiteral("Connection: Upgrade\r\n");
-  response.Append(nsCString("Sec-WebSocket-Accept: ") + res +
-                  nsCString("\r\n"));
+  response.AppendLiteral("Sec-WebSocket-Accept: ");
+  rv = Base64EncodeAppend(newString, response);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+  response.AppendLiteral("\r\n");
   response.AppendLiteral("Sec-WebSocket-Protocol: binary\r\n\r\n");
   uint32_t written = 0;
   uint32_t size = response.Length();
@@ -1218,7 +1219,7 @@ nsresult LayerScopeWebSocketManager::SocketHandler::HandleSocketMessage(
     // TODO: combine packets if we have to read more than once
 
     if (rv == NS_BASE_STREAM_WOULD_BLOCK) {
-      mInputStream->AsyncWait(this, 0, 0, GetCurrentThreadEventTarget());
+      mInputStream->AsyncWait(this, 0, 0, GetCurrentEventTarget());
       return NS_OK;
     }
 

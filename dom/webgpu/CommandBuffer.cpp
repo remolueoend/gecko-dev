@@ -5,7 +5,9 @@
 
 #include "mozilla/dom/WebGPUBinding.h"
 #include "CommandBuffer.h"
+#include "ipc/WebGPUChild.h"
 
+#include "mozilla/dom/HTMLCanvasElement.h"
 #include "Device.h"
 
 namespace mozilla {
@@ -14,8 +16,10 @@ namespace webgpu {
 GPU_IMPL_CYCLE_COLLECTION(CommandBuffer, mParent)
 GPU_IMPL_JS_WRAP(CommandBuffer)
 
-CommandBuffer::CommandBuffer(Device* const aParent, RawId aId)
-    : ChildOf(aParent), mId(aId) {
+CommandBuffer::CommandBuffer(
+    Device* const aParent, RawId aId,
+    const WeakPtr<dom::HTMLCanvasElement>& aTargetCanvasElement)
+    : ChildOf(aParent), mId(aId), mTargetCanvasElement(aTargetCanvasElement) {
   if (!aId) {
     mValid = false;
   }
@@ -38,6 +42,9 @@ Maybe<RawId> CommandBuffer::Commit() {
     return Nothing();
   }
   mValid = false;
+  if (mTargetCanvasElement) {
+    mTargetCanvasElement->InvalidateCanvasContent(nullptr);
+  }
   return Some(mId);
 }
 

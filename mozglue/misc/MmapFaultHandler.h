@@ -36,7 +36,8 @@
 #else
 // Linux
 
-#  include "mozilla/GuardObjects.h"
+#  include "mozilla/Attributes.h"
+#  include "mozilla/Types.h"
 #  include <stdint.h>
 #  include <setjmp.h>
 

@@ -8,6 +8,7 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 const FRAME_SCRIPT_URL = "chrome://gfxsanity/content/gfxFrameScript.js";
 
+const TEST_DISABLED_PREF = "media.sanity-test.disabled";
 const PAGE_WIDTH = 160;
 const PAGE_HEIGHT = 234;
 const LEFT_EDGE = 8;
@@ -347,8 +348,8 @@ function SanityTest() {}
 SanityTest.prototype = {
   classID: Components.ID("{f3a8ca4d-4c83-456b-aee2-6a2cbf11e9bd}"),
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsISupportsWeakReference,
+    "nsIObserver",
+    "nsISupportsWeakReference",
   ]),
 
   shouldRunTest() {
@@ -430,6 +431,9 @@ SanityTest.prototype = {
 
   observe(subject, topic, data) {
     if (topic != "profile-after-change") {
+      return;
+    }
+    if (Services.prefs.getBoolPref(TEST_DISABLED_PREF, false)) {
       return;
     }
 

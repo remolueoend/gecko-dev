@@ -1,4 +1,3 @@
-# %ARG DOCKER_IMAGE_PARENT
 FROM $DOCKER_IMAGE_PARENT
 MAINTAINER Mike Hommey <mhommey@mozilla.com>
 
@@ -28,6 +27,7 @@ RUN apt-get update && \
       libucl1 \
       libxml2 \
       patch \
+      python3-dev \
       p7zip-full \
       scons \
       tar \

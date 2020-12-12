@@ -7,6 +7,7 @@
 #include "nsIWebNavigation.idl"
 
 interface nsIDocShell;
+webidl BrowsingContext;
 
 /**
  * This interface represents a nsIWebBrowser instance with no associated OS
@@ -14,7 +15,7 @@ interface nsIDocShell;
  * A strong reference to this object must be held until the window is
  * ready to be destroyed.
  */
-[scriptable, uuid(abb46f48-abfc-41bf-aa9a-7feccefcf977)]
+[scriptable, builtinclass, uuid(abb46f48-abfc-41bf-aa9a-7feccefcf977)]
 interface nsIWindowlessBrowser : nsIWebNavigation
 {
   /**
@@ -31,5 +32,10 @@ interface nsIWindowlessBrowser : nsIWebNavigation
    * navigated when the browser's nsIWebNavigation interface is used.
    */
   readonly attribute nsIDocShell docShell;
-};
 
+  /**
+   * Get the Browsing Context for this browser.  This is the Browsing Context
+   * that owns the docshell used for navigation.
+   */
+  readonly attribute BrowsingContext browsingContext;
+};

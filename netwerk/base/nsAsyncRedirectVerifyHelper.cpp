@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Logging.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "nsAsyncRedirectVerifyHelper.h"
 #include "nsThreadUtils.h"
 #include "nsNetUtil.h"
@@ -70,7 +71,7 @@ nsresult nsAsyncRedirectVerifyHelper::Init(
   mFlags = flags;
   mCallbackEventTarget = NS_IsMainThread() && mainThreadEventTarget
                              ? mainThreadEventTarget
-                             : GetCurrentThreadEventTarget();
+                             : GetCurrentEventTarget();
 
   if (!(flags & (nsIChannelEventSink::REDIRECT_INTERNAL |
                  nsIChannelEventSink::REDIRECT_STS_UPGRADE))) {

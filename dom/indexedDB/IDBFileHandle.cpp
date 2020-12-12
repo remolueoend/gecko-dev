@@ -22,8 +22,7 @@
 #include "nsServiceManagerUtils.h"
 #include "nsWidgetsCID.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::dom::indexedDB;
 using namespace mozilla::ipc;
@@ -40,7 +39,8 @@ RefPtr<IDBFileRequest> GenerateFileRequest(IDBFileHandle* aFileHandle) {
 }  // namespace
 
 IDBFileHandle::IDBFileHandle(IDBMutableFile* aMutableFile, FileMode aMode)
-    : mMutableFile(aMutableFile),
+    : DOMEventTargetHelper(aMutableFile),
+      mMutableFile(aMutableFile),
       mBackgroundActor(nullptr),
       mLocation(0),
       mPendingRequestCount(0),
@@ -82,8 +82,6 @@ RefPtr<IDBFileHandle> IDBFileHandle::Create(IDBMutableFile* aMutableFile,
   MOZ_ASSERT(aMode == FileMode::Readonly || aMode == FileMode::Readwrite);
 
   RefPtr<IDBFileHandle> fileHandle = new IDBFileHandle(aMutableFile, aMode);
-
-  fileHandle->BindToOwner(aMutableFile);
 
   // XXX Fix!
   MOZ_ASSERT(NS_IsMainThread(), "This won't work on non-main threads!");
@@ -746,5 +744,4 @@ JSObject* IDBFileHandle::WrapObject(JSContext* aCx,
   return IDBFileHandle_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -9,8 +9,14 @@
 #include "GeckoProfiler.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Unused.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/PerformanceNavigation.h"
+#include "mozilla/dom/WindowGlobalChild.h"
 #include "mozilla/ipc/IPDLParamTraits.h"
+#include "mozilla/ipc/URIUtils.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsDocShell.h"
@@ -20,10 +26,11 @@
 #include "nsPrintfCString.h"
 #include "prtime.h"
 #ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerMarkerPayload.h"
+#  include "mozilla/ProfilerMarkerTypes.h"
 #endif
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 namespace mozilla {
 
@@ -84,7 +91,7 @@ void nsDOMNavigationTiming::NotifyNavigationStart(
   mNavigationStart = TimeStamp::Now();
   mDocShellHasBeenActiveSinceNavigationStart =
       (aDocShellState == DocShellState::eActive);
-  PROFILER_ADD_MARKER("Navigation::Start", DOM);
+  PROFILER_MARKER_UNTYPED("Navigation::Start", DOM);
 }
 
 void nsDOMNavigationTiming::NotifyFetchStart(nsIURI* aURI,
@@ -110,14 +117,18 @@ void nsDOMNavigationTiming::NotifyUnloadAccepted(nsIURI* aOldURI) {
 
 void nsDOMNavigationTiming::NotifyUnloadEventStart() {
   mUnloadStart = TimeStamp::Now();
-  PROFILER_TRACING_MARKER_DOCSHELL("Navigation", "Unload", NETWORK,
-                                   TRACING_INTERVAL_START, mDocShell);
+  PROFILER_MARKER("Unload", NETWORK,
+                  MarkerOptions(MarkerTiming::IntervalStart(),
+                                MarkerInnerWindowIdFromDocShell(mDocShell)),
+                  Tracing, "Navigation");
 }
 
 void nsDOMNavigationTiming::NotifyUnloadEventEnd() {
   mUnloadEnd = TimeStamp::Now();
-  PROFILER_TRACING_MARKER_DOCSHELL("Navigation", "Unload", NETWORK,
-                                   TRACING_INTERVAL_END, mDocShell);
+  PROFILER_MARKER("Unload", NETWORK,
+                  MarkerOptions(MarkerTiming::IntervalEnd(),
+                                MarkerInnerWindowIdFromDocShell(mDocShell)),
+                  Tracing, "Navigation");
 }
 
 void nsDOMNavigationTiming::NotifyLoadEventStart() {
@@ -126,25 +137,28 @@ void nsDOMNavigationTiming::NotifyLoadEventStart() {
   }
   mLoadEventStart = TimeStamp::Now();
 
-  PROFILER_TRACING_MARKER_DOCSHELL("Navigation", "Load", NETWORK,
-                                   TRACING_INTERVAL_START, mDocShell);
+  PROFILER_MARKER("Load", NETWORK,
+                  MarkerOptions(MarkerTiming::IntervalStart(),
+                                MarkerInnerWindowIdFromDocShell(mDocShell)),
+                  Tracing, "Navigation");
 
   if (IsTopLevelContentDocumentInContentProcess()) {
-    TimeStamp now = TimeStamp::Now();
+    mLoadEventStartForTelemetry = TimeStamp::Now();
 
     Telemetry::AccumulateTimeDelta(Telemetry::TIME_TO_LOAD_EVENT_START_MS,
-                                   mNavigationStart, now);
+                                   mNavigationStart,
+                                   mLoadEventStartForTelemetry);
 
     if (mDocShellHasBeenActiveSinceNavigationStart) {
       if (net::nsHttp::IsBeforeLastActiveTabLoadOptimization(
               mNavigationStart)) {
         Telemetry::AccumulateTimeDelta(
             Telemetry::TIME_TO_LOAD_EVENT_START_ACTIVE_NETOPT_MS,
-            mNavigationStart, now);
+            mNavigationStart, mLoadEventStartForTelemetry);
       } else {
         Telemetry::AccumulateTimeDelta(
             Telemetry::TIME_TO_LOAD_EVENT_START_ACTIVE_MS, mNavigationStart,
-            now);
+            mLoadEventStartForTelemetry);
       }
     }
   }
@@ -156,8 +170,10 @@ void nsDOMNavigationTiming::NotifyLoadEventEnd() {
   }
   mLoadEventEnd = TimeStamp::Now();
 
-  PROFILER_TRACING_MARKER_DOCSHELL("Navigation", "Load", NETWORK,
-                                   TRACING_INTERVAL_END, mDocShell);
+  PROFILER_MARKER("Load", NETWORK,
+                  MarkerOptions(MarkerTiming::IntervalEnd(),
+                                MarkerInnerWindowIdFromDocShell(mDocShell)),
+                  Tracing, "Navigation");
 
   if (IsTopLevelContentDocumentInContentProcess()) {
 #ifdef MOZ_GECKO_PROFILER
@@ -172,14 +188,21 @@ void nsDOMNavigationTiming::NotifyLoadEventEnd() {
           "Document %s loaded after %dms, load event duration %dms", spec.get(),
           int(elapsed.ToMilliseconds()), int(duration.ToMilliseconds()));
       PAGELOAD_LOG(("%s", marker.get()));
-      PROFILER_ADD_MARKER_WITH_PAYLOAD(
-          "DocumentLoad", DOM, TextMarkerPayload,
-          (marker, mNavigationStart, mLoadEventEnd,
-           profiler_get_inner_window_id_from_docshell(mDocShell)));
+      PROFILER_MARKER_TEXT(
+          "DocumentLoad", DOM,
+          MarkerOptions(
+              MarkerTiming::Interval(mNavigationStart, mLoadEventEnd),
+              MarkerInnerWindowId(
+                  profiler_get_inner_window_id_from_docshell(mDocShell))),
+          marker);
     }
 #endif
+    TimeStamp loadEventEnd = TimeStamp::Now();
+
     Telemetry::AccumulateTimeDelta(Telemetry::TIME_TO_LOAD_EVENT_END_MS,
-                                   mNavigationStart);
+                                   mNavigationStart, loadEventEnd);
+
+    MaybeSubmitTimeToLoadEventPreloadTelemetry(loadEventEnd);
   }
 }
 
@@ -199,7 +222,7 @@ void nsDOMNavigationTiming::NotifyDOMLoading(nsIURI* aURI) {
   mLoadedURI = aURI;
   mDOMLoading = TimeStamp::Now();
 
-  PROFILER_ADD_MARKER("Navigation::DOMLoading", DOM);
+  PROFILER_MARKER_UNTYPED("Navigation::DOMLoading", DOM);
 }
 
 void nsDOMNavigationTiming::NotifyDOMInteractive(nsIURI* aURI) {
@@ -209,7 +232,7 @@ void nsDOMNavigationTiming::NotifyDOMInteractive(nsIURI* aURI) {
   mLoadedURI = aURI;
   mDOMInteractive = TimeStamp::Now();
 
-  PROFILER_ADD_MARKER("Navigation::DOMInteractive", DOM);
+  PROFILER_MARKER_UNTYPED("Navigation::DOMInteractive", DOM);
 }
 
 void nsDOMNavigationTiming::NotifyDOMComplete(nsIURI* aURI) {
@@ -219,7 +242,7 @@ void nsDOMNavigationTiming::NotifyDOMComplete(nsIURI* aURI) {
   mLoadedURI = aURI;
   mDOMComplete = TimeStamp::Now();
 
-  PROFILER_ADD_MARKER("Navigation::DOMComplete", DOM);
+  PROFILER_MARKER_UNTYPED("Navigation::DOMComplete", DOM);
 }
 
 void nsDOMNavigationTiming::NotifyDOMContentLoadedStart(nsIURI* aURI) {
@@ -230,8 +253,10 @@ void nsDOMNavigationTiming::NotifyDOMContentLoadedStart(nsIURI* aURI) {
   mLoadedURI = aURI;
   mDOMContentLoadedEventStart = TimeStamp::Now();
 
-  PROFILER_TRACING_MARKER_DOCSHELL("Navigation", "DOMContentLoaded", NETWORK,
-                                   TRACING_INTERVAL_START, mDocShell);
+  PROFILER_MARKER("DOMContentLoaded", NETWORK,
+                  MarkerOptions(MarkerTiming::IntervalStart(),
+                                MarkerInnerWindowIdFromDocShell(mDocShell)),
+                  Tracing, "Navigation");
 
   if (IsTopLevelContentDocumentInContentProcess()) {
     TimeStamp now = TimeStamp::Now();
@@ -262,8 +287,10 @@ void nsDOMNavigationTiming::NotifyDOMContentLoadedEnd(nsIURI* aURI) {
   mLoadedURI = aURI;
   mDOMContentLoadedEventEnd = TimeStamp::Now();
 
-  PROFILER_TRACING_MARKER_DOCSHELL("Navigation", "DOMContentLoaded", NETWORK,
-                                   TRACING_INTERVAL_END, mDocShell);
+  PROFILER_MARKER("DOMContentLoaded", NETWORK,
+                  MarkerOptions(MarkerTiming::IntervalEnd(),
+                                MarkerInnerWindowIdFromDocShell(mDocShell)),
+                  Tracing, "Navigation");
 
   if (IsTopLevelContentDocumentInContentProcess()) {
     Telemetry::AccumulateTimeDelta(Telemetry::TIME_TO_DOM_CONTENT_LOADED_END_MS,
@@ -366,10 +393,13 @@ void nsDOMNavigationTiming::TTITimeout(nsITimer* aTimer) {
                            int(elapsed.ToMilliseconds()),
                            int(elapsedLongTask.ToMilliseconds()), spec.get());
 
-    PROFILER_ADD_MARKER_WITH_PAYLOAD(
-        "TimeToFirstInteractive (TTFI)", DOM, TextMarkerPayload,
-        (marker, mNavigationStart, mTTFI,
-         profiler_get_inner_window_id_from_docshell(mDocShell)));
+    PROFILER_MARKER_TEXT(
+        "TimeToFirstInteractive (TTFI)", DOM,
+        MarkerOptions(
+            MarkerTiming::Interval(mNavigationStart, mTTFI),
+            MarkerInnerWindowId(
+                profiler_get_inner_window_id_from_docshell(mDocShell))),
+        marker);
   }
 #endif
 }
@@ -399,10 +429,13 @@ void nsDOMNavigationTiming::NotifyNonBlankPaintForRootContentDocument() {
             : "this tab was inactive some of the time between navigation start "
               "and first non-blank paint");
     PAGELOAD_LOG(("%s", marker.get()));
-    PROFILER_ADD_MARKER_WITH_PAYLOAD(
-        "FirstNonBlankPaint", DOM, TextMarkerPayload,
-        (marker, mNavigationStart, mNonBlankPaint,
-         profiler_get_inner_window_id_from_docshell(mDocShell)));
+    PROFILER_MARKER_TEXT(
+        "FirstNonBlankPaint", DOM,
+        MarkerOptions(
+            MarkerTiming::Interval(mNavigationStart, mNonBlankPaint),
+            MarkerInnerWindowId(
+                profiler_get_inner_window_id_from_docshell(mDocShell))),
+        marker);
   }
 #endif
 
@@ -448,10 +481,13 @@ void nsDOMNavigationTiming::NotifyContentfulPaintForRootContentDocument(
             : "this tab was inactive some of the time between navigation start "
               "and first non-blank paint");
     PAGELOAD_LOG(("%s", marker.get()));
-    PROFILER_ADD_MARKER_WITH_PAYLOAD(
-        "FirstContentfulPaint", DOM, TextMarkerPayload,
-        (marker, mNavigationStart, mContentfulPaint,
-         profiler_get_inner_window_id_from_docshell(mDocShell)));
+    PROFILER_MARKER_TEXT(
+        "FirstContentfulPaint", DOM,
+        MarkerOptions(
+            MarkerTiming::Interval(mNavigationStart, mContentfulPaint),
+            MarkerInnerWindowId(
+                profiler_get_inner_window_id_from_docshell(mDocShell))),
+        marker);
   }
 #endif
 
@@ -497,10 +533,13 @@ void nsDOMNavigationTiming::NotifyDOMContentFlushedForRootContentDocument() {
             : "this tab was inactive some of the time between navigation start "
               "and DOMContentFlushed");
     PAGELOAD_LOG(("%s", marker.get()));
-    PROFILER_ADD_MARKER_WITH_PAYLOAD(
-        "DOMContentFlushed", DOM, TextMarkerPayload,
-        (marker, mNavigationStart, mDOMContentFlushed,
-         profiler_get_inner_window_id_from_docshell(mDocShell)));
+    PROFILER_MARKER_TEXT(
+        "DOMContentFlushed", DOM,
+        MarkerOptions(
+            MarkerTiming::Interval(mNavigationStart, mDOMContentFlushed),
+            MarkerInnerWindowId(
+                profiler_get_inner_window_id_from_docshell(mDocShell))),
+        marker);
   }
 #endif
 }
@@ -541,6 +580,33 @@ bool nsDOMNavigationTiming::IsTopLevelContentDocumentInContentProcess() const {
     return false;
   }
   return mDocShell->GetBrowsingContext()->IsTopContent();
+}
+
+void nsDOMNavigationTiming::MaybeSubmitTimeToLoadEventPreloadTelemetry(
+    mozilla::TimeStamp aLoadEventEnd) const {
+  if (!mDocShell) {
+    return;
+  }
+
+  if (const ContentChild* cc = ContentChild::GetSingleton();
+      cc && !(IsWebRemoteType(cc->GetRemoteType()) ||
+              IsPrivilegedMozillaRemoteType(cc->GetRemoteType()))) {
+    return;
+  }
+
+  Document* doc = mDocShell->GetExtantDocument();
+  if (!doc ||
+      !doc->ShouldIncludeInTelemetry(/* aAllowExtensionURIs = */ false)) {
+    return;
+  }
+
+  WindowGlobalChild* wgc = doc->GetWindowGlobalChild();
+  if (!wgc) {
+    return;
+  }
+
+  wgc->SendSubmitLoadEventPreloadTelemetry(
+      mNavigationStart, mLoadEventStartForTelemetry, aLoadEventEnd);
 }
 
 nsDOMNavigationTiming::nsDOMNavigationTiming(nsDocShell* aDocShell,

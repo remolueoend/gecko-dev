@@ -501,6 +501,8 @@ void GDIFontFamily::FindStyleVariations(FontInfoData* aFontInfoData) {
   if (mIsBadUnderlineFamily) {
     SetBadUnderlineFonts();
   }
+
+  CheckForSimpleFamily();
 }
 
 /***************************************************************
@@ -824,7 +826,7 @@ bool gfxGDIFontList::FindAndAddFamilies(StyleGenericFontFamily aGeneric,
                                         const nsACString& aFamily,
                                         nsTArray<FamilyAndGeneric>* aOutput,
                                         FindFamiliesFlags aFlags,
-                                        gfxFontStyle* aStyle,
+                                        gfxFontStyle* aStyle, nsAtom* aLanguage,
                                         gfxFloat aDevToCssSize) {
   NS_ConvertUTF8toUTF16 key16(aFamily);
   BuildKeyNameFromFontName(key16);
@@ -840,12 +842,12 @@ bool gfxGDIFontList::FindAndAddFamilies(StyleGenericFontFamily aGeneric,
     return false;
   }
 
-  return gfxPlatformFontList::FindAndAddFamilies(aGeneric, aFamily, aOutput,
-                                                 aFlags, aStyle, aDevToCssSize);
+  return gfxPlatformFontList::FindAndAddFamilies(
+      aGeneric, aFamily, aOutput, aFlags, aStyle, aLanguage, aDevToCssSize);
 }
 
-FontFamily gfxGDIFontList::GetDefaultFontForPlatform(
-    const gfxFontStyle* aStyle) {
+FontFamily gfxGDIFontList::GetDefaultFontForPlatform(const gfxFontStyle* aStyle,
+                                                     nsAtom* aLanguage) {
   FontFamily ff;
 
   // this really shouldn't fail to find a font....
@@ -1067,7 +1069,7 @@ void gfxGDIFontList::ActivateBundledFonts() {
   if (NS_FAILED(rv)) {
     return;
   }
-  if (NS_FAILED(localDir->Append(NS_LITERAL_STRING("fonts")))) {
+  if (NS_FAILED(localDir->Append(u"fonts"_ns))) {
     return;
   }
   bool isDir;

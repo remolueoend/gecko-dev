@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include "TCPSocketChild.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/Unused.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/net/NeckoChild.h"
@@ -44,8 +45,7 @@ bool DeserializeArrayBuffer(JSContext* cx, const nsTArray<uint8_t>& aBuffer,
 
 }  // namespace IPC
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(TCPSocketChildBase)
 
@@ -83,7 +83,7 @@ NS_IMETHODIMP_(MozExternalRefCountType) TCPSocketChild::Release(void) {
 }
 
 TCPSocketChild::TCPSocketChild(const nsAString& aHost, const uint16_t& aPort,
-                               nsIEventTarget* aTarget)
+                               nsISerialEventTarget* aTarget)
     : mHost(aHost), mPort(aPort), mIPCEventTarget(aTarget) {}
 
 void TCPSocketChild::SendOpen(nsITCPSocketCallback* aSocket, bool aUseSSL,
@@ -163,9 +163,7 @@ nsresult TCPSocketChild::SendSend(const ArrayBuffer& aData,
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  nsTArray<uint8_t> arr;
-  arr.SwapElements(fallibleArr);
-  SendData(arr);
+  SendData(SendableData{std::move(fallibleArr)});
   return NS_OK;
 }
 
@@ -180,5 +178,4 @@ mozilla::ipc::IPCResult TCPSocketChild::RecvRequestDelete() {
   return IPC_OK();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

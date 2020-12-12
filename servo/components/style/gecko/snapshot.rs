@@ -14,7 +14,10 @@ use crate::gecko_bindings::structs::ServoElementSnapshot;
 use crate::gecko_bindings::structs::ServoElementSnapshotFlags as Flags;
 use crate::gecko_bindings::structs::ServoElementSnapshotTable;
 use crate::invalidation::element::element_wrapper::ElementSnapshot;
+use crate::selector_parser::AttrValue;
 use crate::string_cache::{Atom, Namespace};
+use crate::values::{AtomIdent, AtomString};
+use crate::LocalName;
 use crate::WeakAtom;
 use selectors::attr::{AttrSelectorOperation, AttrSelectorOperator};
 use selectors::attr::{CaseSensitivity, NamespaceConstraint};
@@ -70,19 +73,23 @@ impl GeckoElementSnapshot {
         self.mClassAttributeChanged()
     }
 
-    /// Returns true if the snapshot recorded an attribute change which isn't a
-    /// class / id
+    /// Executes the callback once for each attribute that changed.
     #[inline]
-    pub fn other_attr_changed(&self) -> bool {
-        self.mOtherAttributeChanged()
+    pub fn each_attr_changed<F>(&self, mut callback: F)
+    where
+        F: FnMut(&AtomIdent),
+    {
+        for attr in self.mChangedAttrNames.iter() {
+            unsafe { AtomIdent::with(attr.mRawPtr, &mut callback) }
+        }
     }
 
     /// selectors::Element::attr_matches
     pub fn attr_matches(
         &self,
         ns: &NamespaceConstraint<&Namespace>,
-        local_name: &Atom,
-        operation: &AttrSelectorOperation<&Atom>,
+        local_name: &LocalName,
+        operation: &AttrSelectorOperation<&AttrValue>,
     ) -> bool {
         unsafe {
             match *operation {
@@ -184,7 +191,7 @@ impl ElementSnapshot for GeckoElementSnapshot {
     }
 
     #[inline]
-    fn is_part(&self, name: &Atom) -> bool {
+    fn is_part(&self, name: &AtomIdent) -> bool {
         let attr = match snapshot_helpers::find_attr(&*self.mAttrs, &atom!("part")) {
             Some(attr) => attr,
             None => return false,
@@ -194,12 +201,12 @@ impl ElementSnapshot for GeckoElementSnapshot {
     }
 
     #[inline]
-    fn imported_part(&self, name: &Atom) -> Option<Atom> {
+    fn imported_part(&self, name: &AtomIdent) -> Option<AtomIdent> {
         snapshot_helpers::imported_part(&*self.mAttrs, name)
     }
 
     #[inline]
-    fn has_class(&self, name: &Atom, case_sensitivity: CaseSensitivity) -> bool {
+    fn has_class(&self, name: &AtomIdent, case_sensitivity: CaseSensitivity) -> bool {
         if !self.has_any(Flags::MaybeClass) {
             return false;
         }
@@ -210,7 +217,7 @@ impl ElementSnapshot for GeckoElementSnapshot {
     #[inline]
     fn each_class<F>(&self, callback: F)
     where
-        F: FnMut(&Atom),
+        F: FnMut(&AtomIdent),
     {
         if !self.has_any(Flags::MaybeClass) {
             return;
@@ -220,12 +227,12 @@ impl ElementSnapshot for GeckoElementSnapshot {
     }
 
     #[inline]
-    fn lang_attr(&self) -> Option<Atom> {
+    fn lang_attr(&self) -> Option<AtomString> {
         let ptr = unsafe { bindings::Gecko_SnapshotLangValue(self) };
         if ptr.is_null() {
             None
         } else {
-            Some(unsafe { Atom::from_addrefed(ptr) })
+            Some(AtomString(unsafe { Atom::from_addrefed(ptr) }))
         }
     }
 }

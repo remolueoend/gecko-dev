@@ -6,6 +6,7 @@
 
 #include "VRDisplayPresentation.h"
 #include "mozilla/dom/DocGroup.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/XRWebGLLayer.h"
 #include "mozilla/Unused.h"
 #include "VRDisplayClient.h"
@@ -17,13 +18,15 @@ using namespace mozilla::gfx;
 VRDisplayPresentation::VRDisplayPresentation(
     VRDisplayClient* aDisplayClient,
     const nsTArray<mozilla::dom::VRLayer>& aLayers, uint32_t aGroup)
-    : mDisplayClient(aDisplayClient), mDOMLayers(aLayers), mGroup(aGroup) {
+    : mDisplayClient(aDisplayClient),
+      mDOMLayers(aLayers.Clone()),
+      mGroup(aGroup) {
   CreateLayers();
 }
 
 void VRDisplayPresentation::UpdateLayers(
     const nsTArray<mozilla::dom::VRLayer>& aLayers) {
-  mDOMLayers = aLayers;
+  mDOMLayers = aLayers.Clone();
   CreateLayers();
 }
 
@@ -37,7 +40,7 @@ void VRDisplayPresentation::UpdateXRWebGLLayer(dom::XRWebGLLayer* aLayer) {
   }
 
   dom::HTMLCanvasElement* canvasElement = aLayer->GetCanvas();
-  nsCOMPtr<nsIEventTarget> target =
+  nsCOMPtr<nsISerialEventTarget> target =
       canvasElement->OwnerDoc()->EventTargetFor(TaskCategory::Other);
 
   if (mLayers.Length() == 0) {
@@ -101,7 +104,7 @@ void VRDisplayPresentation::CreateLayers() {
       continue;
     }
 
-    nsCOMPtr<nsIEventTarget> target =
+    nsCOMPtr<nsISerialEventTarget> target =
         canvasElement->OwnerDoc()->EventTargetFor(TaskCategory::Other);
 
     if (mLayers.Length() <= iLayer) {
@@ -136,7 +139,7 @@ void VRDisplayPresentation::DestroyLayers() {
 }
 
 void VRDisplayPresentation::GetDOMLayers(nsTArray<dom::VRLayer>& result) {
-  result = mDOMLayers;
+  result = mDOMLayers.Clone();
 }
 
 VRDisplayPresentation::~VRDisplayPresentation() {

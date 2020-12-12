@@ -16,6 +16,7 @@
 #include "nsDirectoryServiceUtils.h"
 #include "nsMemory.h"
 #include "nsServiceManagerUtils.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
 #include "mozilla/ReentrantMonitor.h"
 
@@ -54,7 +55,8 @@ already_AddRefed<mozIStorageService> getService() {
 already_AddRefed<mozIStorageConnection> getMemoryDatabase() {
   nsCOMPtr<mozIStorageService> ss = getService();
   nsCOMPtr<mozIStorageConnection> conn;
-  nsresult rv = ss->OpenSpecialDatabase("memory", getter_AddRefs(conn));
+  nsresult rv = ss->OpenSpecialDatabase(kMozStorageMemoryStorageKey,
+                                        VoidCString(), getter_AddRefs(conn));
   do_check_success(rv);
   return conn.forget();
 }
@@ -69,7 +71,7 @@ already_AddRefed<mozIStorageConnection> getDatabase(
                                  getter_AddRefs(dbFile));
     NS_ASSERTION(dbFile, "The directory doesn't exists?!");
 
-    rv = dbFile->Append(NS_LITERAL_STRING("storage_test_db.sqlite"));
+    rv = dbFile->Append(u"storage_test_db.sqlite"_ns);
     do_check_success(rv);
   } else {
     dbFile = aDBFile;
@@ -314,8 +316,7 @@ already_AddRefed<nsIThread> get_conn_async_thread(mozIStorageConnection* db) {
 
   // - statement with nothing to bind
   nsCOMPtr<mozIStorageAsyncStatement> stmt;
-  db->CreateAsyncStatement(NS_LITERAL_CSTRING("SELECT 1"),
-                           getter_AddRefs(stmt));
+  db->CreateAsyncStatement("SELECT 1"_ns, getter_AddRefs(stmt));
   blocking_async_execute(stmt);
   stmt->Finalize();
 

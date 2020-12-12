@@ -265,8 +265,13 @@
 }
 
 .message > .icon.logpoint {
-  background-image: url(resource://devtools/client/debugger/images/webconsole-logpoint.svg);
+  background-image: url(chrome://devtools/content/debugger/images/webconsole-logpoint.svg);
   color: var(--theme-graphs-purple);
+}
+
+.message.network-message-blocked > .icon {
+  color: var(--theme-icon-error-color);
+  background-image: url(chrome://devtools/skin/images/blocked.svg);
 }
 
 .message > .message-body-wrapper {
@@ -383,7 +388,7 @@
   cursor: default;
 }
 
-.message.network .status {
+.message.network .message-body .status {
   flex: none;
   cursor: default;
   margin-left: 1ch;
@@ -411,6 +416,13 @@
   line-height: 10px;
   margin-inline-start: 0;
   margin-inline-end: 1ex;
+}
+
+/* Hide the headers panel toolbar buttons in the console */
+.message.network .headers-panel-container #block-button,
+.message.network .headers-panel-container #edit-resend-button,
+.message.network .headers-panel-container .devtools-separator {
+  display: none;
 }
 
 /* JSTerm Styles */
@@ -699,6 +711,12 @@ a.learn-more-link.webconsole-learn-more-link {
 
 /* Network Messages */
 
+.webconsole-app .message.network.network-message-blocked .method,
+.webconsole-app .message.network.network-message-blocked .message-flex-body .message-body .url,
+.webconsole-app .message.network.network-message-blocked .status {
+  color: var(--timing-blocked-color);
+}
+
 .webconsole-app .message.network .method {
   margin-inline-end: 1ch;
 }
@@ -725,6 +743,12 @@ a.learn-more-link.webconsole-learn-more-link {
   font-size: 16px;
 }
 
+/* For 4XX and 5XX requests, display the text in the "error" color */
+.webconsole-app .message.network.error .message-flex-body .message-body .url,
+.webconsole-app .message.network.error .message-flex-body .message-body .status {
+  color: currentColor;
+}
+
 .network.message .network-info {
   display: none;
   margin-block: 6px 2px;
@@ -740,8 +764,7 @@ a.learn-more-link.webconsole-learn-more-link {
 }
 
 .network.message .network-info .panels {
-  max-height: 250px;
-  min-height: 100px;
+  min-height: 250px;
 }
 /* Response panel needs an absolute height size as the
  * sizing of its content depends on it, it also needs override
@@ -873,7 +896,7 @@ a.learn-more-link.webconsole-learn-more-link {
 }
 
 /* Hide the icon, so that we can use the collapse-button in its place */
-.message.network > .icon,
+.message.network:not(.network-message-blocked) > .icon,
 .message.startGroup > .icon,
 .message.startGroupCollapsed > .icon {
   display: none;

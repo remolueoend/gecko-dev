@@ -9,6 +9,7 @@
 #include "mozilla/dom/XRView.h"
 #include "mozilla/dom/XRViewport.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "WebGLFramebuffer.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StaticPrefs_webgl.h"
@@ -17,15 +18,18 @@
 #include "MozFramebuffer.h"
 #include "VRDisplayClient.h"
 #include "ClientWebGLContext.h"
+#include "nsContentUtils.h"
 #include "nsIScriptError.h"
 
 using namespace mozilla::gl;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+static constexpr float XR_FRAMEBUFFER_MIN_SCALE = 0.2f;
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRWebGLLayer, mParent, mSession, mWebGL,
-                                      mFramebuffer)
+                                      mFramebuffer, mLeftViewport,
+                                      mRightViewport)
 NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(XRWebGLLayer, AddRef)
 NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(XRWebGLLayer, Release)
 
@@ -109,25 +113,25 @@ already_AddRefed<XRWebGLLayer> XRWebGLLayer::Constructor(
     const auto document = gl->GetParentObject()->OwnerDoc();
     if (aXRWebGLLayerInitDict.mAlpha) {
       nsContentUtils::ReportToConsoleNonLocalized(
-          NS_LITERAL_STRING("XRWebGLLayer doesn't support no alpha value. "
-                            "Alpha will be enabled."),
-          nsIScriptError::warningFlag, NS_LITERAL_CSTRING("DOM"), document);
+          u"XRWebGLLayer doesn't support no alpha value. "
+          "Alpha will be enabled."_ns,
+          nsIScriptError::warningFlag, "DOM"_ns, document);
     }
     if (aXRWebGLLayerInitDict.mDepth != aXRWebGLLayerInitDict.mStencil) {
       nsContentUtils::ReportToConsoleNonLocalized(
-          NS_LITERAL_STRING(
-              "XRWebGLLayer doesn't support separate "
+          nsLiteralString(
+              u"XRWebGLLayer doesn't support separate "
               "depth or stencil buffers. They will be enabled together."),
-          nsIScriptError::warningFlag, NS_LITERAL_CSTRING("DOM"), document);
+          nsIScriptError::warningFlag, "DOM"_ns, document);
     }
 
     bool antialias = aXRWebGLLayerInitDict.mAntialias;
-    if (antialias && aXRWebGLContext.IsWebGLRenderingContext()) {
+    if (antialias && !StaticPrefs::webgl_msaa_force()) {
       antialias = false;
       nsContentUtils::ReportToConsoleNonLocalized(
-          NS_LITERAL_STRING("XRWebGLLayer antialiasing is only supported "
-                            "in WebGL2. Antialiasing will be disabled."),
-          nsIScriptError::warningFlag, NS_LITERAL_CSTRING("DOM"), document);
+          u"XRWebGLLayer antialiasing is not supported."
+          "Antialiasing will be disabled."_ns,
+          nsIScriptError::warningFlag, "DOM"_ns, document);
     }
 
     webgl::OpaqueFramebufferOptions options;
@@ -135,12 +139,19 @@ already_AddRefed<XRWebGLLayer> XRWebGLLayer::Constructor(
     options.depthStencil =
         aXRWebGLLayerInitDict.mDepth || aXRWebGLLayerInitDict.mStencil;
 
+    // Clamp the requested framebuffer size to ensure it's not too
+    // small to see or larger than the max native resolution.
+    const float maxScale =
+        std::max(displayState.nativeFramebufferScaleFactor, 1.0f);
     const float scaleFactor =
-        fmin(aXRWebGLLayerInitDict.mFramebufferScaleFactor, 1.0f);
+        std::max(XR_FRAMEBUFFER_MIN_SCALE,
+                 std::min((float)aXRWebGLLayerInitDict.mFramebufferScaleFactor,
+                          maxScale));
 
     options.width =
-        (int32_t)(2.0f * displayState.eyeResolution.width * scaleFactor);
-    options.height = (int32_t)(displayState.eyeResolution.height * scaleFactor);
+        (int32_t)ceilf(2.0f * displayState.eyeResolution.width * scaleFactor);
+    options.height =
+        (int32_t)ceilf(displayState.eyeResolution.height * scaleFactor);
     framebuffer = gl->CreateOpaqueFramebuffer(options);
 
     if (!framebuffer) {
@@ -217,22 +228,34 @@ uint32_t XRWebGLLayer::FramebufferHeight() {
 already_AddRefed<XRViewport> XRWebGLLayer::GetViewport(const XRView& aView) {
   const int32_t width = (aView.Eye() == XREye::None) ? FramebufferWidth()
                                                      : (FramebufferWidth() / 2);
-  gfx::IntRect viewportRect(0, 0, width, FramebufferHeight());
+  gfx::IntRect rect(0, 0, width, FramebufferHeight());
   if (aView.Eye() == XREye::Right) {
-    viewportRect.x = width;
+    rect.x = width;
   }
-  RefPtr<XRViewport> viewport = new XRViewport(mParent, viewportRect);
-  return viewport.forget();
+  RefPtr<XRViewport>& viewport =
+      aView.Eye() == XREye::Right ? mRightViewport : mLeftViewport;
+  if (!viewport) {
+    viewport = new XRViewport(mParent, rect);
+  } else {
+    viewport->mRect = rect;
+  }
+  RefPtr<XRViewport> result = viewport;
+  return result.forget();
 }
 
+// https://www.w3.org/TR/webxr/#dom-xrwebgllayer-getnativeframebufferscalefactor
 /* static */ double XRWebGLLayer::GetNativeFramebufferScaleFactor(
     const GlobalObject& aGlobal, const XRSession& aSession) {
   if (aSession.IsEnded()) {
     return 0.0f;
   }
-  // TODO: Get the maximum framebuffer size from each display.
-  // Right now we assume that the recommended size is the maximum one.
-  return 1.0f;
+  if (!aSession.IsImmersive()) {
+    return 1.0f;
+  }
+
+  const gfx::VRDisplayInfo& displayInfo =
+      aSession.GetDisplayClient()->GetDisplayInfo();
+  return displayInfo.mDisplayState.nativeFramebufferScaleFactor;
 }
 
 void XRWebGLLayer::StartAnimationFrame() {
@@ -253,5 +276,4 @@ HTMLCanvasElement* XRWebGLLayer::GetCanvas() {
 
 void XRWebGLLayer::SessionEnded() { DeleteFramebuffer(); }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

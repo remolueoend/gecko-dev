@@ -5,7 +5,6 @@
 Test auto selector
 
   $ ./mach try auto $testargs
-  warning: 'mach try auto' is experimental, results may vary!
   Commit message:
   Tasks automatically selected.
   
@@ -13,19 +12,18 @@ Test auto selector
   Calculated try_task_config.json:
   {
       "parameters": {
+          "optimize_strategies": "taskgraph.optimize:tryselect.bugbug_debug_disperse",
           "optimize_target_tasks": true,
           "target_tasks_method": "try_auto",
+          "test_manifest_loader": "bugbug",
           "try_mode": "try_auto",
-          "try_task_config": {
-              "optimize-strategies": "taskgraph.optimize:experimental.bugbug.debug"
-          }
+          "try_task_config": {}
       },
       "version": 2
   }
   
 
   $ ./mach try auto $testargs --closed-tree
-  warning: 'mach try auto' is experimental, results may vary!
   Commit message:
   Tasks automatically selected. ON A CLOSED TREE
   
@@ -33,18 +31,17 @@ Test auto selector
   Calculated try_task_config.json:
   {
       "parameters": {
+          "optimize_strategies": "taskgraph.optimize:tryselect.bugbug_debug_disperse",
           "optimize_target_tasks": true,
           "target_tasks_method": "try_auto",
+          "test_manifest_loader": "bugbug",
           "try_mode": "try_auto",
-          "try_task_config": {
-              "optimize-strategies": "taskgraph.optimize:experimental.bugbug.debug"
-          }
+          "try_task_config": {}
       },
       "version": 2
   }
   
   $ ./mach try auto $testargs --closed-tree -m "foo {msg} bar"
-  warning: 'mach try auto' is experimental, results may vary!
   Commit message:
   foo Tasks automatically selected. bar ON A CLOSED TREE
   
@@ -52,12 +49,12 @@ Test auto selector
   Calculated try_task_config.json:
   {
       "parameters": {
+          "optimize_strategies": "taskgraph.optimize:tryselect.bugbug_debug_disperse",
           "optimize_target_tasks": true,
           "target_tasks_method": "try_auto",
+          "test_manifest_loader": "bugbug",
           "try_mode": "try_auto",
-          "try_task_config": {
-              "optimize-strategies": "taskgraph.optimize:experimental.bugbug.debug"
-          }
+          "try_task_config": {}
       },
       "version": 2
   }

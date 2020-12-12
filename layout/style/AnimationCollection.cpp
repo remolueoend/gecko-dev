@@ -7,9 +7,9 @@
 #include "mozilla/AnimationCollection.h"
 
 #include "mozilla/RestyleManager.h"
-#include "nsAnimationManager.h"  // For dom::CSSAnimation
-#include "nsPresContext.h"
-#include "nsTransitionManager.h"  // For dom::CSSTransition
+#include "nsDOMMutationObserver.h"      // For nsAutoAnimationMutationBatch
+#include "mozilla/dom/CSSAnimation.h"   // For dom::CSSAnimation
+#include "mozilla/dom/CSSTransition.h"  // For dom::CSSTransition
 
 namespace mozilla {
 
@@ -126,6 +126,14 @@ AnimationCollection<AnimationType>::GetPropertyAtomForPseudoType(
   }
 
   return propName;
+}
+
+template <class AnimationType>
+void AnimationCollection<AnimationType>::Destroy() {
+  mCalledDestroy = true;
+
+  // This will call our destructor.
+  mElement->RemoveProperty(mElementProperty);
 }
 
 // Explicit class instantiations

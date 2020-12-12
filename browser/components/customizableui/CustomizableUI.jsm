@@ -21,6 +21,7 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   PanelMultiView: "resource:///modules/PanelMultiView.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
   ShortcutUtils: "resource://gre/modules/ShortcutUtils.jsm",
+  BrowserUsageTelemetry: "resource:///modules/BrowserUsageTelemetry.jsm",
 });
 
 XPCOMUtils.defineLazyGetter(this, "gWidgetsBundle", function() {
@@ -34,6 +35,13 @@ XPCOMUtils.defineLazyServiceGetter(
   "gELS",
   "@mozilla.org/eventlistenerservice;1",
   "nsIEventListenerService"
+);
+
+XPCOMUtils.defineLazyPreferenceGetter(
+  this,
+  "gBookmarksToolbar2h2020",
+  "browser.toolbars.bookmarks.2h2020",
+  false
 );
 
 const kDefaultThemeID = "default-theme@mozilla.org";
@@ -276,12 +284,14 @@ var CustomizableUIInternal = {
       {
         type: CustomizableUI.TYPE_TOOLBAR,
         defaultPlacements: ["personal-bookmarks"],
-        defaultCollapsed: true,
+        defaultCollapsed: gBookmarksToolbar2h2020 ? "newtab" : true,
       },
       true
     );
 
     SearchWidgetTracker.init();
+
+    Services.obs.addObserver(this, "browser-set-toolbar-visibility");
   },
 
   onEnabled(addon) {
@@ -1464,7 +1474,10 @@ var CustomizableUIInternal = {
 
     while (++nodeIndex < placements.length) {
       let nextNodeId = placements[nodeIndex];
-      let nextNode = aNode.ownerDocument.getElementById(nextNodeId);
+      // We use aAreaNode here, because if aNode is in a template, its
+      // `ownerDocument` is *not* going to be the browser.xhtml document,
+      // so we cannot rely on it.
+      let nextNode = aAreaNode.ownerDocument.getElementById(nextNodeId);
       // If the next placed widget exists, and is a direct child of the
       // container, or wrapped in a customize mode wrapper (toolbarpaletteitem)
       // inside the container, insert beside it.
@@ -1753,24 +1766,9 @@ var CustomizableUIInternal = {
             aWidget.id +
             " has a view. Auto-registering event handlers."
         );
-        let viewNode = aDocument.getElementById(aWidget.viewId);
 
-        if (viewNode) {
-          // PanelUI relies on the .PanelUI-subView class to be able to show only
-          // one sub-view at a time.
-          viewNode.classList.add("PanelUI-subView");
-          if (aWidget.source == CustomizableUI.SOURCE_BUILTIN) {
-            nodeClasses.push("subviewbutton-nav");
-          }
-          this.ensureSubviewListeners(viewNode);
-        } else {
-          log.error(
-            "Could not find the view node with id: " +
-              aWidget.viewId +
-              ", for widget: " +
-              aWidget.id +
-              "."
-          );
+        if (aWidget.source == CustomizableUI.SOURCE_BUILTIN) {
+          nodeClasses.push("subviewbutton-nav");
         }
 
         let keyPressHandler = this.handleWidgetKeyPress.bind(
@@ -1861,7 +1859,9 @@ var CustomizableUIInternal = {
       return;
     }
 
-    let document = aShortcutNode.ownerDocument;
+    // Use ownerGlobal.document to ensure we get the right doc even for
+    // elements in template tags.
+    let { document } = aShortcutNode.ownerGlobal;
     let shortcutId = aShortcutNode.getAttribute("key");
     let shortcut;
     if (shortcutId) {
@@ -2046,7 +2046,8 @@ var CustomizableUIInternal = {
           (topmostMenuPopup && topmostMenuPopup.triggerNode) ||
           target.parentNode;
       } else {
-        target = target.parentNode;
+        // Skip any parent shadow roots
+        target = target.parentNode?.host?.parentNode || target.parentNode;
       }
     }
 
@@ -3046,7 +3047,9 @@ var CustomizableUIInternal = {
           if (defaultCollapsed !== null) {
             win.setToolbarVisibility(
               areaNode,
-              !defaultCollapsed,
+              typeof defaultCollapsed == "string"
+                ? defaultCollapsed
+                : !defaultCollapsed,
               isFirstChangedToolbar
             );
           }
@@ -3278,13 +3281,28 @@ var CustomizableUIInternal = {
         }
 
         if (props.get("type") == CustomizableUI.TYPE_TOOLBAR) {
-          let attribute =
-            container.getAttribute("type") == "menubar"
-              ? "autohide"
-              : "collapsed";
-          let collapsed = container.getAttribute(attribute) == "true";
+          let collapsed = null;
           let defaultCollapsed = props.get("defaultCollapsed");
-          if (defaultCollapsed !== null && collapsed != defaultCollapsed) {
+          let nondefaultState = false;
+          if (
+            areaId == CustomizableUI.AREA_BOOKMARKS &&
+            gBookmarksToolbar2h2020
+          ) {
+            collapsed = Services.prefs.getCharPref(
+              "browser.toolbars.bookmarks.visibility"
+            );
+            nondefaultState = Services.prefs.prefHasUserValue(
+              "browser.toolbars.bookmarks.visibility"
+            );
+          } else {
+            let attribute =
+              container.getAttribute("type") == "menubar"
+                ? "autohide"
+                : "collapsed";
+            collapsed = container.getAttribute(attribute) == "true";
+            nondefaultState = collapsed != defaultCollapsed;
+          }
+          if (defaultCollapsed !== null && nondefaultState) {
             log.debug(
               "Found " +
                 areaId +
@@ -3369,6 +3387,13 @@ var CustomizableUIInternal = {
         window.setToolbarVisibility(toolbar, aIsVisible, isFirstChangedToolbar);
         isFirstChangedToolbar = false;
       }
+    }
+  },
+
+  observe(aSubject, aTopic, aData) {
+    if (aTopic == "browser-set-toolbar-visibility") {
+      let [toolbar, visibility] = JSON.parse(aData);
+      CustomizableUI.setToolbarVisibility(toolbar, visibility == "true");
     }
   },
 };
@@ -4354,7 +4379,9 @@ var CustomizableUI = {
       "style",
     ];
 
-    let doc = aSubview.ownerDocument;
+    // Use ownerGlobal.document to ensure we get the right doc even for
+    // elements in template tags.
+    let doc = aSubview.ownerGlobal.document;
     let fragment = doc.createDocumentFragment();
     for (let menuChild of aMenuItems) {
       if (menuChild.hidden) {
@@ -4367,11 +4394,11 @@ var CustomizableUI = {
         // menus (which we don't copy) above the separator.
         if (
           !fragment.lastElementChild ||
-          fragment.lastElementChild.localName == "menuseparator"
+          fragment.lastElementChild.localName == "toolbarseparator"
         ) {
           continue;
         }
-        subviewItem = doc.createXULElement("menuseparator");
+        subviewItem = doc.createXULElement("toolbarseparator");
       } else if (menuChild.localName == "menuitem") {
         subviewItem = doc.createXULElement("toolbarbutton");
         CustomizableUI.addShortcut(menuChild, subviewItem);
@@ -4380,6 +4407,9 @@ var CustomizableUI = {
         if (!item.hasAttribute("onclick")) {
           subviewItem.addEventListener("click", event => {
             let newEvent = new doc.defaultView.MouseEvent(event.type, event);
+
+            // Telemetry should only pay attention to the original event.
+            BrowserUsageTelemetry.ignoreEvent(newEvent);
             item.dispatchEvent(newEvent);
           });
         }
@@ -4400,6 +4430,9 @@ var CustomizableUI = {
               event.sourceEvent,
               0
             );
+
+            // Telemetry should only pay attention to the original event.
+            BrowserUsageTelemetry.ignoreEvent(newEvent);
             item.dispatchEvent(newEvent);
           });
         }
@@ -4662,7 +4695,7 @@ function XULWidgetSingleWrapper(aWidgetId, aNode, aDocument) {
     }
     if (aNode) {
       // Return the last known node if it's still in the DOM...
-      if (aNode.ownerDocument.contains(aNode)) {
+      if (aNode.isConnected) {
         return aNode;
       }
       // ... or the toolbox
@@ -5293,7 +5326,9 @@ OverflowableToolbar.prototype = {
     while (++loopIndex < placements.length) {
       let nextNodeId = placements[loopIndex];
       if (loopIndex > nodeIndex) {
-        let nextNode = aNode.ownerDocument.getElementById(nextNodeId);
+        // Note that if aNode is in a template, its `ownerDocument` is *not*
+        // going to be the browser.xhtml document, so we cannot rely on it.
+        let nextNode = this._toolbar.ownerDocument.getElementById(nextNodeId);
         // If the node we're inserting can overflow, and the next node
         // in the toolbar is overflown, we should insert this node
         // in the overflow panel before it.

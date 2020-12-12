@@ -34,13 +34,12 @@ nsresult txXSLTEnvironmentFunctionCall::evaluate(txIEvalContext* aContext,
           return aContext->recycler()->getNumberResult(1.0, aResult);
         }
         if (qname.mLocalName == nsGkAtoms::vendor) {
-          return aContext->recycler()->getStringResult(
-              NS_LITERAL_STRING("Transformiix"), aResult);
+          return aContext->recycler()->getStringResult(u"Transformiix"_ns,
+                                                       aResult);
         }
         if (qname.mLocalName == nsGkAtoms::vendorUrl) {
           return aContext->recycler()->getStringResult(
-              NS_LITERAL_STRING("http://www.mozilla.org/projects/xslt/"),
-              aResult);
+              u"http://www.mozilla.org/projects/xslt/"_ns, aResult);
         }
       }
       aContext->recycler()->getEmptyStringResult(aResult);
@@ -116,11 +115,10 @@ bool txXSLTEnvironmentFunctionCall::isSensitiveTo(ContextSensitivity aContext) {
 
 #ifdef TX_TO_STRING
 void txXSLTEnvironmentFunctionCall::appendName(nsAString& aDest) {
-  nsStaticAtom* atom = mType == SYSTEM_PROPERTY
-                           ? nsGkAtoms::systemProperty
-                           : mType == ELEMENT_AVAILABLE
-                                 ? nsGkAtoms::elementAvailable
-                                 : nsGkAtoms::functionAvailable;
+  nsStaticAtom* atom = mType == SYSTEM_PROPERTY ? nsGkAtoms::systemProperty
+                       : mType == ELEMENT_AVAILABLE
+                           ? nsGkAtoms::elementAvailable
+                           : nsGkAtoms::functionAvailable;
   aDest.Append(atom->GetUTF16String());
 }
 #endif

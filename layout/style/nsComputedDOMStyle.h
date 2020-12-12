@@ -12,7 +12,6 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/StyleColorInlines.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/dom/Element.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nscore.h"
@@ -22,10 +21,16 @@
 #include "mozilla/gfx/Types.h"
 #include "nsCoord.h"
 #include "nsColor.h"
+#include "nsStubMutationObserver.h"
 #include "nsStyleStruct.h"
 #include "mozilla/WritingModes.h"
 
+// XXX Avoid including this here by moving function bodies to the cpp file
+#include "mozilla/dom/Element.h"
+
 namespace mozilla {
+enum class FlushType : uint8_t;
+
 namespace dom {
 class DocGroup;
 class Element;
@@ -179,11 +184,7 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
 
   already_AddRefed<CSSValue> GetPaddingWidthFor(mozilla::Side aSide);
 
-  already_AddRefed<CSSValue> GetBorderStyleFor(mozilla::Side aSide);
-
   already_AddRefed<CSSValue> GetBorderWidthFor(mozilla::Side aSide);
-
-  already_AddRefed<CSSValue> GetBorderColorFor(mozilla::Side aSide);
 
   already_AddRefed<CSSValue> GetMarginWidthFor(mozilla::Side aSide);
 
@@ -294,27 +295,6 @@ class nsComputedDOMStyle final : public nsDOMCSSDeclaration,
 
   void SetValueToExtremumLength(nsROCSSPrimitiveValue* aValue,
                                 StyleExtremumLength);
-
-  /**
-   * If aCoord is a eStyleUnit_Coord returns the nscoord.  If it's
-   * eStyleUnit_Percent, attempts to resolve the percentage base and returns
-   * the resulting nscoord.  If it's some other unit or a percentage base can't
-   * be determined, returns aDefaultValue.
-   */
-  nscoord StyleCoordToNSCoord(const LengthPercentage& aCoord,
-                              PercentageBaseGetter aPercentageBaseGetter,
-                              nscoord aDefaultValue, bool aClampNegativeCalc);
-  template <typename LengthPercentageLike>
-  nscoord StyleCoordToNSCoord(const LengthPercentageLike& aCoord,
-                              PercentageBaseGetter aPercentageBaseGetter,
-                              nscoord aDefaultValue, bool aClampNegativeCalc) {
-    if (aCoord.IsLengthPercentage()) {
-      return StyleCoordToNSCoord(aCoord.AsLengthPercentage(),
-                                 aPercentageBaseGetter, aDefaultValue,
-                                 aClampNegativeCalc);
-    }
-    return aDefaultValue;
-  }
 
   bool GetCBContentWidth(nscoord& aWidth);
   bool GetCBContentHeight(nscoord& aHeight);

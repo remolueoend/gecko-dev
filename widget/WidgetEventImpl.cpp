@@ -23,6 +23,7 @@
 
 #if defined(XP_WIN)
 #  include "npapi.h"
+#  include "WinUtils.h"
 #endif
 
 namespace mozilla {
@@ -66,7 +67,7 @@ const char* ToChar(EventClassID aEventClassID) {
 
 const nsCString ToString(KeyNameIndex aKeyNameIndex) {
   if (aKeyNameIndex == KEY_NAME_INDEX_USE_STRING) {
-    return NS_LITERAL_CSTRING("USE_STRING");
+    return "USE_STRING"_ns;
   }
   nsAutoString keyName;
   WidgetKeyboardEvent::GetDOMKeyName(aKeyNameIndex, keyName);
@@ -75,7 +76,7 @@ const nsCString ToString(KeyNameIndex aKeyNameIndex) {
 
 const nsCString ToString(CodeNameIndex aCodeNameIndex) {
   if (aCodeNameIndex == CODE_NAME_INDEX_USE_STRING) {
-    return NS_LITERAL_CSTRING("USE_STRING");
+    return "USE_STRING"_ns;
   }
   nsAutoString codeName;
   WidgetKeyboardEvent::GetDOMCodeName(aCodeNameIndex, codeName);
@@ -114,7 +115,7 @@ const nsCString GetDOMKeyCodeName(uint32_t aKeyCode) {
 #define NS_DISALLOW_SAME_KEYCODE
 #define NS_DEFINE_VK(aDOMKeyName, aDOMKeyCode) \
   case aDOMKeyCode:                            \
-    return NS_LITERAL_CSTRING(#aDOMKeyName);
+    return nsLiteralCString(#aDOMKeyName);
 
 #include "mozilla/VirtualKeyCodeList.h"
 
@@ -213,7 +214,7 @@ Command GetInternalCommand(const char* aCommandName,
       if (NS_FAILED(rv)) {
         return Command::FormatJustifyNone;
       }
-      cValue = NS_ConvertUTF16toUTF8(value);
+      CopyUTF16toUTF8(value, cValue);
     }
     if (cValue.LowerCaseEqualsASCII("left")) {
       return Command::FormatJustifyLeft;
@@ -428,7 +429,7 @@ bool WidgetEvent::WillBeSentToRemoteProcess() const {
   }
 
   nsCOMPtr<nsIContent> originalTarget = do_QueryInterface(mOriginalTarget);
-  return EventStateManager::IsRemoteTarget(originalTarget);
+  return EventStateManager::IsTopLevelRemoteTarget(originalTarget);
 }
 
 bool WidgetEvent::IsRetargetedNativeEventDelivererForPlugin() const {

@@ -6,15 +6,17 @@
 
 #include "PersistenceType.h"
 
-namespace mozilla {
-namespace dom {
-namespace quota {
+#include <utility>
+#include "nsLiteralString.h"
+#include "nsString.h"
+
+namespace mozilla::dom::quota {
 
 namespace {
 
-constexpr auto kPersistentCString = NS_LITERAL_CSTRING("persistent");
-constexpr auto kTemporaryCString = NS_LITERAL_CSTRING("temporary");
-constexpr auto kDefaultCString = NS_LITERAL_CSTRING("default");
+constexpr auto kPersistentCString = "persistent"_ns;
+constexpr auto kTemporaryCString = "temporary"_ns;
+constexpr auto kDefaultCString = "default"_ns;
 
 static_assert(PERSISTENCE_TYPE_PERSISTENT == 0 &&
                   PERSISTENCE_TYPE_TEMPORARY == 1 &&
@@ -158,6 +160,19 @@ bool IsValidPersistenceType(const PersistenceType aPersistenceType) {
   }
 }
 
+bool IsBestEffortPersistenceType(const PersistenceType aPersistenceType) {
+  switch (aPersistenceType) {
+    case PERSISTENCE_TYPE_TEMPORARY:
+    case PERSISTENCE_TYPE_DEFAULT:
+      return true;
+
+    case PERSISTENCE_TYPE_PERSISTENT:
+    case PERSISTENCE_TYPE_INVALID:
+    default:
+      return false;
+  }
+}
+
 nsLiteralCString PersistenceTypeToString(
     const PersistenceType aPersistenceType) {
   const auto maybeString = TypeTo_impl<nsLiteralCString>(aPersistenceType);
@@ -202,6 +217,4 @@ Maybe<PersistenceType> PersistenceTypeFromInt32(const int32_t aInt32,
   return TypeFrom_impl(aInt32);
 }
 
-}  // namespace quota
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::quota

@@ -19,6 +19,7 @@
 #include "jspubtd.h"
 
 #include "js/AllocPolicy.h"
+#include "js/GCAPI.h"
 #include "js/HashTable.h"
 #include "js/TracingAPI.h"
 #include "js/Utility.h"
@@ -452,7 +453,8 @@ struct HelperThreadStats {
   MACRO(_, MallocHeap, stateData)      \
   MACRO(_, MallocHeap, parseTask)      \
   MACRO(_, MallocHeap, ionCompileTask) \
-  MACRO(_, MallocHeap, wasmCompile)
+  MACRO(_, MallocHeap, wasmCompile)    \
+  MACRO(_, MallocHeap, contexts)
 
   HelperThreadStats() = default;
 
@@ -622,12 +624,10 @@ struct ZoneStats {
   MACRO(Other, GCHeapAdmin, gcHeapArenaAdmin)              \
   MACRO(Other, GCHeapUsed, jitCodesGCHeap)                 \
   MACRO(Other, GCHeapUsed, objectGroupsGCHeap)             \
-  MACRO(Other, MallocHeap, objectGroupsMallocHeap)         \
   MACRO(Other, GCHeapUsed, scopesGCHeap)                   \
   MACRO(Other, MallocHeap, scopesMallocHeap)               \
   MACRO(Other, GCHeapUsed, regExpSharedsGCHeap)            \
   MACRO(Other, MallocHeap, regExpSharedsMallocHeap)        \
-  MACRO(Other, MallocHeap, typePool)                       \
   MACRO(Other, MallocHeap, regexpZone)                     \
   MACRO(Other, MallocHeap, jitZone)                        \
   MACRO(Other, MallocHeap, baselineStubsOptimized)         \
@@ -710,24 +710,21 @@ struct RealmStats {
   // actually guaranteed. But for Servo, at least, it's a moot point because
   // it doesn't provide an ObjectPrivateVisitor so the value will always be
   // zero.
-#define FOR_EACH_SIZE(MACRO)                                  \
-  MACRO(Private, MallocHeap, objectsPrivate)                  \
-  MACRO(Other, GCHeapUsed, scriptsGCHeap)                     \
-  MACRO(Other, MallocHeap, scriptsMallocHeapData)             \
-  MACRO(Other, MallocHeap, baselineData)                      \
-  MACRO(Other, MallocHeap, baselineStubsFallback)             \
-  MACRO(Other, MallocHeap, ionData)                           \
-  MACRO(Other, MallocHeap, jitScripts)                        \
-  MACRO(Other, MallocHeap, typeInferenceAllocationSiteTables) \
-  MACRO(Other, MallocHeap, typeInferenceArrayTypeTables)      \
-  MACRO(Other, MallocHeap, typeInferenceObjectTypeTables)     \
-  MACRO(Other, MallocHeap, realmObject)                       \
-  MACRO(Other, MallocHeap, realmTables)                       \
-  MACRO(Other, MallocHeap, innerViewsTable)                   \
-  MACRO(Other, MallocHeap, objectMetadataTable)               \
-  MACRO(Other, MallocHeap, savedStacksSet)                    \
-  MACRO(Other, MallocHeap, varNamesSet)                       \
-  MACRO(Other, MallocHeap, nonSyntacticLexicalScopesTable)    \
+#define FOR_EACH_SIZE(MACRO)                               \
+  MACRO(Private, MallocHeap, objectsPrivate)               \
+  MACRO(Other, GCHeapUsed, scriptsGCHeap)                  \
+  MACRO(Other, MallocHeap, scriptsMallocHeapData)          \
+  MACRO(Other, MallocHeap, baselineData)                   \
+  MACRO(Other, MallocHeap, baselineStubsFallback)          \
+  MACRO(Other, MallocHeap, ionData)                        \
+  MACRO(Other, MallocHeap, jitScripts)                     \
+  MACRO(Other, MallocHeap, realmObject)                    \
+  MACRO(Other, MallocHeap, realmTables)                    \
+  MACRO(Other, MallocHeap, innerViewsTable)                \
+  MACRO(Other, MallocHeap, objectMetadataTable)            \
+  MACRO(Other, MallocHeap, savedStacksSet)                 \
+  MACRO(Other, MallocHeap, varNamesSet)                    \
+  MACRO(Other, MallocHeap, nonSyntacticLexicalScopesTable) \
   MACRO(Other, MallocHeap, jitRealm)
 
   RealmStats() = default;
@@ -845,9 +842,10 @@ struct RuntimeStats {
 
   mozilla::MallocSizeOf mallocSizeOf_;
 
-  virtual void initExtraRealmStats(JS::Handle<JS::Realm*> realm,
-                                   RealmStats* rstats) = 0;
-  virtual void initExtraZoneStats(JS::Zone* zone, ZoneStats* zstats) = 0;
+  virtual void initExtraRealmStats(JS::Realm* realm, RealmStats* rstats,
+                                   const JS::AutoRequireNoGC& nogc) = 0;
+  virtual void initExtraZoneStats(JS::Zone* zone, ZoneStats* zstats,
+                                  const JS::AutoRequireNoGC& nogc) = 0;
 
 #undef FOR_EACH_SIZE
 };

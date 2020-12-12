@@ -9,6 +9,7 @@
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/PFetchEventOpProxyParent.h"
 #include "mozilla/ipc/BackgroundParent.h"
+#include "mozilla/SchedulerGroup.h"
 #include "mozilla/Unused.h"
 #include "nsProxyRelease.h"
 
@@ -169,7 +170,7 @@ IPCResult RemoteWorkerParent::RecvSetServiceWorkerSkipWaitingFlag(
 
   if (mController) {
     mController->SetServiceWorkerSkipWaitingFlag()->Then(
-        GetCurrentThreadSerialEventTarget(), __func__,
+        GetCurrentSerialEventTarget(), __func__,
         [resolve = aResolve](bool /* unused */) { resolve(true); },
         [resolve = aResolve](nsresult /* unused */) { resolve(false); });
   } else {

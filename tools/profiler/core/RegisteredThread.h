@@ -10,11 +10,14 @@
 #include "platform.h"
 #include "ThreadInfo.h"
 
-#include "js/TraceLoggerAPI.h"
-#include "jsapi.h"
 #include "mozilla/NotNull.h"
 #include "mozilla/RefPtr.h"
 #include "nsIEventTarget.h"
+#include "nsIThread.h"
+
+namespace mozilla {
+class ProfilingStackOwner;
+}
 
 // This class contains the state for a single thread that is accessible without
 // protection from gPSMutex in platform.cpp. Because there is no external
@@ -23,14 +26,7 @@
 //
 class RacyRegisteredThread final {
  public:
-  explicit RacyRegisteredThread(int aThreadId)
-      : mProfilingStackOwner(
-            mozilla::MakeNotNull<RefPtr<class ProfilingStackOwner>>()),
-        mThreadId(aThreadId),
-        mSleep(AWAKE),
-        mIsBeingProfiled(false) {
-    MOZ_COUNT_CTOR(RacyRegisteredThread);
-  }
+  explicit RacyRegisteredThread(int aThreadId);
 
   MOZ_COUNTED_DTOR(RacyRegisteredThread)
 
@@ -88,12 +84,12 @@ class RacyRegisteredThread final {
     return mProfilingStackOwner->ProfilingStack();
   }
 
-  class ProfilingStackOwner& ProfilingStackOwner() {
+  mozilla::ProfilingStackOwner& ProfilingStackOwner() {
     return *mProfilingStackOwner;
   }
 
  private:
-  mozilla::NotNull<RefPtr<class ProfilingStackOwner>> mProfilingStackOwner;
+  mozilla::NotNull<RefPtr<mozilla::ProfilingStackOwner>> mProfilingStackOwner;
 
   // mThreadId contains the thread ID of the current thread. It is safe to read
   // this from multiple threads concurrently, as it will never be mutated.
@@ -167,25 +163,15 @@ class RegisteredThread final {
   // aRunning is the time the event has been running.  If no event is
   // running these will both be TimeDuration() (i.e. 0).  Both are out
   // params, and are always set.  Their initial value is discarded.
-  void GetRunningEventDelay(const TimeStamp& aNow, TimeDuration& aDelay,
-                            TimeDuration& aRunning);
+  void GetRunningEventDelay(const mozilla::TimeStamp& aNow,
+                            mozilla::TimeDuration& aDelay,
+                            mozilla::TimeDuration& aRunning);
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
   // Set the JSContext of the thread to be sampled. Sampling cannot begin until
   // this has been set.
-  void SetJSContext(JSContext* aContext) {
-    // This function runs on-thread.
-
-    MOZ_ASSERT(aContext && !mContext);
-
-    mContext = aContext;
-
-    // We give the JS engine a non-owning reference to the ProfilingStack. It's
-    // important that the JS engine doesn't touch this once the thread dies.
-    js::SetContextProfilingStack(aContext,
-                                 &RacyRegisteredThread().ProfilingStack());
-  }
+  void SetJSContext(JSContext* aContext);
 
   void ClearJSContext() {
     // This function runs on-thread.
@@ -221,46 +207,7 @@ class RegisteredThread final {
   }
 
   // Poll to see if JS sampling should be started/stopped.
-  void PollJSSampling() {
-    // This function runs on-thread.
-
-    // We can't start/stop profiling until we have the thread's JSContext.
-    if (mContext) {
-      // It is possible for mJSSampling to go through the following sequences.
-      //
-      // - INACTIVE, ACTIVE_REQUESTED, INACTIVE_REQUESTED, INACTIVE
-      //
-      // - ACTIVE, INACTIVE_REQUESTED, ACTIVE_REQUESTED, ACTIVE
-      //
-      // Therefore, the if and else branches here aren't always interleaved.
-      // This is ok because the JS engine can handle that.
-      //
-      if (mJSSampling == ACTIVE_REQUESTED) {
-        mJSSampling = ACTIVE;
-        js::EnableContextProfilingStack(mContext, true);
-        if (JSTracerEnabled()) {
-          JS::StartTraceLogger(mContext);
-        }
-        if (JSAllocationsEnabled()) {
-          // TODO - This probability should not be hardcoded. See Bug 1547284.
-          JS::EnableRecordingAllocations(
-              mContext, profiler_add_js_allocation_marker, 0.01);
-        }
-        js::RegisterContextProfilingEventMarker(mContext,
-                                                profiler_add_js_marker);
-
-      } else if (mJSSampling == INACTIVE_REQUESTED) {
-        mJSSampling = INACTIVE;
-        js::EnableContextProfilingStack(mContext, false);
-        if (JSTracerEnabled()) {
-          JS::StopTraceLogger(mContext);
-        }
-        if (JSAllocationsEnabled()) {
-          JS::DisableRecordingAllocations(mContext);
-        }
-      }
-    }
-  }
+  void PollJSSampling();
 
  private:
   class RacyRegisteredThread mRacyRegisteredThread;
@@ -323,10 +270,6 @@ class RegisteredThread final {
   } mJSSampling;
 
   uint32_t mJSFlags;
-
-  bool TrackOptimizationsEnabled() {
-    return mJSFlags & uint32_t(JSInstrumentationFlags::TrackOptimizations);
-  }
 
   bool JSTracerEnabled() {
     return mJSFlags & uint32_t(JSInstrumentationFlags::TraceLogging);

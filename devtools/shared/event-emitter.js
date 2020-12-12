@@ -333,6 +333,10 @@ class EventEmitter {
       EventEmitter.emit(this, ...args);
     }
   }
+
+  count(...args) {
+    return EventEmitter.count(this, ...args);
+  }
 }
 
 module.exports = EventEmitter;
@@ -345,7 +349,7 @@ const { getNthPathExcluding } = require("devtools/shared/platform/stack");
 let loggingEnabled = false;
 
 if (!isWorker) {
-  loggingEnabled = Services.prefs.getBoolPref("devtools.dump.emit");
+  loggingEnabled = Services.prefs.getBoolPref("devtools.dump.emit", false);
   const observer = {
     observe: () => {
       loggingEnabled = Services.prefs.getBoolPref("devtools.dump.emit");

@@ -8,12 +8,9 @@
 "use strict";
 
 add_task(async function setup() {
-  Services.prefs.setCharPref("browser.search.region", "an");
-
-  Services.prefs.setBoolPref("browser.search.geoSpecificDefaults", true);
-
+  Region._setHomeRegion("an", false);
   await AddonTestUtils.promiseStartupManager();
-  await useTestEngines("test-extensions");
+  await SearchTestUtils.useTestEngines("test-extensions");
 });
 
 function promiseDefaultNotification() {
@@ -24,20 +21,11 @@ function promiseDefaultNotification() {
 }
 
 add_task(async function test_originalDefaultEngine() {
-  await withGeoServer(
-    async requests => {
-      await Promise.all([
-        Services.search.init(true),
-        SearchTestUtils.promiseSearchNotification("ensure-known-region-done"),
-        promiseAfterCache(),
-      ]);
-      Assert.equal(
-        Services.search.originalDefaultEngine.name,
-        "Multilocale AN",
-        "Should have returned the correct original default engine"
-      );
-    },
-    { searchDefault: "Multilocale AN" }
+  await Promise.all([Services.search.init(), promiseAfterSettings()]);
+  Assert.equal(
+    Services.search.originalDefaultEngine.name,
+    "Multilocale AN",
+    "Should have returned the correct original default engine"
   );
 });
 
@@ -48,12 +36,7 @@ add_task(async function test_changeRegion() {
   // Note: the test could be done with changing regions or locales. The important
   // part is that the default engine is changing across the switch, and that
   // the engine is not the first one in the new sorted engines list.
-  let reInitPromise = SearchTestUtils.promiseSearchNotification(
-    "reinit-complete"
-  );
-  Services.prefs.setCharPref("browser.search.region", "tr");
-  Services.search.reInit();
-  await reInitPromise;
+  await promiseSetHomeRegion("tr");
 
   Assert.equal(
     Services.search.originalDefaultEngine.name,

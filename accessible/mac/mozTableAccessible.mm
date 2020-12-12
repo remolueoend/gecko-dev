@@ -1,14 +1,25 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #import "mozTableAccessible.h"
 #import "nsCocoaUtils.h"
-#import "AccIterator.h"
-#import "TableAccessible.h"
+#import "MacUtils.h"
+#import "RotorRules.h"
+
+#include "AccIterator.h"
+#include "Accessible.h"
+#include "TableAccessible.h"
+#include "TableCellAccessible.h"
+#include "XULTreeAccessible.h"
+#include "Pivot.h"
+#include "Relation.h"
+
+using namespace mozilla;
+using namespace mozilla::a11y;
 
 @implementation mozColumnContainer
 
@@ -19,67 +30,51 @@
   return self;
 }
 
-- (NSString*)accessibilityRole {
+- (NSString*)moxRole {
   return NSAccessibilityColumnRole;
 }
 
-- (NSString*)accessibilityRoleDescription {
+- (NSString*)moxRoleDescription {
   return NSAccessibilityRoleDescription(NSAccessibilityColumnRole, nil);
 }
 
-- (mozAccessible*)accessibilityParent {
+- (mozAccessible*)moxParent {
   return mParent;
 }
 
-- (NSArray*)accessibilityChildren {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
-
+- (NSArray*)moxUnignoredChildren {
   if (mChildren) return mChildren;
 
   mChildren = [[NSMutableArray alloc] init];
 
-  if (AccessibleWrap* accWrap = [mParent getGeckoAccessible]) {
-    TableAccessible* table = accWrap->AsTable();
-    NSAssert(table, @"Got null table when fetching column children!");
+  if (Accessible* acc = [mParent geckoAccessible].AsAccessible()) {
+    TableAccessible* table = acc->AsTable();
+    MOZ_ASSERT(table, "Got null table when fetching column children!");
     uint32_t numRows = table->RowCount();
 
     for (uint32_t j = 0; j < numRows; j++) {
       Accessible* cell = table->CellAt(j, mIndex);
-      if (cell) {
-        [mChildren addObject:GetNativeFromGeckoAccessible(cell)];
+      mozAccessible* nativeCell =
+          cell ? GetNativeFromGeckoAccessible(cell) : nil;
+      if ([nativeCell isAccessibilityElement]) {
+        [mChildren addObject:nativeCell];
       }
     }
 
-  } else if (ProxyAccessible* proxy = [mParent getProxyAccessible]) {
+  } else if (ProxyAccessible* proxy = [mParent geckoAccessible].AsProxy()) {
     uint32_t numRows = proxy->TableRowCount();
 
     for (uint32_t j = 0; j < numRows; j++) {
       ProxyAccessible* cell = proxy->TableCellAt(j, mIndex);
-      if (cell) {
-        [mChildren addObject:GetNativeFromProxy(cell)];
+      mozAccessible* nativeCell =
+          cell ? GetNativeFromGeckoAccessible(cell) : nil;
+      if ([nativeCell isAccessibilityElement]) {
+        [mChildren addObject:nativeCell];
       }
     }
   }
 
   return mChildren;
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
-}
-
-- (BOOL)accessibilityIsIgnored {
-  return NO;
-}
-
-- (void)invalidateChildren {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
-
-  // make room for new children
-  if (mChildren) {
-    [mChildren release];
-    mChildren = nil;
-  }
-
-  NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 - (void)dealloc {
@@ -98,47 +93,60 @@
 
   mParent = nil;
 
-  NSAccessibilityPostNotification(self, NSAccessibilityUIElementDestroyedNotification);
+  [super expire];
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 - (BOOL)isExpired {
-  return (mChildren == nil) && (mParent == nil);
+  MOZ_ASSERT((mChildren == nil && mParent == nil) == mIsExpired);
+
+  return [super isExpired];
 }
 
-- (BOOL)accessibilityNotifiesWhenDestroyed {
-  return YES;
+- (void)invalidateChildren {
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
+  // make room for new children
+  if (mChildren) {
+    [mChildren release];
+    mChildren = nil;
+  }
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 @end
 
 @implementation mozTablePartAccessible
 
-- (id)accessibilityAttributeValue:(NSString*)attribute {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
-
-  if ([attribute isEqualToString:NSAccessibilityTitleAttribute]) return @"";
-
-  return [super accessibilityAttributeValue:attribute];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+- (NSString*)moxTitle {
+  return @"";
 }
 
-- (BOOL)isLayoutTablePart;
-{
-  if (Accessible* accWrap = [self getGeckoAccessible]) {
-    while (accWrap) {
-      if (accWrap->IsTable()) {
-        return accWrap->AsTable()->IsProbablyLayoutTable();
+- (NSString*)moxRole {
+  return [self isLayoutTablePart] ? NSAccessibilityGroupRole : [super moxRole];
+}
+
+- (BOOL)isLayoutTablePart {
+  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
+    while (acc) {
+      if (acc->Role() == roles::TREE_TABLE) {
+        return false;
       }
-      accWrap = accWrap->Parent();
+      if (acc->IsTable()) {
+        return acc->AsTable()->IsProbablyLayoutTable();
+      }
+      acc = acc->Parent();
     }
     return false;
   }
 
-  if (ProxyAccessible* proxy = [self getProxyAccessible]) {
+  if (ProxyAccessible* proxy = mGeckoAccessible.AsProxy()) {
     while (proxy) {
+      if (proxy->Role() == roles::TREE_TABLE) {
+        return false;
+      }
       if (proxy->IsTable()) {
         return proxy->TableIsProbablyForLayout();
       }
@@ -149,21 +157,9 @@
   return false;
 }
 
-- (NSString*)role {
-  return [self isLayoutTablePart] ? NSAccessibilityGroupRole : [super role];
-}
 @end
 
 @implementation mozTableAccessible
-
-- (void)invalidateColumns {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
-  if (mColContainers) {
-    [mColContainers release];
-    mColContainers = nil;
-  }
-  NS_OBJC_END_TRY_ABORT_BLOCK;
-}
 
 - (void)handleAccessibleEvent:(uint32_t)eventType {
   if (eventType == nsIAccessibleEvent::EVENT_REORDER) {
@@ -182,85 +178,35 @@
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-- (NSArray*)additionalAccessibilityAttributeNames {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
+- (NSNumber*)moxRowCount {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
 
-  NSArray* additionalAttributes = [super additionalAccessibilityAttributeNames];
-  if ([self isLayoutTablePart]) {
-    return additionalAttributes;
-  }
-
-  static NSArray* tableAttrs = nil;
-  if (!tableAttrs) {
-    NSMutableArray* tempArray = [NSMutableArray new];
-    [tempArray addObject:NSAccessibilityRowCountAttribute];
-    [tempArray addObject:NSAccessibilityColumnCountAttribute];
-    [tempArray addObject:NSAccessibilityRowsAttribute];
-    [tempArray addObject:NSAccessibilityColumnsAttribute];
-    tableAttrs = [[NSArray alloc] initWithArray:tempArray];
-    [tempArray release];
-  }
-
-  return [additionalAttributes arrayByAddingObjectsFromArray:tableAttrs];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+  return mGeckoAccessible.IsAccessible()
+             ? @(mGeckoAccessible.AsAccessible()->AsTable()->RowCount())
+             : @(mGeckoAccessible.AsProxy()->TableRowCount());
 }
 
-- (id)accessibilityAttributeValue:(NSString*)attribute {
-  if (AccessibleWrap* accWrap = [self getGeckoAccessible]) {
-    TableAccessible* table = accWrap->AsTable();
-    if ([attribute isEqualToString:NSAccessibilityRowCountAttribute]) return @(table->RowCount());
-    if ([attribute isEqualToString:NSAccessibilityColumnCountAttribute])
-      return @(table->ColCount());
-    if ([attribute isEqualToString:NSAccessibilityRowsAttribute]) {
-      // Create a new array with the list of table rows.
-      NSMutableArray* nativeArray = [[NSMutableArray alloc] init];
-      uint32_t totalCount = accWrap->ChildCount();
-      for (uint32_t i = 0; i < totalCount; i++) {
-        if (accWrap->GetChildAt(i)->IsTableRow()) {
-          mozAccessible* curNative = GetNativeFromGeckoAccessible(accWrap->GetChildAt(i));
-          if (curNative) [nativeArray addObject:GetObjectOrRepresentedView(curNative)];
-        }
-      }
-      return nativeArray;
-    }
-    if ([attribute isEqualToString:NSAccessibilityColumnsAttribute]) {
-      return [self getColContainerList];
-    }
-  } else if (ProxyAccessible* proxy = [self getProxyAccessible]) {
-    if ([attribute isEqualToString:NSAccessibilityRowCountAttribute])
-      return @(proxy->TableRowCount());
-    if ([attribute isEqualToString:NSAccessibilityColumnCountAttribute])
-      return @(proxy->TableColumnCount());
-    if ([attribute isEqualToString:NSAccessibilityRowsAttribute]) {
-      // Create a new array with the list of table rows.
-      NSMutableArray* nativeArray = [[NSMutableArray alloc] init];
-      uint32_t totalCount = proxy->ChildrenCount();
-      for (uint32_t i = 0; i < totalCount; i++) {
-        if (proxy->ChildAt(i)->IsTableRow()) {
-          mozAccessible* curNative = GetNativeFromProxy(proxy->ChildAt(i));
-          if (curNative) [nativeArray addObject:GetObjectOrRepresentedView(curNative)];
-        }
-      }
-      return nativeArray;
-    }
-    if ([attribute isEqualToString:NSAccessibilityColumnsAttribute]) {
-      return [self getColContainerList];
-    }
-  }
+- (NSNumber*)moxColumnCount {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
 
-  return [super accessibilityAttributeValue:attribute];
+  return mGeckoAccessible.IsAccessible()
+             ? @(mGeckoAccessible.AsAccessible()->AsTable()->ColCount())
+             : @(mGeckoAccessible.AsProxy()->TableColumnCount());
 }
 
-- (NSArray*)children {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
-
-  return [[super children] arrayByAddingObjectsFromArray:[self getColContainerList]];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+- (NSArray*)moxRows {
+  // Create a new array with the list of table rows.
+  return [[self moxChildren]
+      filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(
+                                                   mozAccessible* child,
+                                                   NSDictionary* bindings) {
+        return [child isKindOfClass:[mozTableRowAccessible class]];
+      }]];
 }
 
-- (NSArray*)getColContainerList {
+- (NSArray*)moxColumns {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
   if (mColContainers) {
     return mColContainers;
   }
@@ -268,26 +214,103 @@
   mColContainers = [[NSMutableArray alloc] init];
   uint32_t numCols = 0;
 
-  if (AccessibleWrap* accWrap = [self getGeckoAccessible]) {
-    numCols = accWrap->AsTable()->ColCount();
-  } else if (ProxyAccessible* proxy = [self getProxyAccessible]) {
-    numCols = proxy->TableColumnCount();
+  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
+    numCols = acc->AsTable()->ColCount();
+  } else {
+    numCols = mGeckoAccessible.AsProxy()->TableColumnCount();
   }
 
   for (uint32_t i = 0; i < numCols; i++) {
-    mozColumnContainer* container = [[mozColumnContainer alloc] initWithIndex:i andParent:self];
+    mozColumnContainer* container =
+        [[mozColumnContainer alloc] initWithIndex:i andParent:self];
     [mColContainers addObject:container];
   }
 
   return mColContainers;
 }
 
+- (NSArray*)moxUnignoredChildren {
+  if (![self isLayoutTablePart]) {
+    return [[super moxUnignoredChildren]
+        arrayByAddingObjectsFromArray:[self moxColumns]];
+  }
+
+  return [super moxUnignoredChildren];
+}
+
+- (NSArray*)moxColumnHeaderUIElements {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
+  uint32_t numCols = 0;
+  TableAccessible* table = nullptr;
+
+  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
+    table = mGeckoAccessible.AsAccessible()->AsTable();
+    numCols = table->ColCount();
+  } else {
+    numCols = mGeckoAccessible.AsProxy()->TableColumnCount();
+  }
+
+  NSMutableArray* colHeaders =
+      [[NSMutableArray alloc] initWithCapacity:numCols];
+
+  for (uint32_t i = 0; i < numCols; i++) {
+    AccessibleOrProxy cell;
+    if (table) {
+      cell = table->CellAt(0, i);
+    } else {
+      cell = mGeckoAccessible.AsProxy()->TableCellAt(0, i);
+    }
+
+    if (!cell.IsNull() && cell.Role() == roles::COLUMNHEADER) {
+      mozAccessible* colHeader = GetNativeFromGeckoAccessible(cell);
+      [colHeaders addObject:colHeader];
+    }
+  }
+
+  return colHeaders;
+}
+
+- (id)moxCellForColumnAndRow:(NSArray*)columnAndRow {
+  if (columnAndRow == nil || [columnAndRow count] != 2) {
+    return nil;
+  }
+
+  uint32_t col = [[columnAndRow objectAtIndex:0] unsignedIntValue];
+  uint32_t row = [[columnAndRow objectAtIndex:1] unsignedIntValue];
+
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
+  AccessibleOrProxy cell;
+  if (mGeckoAccessible.IsAccessible()) {
+    cell = mGeckoAccessible.AsAccessible()->AsTable()->CellAt(row, col);
+  } else {
+    cell = mGeckoAccessible.AsProxy()->TableCellAt(row, col);
+  }
+
+  if (cell.IsNull()) {
+    return nil;
+  }
+
+  return GetNativeFromGeckoAccessible(cell);
+}
+
+- (void)invalidateColumns {
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+  if (mColContainers) {
+    [mColContainers release];
+    mColContainers = nil;
+  }
+  NS_OBJC_END_TRY_ABORT_BLOCK;
+}
+
 @end
 
 @implementation mozTableRowAccessible
+
 - (void)handleAccessibleEvent:(uint32_t)eventType {
   if (eventType == nsIAccessibleEvent::EVENT_REORDER) {
-    id parent = [self parent];
+    id parent = [self moxParent];
     if ([parent isKindOfClass:[mozTableAccessible class]]) {
       [parent invalidateColumns];
     }
@@ -296,121 +319,276 @@
   [super handleAccessibleEvent:eventType];
 }
 
-- (NSArray*)additionalAccessibilityAttributeNames {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
-
-  NSArray* additionalAttributes = [super additionalAccessibilityAttributeNames];
-  if ([self isLayoutTablePart]) {
-    return additionalAttributes;
-  }
-
-  static NSArray* tableRowAttrs = nil;
-  if (!tableRowAttrs) {
-    NSMutableArray* tempArray = [NSMutableArray new];
-    [tempArray addObject:NSAccessibilityIndexAttribute];
-    tableRowAttrs = [[NSArray alloc] initWithArray:tempArray];
-    [tempArray release];
-  }
-
-  return [additionalAttributes arrayByAddingObjectsFromArray:tableRowAttrs];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
+- (NSNumber*)moxIndex {
+  mozTableAccessible* parent = (mozTableAccessible*)[self moxParent];
+  return @([[parent moxRows] indexOfObjectIdenticalTo:self]);
 }
 
-- (id)accessibilityAttributeValue:(NSString*)attribute {
-  if (AccessibleWrap* accWrap = [self getGeckoAccessible]) {
-    if ([attribute isEqualToString:NSAccessibilityIndexAttribute]) {
-      // Count the number of rows before that one to obtain the row index.
-      uint32_t index = 0;
-      Accessible* parent = accWrap->Parent();
-      if (parent) {
-        for (int32_t i = accWrap->IndexInParent() - 1; i >= 0; i--) {
-          if (parent->GetChildAt(i)->IsTableRow()) {
-            index++;
-          }
-        }
-      }
-      return [NSNumber numberWithUnsignedInteger:index];
-    }
-  } else if (ProxyAccessible* proxy = [self getProxyAccessible]) {
-    if ([attribute isEqualToString:NSAccessibilityIndexAttribute]) {
-      // Count the number of rows before that one to obtain the row index.
-      uint32_t index = 0;
-      ProxyAccessible* parent = proxy->Parent();
-      if (parent) {
-        for (int32_t i = proxy->IndexInParent() - 1; i >= 0; i--) {
-          if (parent->ChildAt(i)->IsTableRow()) {
-            index++;
-          }
-        }
-      }
-      return [NSNumber numberWithUnsignedInteger:index];
-    }
-  }
-
-  return [super accessibilityAttributeValue:attribute];
-}
 @end
 
 @implementation mozTableCellAccessible
-- (NSArray*)additionalAccessibilityAttributeNames {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NIL;
 
-  NSArray* additionalAttributes = [super additionalAccessibilityAttributeNames];
-  if ([self isLayoutTablePart]) {
-    return additionalAttributes;
+- (NSValue*)moxRowIndexRange {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
+  if (mGeckoAccessible.IsAccessible()) {
+    TableCellAccessible* cell = mGeckoAccessible.AsAccessible()->AsTableCell();
+    return
+        [NSValue valueWithRange:NSMakeRange(cell->RowIdx(), cell->RowExtent())];
+  } else {
+    ProxyAccessible* proxy = mGeckoAccessible.AsProxy();
+    return [NSValue
+        valueWithRange:NSMakeRange(proxy->RowIdx(), proxy->RowExtent())];
   }
-
-  static NSArray* tableCellAttrs = nil;
-  if (!tableCellAttrs) {
-    NSMutableArray* tempArray = [NSMutableArray new];
-    [tempArray addObject:NSAccessibilityRowIndexRangeAttribute];
-    [tempArray addObject:NSAccessibilityColumnIndexRangeAttribute];
-    [tempArray addObject:NSAccessibilityRowHeaderUIElementsAttribute];
-    [tempArray addObject:NSAccessibilityColumnHeaderUIElementsAttribute];
-    tableCellAttrs = [[NSArray alloc] initWithArray:tempArray];
-    [tempArray release];
-  }
-
-  return [additionalAttributes arrayByAddingObjectsFromArray:tableCellAttrs];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK_NIL;
 }
 
-- (id)accessibilityAttributeValue:(NSString*)attribute {
-  if (AccessibleWrap* accWrap = [self getGeckoAccessible]) {
-    TableCellAccessible* cell = accWrap->AsTableCell();
-    if ([attribute isEqualToString:NSAccessibilityRowIndexRangeAttribute])
-      return [NSValue valueWithRange:NSMakeRange(cell->RowIdx(), cell->RowExtent())];
-    if ([attribute isEqualToString:NSAccessibilityColumnIndexRangeAttribute])
-      return [NSValue valueWithRange:NSMakeRange(cell->ColIdx(), cell->ColExtent())];
-    if ([attribute isEqualToString:NSAccessibilityRowHeaderUIElementsAttribute]) {
-      AutoTArray<Accessible*, 10> headerCells;
-      cell->RowHeaderCells(&headerCells);
-      return ConvertToNSArray(headerCells);
+- (NSValue*)moxColumnIndexRange {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
+  if (mGeckoAccessible.IsAccessible()) {
+    TableCellAccessible* cell = mGeckoAccessible.AsAccessible()->AsTableCell();
+    return
+        [NSValue valueWithRange:NSMakeRange(cell->ColIdx(), cell->ColExtent())];
+  } else {
+    ProxyAccessible* proxy = mGeckoAccessible.AsProxy();
+    return [NSValue
+        valueWithRange:NSMakeRange(proxy->ColIdx(), proxy->ColExtent())];
+  }
+}
+
+- (NSArray*)moxRowHeaderUIElements {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
+  if (mGeckoAccessible.IsAccessible()) {
+    TableCellAccessible* cell = mGeckoAccessible.AsAccessible()->AsTableCell();
+    AutoTArray<Accessible*, 10> headerCells;
+    cell->RowHeaderCells(&headerCells);
+    return utils::ConvertToNSArray(headerCells);
+  } else {
+    ProxyAccessible* proxy = mGeckoAccessible.AsProxy();
+    nsTArray<ProxyAccessible*> headerCells;
+    proxy->RowHeaderCells(&headerCells);
+    return utils::ConvertToNSArray(headerCells);
+  }
+}
+
+- (NSArray*)moxColumnHeaderUIElements {
+  MOZ_ASSERT(!mGeckoAccessible.IsNull());
+
+  if (mGeckoAccessible.IsAccessible()) {
+    TableCellAccessible* cell = mGeckoAccessible.AsAccessible()->AsTableCell();
+    AutoTArray<Accessible*, 10> headerCells;
+    cell->ColHeaderCells(&headerCells);
+    return utils::ConvertToNSArray(headerCells);
+  } else {
+    ProxyAccessible* proxy = mGeckoAccessible.AsProxy();
+    nsTArray<ProxyAccessible*> headerCells;
+    proxy->ColHeaderCells(&headerCells);
+    return utils::ConvertToNSArray(headerCells);
+  }
+}
+
+@end
+
+@implementation mozOutlineAccessible
+
+- (NSArray*)moxRows {
+  // Create a new array with the list of outline rows. We
+  // use pivot here to do a deep traversal of all rows nested
+  // in this outline, not just those which are direct
+  // children, since that's what VO expects.
+  NSMutableArray* allRows = [[NSMutableArray alloc] init];
+  Pivot p = Pivot(mGeckoAccessible);
+  OutlineRule rule = OutlineRule();
+  AccessibleOrProxy firstChild = mGeckoAccessible.FirstChild();
+  AccessibleOrProxy match = p.Next(firstChild, rule, true);
+  while (!match.IsNull()) {
+    [allRows addObject:GetNativeFromGeckoAccessible(match)];
+    match = p.Next(match, rule);
+  }
+  return allRows;
+}
+
+- (NSArray*)moxColumns {
+  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
+    if (acc->IsContent() && acc->GetContent()->IsXULElement(nsGkAtoms::tree)) {
+      XULTreeAccessible* treeAcc = (XULTreeAccessible*)acc;
+      NSMutableArray* cols = [[NSMutableArray alloc] init];
+      // XUL trees store their columns in a group at the tree's first
+      // child. Here, we iterate over that group to get each column's
+      // native accessible and add it to our col array.
+      Accessible* treeColumns = treeAcc->GetChildAt(0);
+      if (treeColumns) {
+        uint32_t colCount = treeColumns->ChildCount();
+        for (uint32_t i = 0; i < colCount; i++) {
+          Accessible* treeColumnItem = treeColumns->GetChildAt(i);
+          [cols addObject:GetNativeFromGeckoAccessible(treeColumnItem)];
+        }
+        return cols;
+      }
     }
-    if ([attribute isEqualToString:NSAccessibilityColumnHeaderUIElementsAttribute]) {
-      AutoTArray<Accessible*, 10> headerCells;
-      cell->ColHeaderCells(&headerCells);
-      return ConvertToNSArray(headerCells);
-    }
-  } else if (ProxyAccessible* proxy = [self getProxyAccessible]) {
-    if ([attribute isEqualToString:NSAccessibilityRowIndexRangeAttribute])
-      return [NSValue valueWithRange:NSMakeRange(proxy->RowIdx(), proxy->RowExtent())];
-    if ([attribute isEqualToString:NSAccessibilityColumnIndexRangeAttribute])
-      return [NSValue valueWithRange:NSMakeRange(proxy->ColIdx(), proxy->ColExtent())];
-    if ([attribute isEqualToString:NSAccessibilityRowHeaderUIElementsAttribute]) {
-      nsTArray<ProxyAccessible*> headerCells;
-      proxy->RowHeaderCells(&headerCells);
-      return ConvertToNSArray(headerCells);
-    }
-    if ([attribute isEqualToString:NSAccessibilityColumnHeaderUIElementsAttribute]) {
-      nsTArray<ProxyAccessible*> headerCells;
-      proxy->ColHeaderCells(&headerCells);
-      return ConvertToNSArray(headerCells);
+  }
+  // Webkit says we shouldn't expose any cols for aria-tree
+  // so we return an empty array here
+  return @[];
+}
+
+- (NSArray*)moxSelectedRows {
+  NSMutableArray* selectedRows = [[NSMutableArray alloc] init];
+  NSArray* allRows = [self moxRows];
+  for (mozAccessible* row in allRows) {
+    if ([row stateWithMask:states::SELECTED] != 0) {
+      [selectedRows addObject:row];
     }
   }
 
-  return [super accessibilityAttributeValue:attribute];
+  return selectedRows;
 }
+
+- (NSString*)moxOrientation {
+  return NSAccessibilityVerticalOrientationValue;
+}
+
+@end
+
+@implementation mozOutlineRowAccessible
+
+- (BOOL)isLayoutTablePart {
+  return NO;
+}
+
+- (NSNumber*)moxDisclosing {
+  return @([self stateWithMask:states::EXPANDED] != 0);
+}
+
+- (NSNumber*)moxExpanded {
+  return @([self stateWithMask:states::EXPANDED] != 0);
+}
+
+- (id)moxDisclosedByRow {
+  // According to webkit: this attr corresponds to the row
+  // that contains this row. It should be the same as the
+  // first parent that is a treeitem. If the parent is the tree
+  // itself, this should be nil. This is tricky for xul trees because
+  // all rows are direct children of the outline; they use
+  // relations to expose their heirarchy structure.
+
+  mozAccessible* disclosingRow = nil;
+  // first we check the relations to see if we're in a xul tree
+  // with weird row semantics
+  if (mGeckoAccessible.IsAccessible()) {
+    Relation rel = mGeckoAccessible.AsAccessible()->RelationByType(
+        RelationType::NODE_CHILD_OF);
+    Accessible* maybeParent = rel.Next();
+    disclosingRow =
+        maybeParent ? GetNativeFromGeckoAccessible(maybeParent) : nil;
+  } else {
+    nsTArray<ProxyAccessible*> accs =
+        mGeckoAccessible.AsProxy()->RelationByType(RelationType::NODE_CHILD_OF);
+    disclosingRow =
+        accs.Length() > 0 ? GetNativeFromGeckoAccessible(accs[0]) : nil;
+  }
+
+  if (disclosingRow) {
+    // if we find a row from our relation check,
+    // verify it isn't the outline itself and return
+    // appropriately
+    if ([[disclosingRow moxRole] isEqualToString:@"AXOutline"]) {
+      return nil;
+    }
+
+    return disclosingRow;
+  }
+  mozAccessible* parent = (mozAccessible*)[self moxUnignoredParent];
+  // otherwise, its likely we're in an aria tree, so we can use
+  // these role and subrole checks
+  if ([[parent moxRole] isEqualToString:@"AXOutline"]) {
+    return nil;
+  }
+
+  if ([[parent moxSubrole] isEqualToString:@"AXOutlineRow"]) {
+    disclosingRow = parent;
+  }
+
+  return nil;
+}
+
+- (NSNumber*)moxDisclosureLevel {
+  GroupPos groupPos;
+  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
+    groupPos = acc->GroupPosition();
+  } else if (ProxyAccessible* proxy = mGeckoAccessible.AsProxy()) {
+    groupPos = proxy->GroupPosition();
+  }
+  // mac expects 0-indexed levels, but groupPos.level is 1-indexed
+  // so we subtract 1 here for levels above 0
+  return groupPos.level > 0 ? @(groupPos.level - 1) : @(groupPos.level);
+}
+
+- (NSArray*)moxDisclosedRows {
+  // According to webkit: this attr corresponds to the rows
+  // that are considered inside this row. Again, this is weird for
+  // xul trees so we have to use relations first and then fall-back
+  // to the children filter for non-xul outlines.
+
+  NSMutableArray* disclosedRows = [[NSMutableArray alloc] init];
+  // first we check the relations to see if we're in a xul tree
+  // with weird row semantics
+  if (mGeckoAccessible.IsAccessible()) {
+    Relation rel = mGeckoAccessible.AsAccessible()->RelationByType(
+        RelationType::NODE_PARENT_OF);
+    Accessible* acc = nullptr;
+    while ((acc = rel.Next())) {
+      [disclosedRows addObject:GetNativeFromGeckoAccessible(acc)];
+    }
+  } else {
+    nsTArray<ProxyAccessible*> accs =
+        mGeckoAccessible.AsProxy()->RelationByType(
+            RelationType::NODE_PARENT_OF);
+    disclosedRows = utils::ConvertToNSArray(accs);
+  }
+
+  if (disclosedRows) {
+    // if we find rows from our relation check, return them here
+    return disclosedRows;
+  }
+
+  // otherwise, filter our children for outline rows
+  return [[self moxChildren]
+      filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(
+                                                   mozAccessible* child,
+                                                   NSDictionary* bindings) {
+        return [child isKindOfClass:[mozOutlineRowAccessible class]];
+      }]];
+}
+
+- (NSNumber*)moxIndex {
+  mozAccessible* parent = (mozAccessible*)[self moxUnignoredParent];
+  while (parent) {
+    if ([[parent moxRole] isEqualToString:@"AXOutline"]) {
+      break;
+    }
+    parent = (mozAccessible*)[parent moxUnignoredParent];
+  }
+
+  NSUInteger index =
+      [[(mozOutlineAccessible*)parent moxRows] indexOfObjectIdenticalTo:self];
+  return index == NSNotFound ? nil : @(index);
+}
+
+- (NSString*)moxLabel {
+  nsAutoString title;
+  if (Accessible* acc = mGeckoAccessible.AsAccessible()) {
+    acc->Name(title);
+  } else {
+    mGeckoAccessible.AsProxy()->Name(title);
+  }
+  // XXX: When parsing outlines built with ul/lu's, we
+  // include the bullet in this description even
+  // though webkit doesn't. Not all outlines are built with
+  // ul/lu's so we can't strip the first character here.
+
+  return nsCocoaUtils::ToNSString(title);
+}
+
 @end

@@ -5,6 +5,7 @@
 
 const {
   isGroupType,
+  isMessageNetworkError,
   l10n,
 } = require("devtools/client/webconsole/utils/messages");
 
@@ -14,7 +15,7 @@ const { DEFAULT_FILTERS, FILTERS, MESSAGE_TYPE, MESSAGE_SOURCE } = constants;
 loader.lazyRequireGetter(
   this,
   "getGripPreviewItems",
-  "devtools/client/shared/components/reps/reps",
+  "devtools/client/shared/components/reps/index",
   true
 );
 loader.lazyRequireGetter(
@@ -31,37 +32,14 @@ loader.lazyRequireGetter(
 );
 loader.lazyRequireGetter(
   this,
-  "createWarningGroupMessage",
-  "devtools/client/webconsole/utils/messages",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "isWarningGroup",
-  "devtools/client/webconsole/utils/messages",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "getWarningGroupType",
-  "devtools/client/webconsole/utils/messages",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "getDescriptorValue",
-  "devtools/client/webconsole/utils/messages",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "getParentWarningGroupMessageId",
-  "devtools/client/webconsole/utils/messages",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "getNaturalOrder",
+  [
+    "createWarningGroupMessage",
+    "isWarningGroup",
+    "getWarningGroupType",
+    "getDescriptorValue",
+    "getParentWarningGroupMessageId",
+    "getNaturalOrder",
+  ],
   "devtools/client/webconsole/utils/messages",
   true
 );
@@ -139,7 +117,14 @@ function cloneState(state) {
  */
 // eslint-disable-next-line complexity
 function addMessage(newMessage, state, filtersState, prefsState, uiState) {
-  const { messagesById, groupsById, currentGroup, repeatById } = state;
+  const { messagesById, groupsById, repeatById } = state;
+
+  if (newMessage.type === constants.MESSAGE_TYPE.NAVIGATION_MARKER) {
+    // We set the state's currentGroup property to null after navigating
+    state.currentGroup = null;
+  }
+  const { currentGroup } = state;
+
   if (newMessage.type === constants.MESSAGE_TYPE.NULL_MESSAGE) {
     // When the message has a NULL type, we don't add it.
     return state;
@@ -556,32 +541,61 @@ function messages(
         ),
       };
 
-    case constants.NETWORK_MESSAGE_UPDATE:
-      return {
+    case constants.NETWORK_MESSAGES_UPDATE:
+      const updatedState = {
         ...state,
+        // Update messagesById since the nested object of message might be changed.
+        messagesById: new Map(messagesById),
         networkMessagesUpdateById: {
           ...networkMessagesUpdateById,
-          [action.message.id]: action.message,
         },
       };
-
-    case UPDATE_REQUEST:
-    case constants.NETWORK_UPDATE_REQUEST: {
-      const request = networkMessagesUpdateById[action.id];
-      if (!request) {
-        return state;
+      let hasNetworkError = null;
+      for (const message of action.messages) {
+        updatedState.messagesById.set(message.id, message);
+        updatedState.networkMessagesUpdateById[message.id] = message;
+        if (isMessageNetworkError(message)) {
+          hasNetworkError = true;
+        }
       }
 
-      return {
+      // If the message updates contained a network error, then we may have to display it.
+      if (hasNetworkError) {
+        return setVisibleMessages({
+          messagesState: updatedState,
+          filtersState,
+          prefsState,
+          uiState,
+        });
+      }
+
+      return updatedState;
+
+    case UPDATE_REQUEST:
+    case constants.NETWORK_UPDATES_REQUEST: {
+      newState = {
         ...state,
         networkMessagesUpdateById: {
           ...networkMessagesUpdateById,
-          [action.id]: {
-            ...request,
-            ...processNetworkUpdates(action.data, request),
-          },
         },
       };
+
+      // Netmonitor's UPDATE_REQUEST action comes for only one request
+      const updates =
+        action.type == UPDATE_REQUEST
+          ? [{ id: action.id, data: action.data }]
+          : action.updates;
+      for (const { id, data } of updates) {
+        const request = networkMessagesUpdateById[id];
+        if (!request) {
+          continue;
+        }
+        newState.networkMessagesUpdateById[id] = {
+          ...request,
+          ...processNetworkUpdates(data),
+        };
+      }
+      return newState;
     }
 
     case constants.FRONTS_TO_RELEASE_CLEAR:
@@ -649,6 +663,14 @@ function messages(
         forceTimestampSort: !prefsState.groupWarnings,
       });
 
+    case constants.MESSAGE_REMOVE:
+      return removeMessagesFromState(
+        {
+          ...state,
+        },
+        [action.id]
+      );
+
     case constants.FILTER_TOGGLE:
     case constants.FILTER_TEXT_SET:
     case constants.FILTERS_CLEAR:
@@ -672,21 +694,73 @@ function setVisibleMessages({
   uiState,
   forceTimestampSort = false,
 }) {
-  const { messagesById } = messagesState;
+  const { messagesById, visibleMessages, messagesUiById } = messagesState;
 
-  const messagesToShow = [];
+  const messagesToShow = new Set();
+  const matchedGroups = new Set();
   const filtered = getDefaultFiltersCounter();
 
   messagesById.forEach((message, msgId) => {
+    const groupParentId = message.groupId;
+    let hasMatchedAncestor = false;
+    const ancestors = [];
+
+    if (groupParentId) {
+      let ancestorId = groupParentId;
+
+      // we track the message's ancestors and their state
+      while (ancestorId) {
+        ancestors.push({
+          ancestorId: ancestorId,
+          matchedFilters: matchedGroups.has(ancestorId),
+          isOpen: messagesUiById.includes(ancestorId),
+          isCurrentlyVisible: visibleMessages.includes(ancestorId),
+        });
+        if (!hasMatchedAncestor && matchedGroups.has(ancestorId)) {
+          hasMatchedAncestor = true;
+        }
+        ancestorId = messagesById.get(ancestorId).groupId;
+      }
+    }
+
     const { visible, cause } = getMessageVisibility(message, {
       messagesState,
       filtersState,
       prefsState,
       uiState,
+      hasMatchedAncestor,
     });
 
+    // if the message is not visible but passes the search filters, we show its visible ancestors
+    if (!visible && passSearchFilters(message, filtersState)) {
+      const tmp = [];
+      ancestors.forEach(msg => {
+        if (msg.isCurrentlyVisible) {
+          tmp.push(msg.ancestorId);
+        }
+      });
+      tmp.reverse().forEach(id => {
+        messagesToShow.add(id);
+      });
+    }
     if (visible) {
-      messagesToShow.push(msgId);
+      // if the visible message is a child of a group, we add its ancestors to the visible messages
+      if (groupParentId) {
+        // We need to reverse the visibleAncestors array to show the groups in the correct order
+        ancestors.reverse().forEach(msg => {
+          messagesToShow.add(msg.ancestorId);
+        });
+      }
+
+      // we keep track of matched startGroup and startGroupCollapsed messages so we don't filter their children
+      if (
+        message.type === "startGroup" ||
+        message.type === "startGroupCollapsed"
+      ) {
+        matchedGroups.add(msgId);
+      }
+
+      messagesToShow.add(msgId);
     } else if (DEFAULT_FILTERS.includes(cause)) {
       filtered.global = filtered.global + 1;
       filtered[cause] = filtered[cause] + 1;
@@ -695,7 +769,7 @@ function setVisibleMessages({
 
   const newState = {
     ...messagesState,
-    visibleMessages: messagesToShow,
+    visibleMessages: Array.from(messagesToShow),
     filteredMessagesCount: filtered,
   };
 
@@ -955,6 +1029,8 @@ function getToplevelMessageCount(state) {
  *                   - {Boolean} checkParentWarningGroupVisibility: Set to false to not
  *                                 check if a message should be visible because it is in a
  *                                 warningGroup and the warningGroup is visible.
+ *                   - {Boolean} hasMatchedAncestor: Set to true if message is part of a
+ *                                 group that has been set to visible
  *
  * @return {Object} An object of the following form:
  *         - visible {Boolean}: true if the message should be visible
@@ -970,6 +1046,7 @@ function getMessageVisibility(
     uiState,
     checkGroup = true,
     checkParentWarningGroupVisibility = true,
+    hasMatchedAncestor = false,
   }
 ) {
   // Do not display the message if it's not from chromeContext and we don't show content
@@ -1140,7 +1217,9 @@ function getMessageVisibility(
 
   // This should always be the last check, or we might report that a message was hidden
   // because of text search, while it may be hidden because its category is disabled.
-  if (!passSearchFilters(message, filtersState)) {
+  // Do not check for search filters if it is part of a group and one of its ancestor
+  // has matched the current search filters and set to visible
+  if (!hasMatchedAncestor && !passSearchFilters(message, filtersState)) {
     return {
       visible: false,
       cause: FILTERS.TEXT,
@@ -1156,8 +1235,6 @@ function isUnfilterable(message) {
   return [
     MESSAGE_TYPE.COMMAND,
     MESSAGE_TYPE.RESULT,
-    MESSAGE_TYPE.START_GROUP,
-    MESSAGE_TYPE.START_GROUP_COLLAPSED,
     MESSAGE_TYPE.NAVIGATION_MARKER,
   ].includes(message.type);
 }
@@ -1192,7 +1269,8 @@ function passNetworkFilter(message, filters) {
   return (
     message.source !== MESSAGE_SOURCE.NETWORK ||
     message.isXHR === true ||
-    filters[FILTERS.NET] === true
+    filters[FILTERS.NET] === true ||
+    (filters[FILTERS.ERROR] && isMessageNetworkError(message))
   );
 }
 
@@ -1210,7 +1288,8 @@ function passXhrFilter(message, filters) {
   return (
     message.source !== MESSAGE_SOURCE.NETWORK ||
     message.isXHR === false ||
-    filters[FILTERS.NETXHR] === true
+    filters[FILTERS.NETXHR] === true ||
+    (filters[FILTERS.ERROR] && isMessageNetworkError(message))
   );
 }
 
@@ -1227,7 +1306,8 @@ function passLevelFilters(message, filters) {
   return (
     (message.source !== MESSAGE_SOURCE.CONSOLE_API &&
       message.source !== MESSAGE_SOURCE.JAVASCRIPT) ||
-    filters[message.level] === true
+    filters[message.level] === true ||
+    (filters[FILTERS.ERROR] && isMessageNetworkError(message))
   );
 }
 
@@ -1279,7 +1359,7 @@ function passSearchFilters(message, filters) {
     // Look for a match in location.
     isTextInFrame(matchStr, message.frame) ||
     // Look for a match in net events.
-    isTextInNetEvent(matchStr, message.request) ||
+    isTextInNetEvent(matchStr, message) ||
     // Look for a match in stack-trace.
     isTextInStackTrace(matchStr, message.stacktrace) ||
     // Look for a match in messageText.
@@ -1365,12 +1445,10 @@ function isTextInParameter(matchStr, parameter) {
 /**
  * Returns true if given text is included in provided net event grip.
  */
-function isTextInNetEvent(matchStr, request) {
-  if (!request) {
+function isTextInNetEvent(matchStr, { method, url } = {}) {
+  if (!method && !url) {
     return false;
   }
-
-  const { method, url } = request;
   return matchStr(method) || matchStr(url);
 }
 

@@ -30,6 +30,7 @@ this.StoragePrincipalHelper = {
           ["privacy.trackingprotection.pbmode.enabled", false],
           ["privacy.trackingprotection.annotate_channels", true],
           ["privacy.storagePrincipal.enabledForTrackers", true],
+          ["privacy.dynamic_firstparty.use_site", true],
           [
             "privacy.restrict3rdpartystorage.userInteractionRequiredForHosts",
             "tracking.example.org",
@@ -56,6 +57,22 @@ this.StoragePrincipalHelper = {
       let browser = win.gBrowser.getBrowserForTab(tab);
       await BrowserTestUtils.browserLoaded(browser);
 
+      info("Check the cookieJarSettings of the browser object");
+      ok(
+        browser.cookieJarSettings,
+        "The browser object has the cookieJarSettings."
+      );
+      is(
+        browser.cookieJarSettings.cookieBehavior,
+        Ci.nsICookieService.BEHAVIOR_REJECT_TRACKER,
+        "The cookieJarSettings has the correct cookieBehavior"
+      );
+      is(
+        browser.cookieJarSettings.partitionKey,
+        "(http,example.net)",
+        "The cookieJarSettings has the correct partitionKey"
+      );
+
       info("Creating a 3rd party content");
       await SpecialPowers.spawn(
         browser,
@@ -68,19 +85,20 @@ this.StoragePrincipalHelper = {
         async obj => {
           await new content.Promise(resolve => {
             let ifr = content.document.createElement("iframe");
-            ifr.onload = __ => {
-              is(
-                ifr.contentWindow.document.nodePrincipal.originAttributes
-                  .firstPartyDomain,
-                "",
-                "We don't have first-party set on nodePrincipal"
-              );
-              is(
-                ifr.contentWindow.document.effectiveStoragePrincipal
-                  .originAttributes.firstPartyDomain,
-                "example.net",
-                "We have first-party set on storagePrincipal"
-              );
+            ifr.onload = async _ => {
+              await SpecialPowers.spawn(ifr, [], async _ => {
+                is(
+                  content.document.nodePrincipal.originAttributes.partitionKey,
+                  "",
+                  "We don't have first-party set on nodePrincipal"
+                );
+                is(
+                  content.document.effectiveStoragePrincipal.originAttributes
+                    .partitionKey,
+                  "(http,example.net)",
+                  "We have first-party set on storagePrincipal"
+                );
+              });
               info("Sending code to the 3rd party content");
               ifr.contentWindow.postMessage(obj.callback, "*");
             };

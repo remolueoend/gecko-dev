@@ -6,6 +6,7 @@
 
 #include "nsIDocShell.h"
 #include "mozilla/dom/Document.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIDocumentLoader.h"
 #include "nsIObserverService.h"
 #include "nsIXULRuntime.h"
@@ -400,8 +401,7 @@ void RequestContext::ProcessTailQueue(nsresult aResult) {
   // Must drop to stop tailing requests
   mUntailAt = TimeStamp();
 
-  nsTArray<PendingTailRequest> queue;
-  queue.SwapElements(mTailQueue);
+  nsTArray<PendingTailRequest> queue = std::move(mTailQueue);
 
   for (const auto& request : queue) {
     LOG(("  untailing %p", request.get()));
@@ -476,6 +476,10 @@ already_AddRefed<nsIRequestContextService>
 RequestContextService::GetOrCreate() {
   MOZ_ASSERT(NS_IsMainThread());
 
+  if (sShutdown) {
+    return nullptr;
+  }
+
   RefPtr<RequestContextService> svc;
   if (gSingleton) {
     svc = gSingleton;
@@ -499,6 +503,10 @@ RequestContextService::GetRequestContext(const uint64_t rcID,
 
   if (sShutdown) {
     return NS_ERROR_ILLEGAL_DURING_SHUTDOWN;
+  }
+
+  if (!rcID) {
+    return NS_ERROR_INVALID_ARG;
   }
 
   if (!mTable.Get(rcID, rc)) {
@@ -547,10 +555,6 @@ RequestContextService::NewRequestContext(nsIRequestContext** rc) {
 
 NS_IMETHODIMP
 RequestContextService::RemoveRequestContext(const uint64_t rcID) {
-  if (IsNeckoChild() && gNeckoChild) {
-    gNeckoChild->SendRemoveRequestContext(rcID);
-  }
-
   MOZ_ASSERT(NS_IsMainThread());
   mTable.Remove(rcID);
   return NS_OK;

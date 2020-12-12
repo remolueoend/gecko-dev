@@ -4,17 +4,20 @@
 ---
 job-defaults:
     description: "cbindgen toolchain build"
+    attributes:
+        local-toolchain: true
     worker-type: b-linux
     worker:
         max-run-time: 3600
     run:
         script: build-cbindgen.sh
         toolchain-artifact: public/build/cbindgen.tar.xz
+    run-on-projects: [trunk]
     fetches:
         fetch:
             # If you update this, make sure to update the minimum version in
             # build/moz.configure/bindgen.configure as well.
-            - cbindgen-0.14.1
+            - cbindgen-0.15.0
 
 linux64-cbindgen:
     treeherder:
@@ -25,7 +28,7 @@ linux64-cbindgen:
         arguments: ['x86_64-unknown-linux-gnu']
     fetches:
         toolchain:
-            - linux64-rust-1.41
+            - linux64-rust-1.47
 
 macosx64-cbindgen:
     treeherder:
@@ -33,9 +36,6 @@ macosx64-cbindgen:
     worker:
         env:
             TOOLTOOL_MANIFEST: "browser/config/tooltool-manifests/macosx64/cross-releng.manifest"
-    run-on-projects:
-        - trunk
-        - try
     run:
         arguments: ['x86_64-apple-darwin']
         resources:
@@ -43,10 +43,10 @@ macosx64-cbindgen:
         tooltool-downloads: internal
     fetches:
         toolchain:
-            - linux64-cctools-port
+            - linux64-cctools-port-clang-9
             - linux64-clang-9
             - linux64-llvm-dsymutil
-            - linux64-rust-macos-1.41
+            - linux64-rust-macos-1.47
 
 win64-cbindgen:
     treeherder:
@@ -63,4 +63,4 @@ win64-cbindgen:
         tooltool-downloads: internal
     fetches:
         toolchain:
-            - win64-rust-1.41
+            - win64-rust-1.47

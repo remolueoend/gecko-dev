@@ -8,6 +8,9 @@ const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+const { MESSAGE_TYPE_HASH: msg } = ChromeUtils.import(
+  "resource://activity-stream/common/ActorConstants.jsm"
+);
 
 const { actionTypes: at, actionUtils: au } = ChromeUtils.import(
   "resource://activity-stream/common/Actions.jsm"
@@ -19,16 +22,6 @@ const { classifySite } = ChromeUtils.import(
   "resource://activity-stream/lib/SiteClassifier.jsm"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ASRouterPreferences",
-  "resource://activity-stream/lib/ASRouterPreferences.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "perfService",
-  "resource://activity-stream/common/PerfService.jsm"
-);
 ChromeUtils.defineModuleGetter(
   this,
   "AboutNewTab",
@@ -71,6 +64,7 @@ ChromeUtils.defineModuleGetter(
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
+  ExperimentAPI: "resource://messaging-system/experiments/ExperimentAPI.jsm",
   TelemetryEnvironment: "resource://gre/modules/TelemetryEnvironment.jsm",
   TelemetrySession: "resource://gre/modules/TelemetrySession.jsm",
 });
@@ -99,7 +93,6 @@ const USER_PREFS_ENCODING = {
 const PREF_IMPRESSION_ID = "impressionId";
 const TELEMETRY_PREF = "telemetry";
 const EVENTS_TELEMETRY_PREF = "telemetry.ut.events";
-const STRUCTURED_INGESTION_TELEMETRY_PREF = "telemetry.structuredIngestion";
 const STRUCTURED_INGESTION_ENDPOINT_PREF =
   "telemetry.structuredIngestion.endpoint";
 // List of namespaces for the structured ingestion system.
@@ -125,13 +118,14 @@ XPCOMUtils.defineLazyGetter(
 );
 
 this.TelemetryFeed = class TelemetryFeed {
-  constructor(options) {
+  constructor() {
     this.sessions = new Map();
     this._prefs = new Prefs();
     this._impressionId = this.getOrCreateImpressionId();
     this._aboutHomeSeen = false;
     this._classifySite = classifySite;
     this._addWindowListeners = this._addWindowListeners.bind(this);
+    this._browserOpenNewtabStart = null;
     this.handleEvent = this.handleEvent.bind(this);
   }
 
@@ -143,10 +137,6 @@ this.TelemetryFeed = class TelemetryFeed {
     return this._prefs.get(EVENTS_TELEMETRY_PREF);
   }
 
-  get structuredIngestionTelemetryEnabled() {
-    return this._prefs.get(STRUCTURED_INGESTION_TELEMETRY_PREF);
-  }
-
   get structuredIngestionEndpointBase() {
     return this._prefs.get(STRUCTURED_INGESTION_ENDPOINT_PREF);
   }
@@ -156,6 +146,16 @@ this.TelemetryFeed = class TelemetryFeed {
       value: ClientID.getClientID(),
     });
     return this.telemetryClientId;
+  }
+
+  get processStartTs() {
+    let startupInfo = Services.startup.getStartupInfo();
+    let processStartTs = startupInfo.process.getTime();
+
+    Object.defineProperty(this, "processStartTs", {
+      value: processStartTs,
+    });
+    return this.processStartTs;
   }
 
   init() {
@@ -238,7 +238,14 @@ this.TelemetryFeed = class TelemetryFeed {
   }
 
   browserOpenNewtabStart() {
-    perfService.mark("browser-open-newtab-start");
+    let now = Cu.now();
+    this._browserOpenNewtabStart = Math.round(this.processStartTs + now);
+
+    ChromeUtils.addProfilerMarker(
+      "UserTiming",
+      now,
+      "browser-open-newtab-start"
+    );
   }
 
   setLoadTriggerInfo(port) {
@@ -265,10 +272,11 @@ this.TelemetryFeed = class TelemetryFeed {
 
     let data_to_save;
     try {
+      if (!this._browserOpenNewtabStart) {
+        throw new Error("No browser-open-newtab-start recorded.");
+      }
       data_to_save = {
-        load_trigger_ts: perfService.getMostRecentAbsMarkStartByName(
-          "browser-open-newtab-start"
-        ),
+        load_trigger_ts: this._browserOpenNewtabStart,
         load_trigger_type: "menu_plus_or_keyboard",
       };
     } catch (e) {
@@ -311,14 +319,21 @@ this.TelemetryFeed = class TelemetryFeed {
   }
 
   /**
-   *  Check if it is in the CFR experiment cohort. ASRouterPreferences lazily parses AS router pref.
+   *  Check if it is in the CFR experiment cohort by querying against the
+   *  experiment manager of Messaging System
+   *
+   *  @return {bool}
    */
   get isInCFRCohort() {
-    for (let provider of ASRouterPreferences.providers) {
-      if (provider.id === "cfr" && provider.enabled && provider.cohort) {
+    try {
+      const experimentData = ExperimentAPI.getExperimentMetaData({
+        featureId: "cfr",
+      });
+      if (experimentData && experimentData.slug) {
         return true;
       }
-    }
+    } catch (e) {}
+
     return false;
   }
 
@@ -355,21 +370,9 @@ this.TelemetryFeed = class TelemetryFeed {
       load_trigger_type = "first_window_opened";
 
       // The real perceived trigger of first_window_opened is the OS-level
-      // clicking of the icon.  We use perfService.timeOrigin because it's the
-      // earliest number on this time scale that's easy to get.; We could
-      // actually use 0, but maybe that could be before the browser started?
-      // [bug 1401406](https://bugzilla.mozilla.org/show_bug.cgi?id=1401406)
-      // getting sorted out may help clarify. Even better, presumably, would be
-      // to use the process creation time for the main process, which is
-      // available, but somewhat harder to get. However, these are all more or
-      // less proxies for the same thing, so it's not clear how much the better
-      // numbers really matter, since we (activity stream) only control a
-      // relatively small amount of the code that's executing between the
-      // OS-click and when the first <browser> element starts loading.  That
-      // said, it's conceivable that it could help us catch regressions in the
-      // number of cycles early chrome code takes to execute, but it's likely
-      // that there are more direct ways to measure that.
-      load_trigger_ts = perfService.timeOrigin;
+      // clicking of the icon. We express this by using the process start
+      // absolute timestamp.
+      load_trigger_ts = this.processStartTs;
     }
 
     const session = {
@@ -407,8 +410,9 @@ this.TelemetryFeed = class TelemetryFeed {
     this.sendDiscoveryStreamImpressions(portID, session);
 
     if (session.perf.visibility_event_rcvd_ts) {
+      let absNow = this.processStartTs + Cu.now();
       session.session_duration = Math.round(
-        perfService.absNow() - session.perf.visibility_event_rcvd_ts
+        absNow - session.perf.visibility_event_rcvd_ts
       );
 
       // Rounding all timestamps in perf to ease the data processing on the backend.
@@ -576,12 +580,6 @@ this.TelemetryFeed = class TelemetryFeed {
     );
   }
 
-  createPerformanceEvent(action) {
-    return Object.assign(this.createPing(), action.data, {
-      action: "activity_stream_performance_event",
-    });
-  }
-
   createSessionEndEvent(session) {
     return Object.assign(this.createPing(), {
       session_id: session.session_id,
@@ -617,8 +615,13 @@ this.TelemetryFeed = class TelemetryFeed {
       case "snippets_user_event":
         event = await this.applySnippetsPolicy(event);
         break;
-      // Bug 1594125 added a new onboarding-like provider called `whats-new-panel`.
+      case "badge_user_event":
       case "whats-new-panel_user_event":
+        event = await this.applyWhatsNewPolicy(event);
+        break;
+      case "moments_user_event":
+        event = await this.applyMomentsPolicy(event);
+        break;
       case "onboarding_user_event":
         event = await this.applyOnboardingPolicy(event, session);
         break;
@@ -650,6 +653,38 @@ this.TelemetryFeed = class TelemetryFeed {
     }
     delete ping.action;
     return { ping, pingType: "cfr" };
+  }
+
+  /**
+   * Per Bug 1482134, all the metrics for What's New panel use client_id in
+   * all the release channels
+   */
+  async applyWhatsNewPolicy(ping) {
+    ping.client_id = await this.telemetryClientId;
+    ping.browser_session_id = browserSessionId;
+    // Attach page info to `event_context` if there is a session associated with this ping
+    delete ping.action;
+    return { ping, pingType: "whats-new-panel" };
+  }
+
+  /**
+   * Per Bug 1484035, Moments metrics comply with following policies:
+   * 1). In release, it collects impression_id, and treats bucket_id as message_id
+   * 2). In prerelease, it collects client_id and message_id
+   * 3). In shield experiments conducted in release, it collects client_id and message_id
+   */
+  async applyMomentsPolicy(ping) {
+    if (
+      UpdateUtils.getUpdateChannel(true) === "release" &&
+      !this.isInCFRCohort
+    ) {
+      ping.message_id = "n/a";
+      ping.impression_id = this._impressionId;
+    } else {
+      ping.client_id = await this.telemetryClientId;
+    }
+    delete ping.action;
+    return { ping, pingType: "moments" };
   }
 
   /**
@@ -763,7 +798,7 @@ this.TelemetryFeed = class TelemetryFeed {
   }
 
   sendStructuredIngestionEvent(eventObject, namespace, pingType, version) {
-    if (this.telemetryEnabled && this.structuredIngestionTelemetryEnabled) {
+    if (this.telemetryEnabled) {
       this.pingCentre.sendStructuredIngestionPing(
         eventObject,
         this._generateStructuredIngestionEndpoint(namespace, pingType, version)
@@ -806,14 +841,6 @@ this.TelemetryFeed = class TelemetryFeed {
 
   handleUndesiredEvent(action) {
     this.sendEvent(this.createUndesiredEvent(action));
-  }
-
-  handleTrailheadEnrollEvent(action) {
-    // Unlike `sendUTEvent`, we always send the event if AS's telemetry is enabled
-    // regardless of `this.eventTelemetryEnabled`.
-    if (this.telemetryEnabled) {
-      this.utEvents.sendTrailheadEnrollEvent(action.data);
-    }
   }
 
   async sendPageTakeoverData() {
@@ -923,14 +950,18 @@ this.TelemetryFeed = class TelemetryFeed {
       case at.TELEMETRY_USER_EVENT:
         this.handleUserEvent(action);
         break;
+      // The next few action types come from ASRouter, which doesn't use
+      // Actions from Actions.jsm, but uses these other custom strings.
+      case msg.TOOLBAR_BADGE_TELEMETRY:
+      // Intentional fall-through
+      case msg.TOOLBAR_PANEL_TELEMETRY:
+      // Intentional fall-through
+      case msg.MOMENTS_PAGE_TELEMETRY:
+      // Intentional fall-through
+      case msg.DOORHANGER_TELEMETRY:
+      // Intentional fall-through
       case at.AS_ROUTER_TELEMETRY_USER_EVENT:
         this.handleASRouterUserEvent(action);
-        break;
-      case at.TELEMETRY_PERFORMANCE_EVENT:
-        this.sendEvent(this.createPerformanceEvent(action));
-        break;
-      case at.TRAILHEAD_ENROLL_EVENT:
-        this.handleTrailheadEnrollEvent(action);
         break;
       case at.UNINIT:
         this.uninit();
@@ -1112,6 +1143,5 @@ const EXPORTED_SYMBOLS = [
   "PREF_IMPRESSION_ID",
   "TELEMETRY_PREF",
   "EVENTS_TELEMETRY_PREF",
-  "STRUCTURED_INGESTION_TELEMETRY_PREF",
   "STRUCTURED_INGESTION_ENDPOINT_PREF",
 ];

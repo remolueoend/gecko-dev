@@ -47,7 +47,7 @@ const clientAuthDialogs = {
     return true;
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIClientAuthDialogs]),
+  QueryInterface: ChromeUtils.generateQI(["nsIClientAuthDialogs"]),
 };
 
 function startServer(cert) {
@@ -187,7 +187,6 @@ add_task(
     info(`Searching for '${searchString}'`);
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus: SimpleTest.waitForFocus,
       value: searchString,
       fireInputEvent: true,
     });

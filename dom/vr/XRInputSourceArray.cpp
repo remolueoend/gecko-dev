@@ -7,6 +7,7 @@
 #include "mozilla/dom/XRInputSourceArray.h"
 #include "mozilla/dom/XRSession.h"
 #include "mozilla/dom/XRInputSourcesChangeEvent.h"
+#include "VRDisplayClient.h"
 
 namespace mozilla {
 namespace dom {
@@ -38,8 +39,17 @@ void XRInputSourceArray::Update(XRSession* aSession) {
 
   XRInputSourcesChangeEventInit addInit;
   nsTArray<RefPtr<XRInputSource>> removedInputs;
+  if (NS_WARN_IF(!addInit.mAdded.SetCapacity(gfx::kVRControllerMaxCount,
+                                             mozilla::fallible))) {
+    MOZ_ASSERT(false,
+               "'add' sequence in XRInputSourcesChangeEventInit SetCapacity() "
+               "failed.");
+    return;
+  }
+
   for (int32_t i = 0; i < gfx::kVRControllerMaxCount; ++i) {
-    const gfx::VRControllerState& controllerState = displayClient->GetDisplayInfo().mControllerState[i];
+    const gfx::VRControllerState& controllerState =
+        displayClient->GetDisplayInfo().mControllerState[i];
     if (controllerState.controllerName[0] == '\0') {
       // Checking if exising controllers need to be removed.
       for (auto& input : mInputSources) {
@@ -62,7 +72,7 @@ void XRInputSourceArray::Update(XRSession* aSession) {
     }
     // Checking if it is added before.
     if (!found &&
-      (controllerState.numButtons > 0 || controllerState.numAxes > 0)) {
+        (controllerState.numButtons > 0 || controllerState.numAxes > 0)) {
       inputSource = new XRInputSource(mParent);
       inputSource->Setup(aSession, i);
       mInputSources.AppendElement(inputSource);
@@ -70,7 +80,12 @@ void XRInputSourceArray::Update(XRSession* aSession) {
       addInit.mBubbles = false;
       addInit.mCancelable = false;
       addInit.mSession = aSession;
-      addInit.mAdded.AppendElement(*inputSource, mozilla::fallible);
+      if (!addInit.mAdded.AppendElement(*inputSource, mozilla::fallible)) {
+        MOZ_ASSERT(false,
+                   "'add' sequence in XRInputSourcesChangeEventInit "
+                   "AppendElement() failed, it might be due to the"
+                   "wrong size when SetCapacity().");
+      }
     }
     // If added, updating the current controller states.
     if (inputSource) {
@@ -80,8 +95,9 @@ void XRInputSourceArray::Update(XRSession* aSession) {
 
   // Send `inputsourceschange` for new controllers.
   if (addInit.mAdded.Length()) {
-    RefPtr<XRInputSourcesChangeEvent> event = XRInputSourcesChangeEvent::Constructor(aSession,
-        NS_LITERAL_STRING("inputsourceschange"), addInit);
+    RefPtr<XRInputSourcesChangeEvent> event =
+        XRInputSourcesChangeEvent::Constructor(
+            aSession, u"inputsourceschange"_ns, addInit);
 
     event->SetTrusted(true);
     aSession->DispatchEvent(*event);
@@ -91,27 +107,42 @@ void XRInputSourceArray::Update(XRSession* aSession) {
   if (removedInputs.Length()) {
     DispatchInputSourceRemovedEvent(removedInputs, aSession);
   }
-  for (auto& input: removedInputs) {
+  for (auto& input : removedInputs) {
     mInputSources.RemoveElement(input);
   }
 }
 
 void XRInputSourceArray::DispatchInputSourceRemovedEvent(
-  const nsTArray<RefPtr<XRInputSource>>& aInputs, XRSession* aSession) {
+    const nsTArray<RefPtr<XRInputSource>>& aInputs, XRSession* aSession) {
+  if (!aSession) {
+    return;
+  }
+
   XRInputSourcesChangeEventInit init;
-
-  for (auto& input: aInputs) {
-    input->SetGamepadIsConnected(false);
-
+  if (NS_WARN_IF(
+          !init.mRemoved.SetCapacity(aInputs.Length(), mozilla::fallible))) {
+    MOZ_ASSERT(false,
+               "'removed' sequence in XRInputSourcesChangeEventInit "
+               "SetCapacity() failed.");
+    return;
+  }
+  for (const auto& input : aInputs) {
+    input->SetGamepadIsConnected(false, aSession);
     init.mBubbles = false;
     init.mCancelable = false;
     init.mSession = aSession;
-    init.mRemoved.AppendElement(*input, mozilla::fallible);
+    if (!init.mRemoved.AppendElement(*input, mozilla::fallible)) {
+      MOZ_ASSERT(false,
+                 "'removed' sequence in XRInputSourcesChangeEventInit "
+                 "AppendElement() failed, it might be due to the"
+                 "wrong size when SetCapacity().");
+    }
   }
 
   if (init.mRemoved.Length()) {
-    RefPtr<XRInputSourcesChangeEvent> event = XRInputSourcesChangeEvent::Constructor(aSession,
-      NS_LITERAL_STRING("inputsourceschange"), init);
+    RefPtr<XRInputSourcesChangeEvent> event =
+        XRInputSourcesChangeEvent::Constructor(aSession,
+                                               u"inputsourceschange"_ns, init);
 
     event->SetTrusted(true);
     aSession->DispatchEvent(*event);

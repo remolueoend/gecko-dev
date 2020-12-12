@@ -20,7 +20,7 @@ const TEST_CASES = [
   {
     type: "http",
     testURL: "http://example.com",
-    img_url: `url("chrome://browser/skin/connection-mixed-active-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/connection-mixed-active-loaded.svg")`,
   },
   {
     type: "https",
@@ -30,7 +30,7 @@ const TEST_CASES = [
   {
     type: "non-chrome about page",
     testURL: "about:about",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/document.svg")`,
   },
   {
     type: "chrome about page",
@@ -40,12 +40,17 @@ const TEST_CASES = [
   {
     type: "file",
     testURL: "dummy_page.html",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/document.svg")`,
+  },
+  {
+    type: "resource",
+    testURL: "resource://gre/modules/Log.jsm",
+    img_url: `url("chrome://global/skin/icons/document.svg")`,
   },
   {
     type: "mixedPassiveContent",
     testURL: kBaseURI + "file_mixedPassiveContent.html",
-    img_url: `url("chrome://browser/skin/connection-mixed-passive-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")`,
   },
   {
     type: "mixedActiveContent",
@@ -55,33 +60,32 @@ const TEST_CASES = [
   {
     type: "certificateError",
     testURL: "https://self-signed.example.com",
-    img_url: `url("chrome://browser/skin/connection-mixed-passive-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")`,
   },
   {
     type: "localhost",
     testURL: "http://127.0.0.1",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/document.svg")`,
   },
   {
     type: "localhost + http frame",
     testURL: kBaseURILocalhost + "file_csp_block_all_mixedcontent.html",
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://global/skin/icons/document.svg")`,
   },
   {
     type: "data URI",
     testURL: "data:text/html,<div>",
-    img_url: `url("chrome://browser/skin/connection-mixed-active-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/connection-mixed-active-loaded.svg")`,
   },
   {
     type: "view-source HTTP",
     testURL: "view-source:http://example.com/",
-    img_url: `url("chrome://browser/skin/connection-mixed-active-loaded.svg")`,
+    img_url: `url("chrome://global/skin/icons/connection-mixed-active-loaded.svg")`,
   },
   {
     type: "view-source HTTPS",
     testURL: "view-source:https://example.com/",
-    // TODO this will get a secure treatment with bug 1496844.
-    img_url: `url("chrome://global/skin/icons/identity-icon.svg")`,
+    img_url: `url("chrome://browser/skin/connection-secure.svg")`,
   },
 ];
 
@@ -90,6 +94,7 @@ add_task(async function test() {
     set: [
       // By default, proxies don't apply to 127.0.0.1. We need them to for this test, though:
       ["network.proxy.allow_hijacking_localhost", true],
+      ["security.mixed_content.upgrade_display_content", false],
     ],
   });
 

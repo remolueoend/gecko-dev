@@ -10,8 +10,10 @@
 #include "mozilla/Casting.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
 #include "mozilla/gfx/Logging.h"
+#include "mozilla/IntegerRange.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/Scoped.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/Unused.h"
 #include "ScopedGLHelpers.h"
 #include "WebGLContext.h"
@@ -586,9 +588,12 @@ static bool ZeroTextureData(const WebGLContext* webgl, GLuint tex,
     UniqueBuffer zeros = calloc(1u, sliceByteCount);
     if (!zeros) return false;
 
-    ScopedUnpackReset scopedReset(webgl);
-    gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);  // Don't bother with
-                                                     // striding it well.
+    // Don't bother with striding it well.
+    // TODO: We shouldn't need to do this for CompressedTexSubImage.
+    WebGLPixelStore::AssertDefault(*gl, webgl->IsWebGL2());
+    gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);
+    const auto revert = MakeScopeExit(
+        [&]() { gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 4); });
 
     GLenum error = 0;
     for (const auto z : IntegerRange(depth)) {
@@ -628,9 +633,11 @@ static bool ZeroTextureData(const WebGLContext* webgl, GLuint tex,
   UniqueBuffer zeros = calloc(1u, sliceByteCount);
   if (!zeros) return false;
 
-  ScopedUnpackReset scopedReset(webgl);
-  gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT,
-                   1);  // Don't bother with striding it well.
+  // Don't bother with striding it well.
+  WebGLPixelStore::AssertDefault(*gl, webgl->IsWebGL2());
+  gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 1);
+  const auto revert =
+      MakeScopeExit([&]() { gl->fPixelStorei(LOCAL_GL_UNPACK_ALIGNMENT, 4); });
 
   GLenum error = 0;
   for (const auto z : IntegerRange(depth)) {

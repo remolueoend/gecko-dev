@@ -7,6 +7,7 @@
 #include "mozilla/css/StreamLoader.h"
 
 #include "mozilla/Encoding.h"
+#include "nsContentUtils.h"
 #include "nsIChannel.h"
 #include "nsIInputStream.h"
 
@@ -31,6 +32,9 @@ NS_IMPL_ISUPPORTS(StreamLoader, nsIStreamListener)
 /* nsIRequestObserver implementation */
 NS_IMETHODIMP
 StreamLoader::OnStartRequest(nsIRequest* aRequest) {
+  MOZ_ASSERT(aRequest);
+  mSheetLoadData->NotifyStart(aRequest);
+
   // It's kinda bad to let Web content send a number that results
   // in a potentially large allocation directly, but efficiency of
   // compression bombs is so great that it doesn't make much sense
@@ -57,6 +61,7 @@ StreamLoader::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
   mOnStopRequestCalled = true;
 #endif
 
+  nsresult rv = mStatus;
   // Decoded data
   nsCString utf8String;
   {
@@ -68,13 +73,12 @@ StreamLoader::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
     nsCOMPtr<nsIChannel> channel = do_QueryInterface(aRequest);
 
     if (NS_FAILED(mStatus)) {
-      mSheetLoadData->VerifySheetReadyToParse(mStatus, EmptyCString(),
-                                              EmptyCString(), channel);
+      mSheetLoadData->VerifySheetReadyToParse(mStatus, ""_ns, ""_ns, channel);
       return mStatus;
     }
 
-    nsresult rv = mSheetLoadData->VerifySheetReadyToParse(aStatus, mBOMBytes,
-                                                          bytes, channel);
+    rv = mSheetLoadData->VerifySheetReadyToParse(aStatus, mBOMBytes, bytes,
+                                                 channel);
     if (rv != NS_OK_PARSE_SHEET) {
       return rv;
     }
@@ -111,11 +115,34 @@ StreamLoader::OnStopRequest(nsIRequest* aRequest, nsresult aStatus) {
     }
   }  // run destructor for `bytes`
 
+  auto info = nsContentUtils::GetSubresourceCacheValidationInfo(aRequest);
+
+  // data: URIs are safe to cache across documents under any circumstance, so we
+  // special-case them here even though the channel itself doesn't have any
+  // caching policy.
+  //
+  // TODO(emilio): Figure out which other schemes that don't have caching
+  // policies are safe to cache. Blobs should be...
+  if (mSheetLoadData->mURI->SchemeIs("data")) {
+    MOZ_ASSERT(!info.mExpirationTime);
+    MOZ_ASSERT(!info.mMustRevalidate);
+    info.mExpirationTime = Some(0);  // 0 means "doesn't expire".
+  }
+
+  // For now, we never cache entries that we have to revalidate, or whose
+  // channel don't support caching.
+  if (!info.mExpirationTime || info.mMustRevalidate) {
+    info.mExpirationTime =
+        Some(nsContentUtils::SecondsFromPRTime(PR_Now()) - 1);
+  }
+  mSheetLoadData->mExpirationTime = *info.mExpirationTime;
+
   // For reasons I don't understand, factoring the below lines into
   // a method on SheetLoadData resulted in a linker error. Hence,
   // accessing fields of mSheetLoadData from here.
   mSheetLoadData->mLoader->ParseSheet(utf8String, *mSheetLoadData,
                                       Loader::AllowAsyncParse::Yes);
+
   return NS_OK;
 }
 

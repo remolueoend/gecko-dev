@@ -14,6 +14,12 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   WindowsSupport: "resource:///modules/ssb/WindowsSupport.jsm",
 });
 
+XPCOMUtils.defineLazyScriptGetter(
+  this,
+  "PrintUtils",
+  "chrome://global/content/printUtils.js"
+);
+
 let gSSBBrowser = null;
 var gSSB = null;
 
@@ -91,8 +97,8 @@ class ProgressListener {
 }
 
 ProgressListener.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIWebProgressListener,
-  Ci.nsISupportsWeakReference,
+  "nsIWebProgressListener",
+  "nsISupportsWeakReference",
 ]);
 
 class BrowserDOMWindow {
@@ -119,7 +125,7 @@ class BrowserDOMWindow {
     console.error(
       "createContentWindow should never be called from a remote browser"
     );
-    throw Cr.NS_ERROR_FAILURE;
+    throw Components.Exception("", Cr.NS_ERROR_FAILURE);
   }
 
   /**
@@ -135,7 +141,7 @@ class BrowserDOMWindow {
    */
   openURI(uri, openWindowInfo, where, flags, triggeringPrincipal, csp) {
     console.error("openURI should never be called from a remote browser");
-    throw Cr.NS_ERROR_FAILURE;
+    throw Components.Exception("", Cr.NS_ERROR_FAILURE);
   }
 
   /**
@@ -160,6 +166,13 @@ class BrowserDOMWindow {
     // It's been determined that this load needs to happen in a new frame.
     // Either onBeforeLinkTraversal set this correctly or this is the result
     // of a window.open call.
+    if (where == Ci.nsIBrowserDOMWindow.OPEN_PRINT_BROWSER) {
+      return PrintUtils.startPrintWindow(
+        "window_print",
+        params.openWindowInfo.parent,
+        params.openWindowInfo
+      );
+    }
 
     // If this ssb can load the url then just load it internally.
     if (gSSB.canLoad(uri)) {
@@ -232,13 +245,16 @@ class BrowserDOMWindow {
     );
   }
 
-  isTabContentWindow(window) {
-    // This method is probably not needed anymore: bug 1602915
-    return gSSBBrowser.contentWindow == window;
-  }
-
   canClose() {
-    return BrowserUtils.canCloseWindow(window);
+    /* globals docShell */
+    for (let i = 0; i < docShell.childCount; i++) {
+      let childShell = docShell.getChildAt(i).QueryInterface(Ci.nsIDocShell);
+      let { contentViewer } = childShell;
+      if (contentViewer && !contentViewer.permitUnload()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   get tabCount() {
@@ -247,7 +263,7 @@ class BrowserDOMWindow {
 }
 
 BrowserDOMWindow.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIBrowserDOMWindow,
+  "nsIBrowserDOMWindow",
 ]);
 
 window.addEventListener("DOMContentLoaded", init, true);

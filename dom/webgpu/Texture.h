@@ -6,13 +6,17 @@
 #ifndef GPU_Texture_H_
 #define GPU_Texture_H_
 
+#include "mozilla/WeakPtr.h"
 #include "nsWrapperCache.h"
 #include "ObjectModel.h"
+#include "mozilla/webgpu/WebGPUTypes.h"
+#include "mozilla/WeakPtr.h"
 
 namespace mozilla {
 namespace dom {
 struct GPUTextureDescriptor;
 struct GPUTextureViewDescriptor;
+class HTMLCanvasElement;
 }  // namespace dom
 
 namespace webgpu {
@@ -32,12 +36,13 @@ class Texture final : public ObjectBase, public ChildOf<Device> {
           const dom::GPUTextureDescriptor& aDesc);
   Device* GetParentDevice() { return mParent; }
   const RawId mId;
+  const Maybe<uint8_t> mBytesPerBlock;
+
+  WeakPtr<dom::HTMLCanvasElement> mTargetCanvasElement;
 
  private:
   virtual ~Texture();
   void Cleanup();
-
-  const UniquePtr<ffi::WGPUTextureViewDescriptor> mDefaultViewDescriptor;
 
  public:
   already_AddRefed<TextureView> CreateView(

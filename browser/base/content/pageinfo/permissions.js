@@ -10,9 +10,17 @@ const { SitePermissions } = ChromeUtils.import(
 
 var gPermPrincipal;
 
+// List of ids of permissions to hide.
+const EXCLUDE_PERMS = ["open-protocol-handler"];
+
 // Array of permissionIDs sorted alphabetically by label.
-var gPermissions = SitePermissions.listPermissions()
-  .filter(p => SitePermissions.getPermissionLabel(p) != null)
+let gPermissions = SitePermissions.listPermissions()
+  .filter(permissionID => {
+    if (!SitePermissions.getPermissionLabel(permissionID)) {
+      return false;
+    }
+    return !EXCLUDE_PERMS.includes(permissionID);
+  })
   .sort((a, b) => {
     let firstLabel = SitePermissions.getPermissionLabel(a);
     let secondLabel = SitePermissions.getPermissionLabel(b);
@@ -33,6 +41,10 @@ var permissionObserver = {
   },
 };
 
+function getExcludedPermissions() {
+  return EXCLUDE_PERMS;
+}
+
 function onLoadPermission(uri, principal) {
   var permTab = document.getElementById("permTab");
   if (SitePermissions.isSupportedPrincipal(principal)) {
@@ -44,7 +56,7 @@ function onLoadPermission(uri, principal) {
       initRow(i);
     }
     Services.obs.addObserver(permissionObserver, "perm-changed");
-    onUnloadRegistry.push(onUnloadPermission);
+    window.addEventListener("unload", onUnloadPermission);
     permTab.hidden = false;
   } else {
     permTab.hidden = true;
@@ -87,6 +99,11 @@ function initRow(aPartId) {
     }
 
     setRadioState(aPartId, state);
+
+    checkbox.disabled = Services.prefs.prefIsLocked(
+      "network.cookie.cookieBehavior"
+    );
+
     return;
   }
 
@@ -106,6 +123,29 @@ function initRow(aPartId) {
   }
 
   setRadioState(aPartId, state);
+
+  switch (aPartId) {
+    case "install":
+      checkbox.disabled = !Services.policies.isAllowed("xpinstall");
+      break;
+    case "popup":
+      checkbox.disabled = Services.prefs.prefIsLocked(
+        "dom.disable_open_during_load"
+      );
+      break;
+    case "autoplay-media":
+      checkbox.disabled = Services.prefs.prefIsLocked("media.autoplay.default");
+      break;
+    case "geo":
+    case "desktop-notification":
+    case "camera":
+    case "microphone":
+    case "xr":
+      checkbox.disabled = Services.prefs.prefIsLocked(
+        "permissions.default." + aPartId
+      );
+      break;
+  }
 }
 
 function createRow(aPartId) {

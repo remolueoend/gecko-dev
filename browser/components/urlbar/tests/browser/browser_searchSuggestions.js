@@ -22,6 +22,7 @@ add_task(async function prepare() {
   );
   let oldDefaultEngine = await Services.search.getDefault();
   await Services.search.setDefault(engine);
+  await UrlbarTestUtils.formHistory.clear();
   registerCleanupFunction(async function() {
     Services.prefs.setBoolPref(SUGGEST_URLBAR_PREF, suggestionsEnabled);
     await Services.search.setDefault(oldDefaultEngine);
@@ -29,6 +30,7 @@ add_task(async function prepare() {
     // Clicking suggestions causes visits to search results pages, so clear that
     // history now.
     await PlacesUtils.history.clear();
+    await UrlbarTestUtils.formHistory.clear();
   });
 });
 
@@ -37,7 +39,6 @@ add_task(async function clickSuggestion() {
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   let [idx, suggestion, engineName] = await getFirstSuggestion();
@@ -56,7 +57,18 @@ add_task(async function clickSuggestion() {
   let element = await UrlbarTestUtils.waitForAutocompleteResultAt(window, idx);
   EventUtils.synthesizeMouseAtCenter(element, {}, window);
   await loadPromise;
+
+  let formHistory = (
+    await UrlbarTestUtils.formHistory.search({ source: engineName })
+  ).map(entry => entry.value);
+  Assert.deepEqual(
+    formHistory,
+    ["foofoo"],
+    "Should find form history after adding it"
+  );
+
   BrowserTestUtils.removeTab(tab);
+  await UrlbarTestUtils.formHistory.clear();
 });
 
 async function testPressEnterOnSuggestion(
@@ -67,7 +79,6 @@ async function testPressEnterOnSuggestion(
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   let [idx, suggestion, engineName] = await getFirstSuggestion();
@@ -77,6 +88,7 @@ async function testPressEnterOnSuggestion(
     "Expected suggestion engine"
   );
 
+  let hasExpectedUrl = !!expectedUrl;
   if (!expectedUrl) {
     expectedUrl = (await Services.search.getDefault()).getSubmission(suggestion)
       .uri.spec;
@@ -87,13 +99,32 @@ async function testPressEnterOnSuggestion(
     gBrowser.selectedBrowser
   );
 
+  let promiseFormHistory;
+  if (!hasExpectedUrl) {
+    promiseFormHistory = UrlbarTestUtils.formHistory.promiseChanged("add");
+  }
+
   for (let i = 0; i < idx; ++i) {
     EventUtils.synthesizeKey("KEY_ArrowDown");
   }
   EventUtils.synthesizeKey("KEY_Enter", keyModifiers);
 
   await promiseLoad;
+
+  if (!hasExpectedUrl) {
+    await promiseFormHistory;
+    let formHistory = (
+      await UrlbarTestUtils.formHistory.search({ source: engineName })
+    ).map(entry => entry.value);
+    Assert.deepEqual(
+      formHistory,
+      ["foofoo"],
+      "Should find form history after adding it"
+    );
+  }
+
   BrowserTestUtils.removeTab(tab);
+  await UrlbarTestUtils.formHistory.clear();
 }
 
 add_task(async function plainEnterOnSuggestion() {
@@ -101,14 +132,15 @@ add_task(async function plainEnterOnSuggestion() {
 });
 
 add_task(async function ctrlEnterOnSuggestion() {
-  await testPressEnterOnSuggestion("http://www.foofoo.com/", { ctrlKey: true });
+  await testPressEnterOnSuggestion("https://www.foofoo.com/", {
+    ctrlKey: true,
+  });
 });
 
 add_task(async function copySuggestionText() {
   gURLBar.focus();
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: "foo",
   });
   let [idx, suggestion] = await getFirstSuggestion();
@@ -137,7 +169,6 @@ add_task(async function typeMaxChars() {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
     value,
-    waitForFocus: SimpleTest.waitForFocus,
   });
 
   // Suggestions should be fetched since we allow them when typing, and the
@@ -221,6 +252,53 @@ add_task(async function pasteMoreThanMaxChars() {
   await assertSuggestions([]);
 
   await SpecialPowers.popPrefEnv();
+});
+
+add_task(async function heuristicAddsFormHistory() {
+  await UrlbarTestUtils.formHistory.clear();
+  let formHistory = (await UrlbarTestUtils.formHistory.search()).map(
+    entry => entry.value
+  );
+  Assert.deepEqual(formHistory, [], "Form history should be empty initially");
+
+  let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
+
+  gURLBar.focus();
+  await UrlbarTestUtils.promiseAutocompleteResultPopup({
+    window,
+    value: "foo",
+  });
+
+  let result = await UrlbarTestUtils.getDetailsOfResultAt(window, 0);
+  Assert.ok(result.heuristic);
+  Assert.equal(result.type, UrlbarUtils.RESULT_TYPE.SEARCH);
+  Assert.equal(result.searchParams.query, "foo");
+
+  let uri = (await Services.search.getDefault()).getSubmission("foo").uri;
+  let loadPromise = BrowserTestUtils.browserLoaded(
+    gBrowser.selectedBrowser,
+    false,
+    uri.spec
+  );
+  let formHistoryPromise = UrlbarTestUtils.formHistory.promiseChanged("add");
+  let element = await UrlbarTestUtils.waitForAutocompleteResultAt(window, 0);
+  EventUtils.synthesizeMouseAtCenter(element, {}, window);
+  await loadPromise;
+
+  await formHistoryPromise;
+  formHistory = (
+    await UrlbarTestUtils.formHistory.search({
+      source: result.searchParams.engine,
+    })
+  ).map(entry => entry.value);
+  Assert.deepEqual(
+    formHistory,
+    ["foo"],
+    "Should find form history after adding it"
+  );
+
+  BrowserTestUtils.removeTab(tab);
+  await UrlbarTestUtils.formHistory.clear();
 });
 
 async function getFirstSuggestion() {

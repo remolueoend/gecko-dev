@@ -8,73 +8,77 @@
 #include "mozilla/dom/XRInputSourceEvent.h"
 #include "XRNativeOriginViewer.h"
 #include "XRNativeOriginTracker.h"
+#include "XRInputSpace.h"
+#include "VRDisplayClient.h"
 
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/dom/Gamepad.h"
 #include "mozilla/dom/GamepadManager.h"
 
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRInputSource, mParent)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(XRInputSource, mParent, mTargetRaySpace,
+                                      mGripSpace, mGamepad)
 NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(XRInputSource, AddRef)
 NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(XRInputSource, Release)
 
 // Follow the controller profile ids from
 // https://github.com/immersive-web/webxr-input-profiles.
-nsTArray<nsString> GetInputSourceProfile(VRControllerType aType) {
+nsTArray<nsString> GetInputSourceProfile(gfx::VRControllerType aType) {
   nsTArray<nsString> profile;
   nsString id;
 
   switch (aType) {
-    case VRControllerType::HTCVive:
+    case gfx::VRControllerType::HTCVive:
       id.AssignLiteral("htc-vive");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::HTCViveCosmos:
+    case gfx::VRControllerType::HTCViveCosmos:
       id.AssignLiteral("htc-vive-cosmos");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::HTCViveFocus:
+    case gfx::VRControllerType::HTCViveFocus:
       id.AssignLiteral("htc-vive-focus");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::HTCViveFocusPlus:
+    case gfx::VRControllerType::HTCViveFocusPlus:
       id.AssignLiteral("htc-vive-focus-plus");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::MSMR:
+    case gfx::VRControllerType::MSMR:
       id.AssignLiteral("microsoft-mixed-reality");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::ValveIndex:
+    case gfx::VRControllerType::ValveIndex:
       id.AssignLiteral("valve-index");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-touchpad-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::OculusGo:
+    case gfx::VRControllerType::OculusGo:
       id.AssignLiteral("oculus-go");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::OculusTouch:
+    case gfx::VRControllerType::OculusTouch:
       id.AssignLiteral("oculus-touch");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::OculusTouch2:
+    case gfx::VRControllerType::OculusTouch2:
       id.AssignLiteral("oculus-touch-v2");
       profile.AppendElement(id);
       id.AssignLiteral("oculus-touch");
@@ -82,20 +86,20 @@ nsTArray<nsString> GetInputSourceProfile(VRControllerType aType) {
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
       break;
-    case VRControllerType::PicoGaze:
+    case gfx::VRControllerType::PicoGaze:
       id.AssignLiteral("pico-gaze");
       profile.AppendElement(id);
       id.AssignLiteral("generic-button");
       profile.AppendElement(id);
       break;
-    case VRControllerType::PicoG2:
-      id.AssignLiteral("pico-g-v2");
+    case gfx::VRControllerType::PicoG2:
+      id.AssignLiteral("pico-g2");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-touchpad");
       profile.AppendElement(id);
       break;
-    case VRControllerType::PicoNeo2:
-      id.AssignLiteral("pico-neo-v2");
+    case gfx::VRControllerType::PicoNeo2:
+      id.AssignLiteral("pico-neo2");
       profile.AppendElement(id);
       id.AssignLiteral("generic-trigger-squeeze-thumbstick");
       profile.AppendElement(id);
@@ -135,7 +139,7 @@ XRSpace* XRInputSource::TargetRaySpace() { return mTargetRaySpace; }
 XRSpace* XRInputSource::GetGripSpace() { return mGripSpace; }
 
 void XRInputSource::GetProfiles(nsTArray<nsString>& aResult) {
-  aResult = mProfiles;
+  aResult = mProfiles.Clone();
 }
 
 Gamepad* XRInputSource::GetGamepad() { return mGamepad; }
@@ -170,13 +174,11 @@ void XRInputSource::Setup(XRSession* aSession, uint32_t aIndex) {
   }
 
   RefPtr<XRNativeOrigin> nativeOriginTargetRay = nullptr;
-  RefPtr<XRNativeOrigin> nativeOriginGrip = nullptr;
   mTargetRayMode = XRTargetRayMode::Tracked_pointer;
   switch (controllerState.targetRayMode) {
     case gfx::TargetRayMode::Gaze:
       mTargetRayMode = XRTargetRayMode::Gaze;
       nativeOriginTargetRay = new XRNativeOriginViewer(displayClient);
-      nativeOriginGrip = new XRNativeOriginViewer(displayClient);
       break;
     case gfx::TargetRayMode::TrackedPointer:
       mTargetRayMode = XRTargetRayMode::Tracked_pointer;
@@ -184,7 +186,6 @@ void XRInputSource::Setup(XRSession* aSession, uint32_t aIndex) {
       // data internally.
       nativeOriginTargetRay =
           new XRNativeOriginTracker(&controllerState.targetRayPose);
-      nativeOriginGrip = new XRNativeOriginTracker(&controllerState.pose);
       break;
     case gfx::TargetRayMode::Screen:
       mTargetRayMode = XRTargetRayMode::Screen;
@@ -193,24 +194,42 @@ void XRInputSource::Setup(XRSession* aSession, uint32_t aIndex) {
       MOZ_ASSERT(false && "Undefined TargetRayMode type.");
       break;
   }
-  mTargetRaySpace =
-      new XRSpace(aSession->GetParentObject(), aSession, nativeOriginTargetRay);
-  mGripSpace =
-      new XRSpace(aSession->GetParentObject(), aSession, nativeOriginGrip);
-  const uint32_t gamepadId =
-      displayInfo.mDisplayID * kVRControllerMaxCount + aIndex;
-  const uint32_t hashKey = GamepadManager::GetGamepadIndexWithServiceType(
-      gamepadId, GamepadServiceType::VR);
+
+  mTargetRaySpace = new XRInputSpace(aSession->GetParentObject(), aSession,
+                                     nativeOriginTargetRay, aIndex);
+
+  const uint32_t gamepadHandleValue =
+      displayInfo.mDisplayID * gfx::kVRControllerMaxCount + aIndex;
+
+  const GamepadHandle gamepadHandle{gamepadHandleValue, GamepadHandleKind::VR};
+
   mGamepad =
-      new Gamepad(mParent, NS_ConvertASCIItoUTF16(""), -1, hashKey,
+      new Gamepad(mParent, NS_ConvertASCIItoUTF16(""), -1, gamepadHandle,
                   GamepadMappingType::Xr_standard, controllerState.hand,
                   displayInfo.mDisplayID, controllerState.numButtons,
                   controllerState.numAxes, controllerState.numHaptics, 0, 0);
   mIndex = aIndex;
+
+  if (!mGripSpace) {
+    CreateGripSpace(aSession, controllerState);
+  }
 }
 
-void XRInputSource::SetGamepadIsConnected(bool aConnected) {
+void XRInputSource::SetGamepadIsConnected(bool aConnected,
+                                          XRSession* aSession) {
   mGamepad->SetConnected(aConnected);
+  MOZ_ASSERT(aSession);
+
+  if (!aConnected) {
+    if (mSelectAction != ActionState::ActionState_Released) {
+      DispatchEvent(u"selectend"_ns, aSession);
+      mSelectAction = ActionState::ActionState_Released;
+    }
+    if (mSqueezeAction != ActionState::ActionState_Released) {
+      DispatchEvent(u"squeezeend"_ns, aSession);
+      mSqueezeAction = ActionState::ActionState_Released;
+    }
+  }
 }
 
 void XRInputSource::Update(XRSession* aSession) {
@@ -225,6 +244,13 @@ void XRInputSource::Update(XRSession* aSession) {
   const gfx::VRControllerState& controllerState =
       displayInfo.mControllerState[mIndex];
   MOZ_ASSERT(controllerState.controllerName[0] != '\0');
+
+  // OculusVR and OpenVR controllers need to wait until
+  // update functions to assign GamepadCapabilityFlags::Cap_GripSpacePosition
+  // flag.
+  if (!mGripSpace) {
+    CreateGripSpace(aSession, controllerState);
+  }
 
   // Update button values.
   nsTArray<RefPtr<GamepadButton>> buttons;
@@ -261,7 +287,7 @@ void XRInputSource::Update(XRSession* aSession) {
         controllerState.selectActionStopFrameId) {
       if (mSelectAction == ActionState::ActionState_Released &&
           controllerState.triggerValue[selectIndex] > endThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("selectstart"), aSession);
+        DispatchEvent(u"selectstart"_ns, aSession);
         mSelectAction = ActionState::ActionState_Pressing;
       } else if (mSelectAction == ActionState::ActionState_Pressing &&
                  controllerState.triggerValue[selectIndex] >
@@ -269,23 +295,23 @@ void XRInputSource::Update(XRSession* aSession) {
         mSelectAction = ActionState::ActionState_Pressed;
       } else if (mSelectAction == ActionState::ActionState_Pressed &&
                  controllerState.triggerValue[selectIndex] < startThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("select"), aSession);
+        DispatchEvent(u"select"_ns, aSession);
         mSelectAction = ActionState::ActionState_Releasing;
       } else if (mSelectAction <= ActionState::ActionState_Releasing &&
                  controllerState.triggerValue[selectIndex] < endThreshold) {
         // For a select btn which only has pressed and unpressed status.
         if (mSelectAction == ActionState::ActionState_Pressed) {
-          DispatchEvent(NS_LITERAL_STRING("select"), aSession);
+          DispatchEvent(u"select"_ns, aSession);
         }
-        DispatchEvent(NS_LITERAL_STRING("selectend"), aSession);
+        DispatchEvent(u"selectend"_ns, aSession);
         mSelectAction = ActionState::ActionState_Released;
       }
     } else if (mSelectAction <= ActionState::ActionState_Releasing) {
       // For a select btn which only has pressed and unpressed status.
       if (mSelectAction == ActionState::ActionState_Pressed) {
-        DispatchEvent(NS_LITERAL_STRING("select"), aSession);
+        DispatchEvent(u"select"_ns, aSession);
       }
-      DispatchEvent(NS_LITERAL_STRING("selectend"), aSession);
+      DispatchEvent(u"selectend"_ns, aSession);
       mSelectAction = ActionState::ActionState_Released;
     }
   }
@@ -296,7 +322,7 @@ void XRInputSource::Update(XRSession* aSession) {
         controllerState.squeezeActionStopFrameId) {
       if (mSqueezeAction == ActionState::ActionState_Released &&
           controllerState.triggerValue[squeezeIndex] > endThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("squeezestart"), aSession);
+        DispatchEvent(u"squeezestart"_ns, aSession);
         mSqueezeAction = ActionState::ActionState_Pressing;
       } else if (mSqueezeAction == ActionState::ActionState_Pressing &&
                  controllerState.triggerValue[squeezeIndex] >
@@ -304,23 +330,23 @@ void XRInputSource::Update(XRSession* aSession) {
         mSqueezeAction = ActionState::ActionState_Pressed;
       } else if (mSqueezeAction == ActionState::ActionState_Pressed &&
                  controllerState.triggerValue[squeezeIndex] < startThreshold) {
-        DispatchEvent(NS_LITERAL_STRING("squeeze"), aSession);
+        DispatchEvent(u"squeeze"_ns, aSession);
         mSqueezeAction = ActionState::ActionState_Releasing;
       } else if (mSqueezeAction <= ActionState::ActionState_Releasing &&
                  controllerState.triggerValue[squeezeIndex] < endThreshold) {
         // For a squeeze btn which only has pressed and unpressed status.
         if (mSqueezeAction == ActionState::ActionState_Pressed) {
-          DispatchEvent(NS_LITERAL_STRING("squeeze"), aSession);
+          DispatchEvent(u"squeeze"_ns, aSession);
         }
-        DispatchEvent(NS_LITERAL_STRING("squeezeend"), aSession);
+        DispatchEvent(u"squeezeend"_ns, aSession);
         mSqueezeAction = ActionState::ActionState_Released;
       }
     } else if (mSqueezeAction <= ActionState::ActionState_Releasing) {
       // For a squeeze btn which only has pressed and unpressed status.
       if (mSqueezeAction == ActionState::ActionState_Pressed) {
-        DispatchEvent(NS_LITERAL_STRING("squeeze"), aSession);
+        DispatchEvent(u"squeeze"_ns, aSession);
       }
-      DispatchEvent(NS_LITERAL_STRING("squeezeend"), aSession);
+      DispatchEvent(u"squeezeend"_ns, aSession);
       mSqueezeAction = ActionState::ActionState_Released;
     }
   }
@@ -330,6 +356,9 @@ int32_t XRInputSource::GetIndex() { return mIndex; }
 
 void XRInputSource::DispatchEvent(const nsAString& aEvent,
                                   XRSession* aSession) {
+  if (!GetParentObject() || !aSession) {
+    return;
+  }
   // Create a XRFrame for its callbacks
   RefPtr<XRFrame> frame = new XRFrame(GetParentObject(), aSession);
   frame->StartInputSourceEvent();
@@ -346,6 +375,21 @@ void XRInputSource::DispatchEvent(const nsAString& aEvent,
   event->SetTrusted(true);
   aSession->DispatchEvent(*event);
   frame->EndInputSourceEvent();
+}
+
+void XRInputSource::CreateGripSpace(
+    XRSession* aSession, const gfx::VRControllerState& controllerState) {
+  MOZ_ASSERT(!mGripSpace);
+  MOZ_ASSERT(aSession && mIndex >= 0 && mGamepad);
+  if (mTargetRayMode == XRTargetRayMode::Tracked_pointer &&
+      controllerState.flags & GamepadCapabilityFlags::Cap_GripSpacePosition) {
+    RefPtr<XRNativeOrigin> nativeOriginGrip = nullptr;
+    nativeOriginGrip = new XRNativeOriginTracker(&controllerState.pose);
+    mGripSpace = new XRInputSpace(aSession->GetParentObject(), aSession,
+                                  nativeOriginGrip, mIndex);
+  } else {
+    mGripSpace = nullptr;
+  }
 }
 
 }  // namespace dom

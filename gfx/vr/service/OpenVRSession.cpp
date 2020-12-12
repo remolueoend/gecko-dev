@@ -7,6 +7,7 @@
 #include <fstream>
 #include "mozilla/JSONWriter.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "nsIThread.h"
 #include "nsString.h"
 
 #include "OpenVRSession.h"
@@ -66,7 +67,7 @@ struct StringWriteFunc : public JSONWriteFunc {
 
   explicit StringWriteFunc(nsACString& buffer) : mBuffer(buffer) {}
 
-  void Write(const char* aStr) override { mBuffer.Append(aStr); }
+  void Write(const Span<const char>& aStr) override { mBuffer.Append(aStr); }
 };
 
 class ControllerManifestFile {
@@ -210,8 +211,11 @@ OpenVRSession::~OpenVRSession() {
 
 bool OpenVRSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
                                bool aDetectRuntimesOnly) {
-  if (!StaticPrefs::dom_vr_enabled() ||
-      !StaticPrefs::dom_vr_openvr_enabled_AtStartup()) {
+  if (StaticPrefs::dom_vr_puppet_enabled()) {
+    // Ensure that tests using the VR Puppet do not find real hardware
+    return false;
+  }
+  if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_openvr_enabled()) {
     return false;
   }
   if (mVRSystem != nullptr) {
@@ -587,8 +591,8 @@ bool OpenVRSession::SetupContollerActions() {
     auto SetupActionWriterByControllerType = [&](const char* aType,
                                                  const nsCString& aManifest) {
       actionWriter.StartObjectElement();
-      actionWriter.StringProperty("controller_type", aType);
-      actionWriter.StringProperty("binding_url", aManifest.BeginReading());
+      actionWriter.StringProperty("controller_type", MakeStringSpan(aType));
+      actionWriter.StringProperty("binding_url", aManifest);
       actionWriter.EndObject();
     };
     SetupActionWriterByControllerType("vive_controller", viveManifest);
@@ -604,8 +608,8 @@ bool OpenVRSession::SetupContollerActions() {
     for (auto& controller : mControllerHand) {
       auto SetActionsToWriter = [&](const ControllerAction& aAction) {
         actionWriter.StartObjectElement();
-        actionWriter.StringProperty("name", aAction.name.BeginReading());
-        actionWriter.StringProperty("type", aAction.type.BeginReading());
+        actionWriter.StringProperty("name", aAction.name);
+        actionWriter.StringProperty("type", aAction.type);
         actionWriter.EndObject();
       };
 
@@ -734,6 +738,7 @@ bool OpenVRSession::InitState(VRSystemState& aSystemState) {
   mVRSystem->GetRecommendedRenderTargetSize(&w, &h);
   state.eyeResolution.width = w;
   state.eyeResolution.height = h;
+  state.nativeFramebufferScaleFactor = 1.0f;
 
   // default to an identity quaternion
   aSystemState.sensorState.pose.orientation[3] = 1.0f;
@@ -872,7 +877,6 @@ void OpenVRSession::UpdateHeadsetPose(VRSystemState& aState) {
 
     gfx::Quaternion rot;
     rot.SetFromRotationMatrix(m);
-    rot.Invert();
 
     aState.sensorState.flags = (VRDisplayCapabilityFlags)(
         (int)aState.sensorState.flags |
@@ -1047,7 +1051,8 @@ void OpenVRSession::UpdateControllerButtons(VRSystemState& aState) {
     VRControllerState& controllerState = aState.controllerState[stateIndex];
     controllerState.hand = GetControllerHandFromControllerRole(role);
     mControllerMapper->UpdateButtons(controllerState, mControllerHand[role]);
-    SetControllerSelectionAndSqueezeFrameId(controllerState, aState.displayState.lastSubmittedFrameId);
+    SetControllerSelectionAndSqueezeFrameId(
+        controllerState, aState.displayState.lastSubmittedFrameId);
   }
 }
 
@@ -1062,7 +1067,7 @@ void OpenVRSession::UpdateControllerPoses(VRSystemState& aState) {
     }
     VRControllerState& controllerState = aState.controllerState[stateIndex];
     vr::InputPoseActionData_t poseData;
-    if (vr::VRInput()->GetPoseActionData(
+    if (vr::VRInput()->GetPoseActionDataRelativeToNow(
             mControllerHand[role].mActionPose.handle,
             vr::TrackingUniverseSeated, 0, &poseData, sizeof(poseData),
             vr::k_ulInvalidInputValueHandle) != vr::VRInputError_None ||
@@ -1072,9 +1077,10 @@ void OpenVRSession::UpdateControllerPoses(VRSystemState& aState) {
     } else {
       const ::vr::TrackedDevicePose_t& pose = poseData.pose;
       if (pose.bDeviceIsConnected) {
-        controllerState.flags = (dom::GamepadCapabilityFlags::Cap_Orientation |
-                                 dom::GamepadCapabilityFlags::Cap_Position |
-                                 dom::GamepadCapabilityFlags::Cap_TargetRaySpacePosition);
+        controllerState.flags =
+            (dom::GamepadCapabilityFlags::Cap_Orientation |
+             dom::GamepadCapabilityFlags::Cap_Position |
+             dom::GamepadCapabilityFlags::Cap_GripSpacePosition);
       } else {
         controllerState.flags = dom::GamepadCapabilityFlags::Cap_None;
       }
@@ -1092,7 +1098,6 @@ void OpenVRSession::UpdateControllerPoses(VRSystemState& aState) {
 
         gfx::Quaternion rot;
         rot.SetFromRotationMatrix(m);
-        rot.Invert();
 
         controllerState.pose.orientation[0] = rot.x;
         controllerState.pose.orientation[1] = rot.y;
@@ -1119,12 +1124,11 @@ void OpenVRSession::UpdateControllerPoses(VRSystemState& aState) {
 
         // Calculate its target ray space by shifting degrees in x-axis
         // for ergonomic.
-        const float kPointerAngleDegrees = -0.698; // 40 degrees.
+        const float kPointerAngleDegrees = -0.698;  // 40 degrees.
         gfx::Matrix4x4 rayMtx(m);
         rayMtx.RotateX(kPointerAngleDegrees);
         gfx::Quaternion rayRot;
         rayRot.SetFromRotationMatrix(rayMtx);
-        rayRot.Invert();
 
         controllerState.targetRayPose = controllerState.pose;
         controllerState.targetRayPose.orientation[0] = rayRot.x;
@@ -1251,7 +1255,6 @@ void OpenVRSession::ProcessEvents(mozilla::gfx::VRSystemState& aSystemState) {
       // process to shutdown the VR process, and we need to avoid it.
       // case ::vr::EVREventType::VREvent_ProcessQuit:
       case ::vr::EVREventType::VREvent_QuitAcknowledged:
-      case ::vr::EVREventType::VREvent_QuitAborted_UserPrompt:
         mShouldQuit = true;
         break;
       default:
@@ -1362,7 +1365,7 @@ void OpenVRSession::VibrateHaptic(uint32_t aControllerIdx,
 void OpenVRSession::StartHapticThread() {
   MOZ_ASSERT(NS_IsMainThread());
   if (!mHapticThread) {
-    mHapticThread = new VRThread(NS_LITERAL_CSTRING("VR_OpenVR_Haptics"));
+    mHapticThread = new VRThread("VR_OpenVR_Haptics"_ns);
   }
   mHapticThread->Start();
   StartHapticTimer();

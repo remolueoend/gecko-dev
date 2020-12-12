@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/HTMLOptionElement.h"
+
+#include "HTMLOptGroupElement.h"
 #include "mozilla/dom/HTMLOptionElementBinding.h"
 #include "mozilla/dom/HTMLSelectElement.h"
 #include "nsGkAtoms.h"
@@ -29,8 +31,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Option)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLOptionElement::HTMLOptionElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
@@ -338,8 +339,8 @@ already_AddRefed<HTMLOptionElement> HTMLOptionElement::Option(
   if (aDefaultSelected) {
     // We're calling SetAttr directly because we want to pass
     // aNotify == false.
-    aError = option->SetAttr(kNameSpaceID_None, nsGkAtoms::selected,
-                             EmptyString(), false);
+    aError =
+        option->SetAttr(kNameSpaceID_None, nsGkAtoms::selected, u""_ns, false);
     if (aError.Failed()) {
       return nullptr;
     }
@@ -366,5 +367,4 @@ JSObject* HTMLOptionElement::WrapNode(JSContext* aCx,
   return HTMLOptionElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

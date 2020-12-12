@@ -34,13 +34,8 @@ class WebConsoleConnectionProxy {
     this.webConsoleUI = webConsoleUI;
     this.target = target;
     this.needContentProcessMessagesListener = needContentProcessMessagesListener;
-
     this._connecter = null;
 
-    this._onPageError = this._onPageError.bind(this);
-    this._onLogMessage = this._onLogMessage.bind(this);
-    this._onNetworkEvent = this._onNetworkEvent.bind(this);
-    this._onNetworkEventUpdate = this._onNetworkEventUpdate.bind(this);
     this._onTabNavigated = this._onTabNavigated.bind(this);
     this._onTabWillNavigate = this._onTabWillNavigate.bind(this);
     this._onLastPrivateContextExited = this._onLastPrivateContextExited.bind(
@@ -61,6 +56,10 @@ class WebConsoleConnectionProxy {
       return this._connecter;
     }
 
+    if (!this.target.client) {
+      return Promise.reject("target was destroyed");
+    }
+
     this.target.on("will-navigate", this._onTabWillNavigate);
     this.target.on("navigate", this._onTabNavigated);
 
@@ -79,17 +78,9 @@ class WebConsoleConnectionProxy {
         );
       await this.webConsoleUI.setSaveRequestAndResponseBodies(saveBodies);
 
-      // Note that we only fetch PageError from _getCachedMessages.
-      // ConsoleAPI is already fetched via the Resources API.
-      const cachedMessages = await this._getCachedMessages();
-      const networkMessages = this._getNetworkMessages();
-      const messages = cachedMessages.concat(networkMessages);
-      messages.sort((a, b) => a.timeStamp - b.timeStamp);
-      this.dispatchMessagesAdd(messages);
-
       this._addWebConsoleFrontEventListeners();
 
-      if (!this.webConsoleFront.hasNativeConsoleAPI) {
+      if (this.webConsoleFront && !this.webConsoleFront.hasNativeConsoleAPI) {
         await this.webConsoleUI.logWarningAboutReplacedAPI();
       }
     })();
@@ -115,21 +106,25 @@ class WebConsoleConnectionProxy {
     return this._connecter;
   }
 
+  getConnectionPromise() {
+    return this._connecter;
+  }
+
   /**
    * Attach to the Web Console actor.
    * @private
    * @returns Promise
    */
   _attachConsole() {
-    const listeners = ["PageError", "NetworkActivity"];
+    if (!this.webConsoleFront || !this.needContentProcessMessagesListener) {
+      return null;
+    }
+
     // Enable the forwarding of console messages to the parent process
     // when we open the Browser Console or Toolbox without fission support. If Fission
     // is enabled, we don't use the ContentProcessMessages listener, but attach to the
     // content processes directly.
-    if (this.needContentProcessMessagesListener) {
-      listeners.push("ContentProcessMessages");
-    }
-    return this.webConsoleFront.startListeners(listeners);
+    return this.webConsoleFront.startListeners(["ContentProcessMessages"]);
   }
 
   /**
@@ -138,10 +133,10 @@ class WebConsoleConnectionProxy {
    * @private
    */
   _addWebConsoleFrontEventListeners() {
-    this.webConsoleFront.on("networkEvent", this._onNetworkEvent);
-    this.webConsoleFront.on("networkEventUpdate", this._onNetworkEventUpdate);
-    this.webConsoleFront.on("logMessage", this._onLogMessage);
-    this.webConsoleFront.on("pageError", this._onPageError);
+    if (!this.webConsoleFront) {
+      return;
+    }
+
     this.webConsoleFront.on(
       "lastPrivateContextExited",
       this._onLastPrivateContextExited
@@ -158,10 +153,6 @@ class WebConsoleConnectionProxy {
    * @private
    */
   _removeWebConsoleFrontEventListeners() {
-    this.webConsoleFront.off("networkEvent", this._onNetworkEvent);
-    this.webConsoleFront.off("networkEventUpdate", this._onNetworkEventUpdate);
-    this.webConsoleFront.off("logMessage", this._onLogMessage);
-    this.webConsoleFront.off("pageError", this._onPageError);
     this.webConsoleFront.off(
       "lastPrivateContextExited",
       this._onLastPrivateContextExited
@@ -172,108 +163,11 @@ class WebConsoleConnectionProxy {
     );
   }
 
-  /**
-   * Get cached messages from the server.
-   *
-   * @private
-   * @returns A Promise that resolves with the cached messages, or reject if something
-   *          went wrong.
-   */
-  async _getCachedMessages() {
-    const messageTypes = ["PageError"];
-    if (this.webConsoleFront.traits.newCacheStructure) {
-      messageTypes.push("LogMessage");
-    }
-
-    const response = await this.webConsoleFront.getCachedMessages(messageTypes);
-    if (this.webConsoleFront.traits.newCacheStructure) {
-      messageTypes.push("LogMessage");
-    }
-    if (response.error) {
-      throw new Error(
-        `Web Console getCachedMessages error: ${response.error} ${response.message}`
-      );
-    }
-
-    return response.messages;
-  }
-
-  /**
-   * Get network messages from the server.
-   *
-   * @private
-   * @returns An array of network messages.
-   */
-  _getNetworkMessages() {
-    return Array.from(this.webConsoleFront.getNetworkEvents());
-  }
-
-  /**
-   * The "pageError" message type handler. We redirect any page errors to the UI
-   * for displaying.
-   *
-   * @private
-   * @param object packet
-   *        The message received from the server.
-   */
-  _onPageError(packet) {
-    if (!this.webConsoleUI) {
-      return;
-    }
-    packet.type = "pageError";
-    this.dispatchMessageAdd(packet);
-  }
-
-  /**
-   * The "logMessage" message type handler. We redirect any message to the UI
-   * for displaying.
-   *
-   * @private
-   * @param object packet
-   *        The message received from the server.
-   */
-  _onLogMessage(packet) {
-    if (!this.webConsoleUI) {
-      return;
-    }
-    packet.type = "logMessage";
-    this.dispatchMessageAdd(packet);
-  }
-
   _clearLogpointMessages(logpointId) {
-    if (this.webConsoleUI) {
+    // Some message might try to update while we are closing the toolbox.
+    if (this.webConsoleUI?.wrapper) {
       this.webConsoleUI.wrapper.dispatchClearLogpointMessages(logpointId);
     }
-  }
-
-  /**
-   * The "networkEvent" message type handler. We redirect any message to
-   * the UI for displaying.
-   *
-   * @private
-   * @param object networkInfo
-   *        The network request information.
-   */
-  _onNetworkEvent(networkInfo) {
-    if (!this.webConsoleUI) {
-      return;
-    }
-    this.dispatchMessageAdd(networkInfo);
-  }
-
-  /**
-   * The "networkEventUpdate" message type handler. We redirect any message to
-   * the UI for displaying.
-   *
-   * @private
-   * @param object response
-   *        The update response received from the server.
-   */
-  _onNetworkEventUpdate(response) {
-    if (!this.webConsoleUI) {
-      return;
-    }
-    this.dispatchMessageUpdate(response.networkInfo, response);
   }
 
   /**
@@ -300,6 +194,10 @@ class WebConsoleConnectionProxy {
    *        The message received from the server.
    */
   _onTabNavigated(packet) {
+    // Some message might try to update while we are closing the toolbox.
+    if (!this.webConsoleUI) {
+      return;
+    }
     this.webConsoleUI.handleTabNavigated(packet);
   }
 
@@ -311,32 +209,11 @@ class WebConsoleConnectionProxy {
    *        The message received from the server.
    */
   _onTabWillNavigate(packet) {
-    this.webConsoleUI.handleTabWillNavigate(packet);
-  }
-
-  /**
-   * Dispatch a message add on the new frontend and emit an event for tests.
-   */
-  dispatchMessageAdd(packet) {
-    this.webConsoleUI.wrapper.dispatchMessageAdd(packet);
-  }
-
-  /**
-   * Batched dispatch of messages.
-   */
-  dispatchMessagesAdd(packets) {
-    this.webConsoleUI.wrapper.dispatchMessagesAdd(packets);
-  }
-
-  /**
-   * Dispatch a message event on the new frontend and emit an event for tests.
-   */
-  dispatchMessageUpdate(networkInfo, response) {
     // Some message might try to update while we are closing the toolbox.
     if (!this.webConsoleUI) {
       return;
     }
-    this.webConsoleUI.wrapper.dispatchMessageUpdate(networkInfo, response);
+    this.webConsoleUI.handleTabWillNavigate(packet);
   }
 
   /**

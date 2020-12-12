@@ -13,12 +13,15 @@
 #include "nsContentUtils.h"
 #include "nsProxyRelease.h"
 #include "nsContentSecurityManager.h"
+#include "nsComponentManagerUtils.h"
 
 #include "nsIFileURL.h"
 
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/TelemetryComms.h"
 #include "private/pprio.h"
 #include "nsInputStreamPump.h"
 #include "nsThreadUtils.h"
@@ -451,7 +454,7 @@ nsresult nsJARChannel::ContinueOpenLocalFile(nsJARInputThunk* aInput,
   // Create input stream pump and call AsyncRead as a block.
   rv = NS_NewInputStreamPump(getter_AddRefs(mPump), input.forget());
   if (NS_SUCCEEDED(rv)) {
-    rv = mPump->AsyncRead(this, nullptr);
+    rv = mPump->AsyncRead(this);
   }
 
   if (NS_SUCCEEDED(rv)) {
@@ -497,7 +500,7 @@ nsresult nsJARChannel::CheckPendingEvents() {
 
   nsresult rv;
 
-  auto suspendCount = mPendingEvent.suspendCount;
+  uint32_t suspendCount = mPendingEvent.suspendCount;
   while (suspendCount--) {
     if (NS_WARN_IF(NS_FAILED(rv = mPump->Suspend()))) {
       return rv;
@@ -868,7 +871,7 @@ nsJARChannel::AsyncOpen(nsIStreamListener* aListener) {
       mLoadInfo->GetSecurityMode() == 0 ||
           mLoadInfo->GetInitialSecurityCheckDone() ||
           (mLoadInfo->GetSecurityMode() ==
-               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
+               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL &&
            mLoadInfo->GetLoadingPrincipal() &&
            mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()),
       "security flags in loadInfo but doContentSecurityCheck() not called");
@@ -997,7 +1000,6 @@ nsJARChannel::OnStartRequest(nsIRequest* req) {
 
   mRequest = req;
   nsresult rv = mListener->OnStartRequest(this);
-  mRequest = nullptr;
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -1024,6 +1026,39 @@ nsJARChannel::OnStartRequest(nsIRequest* req) {
   return rv;
 }
 
+static void RecordEmptyFileEvent(const nsCString& aFileName) {
+  // Send Telemetry
+
+  // The event can only hold 80 characters.
+  // We only save the file name and path inside the jar.
+  auto findFilenameStart = [](const nsCString& aFileName) -> uint32_t {
+    int32_t pos = aFileName.Find("!/");
+    if (pos == kNotFound) {
+      MOZ_ASSERT(false, "This should not happen");
+      return 0;
+    }
+    int32_t from = aFileName.RFindChar('/', pos);
+    if (from == kNotFound) {
+      MOZ_ASSERT(false, "This should not happen");
+      return 0;
+    }
+    // Skip over the slash
+    from++;
+    return from;
+  };
+
+  // If for some reason we are unable to extract the filename we report the
+  // entire string, or 80 characters of it, to make sure we don't miss any
+  // events.
+  uint32_t from = findFilenameStart(aFileName);
+
+  Telemetry::SetEventRecordingEnabled("network.jar.channel"_ns, true);
+  Telemetry::EventID eventType =
+      Telemetry::EventID::NetworkJarChannel_Nodata_Onstop;
+  Telemetry::RecordEvent(eventType, mozilla::Some(Substring(aFileName, from)),
+                         Nothing{});
+}
+
 NS_IMETHODIMP
 nsJARChannel::OnStopRequest(nsIRequest* req, nsresult status) {
   LOG(("nsJARChannel::OnStopRequest [this=%p %s status=%" PRIx32 "]\n", this,
@@ -1032,12 +1067,17 @@ nsJARChannel::OnStopRequest(nsIRequest* req, nsresult status) {
   if (NS_SUCCEEDED(mStatus)) mStatus = status;
 
   if (mListener) {
+    if (NS_SUCCEEDED(status) && !mOnDataCalled) {
+      RecordEmptyFileEvent(mSpec);
+    }
+
     mListener->OnStopRequest(this, status);
     mListener = nullptr;
   }
 
   if (mLoadGroup) mLoadGroup->RemoveRequest(this, nullptr, status);
 
+  mRequest = nullptr;
   mPump = nullptr;
   mIsPending = false;
 
@@ -1061,6 +1101,7 @@ nsJARChannel::OnDataAvailable(nsIRequest* req, nsIInputStream* stream,
 
   nsresult rv;
 
+  mOnDataCalled = true;
   rv = mListener->OnDataAvailable(this, stream, offset, count);
 
   // simply report progress here instead of hooking ourselves up as a

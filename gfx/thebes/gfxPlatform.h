@@ -7,7 +7,6 @@
 #define GFX_PLATFORM_H
 
 #include "mozilla/FontPropertyTypes.h"
-#include "mozilla/Logging.h"
 #include "mozilla/gfx/Types.h"
 #include "nsTArray.h"
 #include "nsString.h"
@@ -15,9 +14,7 @@
 #include "nsUnicodeScriptCodes.h"
 
 #include "gfxTypes.h"
-#include "gfxBlur.h"
 #include "gfxSkipChars.h"
-#include "nsRect.h"
 
 #include "qcms.h"
 
@@ -25,6 +22,7 @@
 #include "GfxInfoCollector.h"
 
 #include "mozilla/layers/CompositorTypes.h"
+#include "mozilla/layers/LayersTypes.h"
 #include "mozilla/layers/MemoryPressureObserver.h"
 
 class gfxASurface;
@@ -45,6 +43,7 @@ typedef struct FT_LibraryRec_* FT_Library;
 
 namespace mozilla {
 class FontFamilyList;
+class LogModule;
 namespace layers {
 class FrameStats;
 }
@@ -96,6 +95,27 @@ enum eGfxLog {
   eGfxLog_textperf = 5
 };
 
+// Used during font matching to express a preference, if any, for whether
+// to use a font that will present a color or monochrome glyph.
+enum class eFontPresentation : uint8_t {
+  // Character does not have the emoji property, so no special heuristics
+  // apply during font selection.
+  Any = 0,
+  // Character is potentially emoji, but Text-style presentation has been
+  // explicitly requested using VS15.
+  Text = 1,
+  // Character has Emoji-style presentation by default (but an author-
+  // provided webfont will be used even if it is not color).
+  EmojiDefault = 2,
+  // Character explicitly requires Emoji-style presentation due to VS16 or
+  // skin-tone codepoint.
+  EmojiExplicit = 3
+};
+
+inline bool PrefersColor(eFontPresentation aPresentation) {
+  return aPresentation >= eFontPresentation::EmojiDefault;
+}
+
 // when searching through pref langs, max number of pref langs
 const uint32_t kMaxLenPrefLangList = 32;
 
@@ -126,16 +146,18 @@ inline const char* GetBackendName(mozilla::gfx::BackendType aBackend) {
 }
 
 enum class DeviceResetReason {
-  OK = 0,
-  HUNG,
-  REMOVED,
-  RESET,
-  DRIVER_ERROR,
-  INVALID_CALL,
+  OK = 0,        // No reset.
+  HUNG,          // Windows specific, guilty device reset.
+  REMOVED,       // Windows specific, device removed or driver upgraded.
+  RESET,         // Guilty device reset.
+  DRIVER_ERROR,  // Innocent device reset.
+  INVALID_CALL,  // Windows specific, guilty device reset.
   OUT_OF_MEMORY,
-  FORCED_RESET,
-  UNKNOWN,
-  D3D9_RESET
+  FORCED_RESET,  // Simulated device reset.
+  OTHER,         // Unrecognized reason for device reset.
+  D3D9_RESET,    // Windows specific, not used.
+  NVIDIA_VIDEO,  // Linux specific, NVIDIA video memory was reset.
+  UNKNOWN,       // GL specific, unknown if guilty or innocent.
 };
 
 enum class ForcedDeviceResetReason {
@@ -372,7 +394,8 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
    * Create a gfxFontGroup based on the given family list and style.
    */
   gfxFontGroup* CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
-                                const gfxFontStyle* aStyle,
+                                const gfxFontStyle* aStyle, nsAtom* aLanguage,
+                                bool aExplicitLanguage,
                                 gfxTextPerfMetrics* aTextPerf,
                                 FontMatchingStats* aFontMatchingStats,
                                 gfxUserFontSet* aUserFontSet,
@@ -475,8 +498,8 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   // returns a list of commonly used fonts for a given character
   // these are *possible* matches, no cmap-checking is done at this level
-  virtual void GetCommonFallbackFonts(uint32_t /*aCh*/, uint32_t /*aNextCh*/,
-                                      Script /*aRunScript*/,
+  virtual void GetCommonFallbackFonts(uint32_t /*aCh*/, Script /*aRunScript*/,
+                                      eFontPresentation /*aPresentation*/,
                                       nsTArray<const char*>& /*aFontList*/) {
     // platform-specific override, by default do nothing
   }
@@ -505,6 +528,11 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
    * Are we going to try color management?
    */
   static eCMSMode GetCMSMode();
+
+  /**
+   * Used only for testing. Override the pref setting.
+   */
+  static void SetCMSModeOverride(eCMSMode aMode);
 
   /**
    * Determines the rendering intent for color management.
@@ -666,10 +694,10 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   static void ReInitFrameRate();
 
   /**
-   * Update allow sacrificing subpixel AA quality setting (called after pref
+   * Update force subpixel AA quality setting (called after pref
    * changes).
    */
-  void UpdateAllowSacrificingSubpixelAA();
+  void UpdateForceSubpixelAAWherePossible();
 
   /**
    * Used to test which input types are handled via APZ.
@@ -755,6 +783,8 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   static bool WebRenderPrefEnabled();
   // you probably want to use gfxVars::UseWebRender() instead of this
   static bool WebRenderEnvvarEnabled();
+  // you probably want to use gfxVars::UseWebRender() instead of this
+  static bool WebRenderEnvvarDisabled();
 
   void NotifyFrameStats(nsTArray<mozilla::layers::FrameStats>&& aFrameStats);
 
@@ -764,7 +794,12 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
   virtual void EnsureDevicesInitialized(){};
   virtual bool DevicesInitialized() { return true; };
 
+  virtual bool UseDMABufWebGL() { return false; }
+  virtual bool IsWaylandDisplay() { return false; }
+
   static uint32_t TargetFrameRate();
+
+  static bool UseDesktopZoomingScrollbars();
 
  protected:
   gfxPlatform();
@@ -772,7 +807,10 @@ class gfxPlatform : public mozilla::layers::MemoryPressureListener {
 
   virtual void InitAcceleration();
   virtual void InitWebRenderConfig();
+  virtual void InitWebGLConfig();
   virtual void InitWebGPUConfig();
+
+  virtual void GetPlatformDisplayInfo(mozilla::widget::InfoObject& aObj) {}
 
   /**
    * Called immediately before deleting the gfxPlatform object.

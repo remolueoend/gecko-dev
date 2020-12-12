@@ -61,7 +61,7 @@ add_task(async function() {
       }
 
       // Register the font at path |fontPath| and wait
-      // for the brower to detect the change.
+      // for the browser to detect the change.
       async function registerFont(fontPath) {
         let fontRegistered = getFontNotificationPromise();
         let exitCode = runProcess(kPythonPath, [
@@ -106,7 +106,7 @@ add_task(async function() {
       let getFontNotificationPromise = () =>
         new Promise(resolve => {
           let prefObserver = {
-            QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+            QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
             observe() {
               prefBranch.removeObserver("changed", prefObserver);
               resolve();

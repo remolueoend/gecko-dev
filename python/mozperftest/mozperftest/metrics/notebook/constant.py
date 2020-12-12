@@ -2,15 +2,14 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import os
-from pathlib import Path
+import pathlib
 from types import MappingProxyType
 
-from .customtransforms import custom_single_json_retriever
+from .transformer import get_transformers
 
 
 class Constant(object):
-    """A singleton class to store all constants.
-    """
+    """A singleton class to store all constants."""
 
     __instance = None
 
@@ -20,11 +19,8 @@ class Constant(object):
         return cls.__instance
 
     def __init__(self):
-        self.__here = Path(os.path.dirname(os.path.abspath(__file__)))
-        # XXX This needs to be more dynamic
-        self.__predefined_transformers = {
-            "SingleJsonRetriever": custom_single_json_retriever.SingleJsonRetriever
-        }
+        self.__here = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
+        self.__predefined_transformers = get_transformers(self.__here / "transforms")
 
     @property
     def predefined_transformers(self):

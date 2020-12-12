@@ -172,14 +172,16 @@ class BasePopup {
     // popup was closed externally, there will be no message manager here, so
     // just replace our receiveMessage method with a stub.
     if (mm) {
-      mm.removeMessageListener("DOMTitleChanged", this);
       mm.removeMessageListener("Extension:BrowserBackgroundChanged", this);
       mm.removeMessageListener("Extension:BrowserContentLoaded", this);
       mm.removeMessageListener("Extension:BrowserResized", this);
     } else if (finalize) {
       this.receiveMessage = () => {};
     }
+    browser.removeEventListener("pagetitlechanged", this);
     browser.removeEventListener("DOMWindowClose", this);
+    browser.removeEventListener("DoZoomEnlargeBy10", this);
+    browser.removeEventListener("DoZoomReduceBy10", this);
   }
 
   // Returns the name of the event fired on `viewNode` when the popup is being
@@ -211,10 +213,6 @@ class BasePopup {
 
   receiveMessage({ name, data }) {
     switch (name) {
-      case "DOMTitleChanged":
-        this.viewNode.setAttribute("aria-label", this.browser.contentTitle);
-        break;
-
       case "Extension:BrowserBackgroundChanged":
         this.setBackground(data.background);
         break;
@@ -260,9 +258,37 @@ class BasePopup {
         }
         break;
 
+      case "pagetitlechanged":
+        this.viewNode.setAttribute("aria-label", this.browser.contentTitle);
+        break;
+
       case "DOMWindowClose":
         this.closePopup();
         break;
+
+      case "DoZoomEnlargeBy10": {
+        const browser = event.target;
+        let { ZoomManager } = browser.ownerGlobal;
+        let zoom = this.browser.fullZoom;
+        zoom += 0.1;
+        if (zoom > ZoomManager.MAX) {
+          zoom = ZoomManager.MAX;
+        }
+        browser.fullZoom = zoom;
+        break;
+      }
+
+      case "DoZoomReduceBy10": {
+        const browser = event.target;
+        let { ZoomManager } = browser.ownerGlobal;
+        let zoom = browser.fullZoom;
+        zoom -= 0.1;
+        if (zoom < ZoomManager.MIN) {
+          zoom = ZoomManager.MIN;
+        }
+        browser.fullZoom = zoom;
+        break;
+      }
     }
   }
 
@@ -283,7 +309,13 @@ class BasePopup {
     browser.setAttribute("autocompletepopup", "PopupAutoComplete");
     browser.setAttribute("selectmenulist", "ContentSelectDropdown");
     browser.setAttribute("selectmenuconstrained", "false");
-    browser.sameProcessAsFrameLoader = this.extension.groupFrameLoader;
+
+    // Ensure the browser will initially load in the same group as other
+    // browsers from the same extension.
+    browser.setAttribute(
+      "initialBrowsingContextGroupId",
+      this.extension.policy.browsingContextGroupId
+    );
 
     if (this.extension.remote) {
       browser.setAttribute("remote", "true");
@@ -313,6 +345,7 @@ class BasePopup {
 
     stack.appendChild(browser);
     viewNode.appendChild(stack);
+
     if (!this.extension.remote) {
       // FIXME: bug 1494029 - this code used to rely on the browser binding
       // accessing browser.contentWindow. This is a stopgap to continue doing
@@ -324,11 +357,14 @@ class BasePopup {
 
     let setupBrowser = browser => {
       let mm = browser.messageManager;
-      mm.addMessageListener("DOMTitleChanged", this);
       mm.addMessageListener("Extension:BrowserBackgroundChanged", this);
       mm.addMessageListener("Extension:BrowserContentLoaded", this);
       mm.addMessageListener("Extension:BrowserResized", this);
+      browser.addEventListener("pagetitlechanged", this);
       browser.addEventListener("DOMWindowClose", this);
+      browser.addEventListener("DoZoomEnlargeBy10", this, true); // eslint-disable-line mozilla/balanced-listeners
+      browser.addEventListener("DoZoomReduceBy10", this, true); // eslint-disable-line mozilla/balanced-listeners
+
       return browser;
     };
 

@@ -11,6 +11,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/dom/Selection.h"
+#include "mozilla/Result.h"
 #include "mozilla/TextRange.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIFrame.h"
@@ -60,7 +61,7 @@ class PresShell;
 }  // namespace mozilla
 
 /** PeekOffsetStruct is used to group various arguments (both input and output)
- *  that are passed to nsFrame::PeekOffset(). See below for the description of
+ *  that are passed to nsIFrame::PeekOffset(). See below for the description of
  *  individual arguments.
  */
 struct MOZ_STACK_CLASS nsPeekOffsetStruct {
@@ -71,7 +72,7 @@ struct MOZ_STACK_CLASS nsPeekOffsetStruct {
 
   nsPeekOffsetStruct(
       nsSelectionAmount aAmount, nsDirection aDirection, int32_t aStartOffset,
-      nsPoint aDesiredPos, bool aJumpLines, bool aScrollViewStop,
+      nsPoint aDesiredCaretPos, bool aJumpLines, bool aScrollViewStop,
       bool aIsKeyboardSelect, bool aVisual, bool aExtend,
       ForceEditableRegion = ForceEditableRegion::No,
       mozilla::EWordMovementType aWordMovementType = mozilla::eDefaultBehavior,
@@ -110,7 +111,7 @@ struct MOZ_STACK_CLASS nsPeekOffsetStruct {
   // depending on line's writing mode)
   //
   // Used with: eSelectLine.
-  const nsPoint mDesiredPos;
+  const nsPoint mDesiredCaretPos;
 
   // An enum that determines whether to prefer the start or end of a word or to
   // use the default beahvior, which is a combination of direction and the
@@ -256,8 +257,7 @@ class nsFrameSelection final {
    * @param aPoint is relative to aFrame
    */
   // TODO: replace with `MOZ_CAN_RUN_SCRIPT`.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY void HandleDrag(nsIFrame* aFrame,
-                                              const nsPoint& aPoint);
+  MOZ_CAN_RUN_SCRIPT void HandleDrag(nsIFrame* aFrame, const nsPoint& aPoint);
 
   /**
    * HandleTableSelection will set selection to a table, cell, etc
@@ -384,7 +384,7 @@ class nsFrameSelection final {
   /**
    * If we are in table cell selection mode. aka ctrl click in table cell
    */
-  bool GetTableCellSelection() const {
+  bool IsInTableSelectionMode() const {
     return mTableSelection.mMode != mozilla::TableSelectionMode::None;
   }
   void ClearTableCellSelection() {
@@ -473,11 +473,7 @@ class nsFrameSelection final {
   void SetHint(CaretAssociateHint aHintRight) { mCaret.mHint = aHintRight; }
   CaretAssociateHint GetHint() const { return mCaret.mHint; }
 
-  /**
-   * SetCaretBidiLevel sets the caret bidi level.
-   * @param aLevel the caret bidi level
-   */
-  void SetCaretBidiLevel(nsBidiLevel aLevel);
+  void SetCaretBidiLevelAndMaybeSchedulePaint(nsBidiLevel aLevel);
 
   /**
    * GetCaretBidiLevel gets the caret bidi level.
@@ -514,20 +510,6 @@ class nsFrameSelection final {
                                                      bool aExtend);
 
   /**
-   * CharacterExtendForDelete extends the selection forward (logically) to
-   * the next character cell, so that the selected cell can be deleted.
-   */
-  // TODO: replace with `MOZ_CAN_RUN_SCRIPT`.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult CharacterExtendForDelete();
-
-  /**
-   * CharacterExtendForBackspace extends the selection backward (logically) to
-   * the previous character cell, so that the selected cell can be deleted.
-   */
-  // TODO: replace with `MOZ_CAN_RUN_SCRIPT`.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult CharacterExtendForBackspace();
-
-  /**
    * WordMove will generally be called from the nsiselectioncontroller
    * implementations. the effect being the selection will move one word left or
    * right.
@@ -536,14 +518,6 @@ class nsFrameSelection final {
    */
   // TODO: replace with `MOZ_CAN_RUN_SCRIPT`.
   MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult WordMove(bool aForward, bool aExtend);
-
-  /**
-   * WordExtendForDelete extends the selection backward or forward (logically)
-   * to the next word boundary, so that the selected word can be deleted.
-   * @param aForward select forward in document.
-   */
-  // TODO: replace with `MOZ_CAN_RUN_SCRIPT`.
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult WordExtendForDelete(bool aForward);
 
   /**
    * LineMove will generally be called from the nsiselectioncontroller
@@ -567,10 +541,72 @@ class nsFrameSelection final {
                                                      bool aExtend);
 
   /**
-   * Select All will generally be called from the nsiselectioncontroller
-   * implementations. it will select the whole doc
+   * CreateRangeExtendedToNextGraphemeClusterBoundary() returns range which is
+   * extended from normal selection range to start of next grapheme cluster
+   * boundary.
    */
-  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult SelectAll();
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToNextGraphemeClusterBoundary() {
+    return CreateRangeExtendedToSomewhere<RangeType>(eDirNext, eSelectCluster,
+                                                     eLogical);
+  }
+
+  /**
+   * CreateRangeExtendedToPreviousCharacterBoundary() returns range which is
+   * extended from normal selection range to start of previous character
+   * boundary.
+   */
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToPreviousCharacterBoundary() {
+    return CreateRangeExtendedToSomewhere<RangeType>(
+        eDirPrevious, eSelectCharacter, eLogical);
+  }
+
+  /**
+   * CreateRangeExtendedToNextWordBoundary() returns range which is
+   * extended from normal selection range to start of next word boundary.
+   */
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToNextWordBoundary() {
+    return CreateRangeExtendedToSomewhere<RangeType>(eDirNext, eSelectWord,
+                                                     eLogical);
+  }
+
+  /**
+   * CreateRangeExtendedToPreviousWordBoundary() returns range which is
+   * extended from normal selection range to start of previous word boundary.
+   */
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToPreviousWordBoundary() {
+    return CreateRangeExtendedToSomewhere<RangeType>(eDirPrevious, eSelectWord,
+                                                     eLogical);
+  }
+
+  /**
+   * CreateRangeExtendedToPreviousHardLineBreak() returns range which is
+   * extended from normal selection range to previous hard line break.
+   */
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToPreviousHardLineBreak() {
+    return CreateRangeExtendedToSomewhere<RangeType>(
+        eDirPrevious, eSelectBeginLine, eLogical);
+  }
+
+  /**
+   * CreateRangeExtendedToNextHardLineBreak() returns range which is extended
+   * from normal selection range to next hard line break.
+   */
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToNextHardLineBreak() {
+    return CreateRangeExtendedToSomewhere<RangeType>(eDirNext, eSelectEndLine,
+                                                     eLogical);
+  }
 
   /** Sets/Gets The display selection enum.
    */
@@ -671,10 +707,9 @@ class nsFrameSelection final {
    */
   nsresult MaintainSelection(nsSelectionAmount aAmount = eSelectNoAmount);
 
-  nsresult ConstrainFrameAndPointToAnchorSubtree(nsIFrame* aFrame,
-                                                 const nsPoint& aPoint,
-                                                 nsIFrame** aRetFrame,
-                                                 nsPoint& aRetPoint) const;
+  MOZ_CAN_RUN_SCRIPT nsresult ConstrainFrameAndPointToAnchorSubtree(
+      nsIFrame* aFrame, const nsPoint& aPoint, nsIFrame** aRetFrame,
+      nsPoint& aRetPoint) const;
 
   /**
    * @param aPresShell is the parameter to be used for most of the other calls
@@ -703,7 +738,7 @@ class nsFrameSelection final {
   nsresult ClearNormalSelection();
 
   // Table selection support.
-  static nsITableCellLayout* GetCellLayout(nsIContent* aCellContent);
+  static nsITableCellLayout* GetCellLayout(const nsIContent* aCellContent);
 
  private:
   ~nsFrameSelection();
@@ -770,12 +805,51 @@ class nsFrameSelection final {
                                         nsSelectionAmount aAmount,
                                         CaretMovementStyle aMovementStyle);
 
-  nsresult FetchDesiredPos(
-      nsPoint& aDesiredPos);  // the position requested by the Key Handling for
-                              // up down
-  void InvalidateDesiredPos();  // do not listen to mDesiredPos.mValue you must
-                                // get another.
-  void SetDesiredPos(nsPoint aPos);  // set the mDesiredPos.mValue
+  /**
+   * PeekOffsetForCaretMove() only peek offset for caret move.  I.e., won't
+   * change selection ranges nor bidi information.
+   */
+  mozilla::Result<nsPeekOffsetStruct, nsresult> PeekOffsetForCaretMove(
+      nsDirection aDirection, bool aContinueSelection,
+      const nsSelectionAmount aAmount, CaretMovementStyle aMovementStyle,
+      const nsPoint& aDesiredCaretPos) const;
+
+  /**
+   * CreateRangeExtendedToSomewhere() is common method to implement
+   * CreateRangeExtendedTo*().  This method creates a range extended from
+   * normal selection range.
+   */
+  template <typename RangeType>
+  MOZ_CAN_RUN_SCRIPT mozilla::Result<RefPtr<RangeType>, nsresult>
+  CreateRangeExtendedToSomewhere(nsDirection aDirection,
+                                 const nsSelectionAmount aAmount,
+                                 CaretMovementStyle aMovementStyle);
+
+  /**
+   * IsIntraLineCaretMove() is a helper method for PeekOffsetForCaretMove()
+   * and CreateRangeExtendedToSomwhereFromNormalSelection().  This returns
+   * whether aAmount is intra line move or is crossing hard line break.
+   * This returns error if aMount is not supported by the methods.
+   */
+  static mozilla::Result<bool, nsresult> IsIntraLineCaretMove(
+      nsSelectionAmount aAmount) {
+    switch (aAmount) {
+      case eSelectCharacter:
+      case eSelectCluster:
+      case eSelectWord:
+      case eSelectWordNoSpace:
+      case eSelectBeginLine:
+      case eSelectEndLine:
+        return true;
+      case eSelectLine:
+        return false;
+      default:
+        return mozilla::Err(NS_ERROR_FAILURE);
+    }
+  }
+
+  void InvalidateDesiredCaretPos();  // do not listen to mDesiredCaretPos.mValue
+                                     // you must get another.
 
   bool IsBatching() const { return mBatching.mCounter > 0; }
 
@@ -790,15 +864,15 @@ class nsFrameSelection final {
   MOZ_CAN_RUN_SCRIPT
   nsresult NotifySelectionListeners(mozilla::SelectionType aSelectionType);
 
-  static nsresult GetCellIndexes(nsIContent* aCell, int32_t& aRowIndex,
+  static nsresult GetCellIndexes(const nsIContent* aCell, int32_t& aRowIndex,
                                  int32_t& aColIndex);
 
   static nsIContent* GetFirstCellNodeInRange(const nsRange* aRange);
   // Returns non-null table if in same table, null otherwise
-  static nsIContent* IsInSameTable(nsIContent* aContent1,
-                                   nsIContent* aContent2);
+  static nsIContent* IsInSameTable(const nsIContent* aContent1,
+                                   const nsIContent* aContent2);
   // Might return null
-  static nsIContent* GetParentTable(nsIContent* aCellNode);
+  static nsIContent* GetParentTable(const nsIContent* aCellNode);
 
   ////////////BEGIN nsFrameSelection members
 
@@ -823,6 +897,14 @@ class nsFrameSelection final {
                     mozilla::WidgetMouseEvent* aMouseEvent, bool aDragState,
                     mozilla::dom::Selection& aNormalSelection);
 
+    /**
+     * @return the closest inclusive table cell ancestor
+     *         (https://dom.spec.whatwg.org/#concept-tree-inclusive-ancestor) of
+     *         aContent, if it is actively editable.
+     */
+    static nsINode* IsContentInActivelyEditableTableCell(
+        nsPresContext* aContext, nsIContent* aContent);
+
     // TODO: annotate this with `MOZ_CAN_RUN_SCRIPT` instead.
     MOZ_CAN_RUN_SCRIPT_BOUNDARY
     nsresult SelectBlockOfCells(nsIContent* aStartCell, nsIContent* aEndCell,
@@ -832,12 +914,13 @@ class nsFrameSelection final {
                                mozilla::dom::Selection& aNormalSelection);
 
     MOZ_CAN_RUN_SCRIPT nsresult
-    UnselectCells(nsIContent* aTable, int32_t aStartRowIndex,
+    UnselectCells(const nsIContent* aTable, int32_t aStartRowIndex,
                   int32_t aStartColumnIndex, int32_t aEndRowIndex,
                   int32_t aEndColumnIndex, bool aRemoveOutsideOfCellRange,
                   mozilla::dom::Selection& aNormalSelection);
 
-    nsCOMPtr<nsINode> mCellParent;  // used to snap to table selection
+    nsCOMPtr<nsINode>
+        mClosestInclusiveTableCellAncestor;  // used to snap to table selection
     nsCOMPtr<nsIContent> mStartSelectedCell;
     nsCOMPtr<nsIContent> mEndSelectedCell;
     nsCOMPtr<nsIContent> mAppendStartSelectedCell;
@@ -845,17 +928,40 @@ class nsFrameSelection final {
     mozilla::TableSelectionMode mMode = mozilla::TableSelectionMode::None;
     int32_t mSelectedCellIndex = 0;
     bool mDragSelectingCells = false;
+
+   private:
+    struct MOZ_STACK_CLASS FirstAndLastCell {
+      nsCOMPtr<nsIContent> mFirst;
+      nsCOMPtr<nsIContent> mLast;
+    };
+
+    mozilla::Result<FirstAndLastCell, nsresult>
+    FindFirstAndLastCellOfRowOrColumn(const nsIContent& aCellContent) const;
+
+    [[nodiscard]] nsresult HandleDragSelecting(
+        mozilla::TableSelectionMode aTarget, nsIContent* aChildContent,
+        const mozilla::WidgetMouseEvent* aMouseEvent,
+        mozilla::dom::Selection& aNormalSelection);
+
+    [[nodiscard]] MOZ_CAN_RUN_SCRIPT nsresult HandleMouseUpOrDown(
+        mozilla::TableSelectionMode aTarget, bool aDragState,
+        nsIContent* aChildContent, nsINode* aParentContent,
+        int32_t aContentOffset, const mozilla::WidgetMouseEvent* aMouseEvent,
+        mozilla::dom::Selection& aNormalSelection);
+
+    class MOZ_STACK_CLASS RowAndColumnRelation;
   };
 
   TableSelection mTableSelection;
 
   struct MaintainedRange {
     /**
-     * @return true iff the point (aContent, aOffset) is inside and not at the
-     * boundaries of mRange.
+     * Ensure anchor and focus of aNormalSelection are ordered appropriately
+     * relative to the maintained range.
      */
-    bool AdjustNormalSelection(const nsIContent* aContent, int32_t aOffset,
-                               mozilla::dom::Selection& aNormalSelection) const;
+    MOZ_CAN_RUN_SCRIPT void AdjustNormalSelection(
+        const nsIContent* aContent, int32_t aOffset,
+        mozilla::dom::Selection& aNormalSelection) const;
 
     /**
      * @param aScrollViewStop see `nsPeekOffsetStruct::mScrollViewStop`.
@@ -901,20 +1007,33 @@ class nsFrameSelection final {
     // next.
     CaretAssociateHint mHint = mozilla::CARET_ASSOCIATE_BEFORE;
     nsBidiLevel mBidiLevel = BIDI_LEVEL_UNDEFINED;
-    int8_t mMovementStyle = 0;
+
+    bool IsVisualMovement(bool aContinueSelection,
+                          CaretMovementStyle aMovementStyle) const;
   };
 
   Caret mCaret;
 
   nsBidiLevel mKbdBidiLevel = NSBIDI_LTR;
 
-  // TODO: could presumably be transformed to a `mozilla::Maybe`.
-  struct DesiredPos {
-    nsPoint mValue;
+  class DesiredCaretPos {
+   public:
+    // the position requested by the Key Handling for up down
+    nsresult FetchPos(nsPoint& aDesiredCaretPos,
+                      const mozilla::PresShell& aPresShell,
+                      mozilla::dom::Selection& aNormalSelection) const;
+
+    void Set(const nsPoint& aPos);
+
+    void Invalidate();
+
     bool mIsSet = false;
+
+   private:
+    nsPoint mValue;
   };
 
-  DesiredPos mDesiredPos;
+  DesiredCaretPos mDesiredCaretPos;
 
   struct DelayedMouseEvent {
     bool mIsValid = false;

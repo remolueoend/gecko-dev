@@ -51,54 +51,6 @@ function getSourceActor(aSources, aURL) {
 }
 
 /**
- * Wait for a content -> chrome message on the message manager (the window
- * messagemanager is used).
- * @param {String} name The message name
- * @return {Promise} A promise that resolves to the response data when the
- * message has been received
- */
-function waitForContentMessage(name) {
-  info("Expecting message " + name + " from content");
-
-  const mm = gBrowser.selectedBrowser.messageManager;
-
-  return new Promise(resolve => {
-    mm.addMessageListener(name, function onMessage(msg) {
-      mm.removeMessageListener(name, onMessage);
-      resolve(msg.data);
-    });
-  });
-}
-
-/**
- * Send an async message to the frame script (chrome -> content) and wait for a
- * response message with the same name (content -> chrome).
- * @param {String} name The message name. Should be one of the messages defined
- * in doc_frame_script.js
- * @param {Object} data Optional data to send along
- * @param {Object} objects Optional CPOW objects to send along
- * @param {Boolean} expectResponse If set to false, don't wait for a response
- * with the same name from the content script. Defaults to true.
- * @return {Promise} Resolves to the response data if a response is expected,
- * immediately resolves otherwise
- */
-function executeInContent(
-  name,
-  data = {},
-  objects = {},
-  expectResponse = true
-) {
-  info("Sending message " + name + " to content");
-  const mm = gBrowser.selectedBrowser.messageManager;
-
-  mm.sendAsyncMessage(name, data, objects);
-  if (expectResponse) {
-    return waitForContentMessage(name);
-  }
-  return promise.resolve();
-}
-
-/**
  * Synthesize a keypress from a <key> element, taking into account
  * any modifiers.
  * @param {Element} el the <key> element to synthesize
@@ -147,14 +99,11 @@ function createScript(url) {
   info(`Creating script: ${url}`);
   // This is not ideal if called multiple times, as it loads the frame script
   // separately each time.  See bug 1443680.
-  loadFrameScriptUtils();
-  const command = `
-    let script = document.createElement("script");
-    script.setAttribute("src", "${url}");
-    document.body.appendChild(script);
-    null;
-  `;
-  return evalInDebuggee(command);
+  return SpecialPowers.spawn(gBrowser.selectedBrowser, [url], urlChild => {
+    const script = content.document.createElement("script");
+    script.setAttribute("src", urlChild);
+    content.document.body.appendChild(script);
+  });
 }
 
 /**
@@ -167,16 +116,21 @@ function createScript(url) {
 function waitForSourceLoad(toolbox, url) {
   info(`Waiting for source ${url} to be available...`);
   return new Promise(resolve => {
-    const target = toolbox.target;
+    const { resourceWatcher } = toolbox;
 
-    function sourceHandler(sourceEvent) {
-      if (sourceEvent && sourceEvent.source && sourceEvent.source.url === url) {
-        resolve();
-        target.off("source-updated", sourceHandler);
+    function onAvailable(sources) {
+      for (const source of sources) {
+        if (source.url === url) {
+          resourceWatcher.unwatchResources([resourceWatcher.TYPES.SOURCE], {
+            onAvailable,
+          });
+          resolve();
+        }
       }
     }
-
-    target.on("source-updated", sourceHandler);
+    resourceWatcher.watchResources([resourceWatcher.TYPES.SOURCE], {
+      onAvailable,
+    });
   });
 }
 
@@ -462,4 +416,43 @@ function loadFTL(toolbox, path) {
   if (win.MozXULElement) {
     win.MozXULElement.insertFTLIfNeeded(path);
   }
+}
+
+/**
+ * Emit a reload key shortcut from a given toolbox, and wait for the reload to
+ * be completed.
+ *
+ * @param {String} shortcut
+ *        The key shortcut to send, as expected by the devtools shortcuts
+ *        helpers (eg. "CmdOrCtrl+F5").
+ * @param {Toolbox} toolbox
+ *        The toolbox through which the event should be emitted.
+ */
+async function sendToolboxReloadShortcut(shortcut, toolbox) {
+  const promises = [];
+
+  // If we have a jsdebugger panel, wait for it to complete its reload.
+  const jsdebugger = toolbox.getPanel("jsdebugger");
+  if (jsdebugger) {
+    promises.push(jsdebugger.once("reloaded"));
+  }
+
+  // If we have an inspector panel, wait for it to complete its reload.
+  const inspector = toolbox.getPanel("inspector");
+  if (inspector) {
+    promises.push(
+      inspector.once("reloaded"),
+      inspector.once("inspector-updated")
+    );
+  }
+
+  const loadPromise = BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
+  promises.push(loadPromise);
+
+  info("Focus the toolbox window and emit the reload shortcut: " + shortcut);
+  toolbox.win.focus();
+  synthesizeKeyShortcut(shortcut, toolbox.win);
+
+  info("Wait for page and toolbox reload promises");
+  await Promise.all(promises);
 }

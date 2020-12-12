@@ -14,7 +14,6 @@ transforms:
 
 job-defaults:
     run-on-projects:
-        - try
         - mozilla-central
     treeherder:
         kind: other
@@ -52,6 +51,7 @@ jobs:
                 python3.exe condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver.exe
                 --firefox ${MOZ_FETCHES_DIR}/firefox/firefox.exe
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -77,10 +77,11 @@ jobs:
                 - linux64-geckodriver
         run:
             command: >-
-                virtualenv/virtualenv.py -p python3.7 . &&
+                python3.7 virtualenv/virtualenv.py . &&
                 bin/python3.7 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --firefox ${MOZ_FETCHES_DIR}/firefox/firefox-bin
+                --scenario settled
                 ../../archive
         worker:
             docker-image: {in-tree: condprof}
@@ -108,10 +109,11 @@ jobs:
                 - macosx64-geckodriver
         run:
             command: >-
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 -m venv . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --firefox ${MOZ_FETCHES_DIR}/target.dmg
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -128,10 +130,10 @@ jobs:
             product: firefox
             job-name: condprof-g5-geckoview_example
         dependencies:
-            build: build-android-api-16/pgo
+            build: build-android-api-16-shippable/opt
         fetches:
             build:
-                - artifact: target.condprof.tests.tar.gz
+                - artifact: en-US/target.condprof.tests.tar.gz
                 - artifact: geckoview_example.apk
                   extract: false
             toolchain:
@@ -140,11 +142,12 @@ jobs:
             run-as-root: true
             command: >-
                 adb install -r $MOZ_FETCHES_DIR/geckoview_example.apk &&
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 virtualenv/virtualenv.py . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --device-name g5
                 --firefox org.mozilla.geckoview_example
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -159,7 +162,7 @@ jobs:
             platform: android-hw-g5-7-0-arm7-api-16/opt
         index:
             product: firefox
-            job-name: condprof-g5-fenix.performancetest
+            job-name: condprof-g5-fenix
         dependencies:
             build: build-linux64-shippable/opt
         fetches:
@@ -170,14 +173,15 @@ jobs:
         run:
             run-as-root: true
             command: >-
-                curl -L -o target.apk https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/project.mobile.fenix.v2.performance-test.latest/artifacts/public/build/armeabi-v7a/geckoNightly/target.apk &&
+                curl -L -o target.apk https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/mobile.v2.fenix.nightly.latest.armeabi-v7a/artifacts/public/build/armeabi-v7a/target.apk &&
                 adb install -r target.apk &&
                 rm -rf target.apk &&
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 virtualenv/virtualenv.py . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --device-name g5
-                --firefox org.mozilla.fenix.performancetest
+                --firefox org.mozilla.fenix
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -205,11 +209,12 @@ jobs:
             command: >-
                 curl -L -o target.apk https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-esr68.signed-nightly.nightly.latest.mobile.android-api-16-release-opt/artifacts/public/build/target.apk &&
                 adb install -r target.apk &&
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 virtualenv/virtualenv.py . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --device-name g5
                 --firefox org.mozilla.firefox
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -224,25 +229,26 @@ jobs:
             platform: android-hw-p2-8-0-android-aarch64/opt
         index:
             product: firefox
-            job-name: condprof-p2_aarch64-fenix.performancetest
+            job-name: condprof-p2_aarch64-fenix
         dependencies:
-            build: build-android-api-16/pgo
+            build: build-android-api-16-shippable/opt
         fetches:
             build:
-                - artifact: target.condprof.tests.tar.gz
+                - artifact: en-US/target.condprof.tests.tar.gz
             toolchain:
                 - linux64-geckodriver
         run:
             run-as-root: true
             command: >-
-                curl -L -o target.apk https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/project.mobile.fenix.v2.performance-test.latest/artifacts/public/build/arm64-v8a/geckoNightly/target.apk &&
+                curl -L -o target.apk https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/mobile.v2.fenix.nightly.latest.arm64-v8a/artifacts/public/build/arm64-v8a/target.apk &&
                 adb install -r target.apk &&
                 rm -rf target.apk &&
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 virtualenv/virtualenv.py . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --device-name p2_aarch64
-                --firefox org.mozilla.fenix.performancetest
+                --firefox org.mozilla.fenix
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -259,10 +265,10 @@ jobs:
             product: firefox
             job-name: condprof-p2_aarch64-geckoview_example
         dependencies:
-            build: build-android-api-16/pgo
+            build: build-android-api-16-shippable/opt
         fetches:
             build:
-                - artifact: target.condprof.tests.tar.gz
+                - artifact: en-US/target.condprof.tests.tar.gz
                 - artifact: geckoview_example.apk
                   extract: false
             toolchain:
@@ -271,11 +277,12 @@ jobs:
             run-as-root: true
             command: >-
                 adb install -r $MOZ_FETCHES_DIR/geckoview_example.apk &&
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 virtualenv/virtualenv.py . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --device-name p2_aarch64
                 --firefox org.mozilla.geckoview_example
+                --scenario settled
                 ../../archive
         worker:
             artifacts:
@@ -304,11 +311,12 @@ jobs:
                 curl -L -o target.apk https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-esr68.signed-nightly.nightly.latest.mobile.android-aarch64-release-opt/artifacts/public/build/target.apk &&
                 adb install -r target.apk &&
                 rm -rf target.apk &&
-                virtualenv/virtualenv.py -p python3 . &&
+                python3 virtualenv/virtualenv.py . &&
                 bin/python3 condprof/main.py
                 --geckodriver ${MOZ_FETCHES_DIR}/geckodriver
                 --device-name p2_aarch64
                 --firefox org.mozilla.firefox
+                --scenario settled
                 ../../archive
         worker:
             artifacts:

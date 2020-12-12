@@ -45,6 +45,14 @@ XPCOMUtils.defineLazyServiceGetter(
   "nsIOSPermissionRequest"
 );
 
+// Keep in sync with defines at base_capturer_pipewire.cc
+// With PipeWire we can't select which system resource is shared so
+// we don't create a window/screen list. Instead we place these constants
+// as window name/id so frontend code can identify PipeWire backend
+// and does not try to create screen/window preview.
+const PIPEWIRE_PORTAL_NAME = "####_PIPEWIRE_PORTAL_####";
+const PIPEWIRE_ID = 0xaffffff;
+
 class WebRTCParent extends JSWindowActorParent {
   didDestroy() {
     webrtcUI.forgetStreamsFromBrowserContext(this.browsingContext);
@@ -52,12 +60,7 @@ class WebRTCParent extends JSWindowActorParent {
   }
 
   getBrowser() {
-    let browser = this.browsingContext.top.embedderElement;
-    if (browser && browser.outerBrowser) {
-      // Responsive design mode check
-      browser = browser.outerBrowser;
-    }
-    return browser;
+    return this.browsingContext.top.embedderElement;
   }
 
   receiveMessage(aMessage) {
@@ -148,6 +151,7 @@ class WebRTCParent extends JSWindowActorParent {
         break;
       }
       case "webrtc:UpdateIndicators":
+        aMessage.data.documentURI = this.manager.documentURI?.spec;
         if (aMessage.data.windowId) {
           webrtcUI.streamAddedOrRemoved(this.browsingContext, aMessage.data);
         }
@@ -320,7 +324,14 @@ class WebRTCParent extends JSWindowActorParent {
     if (videoDevices.length && sharingScreen) {
       camAllowed = false;
     }
-    if (aRequest.isThirdPartyOrigin && !aRequest.shouldDelegatePermission) {
+    // Don't use persistent permissions from the top-level principal
+    // if we're in a cross-origin iframe and permission delegation is not
+    // allowed, or when we're handling a potentially insecure third party
+    // through a wildcard ("*") allow attribute.
+    if (
+      (aRequest.isThirdPartyOrigin && !aRequest.shouldDelegatePermission) ||
+      aRequest.secondOrigin
+    ) {
       camAllowed = false;
       micAllowed = false;
     }
@@ -441,10 +452,7 @@ function prompt(aActor, aBrowser, aRequest) {
     // If the request comes from a popup, we don't want to show the prompt,
     // but we do want to allow the request if the user previously gave permission.
     if (isPopup) {
-      if (
-        aRequest.secondOrigin ||
-        !aActor.checkRequestAllowed(aRequest, principal, aBrowser)
-      ) {
+      if (!aActor.checkRequestAllowed(aRequest, principal, aBrowser)) {
         aActor.denyRequest(aRequest);
       }
       return;
@@ -476,6 +484,10 @@ function prompt(aActor, aBrowser, aRequest) {
 
   let chromeDoc = aBrowser.ownerDocument;
   let stringBundle = chromeDoc.defaultView.gNavigatorBundle;
+  let localization = new Localization(
+    ["branding/brand.ftl", "browser/browser.ftl"],
+    true
+  );
 
   // Mind the order, because for simplicity we're iterating over the list using
   // "includes()". This allows the rotation of string identifiers. We list the
@@ -525,37 +537,113 @@ function prompt(aActor, aBrowser, aRequest) {
     callback() {},
   };
 
-  let secondaryActions = [
-    {
-      label: stringBundle.getString("getUserMedia.dontAllow.label"),
-      accessKey: stringBundle.getString("getUserMedia.dontAllow.accesskey"),
-      callback(aState) {
-        aActor.denyRequest(aRequest);
-        let scope = SitePermissions.SCOPE_TEMPORARY;
-        if (aState && aState.checkboxChecked) {
-          scope = SitePermissions.SCOPE_PERSISTENT;
-        }
-        if (audioDevices.length) {
+  let notificationSilencingEnabled = Services.prefs.getBoolPref(
+    "privacy.webrtc.allowSilencingNotifications"
+  );
+
+  let secondaryActions = [];
+  if (notificationSilencingEnabled && sharingScreen) {
+    // We want to free up the checkbox at the bottom of the permission
+    // panel for the notification silencing option, so we use a
+    // different configuration for the permissions panel when
+    // notification silencing is enabled.
+
+    // The formatMessagesSync method returns an array of results
+    // for each message that was requested, and for the ones with
+    // attributes, returns an attributes array with objects like:
+    //
+    // { name: "someName", value: "somevalue" }
+    //
+    // For these strings, which use .label and .accesskey attributes,
+    // this convertAttributesToObjects function looks at the attributes
+    // property of each message, and returns back an array of objects,
+    // where each object property is one of the attribute names, and
+    // the property value is the attribute value.
+    //
+    // So, the above example would be converted into:
+    //
+    // { someName: "someValue" }
+    //
+    // which is much easier to access and pass along to other things.
+    let convertAttributesToObjects = messages => {
+      return messages.map(msg => {
+        return msg.attributes.reduce((acc, attribute) => {
+          acc[attribute.name] = attribute.value;
+          return acc;
+        }, {});
+      });
+    };
+
+    let [notNow, never] = convertAttributesToObjects(
+      localization.formatMessagesSync([
+        { id: "popup-screen-sharing-not-now" },
+        { id: "popup-screen-sharing-never" },
+      ])
+    );
+
+    secondaryActions = [
+      {
+        label: notNow.label,
+        accessKey: notNow.accesskey,
+        callback(aState) {
+          aActor.denyRequest(aRequest);
           SitePermissions.setForPrincipal(
             principal,
-            "microphone",
+            "screen",
             SitePermissions.BLOCK,
-            scope,
+            SitePermissions.SCOPE_TEMPORARY,
             notification.browser
           );
-        }
-        if (videoDevices.length) {
-          SitePermissions.setForPrincipal(
-            principal,
-            sharingScreen ? "screen" : "camera",
-            SitePermissions.BLOCK,
-            scope,
-            notification.browser
-          );
-        }
+        },
       },
-    },
-  ];
+      {
+        label: never.label,
+        accessKey: never.accesskey,
+        callback(aState) {
+          aActor.denyRequest(aRequest);
+          SitePermissions.setForPrincipal(
+            principal,
+            "screen",
+            SitePermissions.BLOCK,
+            SitePermissions.SCOPE_PERSISTENT,
+            notification.browser
+          );
+        },
+      },
+    ];
+  } else {
+    secondaryActions = [
+      {
+        label: stringBundle.getString("getUserMedia.dontAllow.label"),
+        accessKey: stringBundle.getString("getUserMedia.dontAllow.accesskey"),
+        callback(aState) {
+          aActor.denyRequest(aRequest);
+          let scope = SitePermissions.SCOPE_TEMPORARY;
+          if (aState && aState.checkboxChecked) {
+            scope = SitePermissions.SCOPE_PERSISTENT;
+          }
+          if (audioDevices.length) {
+            SitePermissions.setForPrincipal(
+              principal,
+              "microphone",
+              SitePermissions.BLOCK,
+              scope,
+              notification.browser
+            );
+          }
+          if (videoDevices.length) {
+            SitePermissions.setForPrincipal(
+              principal,
+              sharingScreen ? "screen" : "camera",
+              SitePermissions.BLOCK,
+              scope,
+              notification.browser
+            );
+          }
+        },
+      },
+    ];
+  }
 
   let productName = gBrandBundle.GetStringFromName("brandShortName");
 
@@ -607,12 +695,7 @@ function prompt(aActor, aBrowser, aRequest) {
       // it is handled synchronously before we add the notification.
       // Handling of ALLOW is delayed until the popupshowing event,
       // to avoid granting permissions automatically to background tabs.
-      // If we have a secondOrigin, it means this request is lacking explicit
-      // trust, and we should always prompt even in with persistent permission.
-      if (
-        !aRequest.secondOrigin &&
-        aActor.checkRequestAllowed(aRequest, principal, aBrowser)
-      ) {
+      if (aActor.checkRequestAllowed(aRequest, principal, aBrowser)) {
         this.remove();
         return true;
       }
@@ -678,6 +761,8 @@ function prompt(aActor, aBrowser, aRequest) {
         );
         menupopup.appendChild(doc.createXULElement("menuseparator"));
 
+        let isPipeWire = false;
+
         // Build the list of 'devices'.
         let monitorIndex = 1;
         for (let i = 0; i < devices.length; ++i) {
@@ -699,6 +784,24 @@ function prompt(aActor, aBrowser, aRequest) {
             }
           } else {
             name = device.name;
+            // When we share content by PipeWire add only one item to the device
+            // list. When it's selected PipeWire portal dialog is opened and
+            // user confirms actual window/screen sharing there.
+            // Don't mark it as scary as there's an extra confirmation step by
+            // PipeWire portal dialog.
+            if (name == PIPEWIRE_PORTAL_NAME && device.id == PIPEWIRE_ID) {
+              isPipeWire = true;
+              let sawcStringId = "getUserMedia.sharePipeWirePortal.label";
+              let item = addDeviceToList(
+                menupopup,
+                stringBundle.getString(sawcStringId),
+                i,
+                type
+              );
+              item.deviceId = device.id;
+              item.mediaSource = type;
+              break;
+            }
             if (type == "application") {
               // The application names returned by the platform are of the form:
               // <window count>\x1e<application name>
@@ -813,39 +916,41 @@ function prompt(aActor, aBrowser, aRequest) {
             perms.EXPIRE_SESSION
           );
 
-          video.deviceId = deviceId;
-          let constraints = {
-            video: { mediaSource: type, deviceId: { exact: deviceId } },
-          };
-          chromeWin.navigator.mediaDevices.getUserMedia(constraints).then(
-            stream => {
-              if (video.deviceId != deviceId) {
-                // The user has selected a different device or closed the panel
-                // before getUserMedia finished.
-                stream.getTracks().forEach(t => t.stop());
-                return;
+          if (!isPipeWire) {
+            video.deviceId = deviceId;
+            let constraints = {
+              video: { mediaSource: type, deviceId: { exact: deviceId } },
+            };
+            chromeWin.navigator.mediaDevices.getUserMedia(constraints).then(
+              stream => {
+                if (video.deviceId != deviceId) {
+                  // The user has selected a different device or closed the panel
+                  // before getUserMedia finished.
+                  stream.getTracks().forEach(t => t.stop());
+                  return;
+                }
+                video.srcObject = stream;
+                video.stream = stream;
+                doc.getElementById("webRTC-preview").hidden = false;
+                video.onloadedmetadata = function(e) {
+                  video.play();
+                };
+              },
+              err => {
+                if (
+                  err.name == "OverconstrainedError" &&
+                  err.constraint == "deviceId"
+                ) {
+                  // Window has disappeared since enumeration, which can happen.
+                  // No preview for you.
+                  return;
+                }
+                Cu.reportError(
+                  `error in preview: ${err.message} ${err.constraint}`
+                );
               }
-              video.srcObject = stream;
-              video.stream = stream;
-              doc.getElementById("webRTC-preview").hidden = false;
-              video.onloadedmetadata = function(e) {
-                video.play();
-              };
-            },
-            err => {
-              if (
-                err.name == "OverconstrainedError" &&
-                err.constraint == "deviceId"
-              ) {
-                // Window has disappeared since enumeration, which can happen.
-                // No preview for you.
-                return;
-              }
-              Cu.reportError(
-                `error in preview: ${err.message} ${err.constraint}`
-              );
-            }
-          );
+            );
+          }
         };
         menupopup.addEventListener("command", menupopup._commandEventListener);
       }
@@ -894,7 +999,15 @@ function prompt(aActor, aBrowser, aRequest) {
       }
 
       this.mainAction.callback = async function(aState) {
-        let remember = aState && aState.checkboxChecked;
+        let remember = false;
+        let silenceNotifications = false;
+
+        if (notificationSilencingEnabled && sharingScreen) {
+          silenceNotifications = aState && aState.checkboxChecked;
+        } else {
+          remember = aState && aState.checkboxChecked;
+        }
+
         let allowedDevices = [];
         let perms = Services.perms;
         if (videoDevices.length) {
@@ -1000,6 +1113,7 @@ function prompt(aActor, aBrowser, aRequest) {
           callID: aRequest.callID,
           windowID: aRequest.windowID,
           devices: allowedDevices,
+          suppressNotifications: silenceNotifications,
         });
       };
 
@@ -1032,7 +1146,8 @@ function prompt(aActor, aBrowser, aRequest) {
   if (shouldShowAlwaysRemember()) {
     // Disable the permanent 'Allow' action if the connection isn't secure, or for
     // screen/audio sharing (because we can't guess which window the user wants to
-    // share without prompting).
+    // share without prompting). Note that we never enter this block for private
+    // browsing windows.
     let reasonForNoPermanentAllow = "";
     if (sharingScreen) {
       reasonForNoPermanentAllow =
@@ -1057,6 +1172,28 @@ function prompt(aActor, aBrowser, aRequest) {
             ),
           }
         : undefined,
+    };
+  }
+
+  // If the notification silencing feature is enabled and we're sharing a
+  // screen, then the checkbox for the permission panel is what controls
+  // notification silencing.
+  if (notificationSilencingEnabled && sharingScreen) {
+    let [
+      silenceNotifications,
+      silenceNotificationsWarning,
+    ] = localization.formatMessagesSync([
+      { id: "popup-silence-notifications-checkbox" },
+      { id: "popup-silence-notifications-checkbox-warning" },
+    ]);
+
+    options.checkbox = {
+      label: silenceNotifications.value,
+      checked: false,
+      checkedState: {
+        disableMainAction: false,
+        warningLabel: silenceNotificationsWarning.value,
+      },
     };
   }
 

@@ -67,12 +67,16 @@ class nsXMLContentSink : public nsContentSink,
   NS_IMETHOD WillInterrupt(void) override;
   NS_IMETHOD WillResume(void) override;
   NS_IMETHOD SetParser(nsParserBase* aParser) override;
-  virtual void InitialDocumentTranslationCompleted() override;
+  virtual void InitialTranslationCompleted() override;
   virtual void FlushPendingNotifications(mozilla::FlushType aType) override;
   virtual void SetDocumentCharset(NotNull<const Encoding*> aEncoding) override;
   virtual nsISupports* GetTarget() override;
   virtual bool IsScriptExecuting() override;
   virtual void ContinueInterruptedParsingAsync() override;
+  bool IsPrettyPrintXML() const override { return mPrettyPrintXML; }
+  bool IsPrettyPrintHasSpecialRoot() const override {
+    return mPrettyPrintHasSpecialRoot;
+  }
 
   // nsITransformObserver
   NS_IMETHOD OnDocumentCreated(
@@ -99,7 +103,8 @@ class nsXMLContentSink : public nsContentSink,
   // stylesheets are all done loading.
   virtual void MaybeStartLayout(bool aIgnorePendingSheets);
 
-  virtual nsresult AddAttributes(const char16_t** aNode, Element* aElement);
+  virtual nsresult AddAttributes(const char16_t** aNode,
+                                 mozilla::dom::Element* aElement);
   nsresult AddText(const char16_t* aString, int32_t aLength);
 
   virtual bool OnOpenContainer(const char16_t** aAtts, uint32_t aAttsCount,
@@ -146,8 +151,8 @@ class nsXMLContentSink : public nsContentSink,
   // nsContentSink override
   virtual nsresult ProcessStyleLinkFromHeader(
       const nsAString& aHref, bool aAlternate, const nsAString& aTitle,
-      const nsAString& aType, const nsAString& aMedia,
-      const nsAString& aReferrerPolicy) override;
+      const nsAString& aIntegrity, const nsAString& aType,
+      const nsAString& aMedia, const nsAString& aReferrerPolicy) override;
 
   // Try to handle an XSLT style link.  If NS_OK is returned and aWasXSLT is not
   // null, *aWasXSLT will be set to whether we processed this link as XSLT.

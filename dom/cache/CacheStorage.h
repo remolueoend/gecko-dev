@@ -55,7 +55,7 @@ class CacheStorage final : public nsISupports,
   // webidl interface methods
   already_AddRefed<Promise> Match(JSContext* aCx,
                                   const RequestOrUSVString& aRequest,
-                                  const CacheQueryOptions& aOptions,
+                                  const MultiCacheQueryOptions& aOptions,
                                   ErrorResult& aRv);
   already_AddRefed<Promise> Has(const nsAString& aKey, ErrorResult& aRv);
   already_AddRefed<Promise> Open(const nsAString& aKey, ErrorResult& aRv);
@@ -86,7 +86,7 @@ class CacheStorage final : public nsISupports,
  private:
   CacheStorage(Namespace aNamespace, nsIGlobalObject* aGlobal,
                const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
-               CacheWorkerRef* aWorkerRef);
+               SafeRefPtr<CacheWorkerRef> aWorkerRef);
   explicit CacheStorage(nsresult aFailureResult);
   ~CacheStorage();
 

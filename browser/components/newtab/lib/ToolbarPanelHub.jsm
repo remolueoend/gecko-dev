@@ -10,7 +10,16 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   Services: "resource://gre/modules/Services.jsm",
   EveryWindow: "resource:///modules/EveryWindow.jsm",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
+  Preferences: "resource://gre/modules/Preferences.jsm",
+  SpecialMessageActions:
+    "resource://messaging-system/lib/SpecialMessageActions.jsm",
+  RemoteL10n: "resource://activity-stream/lib/RemoteL10n.jsm",
 });
+ChromeUtils.defineModuleGetter(
+  this,
+  "PanelMultiView",
+  "resource:///modules/PanelMultiView.jsm"
+);
 XPCOMUtils.defineLazyServiceGetter(
   this,
   "TrackingDBService",
@@ -50,20 +59,15 @@ class _ToolbarPanelHub {
     this.state = {};
   }
 
-  async init(waitForInitialized, { getMessages, dispatch, handleUserAction }) {
+  async init(waitForInitialized, { getMessages, sendTelemetry }) {
     this._getMessages = getMessages;
-    this._dispatch = dispatch;
-    this._handleUserAction = handleUserAction;
+    this._sendTelemetry = sendTelemetry;
     // Wait for ASRouter messages to become available in order to know
     // if we can show the What's New panel
     await waitForInitialized;
-    if (this.whatsNewPanelEnabled) {
-      // Enable the application menu button so that the user can access
-      // the panel outside of the toolbar button
-      this.enableAppmenuButton();
-    }
-    // Listen for pref changes that could turn off the feature
-    Services.prefs.addObserver(WHATSNEW_ENABLED_PREF, this);
+    // Enable the application menu button so that the user can access
+    // the panel outside of the toolbar button
+    await this.enableAppmenuButton();
 
     this.state = {
       protectionPanelMessageSeen: Services.prefs.getBoolPref(
@@ -76,17 +80,6 @@ class _ToolbarPanelHub {
   uninit() {
     EveryWindow.unregisterCallback(TOOLBAR_BUTTON_ID);
     EveryWindow.unregisterCallback(APPMENU_BUTTON_ID);
-    Services.prefs.removeObserver(WHATSNEW_ENABLED_PREF, this);
-  }
-
-  observe(aSubject, aTopic, aPrefName) {
-    switch (aPrefName) {
-      case WHATSNEW_ENABLED_PREF:
-        if (!this.whatsNewPanelEnabled) {
-          this.uninit();
-        }
-        break;
-    }
   }
 
   get messages() {
@@ -97,8 +90,20 @@ class _ToolbarPanelHub {
     });
   }
 
-  get whatsNewPanelEnabled() {
-    return Services.prefs.getBoolPref(WHATSNEW_ENABLED_PREF, false);
+  toggleWhatsNewPref(event) {
+    // Checkbox onclick handler gets called before the checkbox state gets toggled,
+    // so we have to call it with the opposite value.
+    let newValue = !event.target.checked;
+    Preferences.set(WHATSNEW_ENABLED_PREF, newValue);
+
+    this.sendUserEventTelemetry(
+      event.target.ownerGlobal,
+      "WNP_PREF_TOGGLE",
+      // Message id is not applicable in this case, the notification state
+      // is not related to a particular message
+      { id: "n/a" },
+      { value: { prefValue: newValue } }
+    );
   }
 
   maybeInsertFTL(win) {
@@ -178,11 +183,17 @@ class _ToolbarPanelHub {
 
   // Render what's new messages into the panel.
   async renderMessages(win, doc, containerId, options = {}) {
+    // Set the checked status of the footer checkbox
+    let value = Preferences.get(WHATSNEW_ENABLED_PREF);
+    let checkbox = win.document.getElementById("panelMenu-toggleWhatsNew");
+
+    checkbox.checked = value;
+
     this.maybeLoadCustomElement(win);
     const messages =
       (options.force && options.messages) ||
       (await this.messages).sort(this._sortWhatsNewMessages);
-    const container = doc.getElementById(containerId);
+    const container = PanelMultiView.getViewNode(doc, containerId);
 
     if (messages) {
       // Targeting attribute state might have changed making new messages
@@ -221,9 +232,10 @@ class _ToolbarPanelHub {
 
   removeMessages(win, containerId) {
     const doc = win.document;
-    const messageNodes = doc
-      .getElementById(containerId)
-      .querySelectorAll(".whatsNew-message");
+    const messageNodes = PanelMultiView.getViewNode(
+      doc,
+      containerId
+    ).querySelectorAll(".whatsNew-message");
     for (const messageNode of messageNodes) {
       messageNode.remove();
     }
@@ -241,16 +253,16 @@ class _ToolbarPanelHub {
       Cu.reportError(e);
       url = message.content.cta_url;
     }
-    this._handleUserAction({
-      target: win,
-      data: {
+    SpecialMessageActions.handleAction(
+      {
         type: message.content.cta_type,
         data: {
           args: url,
-          where: "tabshifted",
+          where: message.content.cta_where || "tabshifted",
         },
       },
-    });
+      win.browser
+    );
 
     this.sendUserEventTelemetry(win, "CLICK", message);
   }
@@ -274,13 +286,13 @@ class _ToolbarPanelHub {
 
   _createMessageElements(win, doc, message, previousDate) {
     const { content } = message;
-    const messageEl = this._createElement(doc, "div");
+    const messageEl = RemoteL10n.createElement(doc, "div");
     messageEl.classList.add("whatsNew-message");
 
     // Only render date if it is different from the one rendered before.
     if (content.published_date !== previousDate) {
       messageEl.appendChild(
-        this._createElement(doc, "p", {
+        RemoteL10n.createElement(doc, "p", {
           classList: "whatsNew-message-date",
           content: new Date(content.published_date).toLocaleDateString(
             "default",
@@ -294,14 +306,14 @@ class _ToolbarPanelHub {
       );
     }
 
-    const wrapperEl = this._createElement(doc, "button");
+    const wrapperEl = RemoteL10n.createElement(doc, "button");
     wrapperEl.doCommand = () => this._dispatchUserAction(win, message);
     wrapperEl.classList.add("whatsNew-message-body");
     messageEl.appendChild(wrapperEl);
 
     if (content.icon_url) {
       wrapperEl.classList.add("has-icon");
-      const iconEl = this._createElement(doc, "img");
+      const iconEl = RemoteL10n.createElement(doc, "img");
       iconEl.src = content.icon_url;
       iconEl.classList.add("whatsNew-message-icon");
       if (content.icon_alt && content.icon_alt.string_id) {
@@ -315,7 +327,7 @@ class _ToolbarPanelHub {
     wrapperEl.appendChild(this._createMessageContent(win, doc, content));
 
     if (content.link_text) {
-      const anchorEl = this._createElement(doc, "a", {
+      const anchorEl = RemoteL10n.createElement(doc, "a", {
         classList: "text-link",
         content: content.link_text,
       });
@@ -336,35 +348,39 @@ class _ToolbarPanelHub {
     const wrapperEl = new win.DocumentFragment();
 
     wrapperEl.appendChild(
-      this._createElement(doc, "h2", {
+      RemoteL10n.createElement(doc, "h2", {
         classList: "whatsNew-message-title",
         content: content.title,
+        attributes: this.state.contentArguments,
       })
     );
 
     switch (content.layout) {
       case "tracking-protections":
         wrapperEl.appendChild(
-          this._createElement(doc, "h4", {
+          RemoteL10n.createElement(doc, "h4", {
             classList: "whatsNew-message-subtitle",
             content: content.subtitle,
+            attributes: this.state.contentArguments,
           })
         );
         wrapperEl.appendChild(
-          this._createElement(doc, "h2", {
+          RemoteL10n.createElement(doc, "h2", {
             classList: "whatsNew-message-title-large",
             content: this.state.contentArguments[
               content.layout_title_content_variable
             ],
+            attributes: this.state.contentArguments,
           })
         );
         break;
     }
 
     wrapperEl.appendChild(
-      this._createElement(doc, "p", {
+      RemoteL10n.createElement(doc, "p", {
         content: content.body,
         classList: "whatsNew-message-content",
+        attributes: this.state.contentArguments,
       })
     );
 
@@ -374,28 +390,28 @@ class _ToolbarPanelHub {
   _createHeroElement(win, doc, message) {
     this.maybeLoadCustomElement(win);
 
-    const messageEl = this._createElement(doc, "div");
+    const messageEl = RemoteL10n.createElement(doc, "div");
     messageEl.setAttribute("id", "protections-popup-message");
     messageEl.classList.add("whatsNew-hero-message");
-    const wrapperEl = this._createElement(doc, "div");
+    const wrapperEl = RemoteL10n.createElement(doc, "div");
     wrapperEl.classList.add("whatsNew-message-body");
     messageEl.appendChild(wrapperEl);
 
     wrapperEl.appendChild(
-      this._createElement(doc, "h2", {
+      RemoteL10n.createElement(doc, "h2", {
         classList: "whatsNew-message-title",
         content: message.content.title,
       })
     );
     wrapperEl.appendChild(
-      this._createElement(doc, "p", {
+      RemoteL10n.createElement(doc, "p", {
         classList: "protections-popup-content",
         content: message.content.body,
       })
     );
 
     if (message.content.link_text) {
-      let linkEl = this._createElement(doc, "a", {
+      let linkEl = RemoteL10n.createElement(doc, "a", {
         classList: "text-link",
         content: message.content.link_text,
       });
@@ -407,21 +423,6 @@ class _ToolbarPanelHub {
     }
 
     return messageEl;
-  }
-
-  _createElement(doc, elem, options = {}) {
-    let node;
-    if (options.content && options.content.string_id) {
-      node = doc.createElement("remote-text");
-    } else {
-      node = doc.createElementNS("http://www.w3.org/1999/xhtml", elem);
-    }
-    if (options.classList) {
-      node.classList.add(options.classList);
-    }
-    this._setString(node, options.content);
-
-    return node;
   }
 
   async _contentArguments() {
@@ -465,21 +466,6 @@ class _ToolbarPanelHub {
     };
   }
 
-  // If `string_id` is present it means we are relying on fluent for translations.
-  // Otherwise, we have a vanilla string.
-  _setString(el, stringObj) {
-    if (stringObj && stringObj.string_id) {
-      for (let [fluentId, value] of Object.entries(
-        this.state.contentArguments || {}
-      )) {
-        el.setAttribute(`fluent-variable-${fluentId}`, value);
-      }
-      el.setAttribute("fluent-remote-id", stringObj.string_id);
-    } else {
-      el.textContent = stringObj;
-    }
-  }
-
   async _showAppmenuButton(win) {
     this.maybeInsertFTL(win);
     await this._showElement(
@@ -489,8 +475,11 @@ class _ToolbarPanelHub {
     );
   }
 
-  _hideAppmenuButton(win) {
-    this._hideElement(win.browser.ownerDocument, APPMENU_BUTTON_ID);
+  _hideAppmenuButton(win, windowClosed) {
+    // No need to do something if the window is going away
+    if (!windowClosed) {
+      this._hideElement(win.browser.ownerDocument, APPMENU_BUTTON_ID);
+    }
   }
 
   _showToolbarButton(win) {
@@ -504,19 +493,22 @@ class _ToolbarPanelHub {
   }
 
   _showElement(document, id, string_id) {
-    const el = document.getElementById(id);
+    const el = PanelMultiView.getViewNode(document, id);
     document.l10n.setAttributes(el, string_id);
     el.removeAttribute("hidden");
   }
 
   _hideElement(document, id) {
-    document.getElementById(id).setAttribute("hidden", true);
+    const el = PanelMultiView.getViewNode(document, id);
+    if (el) {
+      el.setAttribute("hidden", true);
+    }
   }
 
-  _sendTelemetry(ping) {
-    this._dispatch({
+  _sendPing(ping) {
+    this._sendTelemetry({
       type: "TOOLBAR_PANEL_TELEMETRY",
-      data: { action: "cfr_user_event", source: "CFR", ...ping },
+      data: { action: "whats-new-panel_user_event", ...ping },
     });
   }
 
@@ -528,7 +520,7 @@ class _ToolbarPanelHub {
         win.ownerGlobal.gBrowser.selectedBrowser
       )
     ) {
-      this._sendTelemetry({
+      this._sendPing({
         message_id: message.id,
         bucket_id: message.id,
         event,
@@ -554,10 +546,12 @@ class _ToolbarPanelHub {
       const learnMoreLink = doc.querySelector(
         "#messaging-system-message-container .text-link"
       );
-      container.toggleAttribute("disabled");
-      infoButton.toggleAttribute("checked");
-      panelContainer.toggleAttribute("infoMessageShowing");
-      learnMoreLink.disabled = !learnMoreLink.disabled;
+      if (learnMoreLink) {
+        container.toggleAttribute("disabled");
+        infoButton.toggleAttribute("checked");
+        panelContainer.toggleAttribute("infoMessageShowing");
+        learnMoreLink.disabled = !learnMoreLink.disabled;
+      }
     };
     if (!container.childElementCount) {
       const message = await this._getMessages({
@@ -607,8 +601,8 @@ class _ToolbarPanelHub {
    * @param {object[]} messages Messages selected from devtools page
    */
   forceShowMessage(browser, messages) {
-    const win = browser.browser.ownerGlobal;
-    const doc = browser.browser.ownerDocument;
+    const win = browser.ownerGlobal;
+    const doc = browser.ownerDocument;
     this.removeMessages(win, WHATS_NEW_PANEL_SELECTOR);
     this.renderMessages(win, doc, WHATS_NEW_PANEL_SELECTOR, {
       force: true,

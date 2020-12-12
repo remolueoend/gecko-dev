@@ -19,8 +19,9 @@
 #include "nsUnicharUtils.h"
 #include "nsITextToSubURI.h"
 #include "nsVariant.h"
-#include "mozilla/AssembleCmdLine.h"
+#include "mozilla/CmdLineAndEnvUtils.h"
 #include "mozilla/ShellHeaderOnlyUtils.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/UrlmonHeaderOnlyUtils.h"
 #include "mozilla/UniquePtrExtensions.h"
 
@@ -39,9 +40,11 @@ nsresult nsMIMEInfoWin::LaunchDefaultWithFile(nsIFile* aFile) {
   return aFile->Launch();
 }
 
-nsresult nsMIMEInfoWin::ShellExecuteWithIFile(nsIFile* aExecutable,
-                                              const nsString& aArgs) {
+nsresult nsMIMEInfoWin::ShellExecuteWithIFile(nsIFile* aExecutable, int aArgc,
+                                              const wchar_t** aArgv) {
   nsresult rv;
+
+  NS_ASSERTION(aArgc >= 1, "aArgc must be at least 1");
 
   nsAutoString execPath;
   rv = aExecutable->GetTarget(execPath);
@@ -52,7 +55,7 @@ nsresult nsMIMEInfoWin::ShellExecuteWithIFile(nsIFile* aExecutable,
     return rv;
   }
 
-  auto assembledArgs = mozilla::assembleSingleArgument(aArgs);
+  auto assembledArgs = mozilla::MakeCommandLine(aArgc, aArgv);
   if (!assembledArgs) {
     return NS_ERROR_FILE_EXECUTION_FAILED;
   }
@@ -73,9 +76,10 @@ nsresult nsMIMEInfoWin::ShellExecuteWithIFile(nsIFile* aExecutable,
   mozilla::LauncherVoidResult shellExecuteOk = mozilla::ShellExecuteByExplorer(
       execPathBStr, assembledArgs.get(), verbDefault, workingDir, showCmd);
   if (shellExecuteOk.isErr()) {
-    // No need to pass assembledArgs to LaunchWithIProcess.  aArgs will be
+    // No need to pass assembledArgs to LaunchWithIProcess.  aArgv will be
     // processed in nsProcess::RunProcess.
-    return LaunchWithIProcess(aExecutable, aArgs);
+    return LaunchWithIProcess(aExecutable, aArgc,
+                              reinterpret_cast<const char16_t**>(aArgv));
   }
 
   return NS_OK;
@@ -90,6 +94,31 @@ nsMIMEInfoWin::LaunchWithFile(nsIFile* aFile) {
                "nsMIMEInfoBase should have mClass == eMIMEInfo");
 
   if (mPreferredAction == useSystemDefault) {
+    if (mDefaultApplication &&
+        StaticPrefs::browser_pdf_launchDefaultEdgeAsApp()) {
+      // Since Edgium is the default handler for PDF and other kinds of files,
+      // if we're using the OS default and it's Edgium prefer its app mode so it
+      // operates as a viewer (without browser toolbars). Bug 1632277.
+      nsAutoCString defaultAppExecutable;
+      rv = mDefaultApplication->GetNativeLeafName(defaultAppExecutable);
+      if (NS_SUCCEEDED(rv) &&
+          defaultAppExecutable.LowerCaseEqualsLiteral("msedge.exe")) {
+        nsAutoString path;
+        rv = aFile->GetPath(path);
+        if (NS_SUCCEEDED(rv)) {
+          // If the --app flag doesn't work we'll want to fallback to a
+          // regular path. Send two args so we call `msedge.exe --app={path}
+          // {path}`.
+          nsAutoString appArg;
+          appArg.AppendLiteral("--app=");
+          appArg.Append(path);
+          const wchar_t* argv[] = {appArg.get(), path.get()};
+
+          return ShellExecuteWithIFile(mDefaultApplication,
+                                       mozilla::ArrayLength(argv), argv);
+        }
+      }
+    }
     return LaunchDefaultWithFile(aFile);
   }
 
@@ -170,7 +199,8 @@ nsMIMEInfoWin::LaunchWithFile(nsIFile* aFile) {
     }
     nsAutoString path;
     aFile->GetPath(path);
-    return ShellExecuteWithIFile(executable, path);
+    const wchar_t* argv[] = {path.get()};
+    return ShellExecuteWithIFile(executable, mozilla::ArrayLength(argv), argv);
   }
 
   return NS_ERROR_INVALID_ARG;
@@ -190,12 +220,10 @@ nsMIMEInfoWin::GetEnumerator(nsISimpleEnumerator** _retval) {
   nsCOMArray<nsIVariant> properties;
 
   nsCOMPtr<nsIVariant> variant;
-  GetProperty(NS_LITERAL_STRING("defaultApplicationIconURL"),
-              getter_AddRefs(variant));
+  GetProperty(u"defaultApplicationIconURL"_ns, getter_AddRefs(variant));
   if (variant) properties.AppendObject(variant);
 
-  GetProperty(NS_LITERAL_STRING("customApplicationIconURL"),
-              getter_AddRefs(variant));
+  GetProperty(u"customApplicationIconURL"_ns, getter_AddRefs(variant));
   if (variant) properties.AppendObject(variant);
 
   return NS_NewArrayEnumerator(_retval, properties, NS_GET_IID(nsIVariant));
@@ -261,8 +289,8 @@ nsresult nsMIMEInfoWin::LoadUriInternal(nsIURI* aURL) {
         do_GetService(NS_ITEXTTOSUBURI_CONTRACTID, &rv);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    if (NS_FAILED(textToSubURI->UnEscapeNonAsciiURI(NS_LITERAL_CSTRING("UTF-8"),
-                                                    urlSpec, utf16Spec))) {
+    if (NS_FAILED(textToSubURI->UnEscapeNonAsciiURI("UTF-8"_ns, urlSpec,
+                                                    utf16Spec))) {
       CopyASCIItoUTF16(urlSpec, utf16Spec);
     }
 
@@ -352,14 +380,12 @@ bool nsMIMEInfoWin::GetAppsVerbCommandHandler(const nsAString& appExeName,
 
   // Check for the NoOpenWith flag, if it exists
   uint32_t value;
-  if (NS_SUCCEEDED(
-          appKey->ReadIntValue(NS_LITERAL_STRING("NoOpenWith"), &value)) &&
+  if (NS_SUCCEEDED(appKey->ReadIntValue(u"NoOpenWith"_ns, &value)) &&
       value == 1)
     return false;
 
   nsAutoString dummy;
-  if (NS_SUCCEEDED(
-          appKey->ReadStringValue(NS_LITERAL_STRING("NoOpenWith"), dummy)))
+  if (NS_SUCCEEDED(appKey->ReadStringValue(u"NoOpenWith"_ns, dummy)))
     return false;
 
   appKey->Close();
@@ -377,8 +403,7 @@ bool nsMIMEInfoWin::GetAppsVerbCommandHandler(const nsAString& appExeName,
   if (NS_FAILED(rv)) return false;
 
   nsAutoString appFilesystemCommand;
-  if (NS_SUCCEEDED(
-          appKey->ReadStringValue(EmptyString(), appFilesystemCommand))) {
+  if (NS_SUCCEEDED(appKey->ReadStringValue(u""_ns, appFilesystemCommand))) {
     // Expand environment vars, clean up any misc.
     if (!nsLocalFile::CleanupCmdHandlerPath(appFilesystemCommand)) return false;
 
@@ -415,12 +440,11 @@ bool nsMIMEInfoWin::GetDllLaunchInfo(nsIFile* aDll, nsIFile* aFile,
 
   // Check for the NoOpenWith flag, if it exists
   uint32_t value;
-  rv = appKey->ReadIntValue(NS_LITERAL_STRING("NoOpenWith"), &value);
+  rv = appKey->ReadIntValue(u"NoOpenWith"_ns, &value);
   if (NS_SUCCEEDED(rv) && value == 1) return false;
 
   nsAutoString dummy;
-  if (NS_SUCCEEDED(
-          appKey->ReadStringValue(NS_LITERAL_STRING("NoOpenWith"), dummy)))
+  if (NS_SUCCEEDED(appKey->ReadStringValue(u"NoOpenWith"_ns, dummy)))
     return false;
 
   appKey->Close();
@@ -438,8 +462,7 @@ bool nsMIMEInfoWin::GetDllLaunchInfo(nsIFile* aDll, nsIFile* aFile,
   if (NS_FAILED(rv)) return false;
 
   nsAutoString appFilesystemCommand;
-  if (NS_SUCCEEDED(
-          appKey->ReadStringValue(EmptyString(), appFilesystemCommand))) {
+  if (NS_SUCCEEDED(appKey->ReadStringValue(u""_ns, appFilesystemCommand))) {
     // Replace embedded environment variables.
     uint32_t bufLength =
         ::ExpandEnvironmentStringsW(appFilesystemCommand.get(), nullptr, 0);
@@ -457,7 +480,7 @@ bool nsMIMEInfoWin::GetDllLaunchInfo(nsIFile* aDll, nsIFile* aFile,
     // C:\Windows\System32\rundll32.exe "C:\Program Files\Windows
     // Photo Gallery\PhotoViewer.dll", ImageView_Fullscreen %1
     nsAutoString params;
-    NS_NAMED_LITERAL_STRING(rundllSegment, "rundll32.exe ");
+    constexpr auto rundllSegment = u"rundll32.exe "_ns;
     int32_t index = appFilesystemCommand.Find(rundllSegment);
     if (index > kNotFound) {
       params.Append(
@@ -467,7 +490,7 @@ bool nsMIMEInfoWin::GetDllLaunchInfo(nsIFile* aDll, nsIFile* aFile,
     }
 
     // check to make sure we have a %1 and fill it
-    NS_NAMED_LITERAL_STRING(percentOneParam, "%1");
+    constexpr auto percentOneParam = u"%1"_ns;
     index = params.Find(percentOneParam);
     if (index == kNotFound)  // no parameter
       return false;
@@ -505,8 +528,7 @@ bool nsMIMEInfoWin::GetProgIDVerbCommandHandler(const nsAString& appProgIDName,
   if (NS_FAILED(rv)) return false;
 
   nsAutoString appFilesystemCommand;
-  if (NS_SUCCEEDED(
-          appKey->ReadStringValue(EmptyString(), appFilesystemCommand))) {
+  if (NS_SUCCEEDED(appKey->ReadStringValue(u""_ns, appFilesystemCommand))) {
     // Expand environment vars, clean up any misc.
     if (!nsLocalFile::CleanupCmdHandlerPath(appFilesystemCommand)) return false;
 
@@ -606,7 +628,7 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
                         nsIWindowsRegKey::ACCESS_QUERY_VALUE);
       if (NS_SUCCEEDED(rv)) {
         nsAutoString mimeFileExt;
-        if (NS_SUCCEEDED(regKey->ReadStringValue(EmptyString(), mimeFileExt))) {
+        if (NS_SUCCEEDED(regKey->ReadStringValue(u""_ns, mimeFileExt))) {
           CopyUTF16toUTF8(mimeFileExt, fileExt);
           extKnown = false;
         }
@@ -632,9 +654,9 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
                      workingRegistryPath, nsIWindowsRegKey::ACCESS_QUERY_VALUE);
     if (NS_SUCCEEDED(rv)) {
       nsAutoString appProgId;
-      if (NS_SUCCEEDED(regKey->ReadStringValue(EmptyString(), appProgId))) {
+      if (NS_SUCCEEDED(regKey->ReadStringValue(u""_ns, appProgId))) {
         // Bug 358297 - ignore the embedded internet explorer handler
-        if (appProgId != NS_LITERAL_STRING("XPSViewer.Document")) {
+        if (appProgId != u"XPSViewer.Document"_ns) {
           nsAutoString appFilesystemCommand;
           if (GetProgIDVerbCommandHandler(appProgId, appFilesystemCommand,
                                           false) &&
@@ -705,8 +727,8 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
 
     // HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion
     // \Explorer\FileExts\.ext\OpenWithList
-    workingRegistryPath = NS_LITERAL_STRING(
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\");
+    workingRegistryPath = nsLiteralString(
+        u"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\");
     workingRegistryPath += fileExtToUse;
     workingRegistryPath.AppendLiteral("\\OpenWithList");
 
@@ -738,8 +760,8 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
 
     // HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion
     // \Explorer\FileExts\.ext\OpenWithProgids
-    workingRegistryPath = NS_LITERAL_STRING(
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\");
+    workingRegistryPath = nsLiteralString(
+        u"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\");
     workingRegistryPath += fileExtToUse;
     workingRegistryPath.AppendLiteral("\\OpenWithProgids");
 
@@ -773,11 +795,9 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
                  nsIWindowsRegKey::ACCESS_QUERY_VALUE);
     if (NS_SUCCEEDED(rv)) {
       nsAutoString perceivedType;
-      rv = regKey->ReadStringValue(NS_LITERAL_STRING("PerceivedType"),
-                                   perceivedType);
+      rv = regKey->ReadStringValue(u"PerceivedType"_ns, perceivedType);
       if (NS_SUCCEEDED(rv)) {
-        nsAutoString openWithListPath(
-            NS_LITERAL_STRING("SystemFileAssociations\\"));
+        nsAutoString openWithListPath(u"SystemFileAssociations\\"_ns);
         openWithListPath.Append(perceivedType);  // no period
         openWithListPath.AppendLiteral("\\OpenWithList");
 
@@ -809,7 +829,7 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
   // Listing general purpose handlers, not specific to a mime type or file
   // extension
 
-  workingRegistryPath = NS_LITERAL_STRING("*\\OpenWithList");
+  workingRegistryPath = u"*\\OpenWithList"_ns;
 
   rv = regKey->Open(nsIWindowsRegKey::ROOT_KEY_CLASSES_ROOT,
                     workingRegistryPath, nsIWindowsRegKey::ACCESS_QUERY_VALUE);
@@ -832,7 +852,7 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
   }
 
   // 8) General application's list - not file extension specific on windows
-  workingRegistryPath = NS_LITERAL_STRING("Applications");
+  workingRegistryPath = u"Applications"_ns;
 
   rv =
       regKey->Open(nsIWindowsRegKey::ROOT_KEY_CLASSES_ROOT, workingRegistryPath,
@@ -859,5 +879,22 @@ nsMIMEInfoWin::GetPossibleLocalHandlers(nsIArray** _retval) {
   *_retval = appList;
   NS_ADDREF(*_retval);
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsMIMEInfoWin::IsCurrentAppOSDefault(bool* _retval) {
+  *_retval = false;
+  if (mDefaultApplication) {
+    // Determine if the default executable is our executable.
+    nsCOMPtr<nsIFile> ourBinary;
+    XRE_GetBinaryPath(getter_AddRefs(ourBinary));
+    bool isSame = false;
+    nsresult rv = mDefaultApplication->Equals(ourBinary, &isSame);
+    if (NS_FAILED(rv)) {
+      return rv;
+    }
+    *_retval = isSame;
+  }
   return NS_OK;
 }

@@ -10,8 +10,6 @@
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Tuple.h"
-#include "mozilla/Variant.h"
 
 #include <stddef.h>
 #include <utility>
@@ -250,7 +248,7 @@ class ObjectWrapperMap {
 
 using StringWrapperMap =
     NurseryAwareHashMap<JSString*, JSString*, DefaultHasher<JSString*>,
-                        ZoneAllocPolicy>;
+                        ZoneAllocPolicy, DuplicatesPossible>;
 
 }  // namespace js
 
@@ -493,34 +491,28 @@ struct WrapperValue {
 };
 
 class MOZ_RAII AutoWrapperVector : public JS::GCVector<WrapperValue, 8>,
-                                   private JS::AutoGCRooter {
+                                   public JS::AutoGCRooter {
  public:
-  explicit AutoWrapperVector(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+  explicit AutoWrapperVector(JSContext* cx)
       : JS::GCVector<WrapperValue, 8>(cx),
-        JS::AutoGCRooter(cx, JS::AutoGCRooter::Tag::WrapperVector) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+        JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::WrapperVector) {}
 
-  friend void AutoGCRooter::trace(JSTracer* trc);
+  void trace(JSTracer* trc);
 
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+ private:
 };
 
-class MOZ_RAII AutoWrapperRooter : private JS::AutoGCRooter {
+class MOZ_RAII AutoWrapperRooter : public JS::AutoGCRooter {
  public:
-  AutoWrapperRooter(JSContext* cx,
-                    const WrapperValue& v MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Tag::Wrapper), value(v) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+  AutoWrapperRooter(JSContext* cx, const WrapperValue& v)
+      : JS::AutoGCRooter(cx, JS::AutoGCRooter::Kind::Wrapper), value(v) {}
 
   operator JSObject*() const { return value; }
 
-  friend void JS::AutoGCRooter::trace(JSTracer* trc);
+  void trace(JSTracer* trc);
 
  private:
   WrapperValue value;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 } /* namespace js */

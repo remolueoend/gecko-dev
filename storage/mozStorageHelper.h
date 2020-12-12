@@ -117,10 +117,10 @@ class mozStorageTransaction {
     nsresult rv;
     if (mAsyncCommit) {
       nsCOMPtr<mozIStoragePendingStatement> ps;
-      rv = mConnection->ExecuteSimpleSQLAsync(NS_LITERAL_CSTRING("COMMIT"),
-                                              nullptr, getter_AddRefs(ps));
+      rv = mConnection->ExecuteSimpleSQLAsync("COMMIT"_ns, nullptr,
+                                              getter_AddRefs(ps));
     } else {
-      rv = mConnection->ExecuteSimpleSQL(NS_LITERAL_CSTRING("COMMIT"));
+      rv = mConnection->ExecuteSimpleSQL("COMMIT"_ns);
     }
 
     if (NS_SUCCEEDED(rv)) mHasTransaction = false;
@@ -141,7 +141,7 @@ class mozStorageTransaction {
     // a busy error, so this handling can be removed.
     nsresult rv;
     do {
-      rv = mConnection->ExecuteSimpleSQL(NS_LITERAL_CSTRING("ROLLBACK"));
+      rv = mConnection->ExecuteSimpleSQL("ROLLBACK"_ns);
       if (rv == NS_ERROR_STORAGE_BUSY) (void)PR_Sleep(PR_INTERVAL_NO_WAIT);
     } while (rv == NS_ERROR_STORAGE_BUSY);
 
@@ -172,6 +172,12 @@ class MOZ_STACK_CLASS mozStorageStatementScoper {
   ~mozStorageStatementScoper() {
     if (mStatement) mStatement->Reset();
   }
+
+  mozStorageStatementScoper(mozStorageStatementScoper&&) = default;
+  mozStorageStatementScoper& operator=(mozStorageStatementScoper&&) = default;
+  mozStorageStatementScoper(const mozStorageStatementScoper&) = delete;
+  mozStorageStatementScoper& operator=(const mozStorageStatementScoper&) =
+      delete;
 
   /**
    * Call this to make the statement not reset. You might do this if you know

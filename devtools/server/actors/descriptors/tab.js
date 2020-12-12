@@ -25,6 +25,13 @@ const { ActorClassWithSpec, Actor } = require("devtools/shared/protocol");
 const { tabDescriptorSpec } = require("devtools/shared/specs/descriptors/tab");
 const { AppConstants } = require("resource://gre/modules/AppConstants.jsm");
 
+loader.lazyRequireGetter(
+  this,
+  "WatcherActor",
+  "devtools/server/actors/watcher",
+  true
+);
+
 /**
  * Creates a target actor proxy for handling requests to a single browser frame.
  * Both <xul:browser> and <iframe mozbrowser> are supported.
@@ -39,7 +46,6 @@ const TabDescriptorActor = ActorClassWithSpec(tabDescriptorSpec, {
     Actor.prototype.initialize.call(this, connection);
     this._conn = connection;
     this._browser = browser;
-    this.exited = false;
   },
 
   form() {
@@ -49,23 +55,38 @@ const TabDescriptorActor = ActorClassWithSpec(tabDescriptorSpec, {
         this._browser && this._browser.browsingContext
           ? this._browser.browsingContext.id
           : null,
+      isZombieTab: this._isZombieTab(),
       outerWindowID: this._getOuterWindowId(),
       selected: this.selected,
-      title: this._getZombieTabTitle(),
+      title: this._getTitle(),
       traits: {
-        // Backward compatibility for FF75 or older.
-        // Remove when FF76 is on the release channel.
-        getFavicon: true,
-        // Backward compatibility for FF76 or older.
-        // Remove when FF77 is on the release channel.
-        // This trait indicates that meta data such as title, url and
-        // outerWindowID are directly available on the TabDescriptor.
-        hasTabInfo: true,
+        // Supports the Watcher actor. Can be removed as part of Bug 1680280.
+        watcher: true,
       },
       url: this._getUrl(),
     };
 
     return form;
+  },
+
+  _getTitle() {
+    // If the content already provides a title, use it.
+    if (this._browser.contentTitle) {
+      return this._browser.contentTitle;
+    }
+
+    // For zombie or lazy tabs (tab created, but content has not been loaded),
+    // try to retrieve the title from the XUL Tab itself.
+    // Note: this only works on Firefox desktop.
+    if (this._tabbrowser) {
+      const tab = this._tabbrowser.getTabForBrowser(this._browser);
+      if (tab) {
+        return tab.label;
+      }
+    }
+
+    // No title available.
+    return null;
   },
 
   _getUrl() {
@@ -90,10 +111,15 @@ const TabDescriptorActor = ActorClassWithSpec(tabDescriptorSpec, {
     // getMostRecentBrowserWindow will find the appropriate window on Firefox
     // Desktop and on GeckoView.
     const topAppWindow = Services.wm.getMostRecentBrowserWindow();
-    if (!topAppWindow) {
+
+    const selectedBrowser = topAppWindow?.gBrowser?.selectedBrowser;
+    if (!selectedBrowser) {
+      // Note: gBrowser is not available on GeckoView.
+      // We should find another way to know if this browser is the selected
+      // browser. See Bug 1631020.
       return false;
     }
-    const selectedBrowser = topAppWindow.gBrowser.selectedBrowser;
+
     return this._browser === selectedBrowser;
   },
 
@@ -128,8 +154,7 @@ const TabDescriptorActor = ActorClassWithSpec(tabDescriptorSpec, {
           onDestroy
         );
 
-        const form = this._createTargetForm(connectForm);
-        resolve(form);
+        resolve(connectForm);
       } catch (e) {
         reject({
           error: "tabDestroyed",
@@ -137,6 +162,19 @@ const TabDescriptorActor = ActorClassWithSpec(tabDescriptorSpec, {
         });
       }
     });
+  },
+
+  /**
+   * Return a Watcher actor, allowing to keep track of targets which
+   * already exists or will be created. It also helps knowing when they
+   * are destroyed.
+   */
+  getWatcher() {
+    if (!this.watcher) {
+      this.watcher = new WatcherActor(this.conn, { browser: this._browser });
+      this.manage(this.watcher);
+    }
+    return this.watcher;
   },
 
   get _tabbrowser() {
@@ -168,38 +206,8 @@ const TabDescriptorActor = ActorClassWithSpec(tabDescriptorSpec, {
     return tab?.hasAttribute && tab.hasAttribute("pending");
   },
 
-  /**
-   * If we don't have a title from the content side because it's a zombie tab, try to find
-   * it on the chrome side.
-   */
-  _getZombieTabTitle() {
-    // If contentTitle is empty (e.g. on a not-yet-restored tab), but there is a
-    // tabbrowser (i.e. desktop Firefox, but not GeckoView), we can use the label
-    // as the title.
-    if (this._tabbrowser) {
-      const tab = this._tabbrowser.getTabForBrowser(this._browser);
-      if (tab) {
-        return tab.label;
-      }
-    }
-
-    return null;
-  },
-
-  _createTargetForm(connectedForm) {
-    const form = Object.assign({}, connectedForm);
-    // In case of Zombie tabs (not yet restored), look up title from other.
-    if (this._isZombieTab()) {
-      form.title = this._getZombieTabTitle() || form.title;
-    }
-
-    return form;
-  },
-
   destroy() {
     this._browser = null;
-    this.exited = true;
-    this.emit("exited");
 
     Actor.prototype.destroy.call(this);
   },

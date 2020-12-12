@@ -20,22 +20,16 @@
  *   dom/ipc/manifestMessages.js
  *
  * Which is injected into every browser instance via browser.js.
- *
- * exported ManifestObtainer
  */
 "use strict";
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
-const { PromiseMessage } = ChromeUtils.import(
-  "resource://gre/modules/PromiseMessage.jsm"
-);
 const { ManifestProcessor } = ChromeUtils.import(
   "resource://gre/modules/ManifestProcessor.jsm"
 );
 
 var ManifestObtainer = {
-  // jshint ignore:line
   /**
    * Public interface for obtaining a web manifest from a XUL browser, to use
    * on the parent process.
@@ -52,15 +46,20 @@ var ManifestObtainer = {
     if (!isXULBrowser(aBrowser)) {
       throw new TypeError("Invalid input. Expected XUL browser.");
     }
-    const mm = aBrowser.messageManager;
-    const {
-      data: { success, result },
-    } = await PromiseMessage.send(mm, "DOM:ManifestObtainer:Obtain", aOptions);
-    if (!success) {
-      const error = toError(result);
+
+    const actor = aBrowser.browsingContext.currentWindowGlobal.getActor(
+      "ManifestMessages"
+    );
+
+    const reply = await actor.sendQuery(
+      "DOM:ManifestObtainer:Obtain",
+      aOptions
+    );
+    if (!reply.success) {
+      const error = toError(reply.result);
       throw error;
     }
-    return result;
+    return reply.result;
   },
   /**
    * Public interface for obtaining a web manifest from a XUL browser.
@@ -109,8 +108,9 @@ function isXULBrowser(aBrowser) {
   if (!aBrowser || !aBrowser.namespaceURI || !aBrowser.localName) {
     return false;
   }
-  const XUL = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-  return aBrowser.namespaceURI === XUL && aBrowser.localName === "browser";
+  const XUL_NS =
+    "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+  return aBrowser.namespaceURI === XUL_NS && aBrowser.localName === "browser";
 }
 
 /**
@@ -167,4 +167,4 @@ async function fetchManifest(aWindow) {
   return aWindow.fetch(request);
 }
 
-var EXPORTED_SYMBOLS = ["ManifestObtainer"]; // jshint ignore:line
+var EXPORTED_SYMBOLS = ["ManifestObtainer"];

@@ -8,12 +8,15 @@
 
 #include "ipc/VRLayerParent.h"
 #include "mozilla/gfx/PVRManagerParent.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/ipc/ProtocolTypes.h"
 #include "mozilla/ipc/ProtocolUtils.h"  // for IToplevelProtocol
 #include "mozilla/TimeStamp.h"          // for TimeStamp
 #include "mozilla/Unused.h"
 #include "VRManager.h"
 #include "VRThread.h"
+
+using mozilla::dom::GamepadHandle;
 
 namespace mozilla {
 using namespace layers;
@@ -72,13 +75,12 @@ void VRManagerParent::UnregisterFromManager() {
 
 /* static */
 bool VRManagerParent::CreateForContent(Endpoint<PVRManagerParent>&& aEndpoint) {
-  MessageLoop* loop = CompositorThreadHolder::Loop();
-  if (!loop) {
+  if (!CompositorThread()) {
     return false;
   }
 
   RefPtr<VRManagerParent> vmp = new VRManagerParent(aEndpoint.OtherPid(), true);
-  loop->PostTask(NewRunnableMethod<Endpoint<PVRManagerParent>&&>(
+  CompositorThread()->Dispatch(NewRunnableMethod<Endpoint<PVRManagerParent>&&>(
       "gfx::VRManagerParent::Bind", vmp, &VRManagerParent::Bind,
       std::move(aEndpoint)));
 
@@ -102,12 +104,11 @@ void VRManagerParent::RegisterVRManagerInCompositorThread(
 
 /*static*/
 VRManagerParent* VRManagerParent::CreateSameProcess() {
-  MessageLoop* loop = CompositorThreadHolder::Loop();
   RefPtr<VRManagerParent> vmp =
       new VRManagerParent(base::GetCurrentProcId(), false);
   vmp->mCompositorThreadHolder = CompositorThreadHolder::GetSingleton();
   vmp->mSelfRef = vmp;
-  loop->PostTask(
+  CompositorThread()->Dispatch(
       NewRunnableFunction("RegisterVRManagerIncompositorThreadRunnable",
                           RegisterVRManagerInCompositorThread, vmp.get()));
   return vmp.get();
@@ -115,13 +116,11 @@ VRManagerParent* VRManagerParent::CreateSameProcess() {
 
 bool VRManagerParent::CreateForGPUProcess(
     Endpoint<PVRManagerParent>&& aEndpoint) {
-  MessageLoop* loop = CompositorThreadHolder::Loop();
-
   RefPtr<VRManagerParent> vmp =
       new VRManagerParent(aEndpoint.OtherPid(), false);
   vmp->mCompositorThreadHolder = CompositorThreadHolder::GetSingleton();
   vmp->mSelfRef = vmp;
-  loop->PostTask(NewRunnableMethod<Endpoint<PVRManagerParent>&&>(
+  CompositorThread()->Dispatch(NewRunnableMethod<Endpoint<PVRManagerParent>&&>(
       "gfx::VRManagerParent::Bind", vmp, &VRManagerParent::Bind,
       std::move(aEndpoint)));
   return true;
@@ -129,19 +128,19 @@ bool VRManagerParent::CreateForGPUProcess(
 
 /*static*/
 void VRManagerParent::Shutdown() {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(
+      CompositorThread(),
+      "Shutdown() must gets called before the compositor thread is shutdown");
   ReleaseVRManagerParentSingleton();
-  CompositorThreadHolder::Loop()->PostTask(NS_NewRunnableFunction(
+  CompositorThread()->Dispatch(NS_NewRunnableFunction(
       "VRManagerParent::Shutdown",
-      []() -> void { VRManagerParent::ShutdownInternal(); }));
-}
-
-/*static*/
-void VRManagerParent::ShutdownInternal() {
-  VRManager* vm = VRManager::MaybeGet();
-  if (!vm) {
-    return;
-  }
-  vm->ShutdownVRManagerParents();
+      [vm = RefPtr<VRManager>(VRManager::MaybeGet())]() -> void {
+        if (!vm) {
+          return;
+        }
+        vm->ShutdownVRManagerParents();
+      }));
 }
 
 void VRManagerParent::ActorDestroy(ActorDestroyReason why) {}
@@ -243,21 +242,21 @@ mozilla::ipc::IPCResult VRManagerParent::RecvResetPuppet() {
 }
 
 mozilla::ipc::IPCResult VRManagerParent::RecvVibrateHaptic(
-    const uint32_t& aControllerIdx, const uint32_t& aHapticIndex,
-    const double& aIntensity, const double& aDuration,
-    const uint32_t& aPromiseID) {
+    const mozilla::dom::GamepadHandle& aGamepadHandle,
+    const uint32_t& aHapticIndex, const double& aIntensity,
+    const double& aDuration, const uint32_t& aPromiseID) {
   VRManager* vm = VRManager::Get();
   VRManagerPromise promise(this, aPromiseID);
 
-  vm->VibrateHaptic(aControllerIdx, aHapticIndex, aIntensity, aDuration,
+  vm->VibrateHaptic(aGamepadHandle, aHapticIndex, aIntensity, aDuration,
                     promise);
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult VRManagerParent::RecvStopVibrateHaptic(
-    const uint32_t& aControllerIdx) {
+    const mozilla::dom::GamepadHandle& aGamepadHandle) {
   VRManager* vm = VRManager::Get();
-  vm->StopVibrateHaptic(aControllerIdx);
+  vm->StopVibrateHaptic(aGamepadHandle);
   return IPC_OK();
 }
 

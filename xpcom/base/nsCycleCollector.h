@@ -13,11 +13,12 @@ class nsISupports;
 template <class T>
 struct already_AddRefed;
 
-#include "nsError.h"
-#include "nsID.h"
-
+#include <cstdint>
 #include "mozilla/Attributes.h"
-#include "js/SliceBudget.h"
+
+namespace js {
+class SliceBudget;
+}
 
 namespace mozilla {
 class CycleCollectedJSContext;
@@ -51,7 +52,8 @@ bool nsCycleCollector_doDeferredDeletionWithBudget(js::SliceBudget& aBudget);
 already_AddRefed<nsICycleCollectorLogSink> nsCycleCollector_createLogSink();
 already_AddRefed<nsICycleCollectorListener> nsCycleCollector_createLogger();
 
-void nsCycleCollector_collect(nsICycleCollectorListener* aManualListener);
+// Run a cycle collection and return whether anything was collected.
+bool nsCycleCollector_collect(nsICycleCollectorListener* aManualListener);
 
 void nsCycleCollector_collectSlice(js::SliceBudget& budget,
                                    bool aPreferShorterSlices = false);

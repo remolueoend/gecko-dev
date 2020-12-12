@@ -33,12 +33,10 @@ const inspectorSpec = generateActorSpec({
         pageStyle: RetVal("pagestyle"),
       },
     },
-    getHighlighter: {
-      request: {
-        autohide: Arg(0, "boolean"),
-      },
+    getCompatibility: {
+      request: {},
       response: {
-        highligter: RetVal("highlighter"),
+        compatibility: RetVal("compatibility"),
       },
     },
     getHighlighterByType: {

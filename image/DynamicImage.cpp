@@ -4,14 +4,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "DynamicImage.h"
+#include "gfxContext.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/SVGImageContext.h"
 #include "ImageRegion.h"
 #include "Orientation.h"
-#include "SVGImageContext.h"
 
 #include "mozilla/MemoryReporting.h"
 
@@ -231,9 +232,9 @@ bool DynamicImage::StartDecodingWithResult(uint32_t aFlags,
   return true;
 }
 
-bool DynamicImage::RequestDecodeWithResult(uint32_t aFlags,
-                                           uint32_t aWhichFrame) {
-  return true;
+imgIContainer::DecodeResult DynamicImage::RequestDecodeWithResult(
+    uint32_t aFlags, uint32_t aWhichFrame) {
+  return imgIContainer::DECODE_SURFACE_AVAILABLE;
 }
 
 NS_IMETHODIMP

@@ -17,11 +17,11 @@
 using namespace js;
 using namespace js::frontend;
 
-NameOpEmitter::NameOpEmitter(BytecodeEmitter* bce, Handle<JSAtom*> name,
+NameOpEmitter::NameOpEmitter(BytecodeEmitter* bce, const ParserAtom* name,
                              Kind kind)
     : bce_(bce), kind_(kind), name_(name), loc_(bce_->lookupName(name_)) {}
 
-NameOpEmitter::NameOpEmitter(BytecodeEmitter* bce, Handle<JSAtom*> name,
+NameOpEmitter::NameOpEmitter(BytecodeEmitter* bce, const ParserAtom* name,
                              const NameLocation& loc, Kind kind)
     : bce_(bce), kind_(kind), name_(name), loc_(loc) {}
 
@@ -224,6 +224,11 @@ bool NameOpEmitter::prepareForRhs() {
   return true;
 }
 
+#if defined(__clang__) && defined(XP_WIN) && \
+    (defined(_M_X64) || defined(__x86_64__))
+// Work around a CPU bug. See bug 1524257.
+__attribute__((__aligned__(32)))
+#endif
 bool NameOpEmitter::emitAssignment() {
   MOZ_ASSERT(state_ == State::Rhs);
 

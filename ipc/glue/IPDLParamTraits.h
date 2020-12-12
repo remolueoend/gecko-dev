@@ -10,6 +10,8 @@
 #include "chrome/common/ipc_message_utils.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Variant.h"
+#include "mozilla/Tuple.h"
+#include "nsTArray.h"
 
 #include <type_traits>
 
@@ -236,6 +238,9 @@ struct IPDLParamTraits<nsTArray<T>> {
   static const bool sUseWriteBytes =
       (std::is_integral_v<T> || std::is_floating_point_v<T>);
 };
+
+template <typename T>
+struct IPDLParamTraits<CopyableTArray<T>> : IPDLParamTraits<nsTArray<T>> {};
 
 // Maybe support for IPDLParamTraits
 template <typename T>

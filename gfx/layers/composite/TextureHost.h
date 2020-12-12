@@ -7,17 +7,17 @@
 #ifndef MOZILLA_GFX_TEXTUREHOST_H
 #define MOZILLA_GFX_TEXTUREHOST_H
 
-#include <functional>
-#include <stddef.h>  // for size_t
-#include <stdint.h>  // for uint64_t, uint32_t, uint8_t
-#include "gfxTypes.h"
-#include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
-#include "mozilla/Attributes.h"         // for override
-#include "mozilla/RefPtr.h"             // for RefPtr, already_AddRefed, etc
-#include "mozilla/gfx/2D.h"             // for DataSourceSurface
-#include "mozilla/gfx/Point.h"          // for IntSize, IntPoint
-#include "mozilla/gfx/Types.h"          // for SurfaceFormat, etc
-#include "mozilla/layers/Compositor.h"  // for Compositor
+#include <stddef.h>              // for size_t
+#include <stdint.h>              // for uint64_t, uint32_t, uint8_t
+#include "mozilla/Assertions.h"  // for MOZ_ASSERT, etc
+#include "mozilla/Attributes.h"  // for override
+#include "mozilla/RefPtr.h"      // for RefPtr, already_AddRefed, etc
+#include "mozilla/gfx/Logging.h"
+#include "mozilla/gfx/Matrix.h"
+#include "mozilla/gfx/Point.h"  // for IntSize, IntPoint
+#include "mozilla/gfx/Rect.h"
+#include "mozilla/gfx/Types.h"  // for SurfaceFormat, etc
+#include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/layers/CompositorTypes.h"  // for TextureFlags, etc
 #include "mozilla/layers/LayersTypes.h"      // for LayerRenderState, etc
 #include "mozilla/layers/LayersSurfaces.h"
@@ -28,14 +28,18 @@
 #include "nsCOMPtr.h"         // for already_AddRefed
 #include "nsDebug.h"          // for NS_WARNING
 #include "nsISupportsImpl.h"  // for MOZ_COUNT_CTOR, etc
-#include "nsRegion.h"         // for nsIntRegion
-#include "nsTraceRefcnt.h"    // for MOZ_COUNT_CTOR, etc
-#include "nscore.h"           // for nsACString
+#include "nsRect.h"
+#include "nsRegion.h"       // for nsIntRegion
+#include "nsTraceRefcnt.h"  // for MOZ_COUNT_CTOR, etc
+#include "nscore.h"         // for nsACString
 #include "mozilla/layers/AtomicRefCountedWithFinalize.h"
-#include "mozilla/gfx/Rect.h"
 
 class MacIOSurface;
 namespace mozilla {
+namespace gfx {
+class DataSourceSurface;
+}
+
 namespace ipc {
 class Shmem;
 }  // namespace ipc
@@ -47,6 +51,8 @@ class TransactionBuilder;
 
 namespace layers {
 
+class AndroidHardwareBuffer;
+class AndroidHardwareBufferTextureHost;
 class BufferDescriptor;
 class BufferTextureHost;
 class Compositor;
@@ -63,6 +69,7 @@ class TextureReadLock;
 class TextureSourceOGL;
 class TextureSourceD3D11;
 class TextureSourceBasic;
+class TextureSourceProvider;
 class DataTextureSource;
 class PTextureParent;
 class TextureParent;
@@ -484,6 +491,8 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
    */
   virtual void UnbindTextureSource();
 
+  virtual bool IsValid() { return true; }
+
   /**
    * Is called before compositing if the shared data has changed since last
    * composition.
@@ -605,6 +614,14 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
    */
   virtual bool HasIntermediateBuffer() const { return false; }
 
+  /**
+   * Returns true if the TextureHost can be released before the rendering is
+   * completed, otherwise returns false.
+   */
+  virtual bool NeedsDeferredDeletion() const {
+    return !HasIntermediateBuffer();
+  }
+
   void AddCompositableRef() {
     ++mCompositableCount;
     if (mCompositableCount == 1) {
@@ -638,6 +655,10 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
   }
   virtual WebRenderTextureHost* AsWebRenderTextureHost() { return nullptr; }
   virtual SurfaceTextureHost* AsSurfaceTextureHost() { return nullptr; }
+  virtual AndroidHardwareBufferTextureHost*
+  AsAndroidHardwareBufferTextureHost() {
+    return nullptr;
+  }
 
   // Create the corresponding RenderTextureHost type of this texture, and
   // register the RenderTextureHost into render thread.
@@ -647,6 +668,14 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
         false,
         "No CreateRenderTexture() implementation for this TextureHost type.");
   }
+
+  void EnsureRenderTexture(const wr::MaybeExternalImageId& aExternalImageId);
+
+  // Destroy RenderTextureHost when it was created by the TextureHost.
+  // It is called in TextureHost::Finalize().
+  virtual void MaybeDestroyRenderTexture();
+
+  static void DestroyRenderTexture(const wr::ExternalImageId& aExternalImageId);
 
   /// Returns the number of actual textures that will be used to render this.
   /// For example in a lot of YUV cases it will be 3
@@ -665,6 +694,17 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
     MOZ_ASSERT_UNREACHABLE("Unimplemented");
   }
 
+  enum class PushDisplayItemFlag {
+    // Passed if the caller wants these display items to be promoted
+    // to compositor surfaces if possible.
+    PREFER_COMPOSITOR_SURFACE,
+
+    // Passed in the RenderCompositor supports BufferTextureHosts
+    // being used directly as external compositor surfaces.
+    SUPPORTS_EXTERNAL_BUFFER_TEXTURES,
+  };
+  using PushDisplayItemFlagSet = EnumSet<PushDisplayItemFlag>;
+
   // Put all necessary WR commands into DisplayListBuilder for this textureHost
   // rendering.
   virtual void PushDisplayItems(wr::DisplayListBuilder& aBuilder,
@@ -672,7 +712,7 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
                                 const wr::LayoutRect& aClip,
                                 wr::ImageRendering aFilter,
                                 const Range<wr::ImageKey>& aKeys,
-                                const bool aPreferCompositorSurface) {
+                                PushDisplayItemFlagSet aFlags) {
     MOZ_ASSERT_UNREACHABLE(
         "No PushDisplayItems() implementation for this TextureHost type.");
   }
@@ -685,6 +725,20 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
   virtual bool IsDirectMap() { return false; }
 
   virtual bool NeedsYFlip() const;
+
+  TextureSourceProvider* GetProvider() const { return mProvider; }
+
+  virtual void SetAcquireFence(mozilla::ipc::FileDescriptor&& aFenceFd) {}
+
+  virtual void SetReleaseFence(mozilla::ipc::FileDescriptor&& aFenceFd) {}
+
+  virtual mozilla::ipc::FileDescriptor GetAndResetReleaseFence() {
+    return mozilla::ipc::FileDescriptor();
+  }
+
+  virtual AndroidHardwareBuffer* GetAndroidHardwareBuffer() const {
+    return nullptr;
+  }
 
  protected:
   virtual void ReadUnlock();
@@ -715,12 +769,14 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
   int mCompositableCount;
   uint64_t mFwdTransactionId;
   bool mReadLocked;
+  wr::MaybeExternalImageId mExternalImageId;
 
   friend class Compositor;
   friend class TextureParent;
   friend class TiledLayerBufferComposite;
   friend class TextureSourceProvider;
   friend class GPUVideoTextureHost;
+  friend class WebRenderTextureHost;
 };
 
 /**
@@ -782,14 +838,16 @@ class BufferTextureHost : public TextureHost {
 
   bool HasIntermediateBuffer() const override { return mHasIntermediateBuffer; }
 
+  bool NeedsDeferredDeletion() const override {
+    return TextureHost::NeedsDeferredDeletion() || UseExternalTextures();
+  }
+
   BufferTextureHost* AsBufferTextureHost() override { return this; }
 
   const BufferDescriptor& GetBufferDescriptor() const { return mDescriptor; }
 
   void CreateRenderTexture(
       const wr::ExternalImageId& aExternalImageId) override;
-
-  static void DestroyRenderTexture(const wr::ExternalImageId& aExternalImageId);
 
   uint32_t NumSubTextures() override;
 
@@ -802,7 +860,7 @@ class BufferTextureHost : public TextureHost {
                         const wr::LayoutRect& aBounds,
                         const wr::LayoutRect& aClip, wr::ImageRendering aFilter,
                         const Range<wr::ImageKey>& aImageKeys,
-                        const bool aPreferCompositorSurface) override;
+                        PushDisplayItemFlagSet aFlags) override;
 
   void ReadUnlock() override;
   bool IsDirectMap() override {
@@ -810,8 +868,10 @@ class BufferTextureHost : public TextureHost {
   };
 
   bool CanUnlock() { return !mFirstSource || mFirstSource->Sync(false); }
+  void DisableExternalTextures() { mUseExternalTextures = false; }
 
  protected:
+  bool UseExternalTextures() const { return mUseExternalTextures; }
   bool Upload(nsIntRegion* aRegion = nullptr);
   bool UploadIfNeeded();
   bool MaybeUpload(nsIntRegion* aRegion);
@@ -830,6 +890,7 @@ class BufferTextureHost : public TextureHost {
   bool mLocked;
   bool mNeedsFullUpdate;
   bool mHasIntermediateBuffer;
+  bool mUseExternalTextures;
 
   class DataTextureSourceYCbCrBasic;
 };

@@ -5,10 +5,31 @@
 
 #include "Cookie.h"
 #include "CookieCommons.h"
+#include "CookieLogging.h"
+#include "CookieService.h"
+#include "mozilla/ContentBlocking.h"
+#include "mozilla/ConsoleReportCollector.h"
 #include "mozilla/ContentBlockingNotifier.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/nsMixedContentBlocker.h"
+#include "mozilla/net/CookieJarSettings.h"
+#include "mozIThirdPartyUtil.h"
+#include "nsContentUtils.h"
+#include "nsICookiePermission.h"
+#include "nsICookieService.h"
 #include "nsIEffectiveTLDService.h"
+#include "nsIRedirectHistoryEntry.h"
+#include "nsIWebProgressListener.h"
+#include "nsNetUtil.h"
+#include "nsScriptSecurityManager.h"
+
+constexpr auto CONSOLE_SCHEMEFUL_CATEGORY = "cookieSchemeful"_ns;
 
 namespace mozilla {
+
+using dom::Document;
+
 namespace net {
 
 // static
@@ -61,7 +82,7 @@ bool CookieCommons::PathMatches(Cookie* aCookie, const nsACString& aPath) {
 // be the exact host, and aRequireHostMatch will be true to indicate that
 // substring matches should not be performed.
 nsresult CookieCommons::GetBaseDomain(nsIEffectiveTLDService* aTLDService,
-                                      nsIURI* aHostURI, nsCString& aBaseDomain,
+                                      nsIURI* aHostURI, nsACString& aBaseDomain,
                                       bool& aRequireHostMatch) {
   // get the base domain. this will fail if the host contains a leading dot,
   // more than one trailing dot, or is otherwise malformed.
@@ -72,7 +93,7 @@ nsresult CookieCommons::GetBaseDomain(nsIEffectiveTLDService* aTLDService,
     // aHostURI is either an IP address, an alias such as 'localhost', an eTLD
     // such as 'co.uk', or the empty string. use the host as a key in such
     // cases.
-    rv = aHostURI->GetAsciiHost(aBaseDomain);
+    rv = nsContentUtils::GetHostOrIPv6WithBrackets(aHostURI, aBaseDomain);
   }
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -87,6 +108,18 @@ nsresult CookieCommons::GetBaseDomain(nsIEffectiveTLDService* aTLDService,
   }
 
   return NS_OK;
+}
+
+nsresult CookieCommons::GetBaseDomain(nsIPrincipal* aPrincipal,
+                                      nsACString& aBaseDomain) {
+  MOZ_ASSERT(aPrincipal);
+
+  // for historical reasons we use ascii host for file:// URLs.
+  if (aPrincipal->SchemeIs("file")) {
+    return nsContentUtils::GetHostOrIPv6WithBrackets(aPrincipal, aBaseDomain);
+  }
+
+  return aPrincipal->GetBaseDomain(aBaseDomain);
 }
 
 // Get the base domain for aHost; e.g. for "www.bbc.co.uk", this would be
@@ -127,10 +160,9 @@ nsresult CookieCommons::GetBaseDomainFromHost(
   return rv;
 }
 
-// Notify observers that a cookie was rejected due to the users' prefs.
-void CookieCommons::NotifyRejected(nsIURI* aHostURI, nsIChannel* aChannel,
-                                   uint32_t aRejectedReason,
-                                   CookieOperation aOperation) {
+namespace {
+
+void NotifyRejectionToObservers(nsIURI* aHostURI, CookieOperation aOperation) {
   if (aOperation == OPERATION_WRITE) {
     nsCOMPtr<nsIObserverService> os = services::GetObserverService();
     if (os) {
@@ -139,6 +171,15 @@ void CookieCommons::NotifyRejected(nsIURI* aHostURI, nsIChannel* aChannel,
   } else {
     MOZ_ASSERT(aOperation == OPERATION_READ);
   }
+}
+
+}  // namespace
+
+// Notify observers that a cookie was rejected due to the users' prefs.
+void CookieCommons::NotifyRejected(nsIURI* aHostURI, nsIChannel* aChannel,
+                                   uint32_t aRejectedReason,
+                                   CookieOperation aOperation) {
+  NotifyRejectionToObservers(aHostURI, aOperation);
 
   ContentBlockingNotifier::OnDecision(
       aChannel, ContentBlockingNotifier::BlockingDecision::eBlock,
@@ -177,6 +218,480 @@ bool CookieCommons::CheckHttpValue(const CookieStruct& aCookieData) {
       0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
       0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x3B, 0x00};
   return aCookieData.value().FindCharInSet(illegalCharacters, 0) == -1;
+}
+
+// static
+bool CookieCommons::CheckCookiePermission(nsIChannel* aChannel,
+                                          CookieStruct& aCookieData) {
+  if (!aChannel) {
+    // No channel, let's assume this is a system-principal request.
+    return true;
+  }
+
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
+  nsresult rv =
+      loadInfo->GetCookieJarSettings(getter_AddRefs(cookieJarSettings));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return true;
+  }
+
+  nsIScriptSecurityManager* ssm =
+      nsScriptSecurityManager::GetScriptSecurityManager();
+  MOZ_ASSERT(ssm);
+
+  nsCOMPtr<nsIPrincipal> channelPrincipal;
+  rv = ssm->GetChannelURIPrincipal(aChannel, getter_AddRefs(channelPrincipal));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return false;
+  }
+
+  return CheckCookiePermission(channelPrincipal, cookieJarSettings,
+                               aCookieData);
+}
+
+// static
+bool CookieCommons::CheckCookiePermission(
+    nsIPrincipal* aPrincipal, nsICookieJarSettings* aCookieJarSettings,
+    CookieStruct& aCookieData) {
+  MOZ_ASSERT(aPrincipal);
+  MOZ_ASSERT(aCookieJarSettings);
+
+  if (!aPrincipal->GetIsContentPrincipal()) {
+    return true;
+  }
+
+  uint32_t cookiePermission = nsICookiePermission::ACCESS_DEFAULT;
+  nsresult rv =
+      aCookieJarSettings->CookiePermission(aPrincipal, &cookiePermission);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return true;
+  }
+
+  if (cookiePermission == nsICookiePermission::ACCESS_ALLOW) {
+    return true;
+  }
+
+  if (cookiePermission == nsICookiePermission::ACCESS_SESSION) {
+    aCookieData.isSession() = true;
+    return true;
+  }
+
+  if (cookiePermission == nsICookiePermission::ACCESS_DENY) {
+    return false;
+  }
+
+  // Here we can have any legacy permission value.
+
+  // now we need to figure out what type of accept policy we're dealing with
+  // if we accept cookies normally, just bail and return
+  if (StaticPrefs::network_cookie_lifetimePolicy() ==
+      nsICookieService::ACCEPT_NORMALLY) {
+    return true;
+  }
+
+  // declare this here since it'll be used in all of the remaining cases
+  int64_t currentTime = PR_Now() / PR_USEC_PER_SEC;
+  int64_t delta = aCookieData.expiry() - currentTime;
+
+  // We are accepting the cookie, but,
+  // if it's not a session cookie, we may have to limit its lifetime.
+  if (!aCookieData.isSession() && delta > 0) {
+    if (StaticPrefs::network_cookie_lifetimePolicy() ==
+        nsICookieService::ACCEPT_SESSION) {
+      // limit lifetime to session
+      aCookieData.isSession() = true;
+    }
+  }
+
+  return true;
+}
+
+namespace {
+
+CookieStatus CookieStatusForWindow(nsPIDOMWindowInner* aWindow,
+                                   nsIURI* aDocumentURI) {
+  MOZ_ASSERT(aWindow);
+  MOZ_ASSERT(aDocumentURI);
+
+  if (!nsContentUtils::IsThirdPartyWindowOrChannel(aWindow, nullptr,
+                                                   aDocumentURI)) {
+    return STATUS_ACCEPTED;
+  }
+
+  if (StaticPrefs::network_cookie_thirdparty_sessionOnly()) {
+    return STATUS_ACCEPT_SESSION;
+  }
+
+  if (StaticPrefs::network_cookie_thirdparty_nonsecureSessionOnly() &&
+      !nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin(aDocumentURI)) {
+    return STATUS_ACCEPT_SESSION;
+  }
+
+  return STATUS_ACCEPTED;
+}
+
+}  // namespace
+
+// static
+already_AddRefed<Cookie> CookieCommons::CreateCookieFromDocument(
+    Document* aDocument, const nsACString& aCookieString,
+    int64_t currentTimeInUsec, nsIEffectiveTLDService* aTLDService,
+    mozIThirdPartyUtil* aThirdPartyUtil,
+    std::function<bool(const nsACString&, const OriginAttributes&)>&&
+        aHasExistingCookiesLambda,
+    nsIURI** aDocumentURI, nsACString& aBaseDomain, OriginAttributes& aAttrs) {
+  nsCOMPtr<nsIPrincipal> storagePrincipal =
+      aDocument->EffectiveStoragePrincipal();
+  MOZ_ASSERT(storagePrincipal);
+
+  nsCOMPtr<nsIURI> principalURI;
+  auto* basePrincipal = BasePrincipal::Cast(aDocument->NodePrincipal());
+  basePrincipal->GetURI(getter_AddRefs(principalURI));
+  if (NS_WARN_IF(!principalURI)) {
+    // Document's principal is not a content or null (may be system), so
+    // can't set cookies
+    return nullptr;
+  }
+
+  if (!CookieCommons::IsSchemeSupported(principalURI)) {
+    return nullptr;
+  }
+
+  nsAutoCString baseDomain;
+  bool requireHostMatch = false;
+  nsresult rv = CookieCommons::GetBaseDomain(aTLDService, principalURI,
+                                             baseDomain, requireHostMatch);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return nullptr;
+  }
+
+  nsPIDOMWindowInner* innerWindow = aDocument->GetInnerWindow();
+  if (NS_WARN_IF(!innerWindow)) {
+    return nullptr;
+  }
+
+  // Check if limit-foreign is required.
+  uint32_t dummyRejectedReason = 0;
+  if (aDocument->CookieJarSettings()->GetLimitForeignContexts() &&
+      !aHasExistingCookiesLambda(baseDomain,
+                                 storagePrincipal->OriginAttributesRef()) &&
+      !ContentBlocking::ShouldAllowAccessFor(innerWindow, principalURI,
+                                             &dummyRejectedReason)) {
+    return nullptr;
+  }
+
+  bool isForeignAndNotAddon = false;
+  if (!BasePrincipal::Cast(aDocument->NodePrincipal())->AddonPolicy()) {
+    rv = aThirdPartyUtil->IsThirdPartyWindow(
+        innerWindow->GetOuterWindow(), principalURI, &isForeignAndNotAddon);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      isForeignAndNotAddon = true;
+    }
+  }
+
+  // If we are here, we have been already accepted by the anti-tracking.
+  // We just need to check if we have to be in session-only mode.
+  CookieStatus cookieStatus = CookieStatusForWindow(innerWindow, principalURI);
+  MOZ_ASSERT(cookieStatus == STATUS_ACCEPTED ||
+             cookieStatus == STATUS_ACCEPT_SESSION);
+
+  // Console report takes care of the correct reporting at the exit of this
+  // method.
+  RefPtr<ConsoleReportCollector> crc = new ConsoleReportCollector();
+  auto scopeExit = MakeScopeExit([&] { crc->FlushConsoleReports(aDocument); });
+
+  nsCString cookieString(aCookieString);
+
+  CookieStruct cookieData;
+  bool canSetCookie = false;
+  CookieService::CanSetCookie(principalURI, baseDomain, cookieData,
+                              requireHostMatch, cookieStatus, cookieString,
+                              false, isForeignAndNotAddon, crc, canSetCookie);
+
+  if (!canSetCookie) {
+    return nullptr;
+  }
+
+  // check permissions from site permission list.
+  if (!CookieCommons::CheckCookiePermission(aDocument->NodePrincipal(),
+                                            aDocument->CookieJarSettings(),
+                                            cookieData)) {
+    NotifyRejectionToObservers(principalURI, OPERATION_WRITE);
+    ContentBlockingNotifier::OnDecision(
+        innerWindow, ContentBlockingNotifier::BlockingDecision::eBlock,
+        nsIWebProgressListener::STATE_COOKIES_BLOCKED_BY_PERMISSION);
+    return nullptr;
+  }
+
+  RefPtr<Cookie> cookie =
+      Cookie::Create(cookieData, storagePrincipal->OriginAttributesRef());
+  MOZ_ASSERT(cookie);
+
+  cookie->SetLastAccessed(currentTimeInUsec);
+  cookie->SetCreationTime(
+      Cookie::GenerateUniqueCreationTime(currentTimeInUsec));
+
+  aBaseDomain = baseDomain;
+  aAttrs = storagePrincipal->OriginAttributesRef();
+  principalURI.forget(aDocumentURI);
+
+  return cookie.forget();
+}
+
+// static
+already_AddRefed<nsICookieJarSettings> CookieCommons::GetCookieJarSettings(
+    nsIChannel* aChannel) {
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
+  if (aChannel) {
+    nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+    nsresult rv =
+        loadInfo->GetCookieJarSettings(getter_AddRefs(cookieJarSettings));
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      cookieJarSettings = CookieJarSettings::GetBlockingAll();
+    }
+  } else {
+    cookieJarSettings = CookieJarSettings::Create();
+  }
+
+  MOZ_ASSERT(cookieJarSettings);
+  return cookieJarSettings.forget();
+}
+
+// static
+bool CookieCommons::ShouldIncludeCrossSiteCookieForDocument(Cookie* aCookie) {
+  MOZ_ASSERT(aCookie);
+
+  int32_t sameSiteAttr = 0;
+  aCookie->GetSameSite(&sameSiteAttr);
+
+  return sameSiteAttr == nsICookie::SAMESITE_NONE;
+}
+
+bool CookieCommons::IsSafeTopLevelNav(nsIChannel* aChannel) {
+  if (!aChannel) {
+    return false;
+  }
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+  if (loadInfo->GetExternalContentPolicyType() !=
+          nsIContentPolicy::TYPE_DOCUMENT &&
+      loadInfo->GetExternalContentPolicyType() !=
+          nsIContentPolicy::TYPE_SAVEAS_DOWNLOAD) {
+    return false;
+  }
+  return NS_IsSafeMethodNav(aChannel);
+}
+
+bool CookieCommons::IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI) {
+  if (!aChannel) {
+    return false;
+  }
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
+  // Do not treat loads triggered by web extensions as foreign
+  nsCOMPtr<nsIURI> channelURI;
+  NS_GetFinalChannelURI(aChannel, getter_AddRefs(channelURI));
+  RefPtr<BasePrincipal> triggeringPrincipal =
+      BasePrincipal::Cast(loadInfo->TriggeringPrincipal());
+  if (triggeringPrincipal->AddonPolicy() &&
+      triggeringPrincipal->AddonAllowsLoad(channelURI)) {
+    return false;
+  }
+
+  bool isForeign = true;
+  nsresult rv;
+  if (loadInfo->GetExternalContentPolicyType() ==
+          nsIContentPolicy::TYPE_DOCUMENT ||
+      loadInfo->GetExternalContentPolicyType() ==
+          nsIContentPolicy::TYPE_SAVEAS_DOWNLOAD) {
+    // for loads of TYPE_DOCUMENT we query the hostURI from the
+    // triggeringPrincipal which returns the URI of the document that caused the
+    // navigation.
+    rv = triggeringPrincipal->IsThirdPartyChannel(aChannel, &isForeign);
+  } else {
+    nsCOMPtr<mozIThirdPartyUtil> thirdPartyUtil =
+        do_GetService(THIRDPARTYUTIL_CONTRACTID);
+    if (!thirdPartyUtil) {
+      return true;
+    }
+    rv = thirdPartyUtil->IsThirdPartyChannel(aChannel, aHostURI, &isForeign);
+  }
+  // if we are dealing with a cross origin request, we can return here
+  // because we already know the request is 'foreign'.
+  if (NS_FAILED(rv) || isForeign) {
+    return true;
+  }
+
+  // for loads of TYPE_SUBDOCUMENT we have to perform an additional test,
+  // because a cross-origin iframe might perform a navigation to a same-origin
+  // iframe which would send same-site cookies. Hence, if the iframe navigation
+  // was triggered by a cross-origin triggeringPrincipal, we treat the load as
+  // foreign.
+  if (loadInfo->GetExternalContentPolicyType() ==
+      nsIContentPolicy::TYPE_SUBDOCUMENT) {
+    rv = loadInfo->TriggeringPrincipal()->IsThirdPartyChannel(aChannel,
+                                                              &isForeign);
+    if (NS_FAILED(rv) || isForeign) {
+      return true;
+    }
+  }
+
+  // for the purpose of same-site cookies we have to treat any cross-origin
+  // redirects as foreign. E.g. cross-site to same-site redirect is a problem
+  // with regards to CSRF.
+
+  nsCOMPtr<nsIPrincipal> redirectPrincipal;
+  for (nsIRedirectHistoryEntry* entry : loadInfo->RedirectChain()) {
+    entry->GetPrincipal(getter_AddRefs(redirectPrincipal));
+    if (redirectPrincipal) {
+      rv = redirectPrincipal->IsThirdPartyChannel(aChannel, &isForeign);
+      // if at any point we encounter a cross-origin redirect we can return.
+      if (NS_FAILED(rv) || isForeign) {
+        return true;
+      }
+    }
+  }
+  return isForeign;
+}
+
+namespace {
+
+bool MaybeCompareSchemeInternal(Cookie* aCookie,
+                                nsICookie::schemeType aSchemeType) {
+  MOZ_ASSERT(aCookie);
+
+  // This is an old cookie without a scheme yet. Let's consider it valid.
+  if (aCookie->SchemeMap() == nsICookie::SCHEME_UNSET) {
+    return true;
+  }
+
+  return !!(aCookie->SchemeMap() & aSchemeType);
+}
+
+}  // namespace
+
+// static
+bool CookieCommons::MaybeCompareSchemeWithLogging(
+    nsIConsoleReportCollector* aCRC, nsIURI* aHostURI, Cookie* aCookie,
+    nsICookie::schemeType aSchemeType) {
+  MOZ_ASSERT(aCookie);
+  MOZ_ASSERT(aHostURI);
+
+  if (MaybeCompareSchemeInternal(aCookie, aSchemeType)) {
+    return true;
+  }
+
+  nsAutoCString uri;
+  nsresult rv = aHostURI->GetSpec(uri);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return !StaticPrefs::network_cookie_sameSite_schemeful();
+  }
+
+  if (!StaticPrefs::network_cookie_sameSite_schemeful()) {
+    CookieLogging::LogMessageToConsole(
+        aCRC, aHostURI, nsIScriptError::warningFlag, CONSOLE_SCHEMEFUL_CATEGORY,
+        "CookieSchemefulRejectForBeta"_ns,
+        AutoTArray<nsString, 2>{NS_ConvertUTF8toUTF16(aCookie->Name()),
+                                NS_ConvertUTF8toUTF16(uri)});
+    return true;
+  }
+
+  CookieLogging::LogMessageToConsole(
+      aCRC, aHostURI, nsIScriptError::warningFlag, CONSOLE_SCHEMEFUL_CATEGORY,
+      "CookieSchemefulReject"_ns,
+      AutoTArray<nsString, 2>{NS_ConvertUTF8toUTF16(aCookie->Name()),
+                              NS_ConvertUTF8toUTF16(uri)});
+  return false;
+}
+
+// static
+bool CookieCommons::MaybeCompareScheme(Cookie* aCookie,
+                                       nsICookie::schemeType aSchemeType) {
+  MOZ_ASSERT(aCookie);
+
+  if (!StaticPrefs::network_cookie_sameSite_schemeful()) {
+    return true;
+  }
+
+  return MaybeCompareSchemeInternal(aCookie, aSchemeType);
+}
+
+// static
+nsICookie::schemeType CookieCommons::URIToSchemeType(nsIURI* aURI) {
+  MOZ_ASSERT(aURI);
+
+  nsAutoCString scheme;
+  nsresult rv = aURI->GetScheme(scheme);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return nsICookie::SCHEME_UNSET;
+  }
+
+  return SchemeToSchemeType(scheme);
+}
+
+// static
+nsICookie::schemeType CookieCommons::PrincipalToSchemeType(
+    nsIPrincipal* aPrincipal) {
+  MOZ_ASSERT(aPrincipal);
+
+  nsAutoCString scheme;
+  nsresult rv = aPrincipal->GetScheme(scheme);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return nsICookie::SCHEME_UNSET;
+  }
+
+  return SchemeToSchemeType(scheme);
+}
+
+// static
+nsICookie::schemeType CookieCommons::SchemeToSchemeType(
+    const nsACString& aScheme) {
+  MOZ_ASSERT(IsSchemeSupported(aScheme));
+
+  if (aScheme.Equals("https")) {
+    return nsICookie::SCHEME_HTTPS;
+  }
+
+  if (aScheme.Equals("http")) {
+    return nsICookie::SCHEME_HTTP;
+  }
+
+  if (aScheme.Equals("file")) {
+    return nsICookie::SCHEME_FILE;
+  }
+
+  MOZ_CRASH("Unsupported scheme type");
+}
+
+// static
+bool CookieCommons::IsSchemeSupported(nsIPrincipal* aPrincipal) {
+  MOZ_ASSERT(aPrincipal);
+
+  nsAutoCString scheme;
+  nsresult rv = aPrincipal->GetScheme(scheme);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return false;
+  }
+
+  return IsSchemeSupported(scheme);
+}
+
+// static
+bool CookieCommons::IsSchemeSupported(nsIURI* aURI) {
+  MOZ_ASSERT(aURI);
+
+  nsAutoCString scheme;
+  nsresult rv = aURI->GetScheme(scheme);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return false;
+  }
+
+  return IsSchemeSupported(scheme);
+}
+
+// static
+bool CookieCommons::IsSchemeSupported(const nsACString& aScheme) {
+  return aScheme.Equals("https") || aScheme.Equals("http") ||
+         aScheme.Equals("file");
 }
 
 }  // namespace net

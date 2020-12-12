@@ -13,8 +13,8 @@
  * The actual server startup itself is in this JSM so that code can be cached.
  */
 
-/* exported init */
-const EXPORTED_SYMBOLS = ["init"];
+/* exported initContentProcessTarget */
+const EXPORTED_SYMBOLS = ["initContentProcessTarget"];
 
 let gLoader;
 
@@ -63,9 +63,10 @@ function setupServer(mm) {
   return gLoader;
 }
 
-function init(msg) {
+function initContentProcessTarget(msg) {
   const mm = msg.target;
   const prefix = msg.data.prefix;
+  const watcherActorID = msg.data.watcherActorID;
 
   // Setup a server if none started yet
   const loader = setupServer(mm);
@@ -79,13 +80,10 @@ function init(msg) {
   const { ContentProcessTargetActor } = loader.require(
     "devtools/server/actors/targets/content-process"
   );
-  const { ActorPool } = loader.require("devtools/server/actors/common");
   const actor = new ContentProcessTargetActor(conn);
-  const actorPool = new ActorPool(conn, "content-process");
-  actorPool.addActor(actor);
-  conn.addActorPool(actorPool);
+  actor.manage(actor);
 
-  const response = { actor: actor.form() };
+  const response = { watcherActorID, prefix, actor: actor.form() };
   mm.sendAsyncMessage("debug:content-process-actor", response);
 
   // Clean up things when the client disconnects
@@ -105,4 +103,8 @@ function init(msg) {
     // pools.
     conn.close();
   });
+  return {
+    actor,
+    connection: conn,
+  };
 }

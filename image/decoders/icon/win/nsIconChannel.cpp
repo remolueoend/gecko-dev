@@ -8,6 +8,7 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/Monitor.h"
 
+#include "nsComponentManagerUtils.h"
 #include "nsIconChannel.h"
 #include "nsIIconURI.h"
 #include "nsIInterfaceRequestor.h"
@@ -21,6 +22,7 @@
 #include "nsNetCID.h"
 #include "nsIFile.h"
 #include "nsIFileURL.h"
+#include "nsIInputStream.h"
 #include "nsIMIMEService.h"
 #include "nsCExternalHandlerService.h"
 #include "nsDirectoryServiceDefs.h"
@@ -345,7 +347,7 @@ void nsIconChannel::FinishAsyncOpen(HICON aIcon, nsresult aStatus) {
     return;
   }
 
-  rv = mPump->AsyncRead(this, nullptr);
+  rv = mPump->AsyncRead(this);
   if (NS_FAILED(rv)) {
     OnAsyncError(rv);
   }
@@ -365,7 +367,7 @@ nsIconChannel::AsyncOpen(nsIStreamListener* aListener) {
       mLoadInfo->GetSecurityMode() == 0 ||
           mLoadInfo->GetInitialSecurityCheckDone() ||
           (mLoadInfo->GetSecurityMode() ==
-               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
+               nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL &&
            mLoadInfo->GetLoadingPrincipal() &&
            mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()),
       "security flags in loadInfo but doContentSecurityCheck() not called");
@@ -498,7 +500,7 @@ nsresult nsIconChannel::GetHIconFromFile(bool aNonBlocking, HICON* hIcon) {
     // If the mime service does not know about this mime type, we show
     // the generic icon.
     // In any case, we need to insert a '.' before the extension.
-    filePath = NS_LITERAL_STRING(".") + NS_ConvertUTF8toUTF16(defFileExt);
+    filePath = u"."_ns + NS_ConvertUTF8toUTF16(defFileExt);
   }
 
   if (aNonBlocking) {

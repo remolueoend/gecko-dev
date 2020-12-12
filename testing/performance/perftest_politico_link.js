@@ -1,4 +1,8 @@
-module.exports = async function(context, commands) {
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+async function test(context, commands) {
   let rootUrl = "https://www.politico.com/";
 
   await commands.navigate(rootUrl);
@@ -14,4 +18,11 @@ module.exports = async function(context, commands) {
 
   // Stop and collect the measurement
   await commands.measure.stop();
+}
+
+module.exports = {
+  test,
+  owner: "Performance Team",
+  name: "Politico Link",
+  description: "Measures time to load Politico homepage",
 };

@@ -12,9 +12,12 @@
 #include "mozilla/Maybe.h"
 #include "mozilla/PodOperations.h"
 
+#include "builtin/Array.h"  // js::NewDenseEmptyArray
+#include "builtin/ModuleObject.h"
 #include "jit/BaselineFrame.h"
 #include "jit/RematerializedFrame.h"
 #include "js/Debug.h"
+#include "js/friend/StackLimits.h"  // js::ReportOverRecursed
 #include "vm/EnvironmentObject.h"
 #include "vm/FrameIter.h"  // js::FrameIter
 #include "vm/JSContext.h"
@@ -183,6 +186,19 @@ inline CallObject& InterpreterFrame::callObj() const {
 inline void InterpreterFrame::unsetIsDebuggee() {
   MOZ_ASSERT(!script()->isDebuggee());
   flags_ &= ~DEBUGGEE;
+}
+
+inline bool InterpreterFrame::saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                                 ArrayObject* dest) const {
+  return dest->initDenseElementsFromRange(cx, slots(), slots() + nslots);
+}
+
+inline void InterpreterFrame::restoreGeneratorSlots(ArrayObject* src) {
+  MOZ_ASSERT(script()->nfixed() <= src->length());
+  MOZ_ASSERT(src->length() <= script()->nslots());
+  MOZ_ASSERT(src->getDenseInitializedLength() == src->length());
+  const Value* srcElements = src->getDenseElements();
+  mozilla::PodCopy(slots(), srcElements, src->length());
 }
 
 /*****************************************************************************/
@@ -653,11 +669,21 @@ inline bool AbstractFramePtr::isFunctionFrame() const {
 }
 
 inline bool AbstractFramePtr::isGeneratorFrame() const {
-  if (!isFunctionFrame()) {
+  if (!isFunctionFrame() && !isModuleFrame()) {
     return false;
   }
   JSScript* s = script();
   return s->isGenerator() || s->isAsync();
+}
+
+inline bool AbstractFramePtr::saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                                 ArrayObject* dest) const {
+  MOZ_ASSERT(isGeneratorFrame());
+  if (isInterpreterFrame()) {
+    return asInterpreterFrame()->saveGeneratorSlots(cx, nslots, dest);
+  }
+  MOZ_ASSERT(isBaselineFrame(), "unexpected generator frame in Ion");
+  return asBaselineFrame()->saveGeneratorSlots(cx, nslots, dest);
 }
 
 inline Value* AbstractFramePtr::argv() const {

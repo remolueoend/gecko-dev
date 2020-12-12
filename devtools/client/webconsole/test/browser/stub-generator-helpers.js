@@ -14,6 +14,25 @@ const CHROME_PREFIX = "chrome://mochitests/content/browser/";
 const STUBS_FOLDER = "devtools/client/webconsole/test/node/fixtures/stubs/";
 const STUBS_UPDATE_ENV = "WEBCONSOLE_STUBS_UPDATE";
 
+async function createResourceWatcherForTab(tab) {
+  const { TargetFactory } = require("devtools/client/framework/target");
+  const target = await TargetFactory.forTab(tab);
+  const resourceWatcher = await createResourceWatcherForTarget(target);
+  return resourceWatcher;
+}
+
+async function createResourceWatcherForTarget(target) {
+  // Avoid mocha to try to load these module and fail while doing it when running node tests
+  const {
+    ResourceWatcher,
+  } = require("devtools/shared/resources/resource-watcher");
+  const { TargetList } = require("devtools/shared/resources/target-list");
+
+  const targetList = new TargetList(target.client.mainRoot, target);
+  await targetList.startListening();
+  return new ResourceWatcher(targetList);
+}
+
 // eslint-disable-next-line complexity
 function getCleanedPacket(key, packet) {
   const { stubPackets } = require(CHROME_PREFIX + STUBS_FOLDER + "index");
@@ -26,6 +45,9 @@ function getCleanedPacket(key, packet) {
     .replace(/\\\'/g, `\'`);
 
   cleanTimeStamp(packet);
+  // Remove the targetFront property that has a cyclical reference and that we don't need
+  // in our node tests.
+  delete packet.targetFront;
 
   if (!stubPackets.has(safeKey)) {
     return packet;
@@ -68,7 +90,9 @@ function getCleanedPacket(key, packet) {
       }
     }
     // Clean innerWindowId on the message prop.
-    res.message.innerWindowID = existingPacket.message.innerWindowID;
+    if (existingPacket.message.innerWindowID) {
+      res.message.innerWindowID = existingPacket.message.innerWindowID;
+    }
 
     if (Array.isArray(res.message.arguments)) {
       res.message.arguments = res.message.arguments.map((argument, i) => {
@@ -94,6 +118,10 @@ function getCleanedPacket(key, packet) {
       });
     }
 
+    if (res.message.actor && existingPacket?.message?.actor) {
+      res.message.actor = existingPacket.message.actor;
+    }
+
     if (res.message.sourceId) {
       res.message.sourceId = existingPacket.message.sourceId;
     }
@@ -109,9 +137,33 @@ function getCleanedPacket(key, packet) {
     }
   }
 
+  if (res?.exception?.actor && existingPacket.exception.actor) {
+    // Clean actor ids on evaluation exception
+    copyExistingActor(res.exception, existingPacket.exception);
+  }
+
   if (res.result && res.result._grip && existingPacket.result) {
     // Clean actor ids on evaluation result messages.
     copyExistingActor(res.result, existingPacket.result);
+  }
+
+  if (
+    res?.result?._grip?.promiseState?.reason &&
+    existingPacket?.result?._grip?.promiseState?.reason
+  ) {
+    // Clean actor ids on evaluation promise result messages.
+    copyExistingActor(
+      res.result._grip.promiseState.reason,
+      existingPacket.result._grip.promiseState.reason
+    );
+  }
+
+  if (
+    res?.result?._grip?.promiseState?.timeToSettle &&
+    existingPacket?.result?._grip?.promiseState?.timeToSettle
+  ) {
+    res.result._grip.promiseState.timeToSettle =
+      existingPacket.result._grip.promiseState.timeToSettle;
   }
 
   if (res.exception && existingPacket.exception) {
@@ -149,8 +201,8 @@ function getCleanedPacket(key, packet) {
 
   if (res.eventActor) {
     // Clean actor ids and startedDateTime on network messages.
-    res.eventActor.actor = existingPacket.eventActor.actor;
-    res.eventActor.startedDateTime = existingPacket.eventActor.startedDateTime;
+    res.eventActor.actor = existingPacket.actor;
+    res.eventActor.startedDateTime = existingPacket.startedDateTime;
   }
 
   if (res.pageError) {
@@ -168,11 +220,31 @@ function getCleanedPacket(key, packet) {
       );
     }
 
+    if (
+      res.pageError.exception?._grip?.preview?.message?._grip &&
+      existingPacket.pageError.exception?._grip?.preview?.message?._grip
+    ) {
+      copyExistingActor(
+        res.pageError.exception._grip.preview.message,
+        existingPacket.pageError.exception._grip.preview.message
+      );
+    }
+
+    if (res.pageError.exception && existingPacket.pageError.exception) {
+      copyExistingActor(
+        res.pageError.exception,
+        existingPacket.pageError.exception
+      );
+    }
+
     if (res.pageError.sourceId) {
       res.pageError.sourceId = existingPacket.pageError.sourceId;
     }
 
-    if (Array.isArray(res.pageError.stacktrace)) {
+    if (
+      Array.isArray(res.pageError.stacktrace) &&
+      Array.isArray(existingPacket.pageError.stacktrace)
+    ) {
       res.pageError.stacktrace = res.pageError.stacktrace.map((frame, i) => {
         const existingFrame = existingPacket.pageError.stacktrace[i];
         if (frame && existingFrame && frame.sourceId) {
@@ -208,50 +280,24 @@ function getCleanedPacket(key, packet) {
     res.packet = Object.assign({}, res.packet, override);
   }
 
-  if (res.networkInfo) {
-    if (res.networkInfo.startedDateTime) {
-      res.networkInfo.startedDateTime =
-        existingPacket.networkInfo.startedDateTime;
-    }
-
-    if (res.networkInfo.totalTime) {
-      res.networkInfo.totalTime = existingPacket.networkInfo.totalTime;
-    }
-
-    if (res.networkInfo.actor) {
-      res.networkInfo.actor = existingPacket.networkInfo.actor;
-    }
-
-    if (res.networkInfo.request && res.networkInfo.request.headersSize) {
-      res.networkInfo.request.headersSize =
-        existingPacket.networkInfo.request.headersSize;
-    }
-
-    if (
-      res.networkInfo.response &&
-      res.networkInfo.response.headersSize !== undefined
-    ) {
-      res.networkInfo.response.headersSize =
-        existingPacket.networkInfo.response.headersSize;
-    }
-    if (
-      res.networkInfo.response &&
-      res.networkInfo.response.bodySize !== undefined
-    ) {
-      res.networkInfo.response.bodySize =
-        existingPacket.networkInfo.response.bodySize;
-    }
-    if (
-      res.networkInfo.response &&
-      res.networkInfo.response.transferredSize !== undefined
-    ) {
-      res.networkInfo.response.transferredSize =
-        existingPacket.networkInfo.response.transferredSize;
-    }
+  if (res.startedDateTime) {
+    res.startedDateTime = existingPacket.startedDateTime;
   }
 
-  if (res.updates && Array.isArray(res.updates)) {
-    res.updates.sort();
+  if (res.totalTime && existingPacket.totalTime) {
+    res.totalTime = existingPacket.totalTime;
+  }
+
+  if (res.securityState && existingPacket.securityState) {
+    res.securityState = existingPacket.securityState;
+  }
+
+  if (res.actor && existingPacket.actor) {
+    res.actor = existingPacket.actor;
+  }
+
+  if (res.waitingTime && existingPacket.waitingTime) {
+    res.waitingTime = existingPacket.waitingTime;
   }
 
   if (res.helperResult) {
@@ -260,7 +306,6 @@ function getCleanedPacket(key, packet) {
       existingPacket.helperResult.object
     );
   }
-
   return res;
 }
 
@@ -268,13 +313,18 @@ function cleanTimeStamp(packet) {
   // We want to have the same timestamp for every stub, so they won't be re-sorted when
   // adding them to the store.
   const uniqueTimeStamp = 1572867483805;
-
+  // lowercased timestamp
   if (packet.timestamp) {
     packet.timestamp = uniqueTimeStamp;
   }
 
+  // camelcased timestamp
   if (packet.timeStamp) {
     packet.timeStamp = uniqueTimeStamp;
+  }
+
+  if (packet.startTime) {
+    packet.startTime = uniqueTimeStamp;
   }
 
   if (packet?.message?.timeStamp) {
@@ -283,6 +333,10 @@ function cleanTimeStamp(packet) {
 
   if (packet?.result?._grip?.preview?.timestamp) {
     packet.result._grip.preview.timestamp = uniqueTimeStamp;
+  }
+
+  if (packet?.result?._grip?.promiseState?.creationTimestamp) {
+    packet.result._grip.promiseState.creationTimestamp = uniqueTimeStamp;
   }
 
   if (packet?.exception?._grip?.preview?.timestamp) {
@@ -296,28 +350,23 @@ function cleanTimeStamp(packet) {
   if (packet?.pageError?.timeStamp) {
     packet.pageError.timeStamp = uniqueTimeStamp;
   }
-
-  if (packet?.networkInfo?.timeStamp) {
-    packet.networkInfo.timeStamp = uniqueTimeStamp;
-  }
 }
 
-function copyExistingActor(front1, front2) {
-  if (!front1 || !front2) {
+function copyExistingActor(a, b) {
+  if (!a || !b) {
     return;
   }
 
-  if (front1.actorID && front2.actorID) {
-    front1.actorID = front2.actorID;
+  if (a.actorID && b.actorID) {
+    a.actorID = b.actorID;
   }
 
-  if (
-    front1._grip &&
-    front2._grip &&
-    front1._grip.actor &&
-    front2._grip.actor
-  ) {
-    front1._grip.actor = front2._grip.actor;
+  if (a.actor && b.actor) {
+    a.actor = b.actor;
+  }
+
+  if (a._grip && b._grip && a._grip.actor && b._grip.actor) {
+    a._grip.actor = b._grip.actor;
   }
 }
 
@@ -367,9 +416,7 @@ const stubPackets = parsePacketsWithFronts(rawPackets);
 
 const stubPreparedMessages = new Map();
 for (const [key, packet] of Array.from(stubPackets.entries())) {
-  const transformedPacket = prepareMessage(${
-    isNetworkMessage ? "packet.networkInfo || packet" : "packet"
-  }, {
+  const transformedPacket = prepareMessage(${"packet"}, {
     getNextId: () => "1",
   });
   const message = ${
@@ -394,7 +441,38 @@ function getStubFile(fileName) {
   return require(CHROME_PREFIX + STUBS_FOLDER + fileName);
 }
 
-function getSerializedPacket(packet) {
+function sortObjectKeys(obj) {
+  const isArray = Array.isArray(obj);
+  const isObject = Object.prototype.toString.call(obj) === "[object Object]";
+  const isFront = obj?._grip;
+
+  if (isObject && !isFront) {
+    // Reorder keys for objects, but skip fronts to avoid infinite recursion.
+    const sortedKeys = Object.keys(obj).sort((k1, k2) => k1.localeCompare(k2));
+    const withSortedKeys = {};
+    sortedKeys.forEach(k => {
+      withSortedKeys[k] = k !== "stacktrace" ? sortObjectKeys(obj[k]) : obj[k];
+    });
+    return withSortedKeys;
+  } else if (isArray) {
+    return obj.map(item => sortObjectKeys(item));
+  }
+  return obj;
+}
+
+/**
+ * @param {Object} packet
+ *        The packet to serialize.
+ * @param {Object}
+ *        - {Boolean} sortKeys: pass true to sort all keys alphabetically in the
+ *          packet before serialization. For instance stub comparison should not
+ *          fail if the order of properties changed.
+ */
+function getSerializedPacket(packet, { sortKeys = false } = {}) {
+  if (sortKeys) {
+    packet = sortObjectKeys(packet);
+  }
+
   return JSON.stringify(
     packet,
     function(_, value) {
@@ -431,7 +509,12 @@ function parsePacketAndCreateFronts(packet) {
   }
   if (typeof packet === "object") {
     for (const [key, value] of Object.entries(packet)) {
-      if (value && value._grip) {
+      if (value?._grip) {
+        // The message of an error grip might be a longString.
+        if (value._grip?.preview?.message?._grip) {
+          value._grip.preview.message = value._grip.preview.message._grip;
+        }
+
         packet[key] = getAdHocFrontOrPrimitiveGrip(value._grip, {
           conn: {
             poolFor: () => {},
@@ -451,9 +534,12 @@ function parsePacketAndCreateFronts(packet) {
 
 module.exports = {
   STUBS_UPDATE_ENV,
+  createResourceWatcherForTab,
+  createResourceWatcherForTarget,
   getStubFile,
   getCleanedPacket,
   getSerializedPacket,
   parsePacketsWithFronts,
+  parsePacketAndCreateFronts,
   writeStubsToFile,
 };

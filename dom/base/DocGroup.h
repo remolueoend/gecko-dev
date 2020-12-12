@@ -9,11 +9,11 @@
 
 #include "nsISupportsImpl.h"
 #include "nsIPrincipal.h"
+#include "nsThreadUtils.h"
 #include "nsTHashtable.h"
 #include "nsString.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/dom/BrowsingContextGroup.h"
-#include "mozilla/dom/CustomElementRegistry.h"
 #include "mozilla/dom/HTMLSlotElement.h"
 #include "mozilla/PerformanceCounter.h"
 #include "mozilla/PerformanceTypes.h"
@@ -21,6 +21,9 @@
 namespace mozilla {
 class AbstractThread;
 namespace dom {
+
+class CustomElementReactionsStack;
+class JSExecutionManager;
 
 // Two browsing contexts are considered "related" if they are reachable from one
 // another through window.opener, window.parent, or window.frames. This is the
@@ -47,7 +50,8 @@ class DocGroup final {
   // service isn't available. Returns NS_OK on success, but may still set
   // |aString| may still be set to an empty string.
   static MOZ_MUST_USE nsresult GetKey(nsIPrincipal* aPrincipal,
-                                      nsACString& aString);
+                                      bool aCrossOriginIsolated,
+                                      nsACString& aKey);
 
   bool MatchesKey(const nsACString& aKey) { return aKey == mKey; }
 
@@ -66,14 +70,7 @@ class DocGroup final {
 
   mozilla::dom::DOMArena* ArenaAllocator() { return mArena; }
 
-  mozilla::dom::CustomElementReactionsStack* CustomElementReactionsStack() {
-    MOZ_ASSERT(NS_IsMainThread());
-    if (!mReactionsStack) {
-      mReactionsStack = new mozilla::dom::CustomElementReactionsStack();
-    }
-
-    return mReactionsStack;
-  }
+  mozilla::dom::CustomElementReactionsStack* CustomElementReactionsStack();
 
   // Adding documents to a DocGroup should be done through
   // BrowsingContextGroup::AddDocument (which in turn calls
@@ -111,7 +108,7 @@ class DocGroup final {
   // microtask.
   void SignalSlotChange(HTMLSlotElement& aSlot);
 
-  void MoveSignalSlotListTo(nsTArray<RefPtr<HTMLSlotElement>>& aDest);
+  nsTArray<RefPtr<HTMLSlotElement>> MoveSignalSlotList();
 
   // List of DocGroups that has non-empty signal slot list.
   static AutoTArray<RefPtr<DocGroup>, 2>* sPendingDocGroups;
@@ -145,7 +142,6 @@ class DocGroup final {
   RefPtr<mozilla::ThrottledEventQueue> mIframePostMessageQueue;
   nsTHashtable<nsUint64HashKey> mIframesUsedPostMessageQueue;
   nsCOMPtr<nsISerialEventTarget> mEventTarget;
-  RefPtr<AbstractThread> mAbstractThread;
 
   // non-null if the JS execution for this docgroup is regulated with regards
   // to worker threads. This should only be used when we are forcing serialized

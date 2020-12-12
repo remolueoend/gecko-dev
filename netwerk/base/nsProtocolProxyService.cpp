@@ -20,6 +20,7 @@
 #include "nsIDNSService.h"
 #include "nsPIDNSService.h"
 #include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsContentUtils.h"
 #include "nsThreadUtils.h"
 #include "nsQueryObject.h"
@@ -36,7 +37,9 @@
 #include "nsISystemProxySettings.h"
 #include "nsINetworkLinkService.h"
 #include "nsIHttpChannelInternal.h"
+#include "mozilla/dom/nsMixedContentBlocker.h"
 #include "mozilla/Logging.h"
+#include "mozilla/StaticPrefs_network.h"
 #include "mozilla/Tokenizer.h"
 #include "mozilla/Unused.h"
 
@@ -225,7 +228,7 @@ class nsAsyncResolveRequest final : public nsIRunnable,
     nsCOMPtr<nsIProxyInfo> mProxyInfo;
 
     // The logic is written as non-thread safe, assert single-thread usage.
-    nsCOMPtr<nsIEventTarget> mProcessingThread;
+    nsCOMPtr<nsISerialEventTarget> mProcessingThread;
   };
 
   void EnsureResolveFlagsMatch() {
@@ -325,7 +328,7 @@ class nsAsyncResolveRequest final : public nsIRunnable,
       // If the PAC service is not avail (e.g. failed pac load
       // or shutdown) then we will be going direct. Make that
       // mapping now so that any filters are still applied.
-      mPACString = NS_LITERAL_CSTRING("DIRECT;");
+      mPACString = "DIRECT;"_ns;
       mStatus = NS_OK;
 
       LOG(("pac not available, use DIRECT\n"));
@@ -771,7 +774,6 @@ nsProtocolProxyService::nsProtocolProxyService()
       mSOCKSProxyRemoteDNS(false),
       mProxyOverTLS(true),
       mWPADOverDHCPEnabled(false),
-      mAllowHijackingLocalhost(false),
       mPACMan(nullptr),
       mSessionStart(PR_Now()),
       mFailedProxyTimeout(30 * 60)  // 30 minute default
@@ -1019,11 +1021,6 @@ void nsProtocolProxyService::PrefsChanged(nsIPrefBranch* prefBranch,
     reloadPAC = reloadPAC || mProxyConfig == PROXYCONFIG_WPAD;
   }
 
-  if (!pref || !strcmp(pref, PROXY_PREF("allow_hijacking_localhost"))) {
-    proxy_GetBoolPref(prefBranch, PROXY_PREF("allow_hijacking_localhost"),
-                      mAllowHijackingLocalhost);
-  }
-
   if (!pref || !strcmp(pref, PROXY_PREF("failover_timeout")))
     proxy_GetIntPref(prefBranch, PROXY_PREF("failover_timeout"),
                      mFailedProxyTimeout);
@@ -1097,9 +1094,12 @@ bool nsProtocolProxyService::CanUseProxy(nsIURI* aURI, int32_t defaultPort) {
 
   // Don't use proxy for local hosts (plain hostname, no dots)
   if ((!is_ipaddr && mFilterLocalHosts && !host.Contains('.')) ||
-      (!mAllowHijackingLocalhost &&
-       (host.EqualsLiteral("127.0.0.1") || host.EqualsLiteral("::1") ||
-        host.EqualsLiteral("localhost")))) {
+      // This method detects if we have network.proxy.allow_hijacking_localhost
+      // pref enabled. If it's true then this method will always return false
+      // otherwise it returns true if the host matches an address that's
+      // hardcoded to the loopback address.
+      (!StaticPrefs::network_proxy_allow_hijacking_localhost() &&
+       nsMixedContentBlocker::IsPotentiallyTrustworthyLoopbackHost(host))) {
     LOG(("Not using proxy for this local host [%s]!\n", host.get()));
     return false;  // don't allow proxying
   }
@@ -1352,7 +1352,7 @@ bool nsProtocolProxyService::IsProxyDisabled(nsProxyInfo* pi) {
 }
 
 nsresult nsProtocolProxyService::SetupPACThread(
-    nsIEventTarget* mainThreadEventTarget) {
+    nsISerialEventTarget* mainThreadEventTarget) {
   if (mIsShutdown) {
     return NS_ERROR_FAILURE;
   }
@@ -1505,7 +1505,7 @@ NS_IMPL_ISUPPORTS0(nsAsyncBridgeRequest)
 nsresult nsProtocolProxyService::AsyncResolveInternal(
     nsIChannel* channel, uint32_t flags, nsIProtocolProxyCallback* callback,
     nsICancelable** result, bool isSyncOK,
-    nsIEventTarget* mainThreadEventTarget) {
+    nsISerialEventTarget* mainThreadEventTarget) {
   NS_ENSURE_ARG_POINTER(channel);
   NS_ENSURE_ARG_POINTER(callback);
 
@@ -1564,19 +1564,18 @@ nsresult nsProtocolProxyService::AsyncResolveInternal(
 
 // nsIProtocolProxyService
 NS_IMETHODIMP
-nsProtocolProxyService::AsyncResolve2(nsIChannel* channel, uint32_t flags,
-                                      nsIProtocolProxyCallback* callback,
-                                      nsIEventTarget* mainThreadEventTarget,
-                                      nsICancelable** result) {
+nsProtocolProxyService::AsyncResolve2(
+    nsIChannel* channel, uint32_t flags, nsIProtocolProxyCallback* callback,
+    nsISerialEventTarget* mainThreadEventTarget, nsICancelable** result) {
   return AsyncResolveInternal(channel, flags, callback, result, true,
                               mainThreadEventTarget);
 }
 
 NS_IMETHODIMP
-nsProtocolProxyService::AsyncResolve(nsISupports* channelOrURI, uint32_t flags,
-                                     nsIProtocolProxyCallback* callback,
-                                     nsIEventTarget* mainThreadEventTarget,
-                                     nsICancelable** result) {
+nsProtocolProxyService::AsyncResolve(
+    nsISupports* channelOrURI, uint32_t flags,
+    nsIProtocolProxyCallback* callback,
+    nsISerialEventTarget* mainThreadEventTarget, nsICancelable** result) {
   nsresult rv;
   // Check if we got a channel:
   nsCOMPtr<nsIChannel> channel = do_QueryInterface(channelOrURI);
@@ -1591,7 +1590,7 @@ nsProtocolProxyService::AsyncResolve(nsISupports* channelOrURI, uint32_t flags,
     // use systemPrincipal as the loadingPrincipal.
     rv = NS_NewChannel(getter_AddRefs(channel), uri,
                        nsContentUtils::GetSystemPrincipal(),
-                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                       nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                        nsIContentPolicy::TYPE_OTHER);
     NS_ENSURE_SUCCESS(rv, rv);
   }
@@ -1607,8 +1606,8 @@ nsProtocolProxyService::NewProxyInfo(
     const nsACString& aConnectionIsolationKey, uint32_t aFlags,
     uint32_t aFailoverTimeout, nsIProxyInfo* aFailoverProxy,
     nsIProxyInfo** aResult) {
-  return NewProxyInfoWithAuth(aType, aHost, aPort, EmptyCString(),
-                              EmptyCString(), aProxyAuthorizationHeader,
+  return NewProxyInfoWithAuth(aType, aHost, aPort, ""_ns, ""_ns,
+                              aProxyAuthorizationHeader,
                               aConnectionIsolationKey, aFlags, aFailoverTimeout,
                               aFailoverProxy, aResult);
 }
@@ -1935,7 +1934,7 @@ void nsProtocolProxyService::LoadHostFilters(const nsACString& aFilters) {
       hinfo->name.host_len = host.Length();
 
       hinfo->is_ipaddr = false;
-      hinfo->name.host = ToNewCString(host);
+      hinfo->name.host = ToNewCString(host, mozilla::fallible);
 
       if (!hinfo->name.host) goto loser;
     }
@@ -2207,8 +2206,7 @@ nsresult nsProtocolProxyService::Resolve_Internal(nsIChannel* channel,
   }
 
   if (type) {
-    rv = NewProxyInfo_Internal(type, *host, port, EmptyCString(),
-                               EmptyCString(), EmptyCString(), EmptyCString(),
+    rv = NewProxyInfo_Internal(type, *host, port, ""_ns, ""_ns, ""_ns, ""_ns,
                                proxyFlags, UINT32_MAX, nullptr, flags, result);
     if (NS_FAILED(rv)) return rv;
   }

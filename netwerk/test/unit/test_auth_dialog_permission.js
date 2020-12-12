@@ -95,7 +95,7 @@ Requestor.prototype = {
       return this.prompter;
     }
 
-    throw Cr.NS_ERROR_NO_INTERFACE;
+    throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
   },
 
   prompter: null,
@@ -116,7 +116,7 @@ function makeChan(loadingUrl, url, contentPolicy) {
   return NetUtil.newChannel({
     uri: url,
     loadingPrincipal: principal,
-    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS,
+    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_INHERITS_SEC_CONTEXT,
     contentPolicyType: contentPolicy,
   }).QueryInterface(Ci.nsIHttpChannel);
 }
@@ -159,7 +159,7 @@ Test.prototype = {
       do_throw("Unexpected exception: " + e);
     }
 
-    throw Cr.NS_ERROR_ABORT;
+    throw Components.Exception("", Cr.NS_ERROR_ABORT);
   },
 
   onDataAvailable(request, stream, offset, count) {

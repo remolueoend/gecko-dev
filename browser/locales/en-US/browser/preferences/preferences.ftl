@@ -33,6 +33,9 @@ search-input-box =
 
 managed-notice = Your browser is being managed by your organization.
 
+category-list =
+    .aria-label = Categories
+
 pane-general-title = General
 category-general =
     .tooltiptext = { pane-general-title }
@@ -52,6 +55,17 @@ category-privacy =
 pane-sync-title2 = { -sync-brand-short-name }
 category-sync2 =
     .tooltiptext = { pane-sync-title2 }
+
+pane-experimental-title = { -brand-short-name } Experiments
+category-experimental =
+    .tooltiptext = { -brand-short-name } Experiments
+pane-experimental-subtitle = Proceed with Caution
+pane-experimental-search-results-header = { -brand-short-name } Experiments: Proceed with Caution
+pane-experimental-description = Changing advanced configuration preferences can impact { -brand-short-name } performance or security.
+
+pane-experimental-reset =
+  .label = Restore Defaults
+  .accesskey = R
 
 help-button-label = { -brand-short-name } Support
 addons-button-label = Extensions & Themes
@@ -81,21 +95,13 @@ restart-later = Restart Later
 ## Variables:
 ##   $name (String): name of the extension
 
-# This string is shown to notify the user that their home page
-# is being controlled by an extension.
-extension-controlled-homepage-override = An extension, <img data-l10n-name="icon"/> { $name }, is controlling your home page.
-
-# This string is shown to notify the user that their new tab page
-# is being controlled by an extension.
-extension-controlled-new-tab-url = An extension, <img data-l10n-name="icon"/> { $name }, is controlling your New Tab page.
+# This string is shown to notify the user that the password manager setting
+# is being controlled by an extension
+extension-controlled-password-saving = An extension, <img data-l10n-name="icon"/> { $name }, is controlling this setting.
 
 # This string is shown to notify the user that their notifications permission
 # is being controlled by an extension.
 extension-controlled-web-notifications= An extension, <img data-l10n-name="icon"/> { $name }, is controlling this setting.
-
-# This string is shown to notify the user that the default search engine
-# is being controlled by an extension.
-extension-controlled-default-search = An extension, <img data-l10n-name="icon"/> { $name }, has set your default search engine.
 
 # This string is shown to notify the user that Container Tabs
 # are being enabled by an extension.
@@ -285,6 +291,11 @@ translate-exceptions =
     .label = Exceptions…
     .accesskey = x
 
+# Variables:
+#    $localeName (string) - Localized name of the locale to be used.
+use-system-locale =
+   .label = Use your operating system settings for “{ $localeName }” to format dates, times, numbers, and measurements.
+
 check-user-spelling =
     .label = Check your spelling as you type
     .accesskey = t
@@ -346,6 +357,14 @@ applications-use-app =
 applications-use-app-default =
     .label = Use { $app-name } (default)
 
+applications-use-os-default =
+    .label =
+        { PLATFORM() ->
+            [macos] Use macOS default application
+            [windows] Use Windows default application
+           *[other] Use system default application
+        }
+
 applications-use-other =
     .label = Use other…
 applications-select-helper = Select Helper Application
@@ -354,11 +373,6 @@ applications-manage-app =
     .label = Application Details…
 applications-always-ask =
     .label = Always ask
-applications-type-pdf = Portable Document Format (PDF)
-
-# Variables:
-#   $type (String) - the MIME type (e.g application/binary)
-applications-type-pdf-with-type = { applications-type-pdf } ({ $type })
 
 # Variables:
 #   $type-description (String) - Description of the type (e.g "Portable Document Format")
@@ -374,8 +388,8 @@ applications-file-ending-with-type = { applications-file-ending } ({ $type })
 #   $plugin-name (String) - Name of a plugin (e.g Adobe Flash)
 applications-use-plugin-in =
     .label = Use { $plugin-name } (in { -brand-short-name })
-applications-preview-inapp =
-    .label = Preview in { -brand-short-name }
+applications-open-inapp =
+    .label = Open in { -brand-short-name }
 
 ## The strings in this group are used to populate
 ## selected label element based on the string from
@@ -390,8 +404,8 @@ applications-action-save-label =
 applications-use-app-label =
     .value = { applications-use-app.label }
 
-applications-preview-inapp-label =
-    .value = { applications-preview-inapp.label }
+applications-open-inapp-label =
+    .value = { applications-open-inapp.label }
 
 applications-always-ask-label =
     .value = { applications-always-ask.label }
@@ -401,6 +415,9 @@ applications-use-app-default-label =
 
 applications-use-other-label =
     .value = { applications-use-other.label }
+
+applications-use-os-default-label =
+    .value = { applications-use-os-default.label }
 
 ##
 
@@ -519,6 +536,12 @@ browsing-picture-in-picture-toggle-enabled =
 
 browsing-picture-in-picture-learn-more = Learn more
 
+browsing-media-control =
+    .label = Control media via keyboard, headset, or virtual interface
+    .accesskey = v
+
+browsing-media-control-learn-more = Learn more
+
 browsing-cfr-recommendations =
     .label = Recommend extensions as you browse
     .accesskey = R
@@ -596,12 +619,23 @@ home-prefs-search-header =
 home-prefs-topsites-header =
     .label = Top Sites
 home-prefs-topsites-description = The sites you visit most
+home-prefs-topsites-by-option-sponsored =
+    .label = Sponsored Top Sites
+home-prefs-shortcuts-header =
+    .label = Shortcuts
+home-prefs-shortcuts-description = Sites you save or visit
+home-prefs-shortcuts-by-option-sponsored =
+    .label = Sponsored shortcuts
 
-# Variables:
-#  $provider (String): Name of the corresponding content provider, e.g "Pocket".
+## Variables:
+##  $provider (String): Name of the corresponding content provider, e.g "Pocket".
+
 home-prefs-recommended-by-header =
     .label = Recommended by { $provider }
-home-prefs-recommended-by-description = Great content from around the web, personalized for you
+home-prefs-recommended-by-description-update = Exceptional content from across the web, curated by { $provider }
+home-prefs-recommended-by-description-new = Exceptional content curated by { $provider }, part of the { -brand-product-name } family
+##
+
 home-prefs-recommended-by-learn-more = How it works
 home-prefs-recommended-by-option-sponsored-stories =
     .label = Sponsored Stories
@@ -618,6 +652,10 @@ home-prefs-highlights-option-most-recent-download =
 home-prefs-highlights-option-saved-to-pocket =
     .label = Pages Saved to { -pocket-brand-name }
 
+home-prefs-recent-activity-header =
+    .label = Recent activity
+home-prefs-recent-activity-description = A selection of recent sites and content
+
 # For the "Snippets" feature traditionally on about:home.
 # Alternative translation options: "Small Note" or something that
 # expresses the idea of "a small message, shortened from something else,
@@ -625,6 +663,9 @@ home-prefs-highlights-option-saved-to-pocket =
 home-prefs-snippets-header =
     .label = Snippets
 home-prefs-snippets-description = Updates from { -vendor-short-name } and { -brand-product-name }
+
+home-prefs-snippets-description-new = Tips and news from { -vendor-short-name } and { -brand-product-name }
+
 home-prefs-sections-rows-option =
     .label =
         { $num ->
@@ -669,11 +710,11 @@ search-show-suggestions-above-history-option =
 search-show-suggestions-private-windows =
     .label = Show search suggestions in Private Windows
 
-suggestions-addressbar-settings = Change preferences for browsing history, bookmarks, and tab suggestions
+suggestions-addressbar-settings-generic = Change preferences for other address bar suggestions
 
 search-suggestions-cant-show = Search suggestions will not be shown in location bar results because you have configured { -brand-short-name } to never remember history.
 
-search-one-click-header = One-Click Search Engines
+search-one-click-header2 = Search Shortcuts
 
 search-one-click-desc = Choose the alternative search engines that appear below the address bar and search bar when you start to enter a keyword.
 
@@ -689,6 +730,9 @@ search-restore-default =
 search-remove-engine =
     .label = Remove
     .accesskey = R
+search-add-engine =
+    .label = Add
+    .accesskey = A
 
 search-find-more-link = Find more search engines
 
@@ -883,7 +927,9 @@ privacy-header = Browser Privacy
 
 ## Privacy Section - Logins and Passwords
 
-logins-header = Logins and Passwords
+# The search keyword isn't shown to users but is used to find relevant settings in about:preferences.
+pane-privacy-logins-and-passwords-header = Logins and Passwords
+    .searchkeywords = { -lockwise-brand-short-name }
 
 # Checkbox to control whether UI is shown to users to save or fill logins/passwords.
 forms-ask-to-save-logins =
@@ -907,26 +953,37 @@ forms-fill-logins-and-passwords =
 forms-saved-logins =
     .label = Saved Logins…
     .accesskey = L
-forms-master-pw-use =
-    .label = Use a master password
+forms-primary-pw-use =
+    .label = Use a Primary Password
     .accesskey = U
+forms-primary-pw-learn-more-link = Learn more
+# This string uses the former name of the Primary Password feature
+# ("Master Password" in English) so that the preferences can be found
+# when searching for the old name. The accesskey is unused.
 forms-master-pw-change =
     .label = Change Master Password…
     .accesskey = M
+forms-primary-pw-change =
+    .label = Change Primary Password…
+    .accesskey = P
+# Leave this message empty if the translation for "Primary Password" matches
+# "Master Password" in your language. If you're editing the FTL file directly,
+# use { "" } as the value.
+forms-primary-pw-former-name = Formerly known as Master Password
 
-forms-master-pw-fips-title = You are currently in FIPS mode. FIPS requires a non-empty Master Password.
+forms-primary-pw-fips-title = You are currently in FIPS mode. FIPS requires a non-empty Primary Password.
 forms-master-pw-fips-desc = Password Change Failed
 
 ## OS Authentication dialog
 
-# This message can be seen by trying to add a Master Password.
-master-password-os-auth-dialog-message = Verify your identity to create a Master Password.
+# This message can be seen by trying to add a Primary Password.
+primary-password-os-auth-dialog-message-win = To create a Primary Password, enter your Windows login credentials. This helps protect the security of your accounts.
 
-# This message can be seen by trying to add a Master Password.
+# This message can be seen by trying to add a Primary Password.
 # The macOS strings are preceded by the operating system with "Firefox is trying to "
 # and includes subtitle of "Enter password for the user "xxx" to allow this." These
 # notes are only valid for English. Please test in your locale.
-master-password-os-auth-dialog-message-macosx = create a Master Password
+primary-password-os-auth-dialog-message-macosx = create a Primary Password
 master-password-os-auth-dialog-caption = { -brand-full-name }
 
 ## Privacy Section - History
@@ -1015,6 +1072,10 @@ sitedata-option-block-cross-site-trackers =
     .label = Cross-site trackers
 sitedata-option-block-cross-site-and-social-media-trackers =
     .label = Cross-site and social media trackers
+sitedata-option-block-cross-site-tracking-cookies-including-social-media =
+    .label = Cross-site tracking cookies — includes social media cookies
+sitedata-option-block-cross-site-cookies-including-social-media =
+    .label = Cross-site cookies — includes social media cookies
 sitedata-option-block-cross-site-and-social-media-trackers-plus-isolate =
     .label = Cross-site and social media trackers, and isolate remaining cookies
 sitedata-option-block-unvisited =
@@ -1032,9 +1093,9 @@ sitedata-settings =
     .label = Manage Data…
     .accesskey = M
 
-sitedata-cookies-permissions =
-    .label = Manage Permissions…
-    .accesskey = P
+sitedata-cookies-exceptions =
+    .label = Manage Exceptions…
+    .accesskey = x
 
 ## Privacy Section - Address Bar
 
@@ -1051,6 +1112,12 @@ addressbar-locbar-bookmarks-option =
 addressbar-locbar-openpage-option =
     .label = Open tabs
     .accesskey = O
+addressbar-locbar-topsites-option =
+    .label = Top sites
+    .accesskey = T
+addressbar-locbar-engines-option =
+    .label = Search engines
+    .accesskey = a
 
 addressbar-suggestions-settings = Change preferences for search engine suggestions
 
@@ -1061,6 +1128,8 @@ content-blocking-enhanced-tracking-protection = Enhanced Tracking Protection
 content-blocking-section-top-level-description = Trackers follow you around online to collect information about your browsing habits and interests. { -brand-short-name } blocks many of these trackers and other malicious scripts.
 
 content-blocking-learn-more = Learn more
+
+content-blocking-fpi-incompatibility-warning = You are using First Party Isolation (FPI), which overrides some of { -brand-short-name }’s cookie settings.
 
 ## These strings are used to define the different levels of
 ## Enhanced Tracking Protection.
@@ -1082,6 +1151,7 @@ content-blocking-etp-strict-desc = Stronger protection, but may cause some sites
 content-blocking-etp-custom-desc = Choose which trackers and scripts to block.
 
 content-blocking-private-windows = Tracking content in Private Windows
+content-blocking-cross-site-cookies = Cross-site cookies
 content-blocking-cross-site-tracking-cookies = Cross-site tracking cookies
 content-blocking-cross-site-tracking-cookies-plus-isolate = Cross-site tracking cookies, and isolate remaining cookies
 content-blocking-social-media-trackers = Social media trackers
@@ -1094,6 +1164,7 @@ content-blocking-fingerprinters = Fingerprinters
 
 content-blocking-warning-title = Heads up!
 content-blocking-and-isolating-etp-warning-description = Blocking trackers and isolating cookies could impact the functionality of some sites. Reload a page with trackers to load all content.
+content-blocking-and-isolating-etp-warning-description-2 = This setting may cause some websites to not display content or work correctly. If a site seems broken, you may want to turn off tracking protection for that site to load all content.
 content-blocking-warning-learn-how = Learn how
 
 content-blocking-reload-description = You will need to reload your tabs to apply these changes.
@@ -1192,12 +1263,6 @@ permissions-addon-exceptions =
     .label = Exceptions…
     .accesskey = E
 
-permissions-a11y-privacy-checkbox =
-    .label = Prevent accessibility services from accessing your browser
-    .accesskey = a
-
-permissions-a11y-privacy-link = Learn more
-
 ## Privacy Section - Data Collection
 
 collection-header = { -brand-short-name } Data Collection and Use
@@ -1205,7 +1270,7 @@ collection-header = { -brand-short-name } Data Collection and Use
 collection-description = We strive to provide you with choices and collect only what we need to provide and improve { -brand-short-name } for everyone. We always ask permission before receiving personal information.
 collection-privacy-notice = Privacy Notice
 
-collection-health-report-telemetry-disabled = You’re no longer allowing { -vendor-short-name } to capture technical and interaction data. All past data will be deleted within 30 days. 
+collection-health-report-telemetry-disabled = You’re no longer allowing { -vendor-short-name } to capture technical and interaction data. All past data will be deleted within 30 days.
 collection-health-report-telemetry-disabled-link = Learn more
 
 collection-health-report =
@@ -1256,16 +1321,6 @@ security-block-uncommon-software =
 
 certs-header = Certificates
 
-certs-personal-label = When a server requests your personal certificate
-
-certs-select-auto-option =
-    .label = Select one automatically
-    .accesskey = S
-
-certs-select-ask-option =
-    .label = Ask you every time
-    .accesskey = A
-
 certs-enable-ocsp =
     .label = Query OCSP responder servers to confirm the current validity of certificates
     .accesskey = Q
@@ -1305,6 +1360,23 @@ space-alert-under-5gb-ok-button =
     .accesskey = K
 
 space-alert-under-5gb-message = { -brand-short-name } is running out of disk space. Website contents may not display properly. Visit “Learn More” to optimize your disk usage for better browsing experience.
+
+## Privacy Section - HTTPS-Only
+
+httpsonly-header = HTTPS-Only Mode
+
+httpsonly-description = HTTPS provides a secure, encrypted connection between { -brand-short-name } and the websites you visit. Most websites support HTTPS, and if HTTPS-Only Mode is enabled, then { -brand-short-name } will upgrade all connections to HTTPS.
+
+httpsonly-learn-more = Learn more
+
+httpsonly-radio-enabled =
+    .label = Enable HTTPS-Only Mode in all windows
+
+httpsonly-radio-enabled-pbm =
+    .label = Enable HTTPS-Only Mode in private windows only
+
+httpsonly-radio-disabled =
+    .label = Don’t enable HTTPS-Only Mode
 
 ## The following strings are used in the Download section of settings
 desktop-folder-name = Desktop

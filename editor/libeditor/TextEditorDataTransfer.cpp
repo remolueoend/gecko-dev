@@ -6,10 +6,12 @@
 #include "mozilla/TextEditor.h"
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/HTMLEditor.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/SelectionState.h"
 #include "mozilla/TextControlElement.h"
 #include "mozilla/dom/DataTransfer.h"
+#include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/dom/DragEvent.h"
 #include "mozilla/dom/Selection.h"
 #include "mozilla/dom/StaticRange.h"
@@ -85,6 +87,7 @@ nsresult TextEditor::PrepareTransferable(nsITransferable** aOutTransferable) {
 
 nsresult TextEditor::PrepareToInsertContent(
     const EditorDOMPoint& aPointToInsert, bool aDoDeleteSelection) {
+  // TODO: Move this method to `EditorBase`.
   MOZ_ASSERT(IsEditActionDataAvailable());
 
   MOZ_ASSERT(aPointToInsert.IsSet());
@@ -92,20 +95,22 @@ nsresult TextEditor::PrepareToInsertContent(
   EditorDOMPoint pointToInsert(aPointToInsert);
   if (aDoDeleteSelection) {
     AutoTrackDOMPoint tracker(RangeUpdaterRef(), &pointToInsert);
-    nsresult rv = DeleteSelectionAsSubAction(eNone, eStrip);
+    nsresult rv = DeleteSelectionAsSubAction(
+        nsIEditor::eNone,
+        IsTextEditor() ? nsIEditor::eNoStrip : nsIEditor::eStrip);
     if (NS_FAILED(rv)) {
-      NS_WARNING(
-          "TextEditor::DeleteSelectionAsSubAction(eNone, eStrip) failed");
+      NS_WARNING("EditorBase::DeleteSelectionAsSubAction(eNone) failed");
       return rv;
     }
   }
 
   IgnoredErrorResult error;
-  SelectionRefPtr()->Collapse(pointToInsert, error);
+  MOZ_KnownLive(SelectionRefPtr())->CollapseInLimiter(pointToInsert, error);
   if (NS_WARN_IF(Destroyed())) {
     return NS_ERROR_EDITOR_DESTROYED;
   }
-  NS_WARNING_ASSERTION(!error.Failed(), "Selection::Collapse() failed");
+  NS_WARNING_ASSERTION(!error.Failed(),
+                       "Selection::CollapseInLimiter() failed");
   return error.StealNSResult();
 }
 
@@ -166,7 +171,8 @@ nsresult TextEditor::InsertTextFromTransferable(
       // Sanitize possible carriage returns in the string to be inserted
       nsContentUtils::PlatformToDOMLineBreaks(stuffToPaste);
 
-      AutoPlaceholderBatch treatAsOneTransaction(*this);
+      AutoPlaceholderBatch treatAsOneTransaction(*this,
+                                                 ScrollSelectionIntoView::Yes);
       nsresult rv = InsertTextAsSubAction(stuffToPaste);
       if (NS_FAILED(rv)) {
         NS_WARNING("EditorBase::InsertTextAsSubAction() failed");
@@ -230,7 +236,7 @@ nsresult TextEditor::OnDrop(DragEvent* aDropEvent) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  uint32_t numItems = dataTransfer->MozItemCount();
+  const uint32_t numItems = dataTransfer->MozItemCount();
   if (NS_WARN_IF(!numItems)) {
     return NS_ERROR_FAILURE;  // Nothing to drop?
   }
@@ -249,27 +255,17 @@ nsresult TextEditor::OnDrop(DragEvent* aDropEvent) {
   // Check if dropping into a selected range.  If so and the source comes from
   // same document, jump through some hoops to determine if mouse is over
   // selection (bail) and whether user wants to copy selection or delete it.
-  if (!SelectionRefPtr()->IsCollapsed() && sourceNode &&
-      sourceNode->IsEditable() && srcdoc == document) {
-    uint32_t rangeCount = SelectionRefPtr()->RangeCount();
-    for (uint32_t j = 0; j < rangeCount; j++) {
-      nsRange* range = SelectionRefPtr()->GetRangeAt(j);
-      if (NS_WARN_IF(!range)) {
-        // don't bail yet, iterate through them all
-        continue;
-      }
-      IgnoredErrorResult ignoredError;
-      if (range->IsPointInRange(*droppedAt.GetContainer(), droppedAt.Offset(),
-                                ignoredError) &&
-          !ignoredError.Failed()) {
-        // If source document and destination document is same and dropping
-        // into one of selected ranges, we don't need to do nothing.
-        // XXX If the source comes from outside of this editor, this check
-        //     means that we don't allow to drop the item in the selected
-        //     range.  However, the selection is hidden until the <input> or
-        //     <textarea> gets focus, therefore, this looks odd.
-        return NS_OK;
-      }
+  if (sourceNode && sourceNode->IsEditable() && srcdoc == document) {
+    bool isPointInSelection = EditorUtils::IsPointInSelection(
+        *SelectionRefPtr(), *droppedAt.GetContainer(), droppedAt.Offset());
+    if (isPointInSelection) {
+      // If source document and destination document is same and dropping
+      // into one of selected ranges, we don't need to do nothing.
+      // XXX If the source comes from outside of this editor, this check
+      //     means that we don't allow to drop the item in the selected
+      //     range.  However, the selection is hidden until the <input> or
+      //     <textarea> gets focus, therefore, this looks odd.
+      return NS_OK;
     }
   }
 
@@ -328,7 +324,8 @@ nsresult TextEditor::OnDrop(DragEvent* aDropEvent) {
   }
 
   // Combine any deletion and drop insertion into one transaction.
-  AutoPlaceholderBatch treatAsOneTransaction(*this);
+  AutoPlaceholderBatch treatAsOneTransaction(*this,
+                                             ScrollSelectionIntoView::Yes);
 
   // Don't dispatch "selectionchange" event until inserting all contents.
   SelectionBatcher selectionBatcher(SelectionRefPtr());
@@ -414,8 +411,8 @@ nsresult TextEditor::OnDrop(DragEvent* aDropEvent) {
   // Then, move focus if necessary.  This must cause dispatching "blur" event
   // and "focus" event.
   if (newFocusedElement && focusedElement != newFocusedElement) {
-    DebugOnly<nsresult> rvIgnored =
-        nsFocusManager::GetFocusManager()->SetFocus(newFocusedElement, 0);
+    RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager();
+    DebugOnly<nsresult> rvIgnored = fm->SetFocus(newFocusedElement, 0);
     NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
                          "nsFocusManager::SetFocus() failed to set focus "
                          "to the element, but ignored");
@@ -449,7 +446,7 @@ nsresult TextEditor::OnDrop(DragEvent* aDropEvent) {
     uint32_t textLength = 0;
     for (uint32_t i = 0; i < numItems; ++i) {
       nsCOMPtr<nsIVariant> data;
-      dataTransfer->GetDataAtNoSecurityCheck(NS_LITERAL_STRING("text/plain"), i,
+      dataTransfer->GetDataAtNoSecurityCheck(u"text/plain"_ns, i,
                                              getter_AddRefs(data));
       if (!data) {
         continue;
@@ -531,6 +528,7 @@ nsresult TextEditor::OnDrop(DragEvent* aDropEvent) {
 }
 
 nsresult TextEditor::DeleteSelectionByDragAsAction(bool aDispatchInputEvent) {
+  // TODO: Move this method to `EditorBase`.
   AutoRestore<bool> saveDispatchInputEvent(mDispatchInputEvent);
   mDispatchInputEvent = aDispatchInputEvent;
   // Even if we're handling "deleteByDrag" in same editor as "insertFromDrop",
@@ -548,15 +546,14 @@ nsresult TextEditor::DeleteSelectionByDragAsAction(bool aDispatchInputEvent) {
   // But keep using placeholder transaction for "insertFromDrop" if there is.
   Maybe<AutoPlaceholderBatch> treatAsOneTransaction;
   if (requestedByAnotherEditor) {
-    treatAsOneTransaction.emplace(*this);
+    treatAsOneTransaction.emplace(*this, ScrollSelectionIntoView::Yes);
   }
 
-  rv = DeleteSelectionAsSubAction(eNone, eStrip);
-  if (NS_WARN_IF(Destroyed())) {
-    return NS_ERROR_EDITOR_DESTROYED;
-  }
+  rv = DeleteSelectionAsSubAction(nsIEditor::eNone, IsTextEditor()
+                                                        ? nsIEditor::eNoStrip
+                                                        : nsIEditor::eStrip);
   if (NS_FAILED(rv)) {
-    NS_WARNING("TextEditor::DeleteSelectionAsSubAction() failed");
+    NS_WARNING("EditorBase::DeleteSelectionAsSubAction(eNone) failed");
     return rv;
   }
 
@@ -579,8 +576,13 @@ nsresult TextEditor::PasteAsAction(int32_t aClipboardType,
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  if (aDispatchPasteEvent && !FireClipboardEvent(ePaste, aClipboardType)) {
-    return EditorBase::ToGenericNSResult(NS_ERROR_EDITOR_ACTION_CANCELED);
+  if (aDispatchPasteEvent) {
+    if (!FireClipboardEvent(ePaste, aClipboardType)) {
+      return EditorBase::ToGenericNSResult(NS_ERROR_EDITOR_ACTION_CANCELED);
+    }
+  } else {
+    // The caller must already have dispatched a "paste" event.
+    editActionData.NotifyOfDispatchingClipboardEvent();
   }
 
   if (AsHTMLEditor()) {
@@ -667,10 +669,7 @@ nsresult TextEditor::PasteTransferableAsAction(nsITransferable* aTransferable,
 }
 
 bool TextEditor::CanPaste(int32_t aClipboardType) const {
-  // Always enable the paste command when inside of a HTML or XHTML document,
-  // but if the document is chrome, let it control it.
-  RefPtr<Document> doc = GetDocument();
-  if (doc && doc->IsHTMLOrXHTML() && !nsContentUtils::IsChromeDoc(doc)) {
+  if (AreClipboardCommandsUnconditionallyEnabled()) {
     return true;
   }
 
@@ -718,7 +717,7 @@ bool TextEditor::CanPasteTransferable(nsITransferable* aTransferable) {
   return NS_SUCCEEDED(rv) && data;
 }
 
-bool TextEditor::IsSafeToInsertData(Document* aSourceDoc) {
+bool TextEditor::IsSafeToInsertData(const Document* aSourceDoc) const {
   // Try to determine whether we should use a sanitizing fragment sink
   bool isSafe = false;
 

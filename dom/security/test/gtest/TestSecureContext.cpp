@@ -14,6 +14,7 @@
 #include "nsIPrincipal.h"
 #include "nsScriptSecurityManager.h"
 #include "mozilla/NullPrincipal.h"
+#include "mozilla/Preferences.h"
 
 using namespace mozilla;
 
@@ -24,11 +25,28 @@ struct TestExpectations {
   bool expectedResult;
 };
 
+class MOZ_RAII AutoRestoreBoolPref final {
+ public:
+  AutoRestoreBoolPref(const char* aPref, bool aValue) : mPref(aPref) {
+    Preferences::GetBool(mPref, &mOldValue);
+    Preferences::SetBool(mPref, aValue);
+  }
+
+  ~AutoRestoreBoolPref() { Preferences::SetBool(mPref, mOldValue); }
+
+ private:
+  const char* mPref = nullptr;
+  bool mOldValue = false;
+};
+
 // ============================= TestDirectives ========================
 
 TEST(SecureContext, IsOriginPotentiallyTrustworthyWithContentPrincipal)
 {
   // boolean isOriginPotentiallyTrustworthy(in nsIPrincipal aPrincipal);
+
+  AutoRestoreBoolPref savedPref("network.proxy.allow_hijacking_localhost",
+                                false);
 
   static const TestExpectations uris[] = {
       {"http://example.com/", false},
@@ -39,7 +57,9 @@ TEST(SecureContext, IsOriginPotentiallyTrustworthyWithContentPrincipal)
       {"ftp://example.com", false},
       {"about:config", false},
       {"http://localhost", true},
-      {"http://xyzzy.localhost", false},
+      {"http://localhost.localhost", true},
+      {"http://a.b.c.d.e.localhost", true},
+      {"http://xyzzy.localhost", true},
       {"http://127.0.0.1", true},
       {"http://127.0.0.2", true},
       {"http://127.1.0.1", true},
@@ -69,10 +89,10 @@ TEST(SecureContext, IsOriginPotentiallyTrustworthyWithContentPrincipal)
     nsAutoCString uri(uris[i].uri);
     rv = nsScriptSecurityManager::GetScriptSecurityManager()
              ->CreateContentPrincipalFromOrigin(uri, getter_AddRefs(prin));
-    bool isPotentiallyTrustworthy = false;
-    rv = prin->GetIsOriginPotentiallyTrustworthy(&isPotentiallyTrustworthy);
-    ASSERT_EQ(NS_OK, rv);
-    ASSERT_EQ(isPotentiallyTrustworthy, uris[i].expectedResult);
+    ASSERT_EQ(rv, NS_OK);
+    bool isPotentiallyTrustworthy = prin->GetIsOriginPotentiallyTrustworthy();
+    ASSERT_EQ(isPotentiallyTrustworthy, uris[i].expectedResult)
+        << uris[i].uri << uris[i].expectedResult;
   }
 }
 
@@ -82,10 +102,7 @@ TEST(SecureContext, IsOriginPotentiallyTrustworthyWithSystemPrincipal)
       nsScriptSecurityManager::GetScriptSecurityManager();
   ASSERT_TRUE(!!ssManager);
   nsCOMPtr<nsIPrincipal> sysPrin = nsContentUtils::GetSystemPrincipal();
-  bool isPotentiallyTrustworthy;
-  nsresult rv =
-      sysPrin->GetIsOriginPotentiallyTrustworthy(&isPotentiallyTrustworthy);
-  ASSERT_EQ(rv, NS_OK);
+  bool isPotentiallyTrustworthy = sysPrin->GetIsOriginPotentiallyTrustworthy();
   ASSERT_TRUE(isPotentiallyTrustworthy);
 }
 

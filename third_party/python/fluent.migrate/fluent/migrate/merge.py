@@ -4,7 +4,7 @@ from __future__ import absolute_import
 
 import fluent.syntax.ast as FTL
 
-from .transforms import evaluate
+from .errors import SkipTransform
 from .util import get_message, get_transform
 
 
@@ -50,7 +50,10 @@ def merge_resource(ctx, reference, current, transforms, in_changeset):
         if transform is not None and in_changeset(ident):
             if transform.comment is None:
                 transform.comment = entry.comment
-            return evaluate(ctx, transform)
+            try:
+                return ctx.evaluate(transform)
+            except SkipTransform:
+                return None
 
     body = merge_body(reference.body)
     return FTL.Resource(body)

@@ -2,7 +2,6 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this file,
    - You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-%include ../shared.inc
 %include ../../../shared/in-content/common.inc.css
 
 xul|tabs {
@@ -16,7 +15,7 @@ xul|tab[visuallyselected] {
 }
 
 xul|button[dlgtype="help"] {
-  -moz-appearance: none;
+  appearance: none;
   width: auto;
 }
 
@@ -64,7 +63,7 @@ xul|radio[focused="true"] > .radio-check {
 }
 
 xul|search-textbox {
-  -moz-appearance: none;
+  appearance: none;
   padding-inline: 8px;
 }
 

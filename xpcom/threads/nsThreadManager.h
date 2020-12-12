@@ -7,11 +7,18 @@
 #ifndef nsThreadManager_h__
 #define nsThreadManager_h__
 
-#include "mozilla/Mutex.h"
 #include "nsIThreadManager.h"
 #include "nsThread.h"
 
 class nsIRunnable;
+class nsIEventTarget;
+class nsISerialEventTarget;
+class nsIThread;
+
+namespace mozilla {
+class IdleTaskManager;
+class SynchronizedEventQueue;
+}  // namespace mozilla
 
 class BackgroundEventTarget;
 
@@ -74,6 +81,8 @@ class nsThreadManager : public nsIThreadManager {
 
   static bool MainThreadHasPendingHighPriorityEvents();
 
+  nsIThread* GetMainThreadWeak() { return mMainThread; }
+
  private:
   nsThreadManager();
 
@@ -83,6 +92,7 @@ class nsThreadManager : public nsIThreadManager {
   static void ReleaseThread(void* aData);
 
   unsigned mCurThreadIndex;  // thread-local-storage index
+  RefPtr<mozilla::IdleTaskManager> mIdleTaskManager;
   RefPtr<nsThread> mMainThread;
   PRThread* mMainPRThread;
   mozilla::Atomic<bool, mozilla::SequentiallyConsistent> mInitialized;

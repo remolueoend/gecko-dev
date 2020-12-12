@@ -16,7 +16,7 @@
 
 namespace mozilla {
 
-enum class MediaFeatureChangeReason : uint8_t {
+enum class MediaFeatureChangeReason : uint16_t {
   // The viewport size the document has used has changed.
   //
   // This affects size media queries like min-width.
@@ -40,9 +40,22 @@ enum class MediaFeatureChangeReason : uint8_t {
   // display-mode changed on the document, thus the display-mode media queries
   // may have changed.
   DisplayModeChange = 1 << 7,
+  // A preference that affects media query results has changed. For
+  // example, changes to document_color_use will affect
+  // prefers-contrast.
+  PreferenceChange = 1 << 8,
 };
 
 MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(MediaFeatureChangeReason)
+
+enum class MediaFeatureChangePropagation : uint8_t {
+  JustThisDocument = 0,
+  SubDocuments = 1 << 0,
+  Images = 1 << 1,
+  All = Images | SubDocuments,
+};
+
+MOZ_MAKE_ENUM_CLASS_BITWISE_OPERATORS(MediaFeatureChangePropagation)
 
 struct MediaFeatureChange {
   static const auto kAllChanges = static_cast<MediaFeatureChangeReason>(~0);

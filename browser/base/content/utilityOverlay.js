@@ -111,13 +111,12 @@ function doGetProtocolFlags(aURI) {
 /**
  * openUILink handles clicks on UI elements that cause URLs to load.
  *
- * As the third argument, you may pass an object with the same properties as
- * accepted by openUILinkIn, plus "ignoreButton" and "ignoreAlt".
- *
- * @param url {string}
- * @param event {Event | Object} Event or JSON object representing an Event
+ * @param {string} url
+ * @param {Event | Object} event Event or JSON object representing an Event
  * @param {Boolean | Object} aIgnoreButton
- * @param {Boolean} aIgnoreButton
+ *                           Boolean or object with the same properties as
+ *                           accepted by openUILinkIn, plus "ignoreButton"
+ *                           and "ignoreAlt".
  * @param {Boolean} aIgnoreAlt
  * @param {Boolean} aAllowThirdPartyFixup
  * @param {Object} aPostData
@@ -320,6 +319,7 @@ function openWebLinkIn(url, where, params) {
  * Instead of aAllowThirdPartyFixup, you may also pass an object with any of
  * these properties:
  *   allowThirdPartyFixup (boolean)
+ *   fromChrome           (boolean)
  *   postData             (nsIInputStream)
  *   referrerInfo         (nsIReferrerInfo)
  *   relatedToCurrent     (boolean)
@@ -347,7 +347,7 @@ function openUILinkIn(
     );
   }
 
-  params.fromChrome = true;
+  params.fromChrome = params.fromChrome ?? true;
 
   openLinkIn(url, where, params);
 }
@@ -389,8 +389,6 @@ function openLinkIn(url, where, params) {
   }
 
   if (where == "save") {
-    // TODO(1073187): propagate referrerPolicy.
-    // ContentClick.jsm passes isContentWindowPrivate for saveURL instead of passing a CPOW initiatingDoc
     if ("isContentWindowPrivate" in params) {
       saveURL(
         url,
@@ -399,6 +397,7 @@ function openLinkIn(url, where, params) {
         true,
         true,
         aReferrerInfo,
+        null,
         null,
         params.isContentWindowPrivate,
         aPrincipal
@@ -411,7 +410,7 @@ function openLinkIn(url, where, params) {
         );
         return;
       }
-      saveURL(url, null, null, true, true, aReferrerInfo, aInitiatingDoc);
+      saveURL(url, null, null, true, true, aReferrerInfo, null, aInitiatingDoc);
     }
     return;
   }
@@ -504,9 +503,9 @@ function openLinkIn(url, where, params) {
 
     const sourceWindow = w || window;
     let win;
-    if (params.frameOuterWindowID != undefined && sourceWindow) {
+    if (params.frameID != undefined && sourceWindow) {
       // Only notify it as a WebExtensions' webNavigation.onCreatedNavigationTarget
-      // event if it contains the expected frameOuterWindowID params.
+      // event if it contains the expected frameID params.
       // (e.g. we should not notify it as a onCreatedNavigationTarget if the user is
       // opening a new window using the keyboard shortcut).
       const sourceTabBrowser = sourceWindow.gBrowser.selectedBrowser;
@@ -522,7 +521,7 @@ function openLinkIn(url, where, params) {
                 url,
                 createdTabBrowser: win.gBrowser.selectedBrowser,
                 sourceTabBrowser,
-                sourceFrameOuterWindowID: params.frameOuterWindowID,
+                sourceFrameID: params.frameID,
               },
             },
             "webNavigation-createdNavigationTarget"
@@ -563,8 +562,9 @@ function openLinkIn(url, where, params) {
     } catch (e) {}
 
     if (
+      !aAllowPinnedTabHostChange &&
       w.gBrowser.getTabForBrowser(targetBrowser).pinned &&
-      !aAllowPinnedTabHostChange
+      url != "about:crashcontent"
     ) {
       try {
         // nsIURI.host can throw for non-nsStandardURL nsIURIs.
@@ -671,6 +671,7 @@ function openLinkIn(url, where, params) {
         allowInheritPrincipal: aAllowInheritPrincipal,
         csp: aCsp,
         focusUrlBar,
+        openerBrowser: params.openerBrowser,
       });
       targetBrowser = tabUsedForLoad.linkedBrowser;
 
@@ -678,9 +679,9 @@ function openLinkIn(url, where, params) {
         aResolveOnNewTabCreated(targetBrowser);
       }
 
-      if (params.frameOuterWindowID != undefined && w) {
+      if (params.frameID != undefined && w) {
         // Only notify it as a WebExtensions' webNavigation.onCreatedNavigationTarget
-        // event if it contains the expected frameOuterWindowID params.
+        // event if it contains the expected frameID params.
         // (e.g. we should not notify it as a onCreatedNavigationTarget if the user is
         // opening a new tab using the keyboard shortcut).
         Services.obs.notifyObservers(
@@ -689,7 +690,7 @@ function openLinkIn(url, where, params) {
               url,
               createdTabBrowser: targetBrowser,
               sourceTabBrowser: w.gBrowser.selectedBrowser,
-              sourceFrameOuterWindowID: params.frameOuterWindowID,
+              sourceFrameID: params.frameID,
             },
           },
           "webNavigation-createdNavigationTarget"
@@ -698,7 +699,11 @@ function openLinkIn(url, where, params) {
       break;
   }
 
-  if (!focusUrlBar && targetBrowser == w.gBrowser.selectedBrowser) {
+  if (
+    !params.avoidBrowserFocus &&
+    !focusUrlBar &&
+    targetBrowser == w.gBrowser.selectedBrowser
+  ) {
     // Focus the content, but only if the browser used for the load is selected.
     targetBrowser.focus();
   }
@@ -733,6 +738,11 @@ function checkForMiddleClick(node, event) {
       event.mozInputSource
     );
     node.dispatchEvent(cmdEvent);
+
+    // Stop the propagation of the click event, to prevent the event from being
+    // handled more than once.
+    // E.g. see https://bugzilla.mozilla.org/show_bug.cgi?id=1657992#c4
+    event.stopPropagation();
 
     // If the middle-click was on part of a menu, close the menu.
     // (Menus close automatically with left-click but not with middle-click.)

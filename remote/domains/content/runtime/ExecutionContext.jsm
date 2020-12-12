@@ -47,10 +47,10 @@ class ExecutionContext {
 
     // Here, we assume that debuggee is a window object and we will propably have
     // to adapt that once we cover workers or contexts that aren't a document.
-    const { windowUtils } = debuggee;
-    this.windowId = windowUtils.currentInnerWindowID;
+    this.window = debuggee;
+    this.windowId = this.window.windowGlobalChild.innerWindowId;
     this.id = id;
-    this.frameId = debuggee.docShell.browsingContext.id.toString();
+    this.frameId = this.window.browsingContext.id.toString();
     this.isDefault = isDefault;
 
     // objectId => Debugger.Object
@@ -59,6 +59,10 @@ class ExecutionContext {
 
   destructor() {
     this._debugger.removeDebuggee(this._debuggee);
+  }
+
+  get browsingContext() {
+    return this.window.browsingContext;
   }
 
   hasRemoteObject(objectId) {
@@ -414,6 +418,11 @@ class ExecutionContext {
         result.subtype = "typedarray";
       } else if (Node.isInstance(rawObj)) {
         result.subtype = "node";
+        result.className = ChromeUtils.getClassName(rawObj);
+        result.description = rawObj.localName || rawObj.nodeName;
+        if (rawObj.id) {
+          result.description += `#${rawObj.id}`;
+        }
       }
       return result;
     }

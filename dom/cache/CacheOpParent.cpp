@@ -6,6 +6,7 @@
 
 #include "mozilla/dom/cache/CacheOpParent.h"
 
+#include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/cache/AutoUtils.h"
 #include "mozilla/dom/cache/ManagerId.h"
@@ -15,9 +16,7 @@
 #include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
 using mozilla::ipc::FileDescriptorSetParent;
 using mozilla::ipc::PBackgroundParent;
@@ -42,29 +41,27 @@ CacheOpParent::CacheOpParent(PBackgroundParent* aIpcManager,
 
 CacheOpParent::~CacheOpParent() { NS_ASSERT_OWNINGTHREAD(CacheOpParent); }
 
-void CacheOpParent::Execute(ManagerId* aManagerId) {
+void CacheOpParent::Execute(const SafeRefPtr<ManagerId>& aManagerId) {
   NS_ASSERT_OWNINGTHREAD(CacheOpParent);
   MOZ_DIAGNOSTIC_ASSERT(!mManager);
   MOZ_DIAGNOSTIC_ASSERT(!mVerifier);
 
-  RefPtr<cache::Manager> manager;
-  nsresult rv =
-      cache::Manager::GetOrCreate(aManagerId, getter_AddRefs(manager));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    ErrorResult result(rv);
+  auto managerOrErr = cache::Manager::AcquireCreateIfNonExistent(aManagerId);
+  if (NS_WARN_IF(managerOrErr.isErr())) {
+    ErrorResult result(managerOrErr.unwrapErr());
     Unused << Send__delete__(this, std::move(result), void_t());
     return;
   }
 
-  Execute(manager);
+  Execute(managerOrErr.unwrap());
 }
 
-void CacheOpParent::Execute(cache::Manager* aManager) {
+void CacheOpParent::Execute(SafeRefPtr<cache::Manager> aManager) {
   NS_ASSERT_OWNINGTHREAD(CacheOpParent);
   MOZ_DIAGNOSTIC_ASSERT(!mManager);
   MOZ_DIAGNOSTIC_ASSERT(!mVerifier);
 
-  mManager = aManager;
+  mManager = std::move(aManager);
 
   // Handle put op
   if (mOpArgs.type() == CacheOpArgs::TCachePutAllArgs) {
@@ -125,7 +122,8 @@ void CacheOpParent::ActorDestroy(ActorDestroyReason aReason) {
   mIpcManager = nullptr;
 }
 
-void CacheOpParent::OnPrincipalVerified(nsresult aRv, ManagerId* aManagerId) {
+void CacheOpParent::OnPrincipalVerified(
+    nsresult aRv, const SafeRefPtr<ManagerId>& aManagerId) {
   NS_ASSERT_OWNINGTHREAD(CacheOpParent);
 
   mVerifier->RemoveListener(this);
@@ -140,10 +138,10 @@ void CacheOpParent::OnPrincipalVerified(nsresult aRv, ManagerId* aManagerId) {
   Execute(aManagerId);
 }
 
-void CacheOpParent::OnOpComplete(
-    ErrorResult&& aRv, const CacheOpResult& aResult, CacheId aOpenedCacheId,
-    const nsTArray<SavedResponse>& aSavedResponseList,
-    const nsTArray<SavedRequest>& aSavedRequestList, StreamList* aStreamList) {
+void CacheOpParent::OnOpComplete(ErrorResult&& aRv,
+                                 const CacheOpResult& aResult,
+                                 CacheId aOpenedCacheId,
+                                 const Maybe<StreamInfo>& aStreamInfo) {
   NS_ASSERT_OWNINGTHREAD(CacheOpParent);
   MOZ_DIAGNOSTIC_ASSERT(mIpcManager);
   MOZ_DIAGNOSTIC_ASSERT(mManager);
@@ -155,9 +153,20 @@ void CacheOpParent::OnOpComplete(
     return;
   }
 
-  uint32_t entryCount = std::max(
-      1lu, static_cast<unsigned long>(std::max(aSavedResponseList.Length(),
-                                               aSavedRequestList.Length())));
+  if (aStreamInfo.isSome()) {
+    ProcessCrossOriginResourcePolicyHeader(aRv,
+                                           aStreamInfo->mSavedResponseList);
+    if (NS_WARN_IF(aRv.Failed())) {
+      Unused << Send__delete__(this, std::move(aRv), void_t());
+      return;
+    }
+  }
+
+  uint32_t entryCount =
+      std::max(1lu, aStreamInfo ? static_cast<unsigned long>(std::max(
+                                      aStreamInfo->mSavedResponseList.Length(),
+                                      aStreamInfo->mSavedRequestList.Length()))
+                                : 0lu);
 
   // The result must contain the appropriate type at this point.  It may
   // or may not contain the additional result data yet.  For types that
@@ -168,15 +177,19 @@ void CacheOpParent::OnOpComplete(
   AutoParentOpResult result(mIpcManager, aResult, entryCount);
 
   if (aOpenedCacheId != INVALID_CACHE_ID) {
-    result.Add(aOpenedCacheId, mManager);
+    result.Add(aOpenedCacheId, mManager.clonePtr());
   }
 
-  for (uint32_t i = 0; i < aSavedResponseList.Length(); ++i) {
-    result.Add(aSavedResponseList[i], aStreamList);
-  }
+  if (aStreamInfo) {
+    const auto& streamInfo = *aStreamInfo;
 
-  for (uint32_t i = 0; i < aSavedRequestList.Length(); ++i) {
-    result.Add(aSavedRequestList[i], aStreamList);
+    for (const auto& savedResponse : streamInfo.mSavedResponseList) {
+      result.Add(savedResponse, streamInfo.mStreamList);
+    }
+
+    for (const auto& savedRequest : streamInfo.mSavedRequestList) {
+      result.Add(savedRequest, streamInfo.mStreamList);
+    }
   }
 
   Unused << Send__delete__(this, std::move(aRv), result.SendAsOpResult());
@@ -204,6 +217,100 @@ already_AddRefed<nsIInputStream> CacheOpParent::DeserializeCacheStream(
   return DeserializeIPCStream(readStream.stream());
 }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+void CacheOpParent::ProcessCrossOriginResourcePolicyHeader(
+    ErrorResult& aRv, const nsTArray<SavedResponse>& aResponses) {
+  if (!StaticPrefs::browser_tabs_remote_useCrossOriginEmbedderPolicy()) {
+    return;
+  }
+  // Only checking for match/matchAll.
+  nsILoadInfo::CrossOriginEmbedderPolicy loadingCOEP =
+      nsILoadInfo::EMBEDDER_POLICY_NULL;
+  Maybe<PrincipalInfo> principalInfo;
+  switch (mOpArgs.type()) {
+    case CacheOpArgs::TCacheMatchArgs: {
+      loadingCOEP =
+          mOpArgs.get_CacheMatchArgs().request().loadingEmbedderPolicy();
+      principalInfo = mOpArgs.get_CacheMatchArgs().request().principalInfo();
+      break;
+    }
+    case CacheOpArgs::TCacheMatchAllArgs: {
+      if (mOpArgs.get_CacheMatchAllArgs().maybeRequest().isSome()) {
+        loadingCOEP = mOpArgs.get_CacheMatchAllArgs()
+                          .maybeRequest()
+                          .ref()
+                          .loadingEmbedderPolicy();
+        principalInfo = mOpArgs.get_CacheMatchAllArgs()
+                            .maybeRequest()
+                            .ref()
+                            .principalInfo();
+      }
+      break;
+    }
+    default: {
+      return;
+    }
+  }
+
+  // skip checking if the request has no principal for same-origin/same-site
+  // checking.
+  if (principalInfo.isNothing() ||
+      principalInfo.ref().type() != PrincipalInfo::TContentPrincipalInfo) {
+    return;
+  }
+  const ContentPrincipalInfo& contentPrincipalInfo =
+      principalInfo.ref().get_ContentPrincipalInfo();
+
+  nsAutoCString corp;
+  for (auto it = aResponses.cbegin(); it != aResponses.cend(); ++it) {
+    if (it->mValue.type() != ResponseType::Opaque &&
+        it->mValue.type() != ResponseType::Opaqueredirect) {
+      continue;
+    }
+    corp.Assign(""_ns);
+    for (auto headerIt = it->mValue.headers().cbegin();
+         headerIt != it->mValue.headers().cend(); ++headerIt) {
+      if (headerIt->name().Equals("Cross-Origin-Resource-Policy"_ns)) {
+        corp = headerIt->value();
+        break;
+      }
+    }
+
+    // According to https://github.com/w3c/ServiceWorker/issues/1490, the cache
+    // response is expected with CORP header, otherwise, throw the type error.
+    // Note that this is different with the CORP checking for fetch metioned in
+    // https://wicg.github.io/cross-origin-embedder-policy/#corp-check.
+    // For fetch, if the response has no CORP header, "same-origin" checking
+    // will be performed.
+    if (corp.IsEmpty() &&
+        loadingCOEP == nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP) {
+      aRv.ThrowTypeError("Response is expected with CORP header.");
+      return;
+    }
+
+    // Skip the case if the response has no principal for same-origin/same-site
+    // checking.
+    if (it->mValue.principalInfo().isNothing() ||
+        it->mValue.principalInfo().ref().type() !=
+            PrincipalInfo::TContentPrincipalInfo) {
+      continue;
+    }
+
+    const ContentPrincipalInfo& responseContentPrincipalInfo =
+        it->mValue.principalInfo().ref().get_ContentPrincipalInfo();
+
+    if (corp.EqualsLiteral("same-origin")) {
+      if (responseContentPrincipalInfo == contentPrincipalInfo) {
+        aRv.ThrowTypeError("Response is expected from same origin.");
+        return;
+      }
+    } else if (corp.EqualsLiteral("same-site")) {
+      if (!responseContentPrincipalInfo.baseDomain().Equals(
+              contentPrincipalInfo.baseDomain())) {
+        aRv.ThrowTypeError("Response is expected from same site.");
+        return;
+      }
+    }
+  }
+}
+
+}  // namespace mozilla::dom::cache

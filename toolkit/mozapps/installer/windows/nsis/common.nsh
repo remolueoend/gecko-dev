@@ -3698,6 +3698,18 @@
           ${If} ${FileExists} "$R0\updates"
             RmDir /r "$R0"
           ${EndIf}
+
+          ; Also remove the secure log files that our updater may have created
+          ; inside the maintenance service path. There are several files named
+          ; with the install hash and an extension indicating the kind of file.
+          ; so use a wildcard to delete them all.
+          Delete "$PROGRAMFILES32\Mozilla Maintenance Service\UpdateLogs\$R1.*"
+
+          ; If the UpdateLogs directory is now empty, then delete it.
+          ; The Maintenance Service uninstaller should do this, but it may not
+          ; be up to date enough because of bug 1665193, so doing this here as
+          ; well lets us make sure it really happens.
+          RmDir "$PROGRAMFILES32\Mozilla Maintenance Service\UpdateLogs"
         ${EndIf}
       ${EndIf}
 
@@ -5862,6 +5874,22 @@ end:
 
       ${GetParameters} $R0
 
+      ${Unless} ${Silent}
+        ; Manually check for /S in the command line due to Bug 506867
+        ClearErrors
+        ${GetOptions} "$R0" "/S" $R2
+        ${Unless} ${Errors}
+          SetSilent silent
+        ${Else}
+          ; Support for the deprecated -ms command line argument.
+          ClearErrors
+          ${GetOptions} "$R0" "-ms" $R2
+          ${Unless} ${Errors}
+            SetSilent silent
+          ${EndUnless}
+        ${EndUnless}
+      ${EndUnless}
+
       StrCmp "$R0" "" continue +1
 
       ; Require elevation if the user can elevate
@@ -5947,27 +5975,110 @@ end:
       IfFileExists "$INSTDIR\uninstall\uninstall.log" +2 +1
       Quit ; Nothing initialized so no need to call OnEndCommon
 
-      ; Require elevation if the user can elevate
-      ${ElevateUAC}
+      ; When silent, try to avoid elevation if we have a chance to succeed.  We
+      ; can succeed when we can write to (hence delete from) the install
+      ; directory and when we can clean up all registry entries.  Now, the
+      ; installer when elevated writes privileged registry entries for the use
+      ; of the Maintenance Service, even when the service is not and will not be
+      ; installed.  (In fact, even when a service installed in the future will
+      ; never update the installation, for example due to not being in a
+      ; privileged location.)  In practice this means we can only truly silently
+      ; remove an unelevated install: an elevated installer writing to an
+      ; unprivileged install directory will still write privileged registry
+      ; entries, requiring an elevated uninstaller to completely clean up.
+      ;
+      ; This avoids a wrinkle, whereby an uninstaller which runs unelevated will
+      ; never itself launch the Maintenance Service uninstaller, because it will
+      ; fail to remove its own service registration (removing the relevant
+      ; registry key would require elevation).  Therefore the check for the
+      ; service being unused will fail, which will prevent running the service
+      ; uninstaller.  That's both subtle and possibly leaves the service
+      ; registration hanging around, which might be a security risk.
+      ;
+      ; That is why we look for a privileged service registration for this
+      ; installation when deciding to elevate, and elevate unconditionally if we
+      ; find one, regardless of the result of the write check that would avoid
+      ; elevation.
+
+      ; The reason for requiring elevation, or "" for not required.
+      StrCpy $R4 ""
+
+      ${IfNot} ${Silent}
+        ; In normal operation, require elevation if the user can elevate so that
+        ; we are most likely to succeed.
+        StrCpy $R4 "not silent"
+      ${EndIf}
+
+      GetTempFileName $R6 "$INSTDIR"
+      FileOpen $R5 "$R6" w
+      FileWrite $R5 "Write Access Test"
+      FileClose $R5
+      Delete $R6
+      ${If} ${Errors}
+        StrCpy $R4 "write"
+      ${EndIf}
+
+      !ifdef MOZ_MAINTENANCE_SERVICE
+        ; We don't necessarily have $MaintCertKey, so use temporary registers.
+        ServicesHelper::PathToUniqueRegistryPath "$INSTDIR"
+        Pop $R5
+
+        ${If} $R5 != ""
+          ; Always use the 64bit registry for certs on 64bit systems.
+          ${If} ${RunningX64}
+          ${OrIf} ${IsNativeARM64}
+            SetRegView 64
+          ${EndIf}
+
+          EnumRegKey $R6 HKLM $R5 0
+          ClearErrors
+
+          ${If} ${RunningX64}
+          ${OrIf} ${IsNativeARM64}
+            SetRegView lastused
+          ${EndIf}
+
+          ${IfNot} "$R6" == ""
+            StrCpy $R4 "mms"
+          ${EndIf}
+        ${EndIf}
+      !endif
+
+      ${If} "$R4" != ""
+        ; In the future, we might not try to elevate to remain truly silent.  Or
+        ; we might add a command line arguments to specify behaviour.  One
+        ; reason to not do that immediately is that we have no great way to
+        ; signal that we exited without taking action.
+        ${ElevateUAC}
+      ${EndIf}
+
+      ; Now we've elevated, try the write access test again.
+      ClearErrors
+      GetTempFileName $R6 "$INSTDIR"
+      FileOpen $R5 "$R6" w
+      FileWrite $R5 "Write Access Test"
+      FileClose $R5
+      Delete $R6
+      ${If} ${Errors}
+        ; Nothing initialized so no need to call OnEndCommon
+        Quit
+      ${EndIf}
+
+      !ifdef MOZ_MAINTENANCE_SERVICE
+        ; And verify that if we need to, we're going to clean up the registry
+        ; correctly.
+        ${If} "$R4" == "mms"
+          WriteRegStr HKLM "Software\Mozilla" "${BrandShortName}InstallerTest" "Write Test"
+          ${If} ${Errors}
+            ; Nothing initialized so no need to call OnEndCommon
+            Quit
+          ${Endif}
+          DeleteRegValue HKLM "Software\Mozilla" "${BrandShortName}InstallerTest"
+        ${EndIf}
+      !endif
 
       ; If we made it this far then this installer is being used as an uninstaller.
       WriteUninstaller "$EXEDIR\uninstaller.exe"
-
-      ${Unless} ${Silent}
-        ; Manually check for /S in the command line due to Bug 506867
-        ClearErrors
-        ${GetOptions} "$R0" "/S" $R2
-        ${Unless} ${Errors}
-          SetSilent silent
-        ${Else}
-          ; Support for the deprecated -ms command line argument.
-          ClearErrors
-          ${GetOptions} "$R0" "-ms" $R2
-          ${Unless} ${Errors}
-            SetSilent silent
-          ${EndUnless}
-        ${EndUnless}
-      ${EndUnless}
 
       ${If} ${Silent}
         StrCpy $R1 "$\"$EXEDIR\uninstaller.exe$\" /S"
@@ -7851,6 +7962,86 @@ end:
   !endif
 !macroend
 
+/**
+ * Try to locate the default profile of this install from AppUserModelID
+ * using installs.ini.
+ * FIXME This could instead use the Install<AUMID> entries in profiles.ini?
+ *
+ * - `SetShellVarContext current` must be called before this macro so
+ *   $APPDATA gets the current user's data.
+ * - InitHashAppModelId must have been called before this macro to set
+ *   $AppUserModelID
+ *
+ * @result: Path of the profile directory (not checked for existence),
+ *          or "" if not found, left on top of the stack.
+ */
+!macro FindInstallSpecificProfileMaybeUn _MOZFUNC_UN
+  Push $R0
+  Push $0
+  Push $1
+  Push $2
+
+  StrCpy $R0 ""
+  ; Look for an install-specific profile, which might be listed as
+  ; either a relative or an absolute path (installs.ini doesn't say which).
+  ${If} ${FileExists} "$APPDATA\Mozilla\Firefox\installs.ini"
+    ClearErrors
+    ReadINIStr $1 "$APPDATA\Mozilla\Firefox\installs.ini" "$AppUserModelID" "Default"
+    ${IfNot} ${Errors}
+      ${${_MOZFUNC_UN}GetLongPath} "$APPDATA\Mozilla\Firefox\$1" $2
+      ${If} ${FileExists} $2
+        StrCpy $R0 $2
+      ${Else}
+        ${${_MOZFUNC_UN}GetLongPath} "$1" $2
+        ${If} ${FileExists} $2
+          StrCpy $R0 $2
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  Pop $2
+  Pop $1
+  Pop $0
+  Exch $R0
+!macroend
+!define FindInstallSpecificProfile "!insertmacro FindInstallSpecificProfileMaybeUn ''"
+!define un.FindInstallSpecificProfile "!insertmacro FindInstallSpecificProfileMaybeUn un."
+
+/**
+ * Copy the post-signing data, which was left alongside the installer
+ * by the self-extractor stub, into the global location for this data.
+ *
+ * If the post-signing data file doesn't exist, or is empty, "0" is
+ * pushed on the stack, and nothing is copied.
+ * Otherwise the first line of the post-signing data (including newline,
+ * if any) is pushed on the stack.
+ */
+!macro CopyPostSigningData
+  !ifndef CopyPostSigningData
+    !verbose push
+    !verbose ${_MOZFUNC_VERBOSE}
+    !define CopyPostSigningData "Call CopyPostSigningData"
+
+    Function CopyPostSigningData
+      Push $0   ; Stack: old $0
+
+      ${LineRead} "$EXEDIR\postSigningData" "1" $0
+      ${If} ${Errors}
+        ClearErrors
+        StrCpy $0 "0"
+      ${Else}
+        CreateDirectory "$LOCALAPPDATA\Mozilla\Firefox"
+        CopyFiles /SILENT "$EXEDIR\postSigningData" "$LOCALAPPDATA\Mozilla\Firefox"
+      ${Endif}
+
+      Exch $0   ; Stack: postSigningData
+    FunctionEnd
+
+    !verbose pop
+  !endif
+!macroend
+
 ################################################################################
 # Helpers for taskbar progress
 
@@ -8028,11 +8219,11 @@ end:
   !define DT_NOFULLWIDTHCHARBREAK 0x00080000
 !endif
 
+!define /ifndef GWL_STYLE -16
+!define /ifndef GWL_EXSTYLE -20
+
 !ifndef WS_EX_NOINHERITLAYOUT
   !define WS_EX_NOINHERITLAYOUT 0x00100000
-!endif
-!ifndef WS_EX_LAYOUTRTL
-  !define WS_EX_LAYOUTRTL 0x00400000
 !endif
 
 !ifndef PBS_MARQUEE
@@ -8260,6 +8451,23 @@ end:
 !define RemoveStyle "!insertmacro _RemoveStyle"
 
 /**
+ * Adds a single extended style to a control.
+ *
+ * _HANDLE  the handle of the control
+ * _EXSTYLE the extended style to add
+ */
+!macro _AddExStyle _HANDLE _EXSTYLE
+  Push $0
+
+  System::Call 'user32::GetWindowLongW(i ${_HANDLE}, i ${GWL_EXSTYLE}) i .r0'
+  IntOp $0 $0 | ${_EXSTYLE}
+  System::Call 'user32::SetWindowLongW(i ${_HANDLE}, i ${GWL_EXSTYLE}, i r0)'
+
+  Pop $0
+!macroend
+!define AddExStyle "!insertmacro _AddExStyle"
+
+/**
  * Removes a single extended style from a control.
  *
  * _HANDLE  the handle of the control
@@ -8276,6 +8484,25 @@ end:
   Pop $0
 !macroend
 !define RemoveExStyle "!insertmacro _RemoveExStyle"
+
+/**
+ * Set the necessary styles to configure the given window as right-to-left
+ *
+ * _HANDLE the handle of the control to configure
+ */
+!macro _MakeWindowRTL _HANDLE
+  !define /ifndef WS_EX_RIGHT 0x00001000
+  !define /ifndef WS_EX_LEFT 0x00000000
+  !define /ifndef WS_EX_RTLREADING 0x00002000
+  !define /ifndef WS_EX_LTRREADING 0x00000000
+  !define /ifndef WS_EX_LAYOUTRTL 0x00400000
+
+  ${AddExStyle} ${_HANDLE} ${WS_EX_LAYOUTRTL}
+  ${RemoveExStyle} ${_HANDLE} ${WS_EX_RTLREADING}
+  ${RemoveExStyle} ${_HANDLE} ${WS_EX_RIGHT}
+  ${AddExStyle} ${_HANDLE} ${WS_EX_LEFT}|${WS_EX_LTRREADING}
+!macroend
+!define MakeWindowRTL "!insertmacro _MakeWindowRTL"
 
 /**
  * Gets the extent of the specified text in pixels for sizing a control.

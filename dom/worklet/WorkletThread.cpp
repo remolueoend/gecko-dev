@@ -8,9 +8,13 @@
 #include "prthread.h"
 #include "nsContentUtils.h"
 #include "nsCycleCollector.h"
+#include "nsJSEnvironment.h"
 #include "mozilla/dom/AtomList.h"
+#include "mozilla/dom/WorkletGlobalScope.h"
+#include "mozilla/dom/WorkletPrincipals.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/CycleCollectedJSRuntime.h"
 #include "mozilla/EventQueue.h"
 #include "mozilla/ThreadEventQueue.h"
 #include "js/Exception.h"
@@ -129,7 +133,7 @@ class WorkletJSContext final : public CycleCollectedJSContext {
 
     JSContext* cx = Context();
 
-    js::SetPreserveWrapperCallback(cx, PreserveWrapper);
+    js::SetPreserveWrapperCallbacks(cx, PreserveWrapper, HasReleasedWrapper);
     JS_InitDestroyPrincipalsCallback(cx, WorkletPrincipals::Destroy);
     JS_SetWrapObjectCallbacks(cx, &WrapObjectCallbacks);
     JS_SetFutexCanWait(cx);
@@ -249,9 +253,9 @@ class WorkletThread::TerminateRunnable final : public Runnable {
 };
 
 WorkletThread::WorkletThread(WorkletImpl* aWorkletImpl)
-    : nsThread(MakeNotNull<ThreadEventQueue<mozilla::EventQueue>*>(
-                   MakeUnique<mozilla::EventQueue>()),
-               nsThread::NOT_MAIN_THREAD, kWorkletStackSize),
+    : nsThread(
+          MakeNotNull<ThreadEventQueue*>(MakeUnique<mozilla::EventQueue>()),
+          nsThread::NOT_MAIN_THREAD, kWorkletStackSize),
       mWorkletImpl(aWorkletImpl),
       mExitLoop(false),
       mIsTerminating(false) {
@@ -265,7 +269,7 @@ WorkletThread::~WorkletThread() = default;
 already_AddRefed<WorkletThread> WorkletThread::Create(
     WorkletImpl* aWorkletImpl) {
   RefPtr<WorkletThread> thread = new WorkletThread(aWorkletImpl);
-  if (NS_WARN_IF(NS_FAILED(thread->Init(NS_LITERAL_CSTRING("DOM Worklet"))))) {
+  if (NS_WARN_IF(NS_FAILED(thread->Init("DOM Worklet"_ns)))) {
     return nullptr;
   }
 
@@ -348,11 +352,12 @@ void WorkletThread::EnsureCycleCollectedJSContext(JSRuntime* aParentRuntime) {
     return;
   }
 
+  JS_SetGCParameter(context->Context(), JSGC_MAX_BYTES, uint32_t(-1));
+
   // FIXME: JS_SetDefaultLocale
   // FIXME: JSSettings
   // FIXME: JS_SetSecurityCallbacks
   // FIXME: JS::SetAsyncTaskCallbacks
-  // FIXME: JS_AddInterruptCallback
   // FIXME: JS::SetCTypesActivityCallback
   // FIXME: JS_SetGCZeal
 

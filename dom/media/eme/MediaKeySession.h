@@ -9,7 +9,6 @@
 
 #include "DecoderDoctorLogger.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "nsCOMPtr.h"
@@ -24,6 +23,7 @@
 struct JSContext;
 
 namespace mozilla {
+class ErrorResult;
 
 namespace dom {
 class MediaKeySession;
@@ -47,7 +47,7 @@ class MediaKeySession final : public DOMEventTargetHelper,
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(MediaKeySession,
                                            DOMEventTargetHelper)
  public:
-  MediaKeySession(JSContext* aCx, nsPIDOMWindowInner* aParent, MediaKeys* aKeys,
+  MediaKeySession(nsPIDOMWindowInner* aParent, MediaKeys* aKeys,
                   const nsAString& aKeySystem, MediaKeySessionType aSessionType,
                   ErrorResult& aRv);
 

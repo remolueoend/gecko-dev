@@ -16,12 +16,14 @@
 #include "nsString.h"
 #include "nsTArray.h"
 #include "mozilla/Telemetry.h"
+#include "nsIHttpChannelInternal.h"
 #include "nsITimedChannel.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIRequestObserver.h"
 #include "CacheObserver.h"
 #include "MainThreadUtils.h"
 #include "RequestContextService.h"
+#include "mozilla/StoragePrincipalHelper.h"
 #include "mozilla/Unused.h"
 
 namespace mozilla {
@@ -93,6 +95,7 @@ nsLoadGroup::nsLoadGroup()
       mIsCanceling(false),
       mDefaultLoadIsTimed(false),
       mBrowsingContextDiscarded(false),
+      mExternalRequestContext(false),
       mTimedRequests(0),
       mCachedRequests(0) {
   LOG(("LOADGROUP [%p]: Created.\n", this));
@@ -104,8 +107,11 @@ nsLoadGroup::~nsLoadGroup() {
 
   mDefaultLoadRequest = nullptr;
 
-  if (mRequestContext) {
+  if (mRequestContext && !mExternalRequestContext) {
     mRequestContextService->RemoveRequestContext(mRequestContext->GetID());
+    if (IsNeckoChild() && gNeckoChild) {
+      gNeckoChild->SendRemoveRequestContext(mRequestContext->GetID());
+    }
   }
 
   nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
@@ -159,10 +165,9 @@ static bool AppendRequestsToArray(PLDHashTable* aTable,
     nsIRequest* request = e->mKey;
     NS_ASSERTION(request, "What? Null key in PLDHashTable entry?");
 
-    bool ok = !!aArray->AppendElement(request);
-    if (!ok) {
-      break;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    aArray->AppendElement(request);
     NS_ADDREF(request);
   }
 
@@ -836,6 +841,23 @@ void nsLoadGroup::TelemetryReportChannel(nsITimedChannel* aTimedChannel,
   rv = aTimedChannel->GetResponseEnd(&responseEnd);
   if (NS_FAILED(rv)) return;
 
+  bool useHttp3 = false;
+  bool supportHttp3 = false;
+  nsCOMPtr<nsIHttpChannelInternal> httpChannel =
+      do_QueryInterface(aTimedChannel);
+  if (httpChannel) {
+    uint32_t major;
+    uint32_t minor;
+    if (NS_SUCCEEDED(httpChannel->GetResponseVersion(&major, &minor))) {
+      useHttp3 = major == 3;
+      if (major == 2) {
+        if (NS_FAILED(httpChannel->GetSupportsHTTP3(&supportHttp3))) {
+          supportHttp3 = false;
+        }
+      }
+    }
+  }
+
 #define HTTP_REQUEST_HISTOGRAMS(prefix)                                        \
   if (!domainLookupStart.IsNull()) {                                           \
     Telemetry::AccumulateTimeDelta(Telemetry::HTTP_##prefix##_DNS_ISSUE_TIME,  \
@@ -908,6 +930,44 @@ void nsLoadGroup::TelemetryReportChannel(nsITimedChannel* aTimedChannel,
   } else {
     HTTP_REQUEST_HISTOGRAMS(SUB)
   }
+
+  if ((useHttp3 || supportHttp3) && cacheReadStart.IsNull() &&
+      cacheReadEnd.IsNull()) {
+    nsCString key = (useHttp3) ? ((aDefaultRequest) ? "uses_http3_page"_ns
+                                                    : "uses_http3_sub"_ns)
+                               : ((aDefaultRequest) ? "supports_http3_page"_ns
+                                                    : "supports_http3_sub"_ns);
+
+    if (!secureConnectionStart.IsNull() && !connectEnd.IsNull()) {
+      Telemetry::AccumulateTimeDelta(Telemetry::HTTP3_TLS_HANDSHAKE, key,
+                                     secureConnectionStart, connectEnd);
+    }
+
+    if (supportHttp3 && !connectStart.IsNull() && !connectEnd.IsNull()) {
+      Telemetry::AccumulateTimeDelta(Telemetry::SUP_HTTP3_TCP_CONNECTION, key,
+                                     connectStart, connectEnd);
+    }
+
+    if (!requestStart.IsNull() && !responseEnd.IsNull()) {
+      Telemetry::AccumulateTimeDelta(Telemetry::HTTP3_OPEN_TO_FIRST_SENT, key,
+                                     asyncOpen, requestStart);
+
+      Telemetry::AccumulateTimeDelta(
+          Telemetry::HTTP3_FIRST_SENT_TO_LAST_RECEIVED, key, requestStart,
+          responseEnd);
+
+      if (!responseStart.IsNull()) {
+        Telemetry::AccumulateTimeDelta(Telemetry::HTTP3_OPEN_TO_FIRST_RECEIVED,
+                                       key, asyncOpen, responseStart);
+      }
+
+      if (!responseEnd.IsNull()) {
+        Telemetry::AccumulateTimeDelta(Telemetry::HTTP3_COMPLETE_LOAD, key,
+                                       asyncOpen, responseEnd);
+      }
+    }
+  }
+
 #undef HTTP_REQUEST_HISTOGRAMS
 }
 
@@ -975,12 +1035,30 @@ nsresult nsLoadGroup::Init() {
   return NS_OK;
 }
 
+nsresult nsLoadGroup::InitWithRequestContextId(
+    const uint64_t& aRequestContextId) {
+  mRequestContextService = RequestContextService::GetOrCreate();
+  if (mRequestContextService) {
+    Unused << mRequestContextService->GetRequestContext(
+        aRequestContextId, getter_AddRefs(mRequestContext));
+  }
+  mExternalRequestContext = true;
+
+  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
+  NS_ENSURE_STATE(os);
+
+  Unused << os->AddObserver(this, "last-pb-context-exited", true);
+
+  return NS_OK;
+}
+
 NS_IMETHODIMP
 nsLoadGroup::Observe(nsISupports* aSubject, const char* aTopic,
                      const char16_t* aData) {
   MOZ_ASSERT(!strcmp(aTopic, "last-pb-context-exited"));
 
-  OriginAttributes attrs = nsContentUtils::GetOriginAttributes(this);
+  OriginAttributes attrs;
+  StoragePrincipalHelper::GetRegularPrincipalOriginAttributes(this, attrs);
   if (attrs.mPrivateBrowsingId == 0) {
     return NS_OK;
   }

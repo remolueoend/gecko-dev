@@ -58,6 +58,8 @@
  ******* END LICENSE BLOCK *******/
 
 #include "mozHunspell.h"
+#include "mozHunspellFileMgrGlue.h"
+#include "mozHunspellFileMgrHost.h"
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsIObserverService.h"
@@ -68,9 +70,11 @@
 #include "mozInlineSpellChecker.h"
 #include <stdlib.h>
 #include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsNetUtil.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/Components.h"
+#include "mozilla/Services.h"
 
 using mozilla::dom::ContentParent;
 using namespace mozilla;
@@ -183,6 +187,9 @@ mozHunspell::SetDictionary(const nsAString& aDictionary) {
   mDictionary = aDictionary;
   mAffixFileName = affFileName;
 
+  RegisterHunspellCallbacks(
+      mozHunspellCallbacks::CreateFilemgr, mozHunspellCallbacks::GetLine,
+      mozHunspellCallbacks::GetLineNum, mozHunspellCallbacks::DestructFilemgr);
   mHunspell = new Hunspell(affFileName.get(), dictFileName.get());
   if (!mHunspell) return NS_ERROR_OUT_OF_MEMORY;
 
@@ -299,7 +306,7 @@ void mozHunspell::DictionariesChanged(bool aNotifyChildProcesses) {
   // If the current dictionary has gone, and we don't have a good replacement,
   // set no current dictionary.
   if (!mDictionary.IsEmpty()) {
-    SetDictionary(EmptyString());
+    SetDictionary(u""_ns);
   }
 }
 
@@ -322,7 +329,7 @@ mozHunspell::LoadDictionariesFromDir(nsIFile* aDir) {
   while (NS_SUCCEEDED(files->GetNextFile(getter_AddRefs(file))) && file) {
     nsAutoString leafName;
     file->GetLeafName(leafName);
-    if (!StringEndsWith(leafName, NS_LITERAL_STRING(".dic"))) continue;
+    if (!StringEndsWith(leafName, u".dic"_ns)) continue;
 
     nsAutoString dict(leafName);
     dict.SetLength(dict.Length() - 4);  // magic length of ".dic"
@@ -356,7 +363,7 @@ nsresult mozHunspell::ConvertCharset(const nsAString& aStr, std::string& aDst) {
     return NS_ERROR_NOT_INITIALIZED;
   }
 
-  auto src = MakeSpan(aStr.BeginReading(), aStr.Length());
+  auto src = Span(aStr.BeginReading(), aStr.Length());
   CheckedInt<size_t> needed =
       mEncoder->MaxBufferLengthFromUTF16WithoutReplacement(src.Length());
   if (!needed.isValid()) {
@@ -366,7 +373,7 @@ nsresult mozHunspell::ConvertCharset(const nsAString& aStr, std::string& aDst) {
   aDst.resize(needed.value());
 
   char* dstPtr = &aDst[0];
-  auto dst = MakeSpan(reinterpret_cast<uint8_t*>(dstPtr), needed.value());
+  auto dst = Span(reinterpret_cast<uint8_t*>(dstPtr), needed.value());
 
   uint32_t result;
   size_t read;

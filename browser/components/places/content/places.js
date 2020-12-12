@@ -277,7 +277,7 @@ var PlacesOrganizer = {
 
   set location(aLocation) {
     if (!aLocation || this._location == aLocation) {
-      return aLocation;
+      return;
     }
 
     if (this.location) {
@@ -313,8 +313,6 @@ var PlacesOrganizer = {
         .getElementById("OrganizerCommand:Forward")
         .removeAttribute("disabled");
     }
-
-    return aLocation;
   },
 
   _backHistory: [],
@@ -719,11 +717,13 @@ var PlacesOrganizer = {
 
   _fillDetailsPane: function PO__fillDetailsPane(aNodeList) {
     var infoBox = document.getElementById("infoBox");
-    var detailsDeck = document.getElementById("detailsDeck");
+    var itemsCountBox = document.getElementById("itemsCountBox");
 
     // Make sure the infoBox UI is visible if we need to use it, we hide it
     // below when we don't.
     infoBox.hidden = false;
+    itemsCountBox.hidden = true;
+
     let selectedNode = aNodeList.length == 1 ? aNodeList[0] : null;
 
     // If an input within a panel is focused, force-blur it so its contents
@@ -748,11 +748,7 @@ var PlacesOrganizer = {
           (selectedNode.itemId == -1 &&
             gEditItemOverlay.uri &&
             gEditItemOverlay.uri == selectedNode.uri);
-        if (
-          nodeIsSame &&
-          detailsDeck.selectedIndex == 1 &&
-          !gEditItemOverlay.multiEdit
-        ) {
+        if (nodeIsSame && !infoBox.hidden && !gEditItemOverlay.multiEdit) {
           return;
         }
       }
@@ -762,8 +758,6 @@ var PlacesOrganizer = {
     gEditItemOverlay.uninitPanel(false);
 
     if (selectedNode && !PlacesUtils.nodeIsSeparator(selectedNode)) {
-      detailsDeck.selectedIndex = 1;
-
       gEditItemOverlay.initPanel({
         node: selectedNode,
         hiddenRows: ["folderPicker"],
@@ -771,13 +765,11 @@ var PlacesOrganizer = {
     } else if (!selectedNode && aNodeList[0]) {
       if (aNodeList.every(PlacesUtils.nodeIsURI)) {
         let uris = aNodeList.map(node => Services.io.newURI(node.uri));
-        detailsDeck.selectedIndex = 1;
         gEditItemOverlay.initPanel({
           uris,
           hiddenRows: ["folderPicker", "location", "keyword", "name"],
         });
       } else {
-        detailsDeck.selectedIndex = 0;
         let selectItemDesc = document.getElementById("selectItemDescription");
         let itemsCountLabel = document.getElementById("itemsCountText");
         selectItemDesc.hidden = false;
@@ -789,7 +781,6 @@ var PlacesOrganizer = {
         infoBox.hidden = true;
       }
     } else {
-      detailsDeck.selectedIndex = 0;
       infoBox.hidden = true;
       let selectItemDesc = document.getElementById("selectItemDescription");
       let itemsCountLabel = document.getElementById("itemsCountText");
@@ -812,6 +803,7 @@ var PlacesOrganizer = {
         );
       }
     }
+    itemsCountBox.hidden = !infoBox.hidden;
   },
 };
 
@@ -838,7 +830,6 @@ var PlacesSearchBox = {
   },
   set folders(aFolders) {
     this._folders = aFolders;
-    return aFolders;
   },
 
   /**
@@ -947,13 +938,11 @@ var PlacesSearchBox = {
   },
   set filterCollection(collectionName) {
     if (collectionName == this.filterCollection) {
-      return collectionName;
+      return;
     }
 
     this.searchFilter.setAttribute("collection", collectionName);
     this.updateCollectionTitle();
-
-    return collectionName;
   },
 
   /**
@@ -977,7 +966,7 @@ var PlacesSearchBox = {
     return this.searchFilter.value;
   },
   set value(value) {
-    return (this.searchFilter.value = value);
+    this.searchFilter.value = value;
   },
 };
 
@@ -1303,7 +1292,7 @@ var ContentArea = {
   _specialViews: new Map(),
 
   init: function CA_init() {
-    this._deck = document.getElementById("placesViewsDeck");
+    this._box = document.getElementById("placesViewsBox");
     this._toolbar = document.getElementById("placesToolbar");
     ContentTree.init();
     this._setupView();
@@ -1367,12 +1356,16 @@ var ContentArea = {
   },
 
   get currentView() {
-    return PlacesUIUtils.getViewForNode(this._deck.selectedPanel);
+    let selectedPane = [...this._box.children].filter(
+      child => !child.hidden
+    )[0];
+    return PlacesUIUtils.getViewForNode(selectedPane);
   },
   set currentView(aNewView) {
     let oldView = this.currentView;
     if (oldView != aNewView) {
-      this._deck.selectedPanel = aNewView.associatedElement;
+      oldView.associatedElement.hidden = true;
+      aNewView.associatedElement.hidden = false;
 
       // If the content area inactivated view was focused, move focus
       // to the new view.
@@ -1380,7 +1373,6 @@ var ContentArea = {
         aNewView.associatedElement.focus();
       }
     }
-    return aNewView;
   },
 
   get currentPlace() {
@@ -1396,7 +1388,6 @@ var ContentArea = {
       this._setupView();
       newView.active = true;
     }
-    return aQueryString;
   },
 
   /**
@@ -1406,8 +1397,8 @@ var ContentArea = {
     let options = this.currentViewOptions;
 
     // showDetailsPane.
-    let detailsDeck = document.getElementById("detailsDeck");
-    detailsDeck.hidden = !options.showDetailsPane;
+    let detailsPane = document.getElementById("detailsPane");
+    detailsPane.hidden = !options.showDetailsPane;
 
     // toolbarSet.
     for (let elt of this._toolbar.childNodes) {
@@ -1440,7 +1431,7 @@ var ContentArea = {
   },
 
   focus() {
-    this._deck.selectedPanel.focus();
+    this.currentView.associatedElement.focus();
   },
 };
 

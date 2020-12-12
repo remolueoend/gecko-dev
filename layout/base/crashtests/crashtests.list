@@ -133,8 +133,6 @@ load 366271-1.html
 load 366967-1.html
 load 367015-1.html
 load 367243-1.html
-load 367498-1.html
-load 367498-2.html
 load 369176-1.html
 load 369547-1.html
 load 369547-2.html
@@ -275,7 +273,6 @@ load 480686-1.html
 load 481806-1.html
 load 483604-1.xhtml
 load 485501-1.html
-load 487544-1.html
 load 488390-1.xhtml
 load 489691.html
 load 490376-1.xhtml
@@ -452,7 +449,7 @@ load 1308848-2.html
 load 1338772-1.html
 load 1340571.html
 pref(dom.animations-api.implicit-keyframes.enabled,true) load 1343139-1.html
-asserts(0-1) asserts-if(Android,1-4) load 1343606.html # bug 1343948
+asserts-if(Android,0-3) load 1343606.html # bug 1642521
 load 1343937.html
 load 1352380.html
 load 1362423-1.html
@@ -481,6 +478,7 @@ load 1414303.html
 load 1419762.html
 load 1419802.html
 load 1420533.html
+load 1422908.html
 load 1425893.html
 load 1425959.html
 load 1428353.html
@@ -529,7 +527,7 @@ pref(layout.css.individual-transform.enabled,true) load 1511442.html
 load 1511535.html
 load 1511563.html
 load 1516286-empty-mask.html
-load 1524382.html
+asserts(7-7) load 1524382.html
 load 1524411.html
 load 1533885.html
 load 1534146.html
@@ -556,3 +554,4 @@ load 1586600.html
 load 1599518.html
 load 1599532.html
 pref(layout.accessiblecaret.enabled,true) load 1606492.html
+load 1676301-1.html

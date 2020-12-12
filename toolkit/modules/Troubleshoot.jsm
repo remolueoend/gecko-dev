@@ -17,6 +17,11 @@ const { E10SUtils } = ChromeUtils.import(
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
+
+const { FeatureGate } = ChromeUtils.import(
+  "resource://featuregates/FeatureGate.jsm"
+);
+
 XPCOMUtils.defineLazyGlobalGetters(this, ["DOMParser"]);
 
 // We use a preferences whitelist to make sure we only show preferences that
@@ -46,16 +51,17 @@ const PREFS_WHITELIST = [
   "browser.search.log",
   "browser.search.openintab",
   "browser.search.param",
+  "browser.search.region",
   "browser.search.searchEnginesURL",
   "browser.search.suggest.enabled",
   "browser.search.update",
-  "browser.search.useDBForOrder",
   "browser.sessionstore.",
   "browser.startup.homepage",
   "browser.startup.page",
   "browser.tabs.",
   "browser.urlbar.",
   "browser.zoom.",
+  "doh-rollout.",
   "dom.",
   "extensions.checkCompatibility",
   "extensions.formautofill.",
@@ -81,7 +87,6 @@ const PREFS_WHITELIST = [
   "places.",
   "plugin.",
   "plugins.",
-  "print.",
   "privacy.",
   "remote.enabled",
   "security.",
@@ -99,6 +104,9 @@ const PREFS_WHITELIST = [
   "ui.osk.require_tablet_mode",
   "ui.osk.debug.keyboardDisplayReason",
   "webgl.",
+  "widget.dmabuf",
+  "widget.use-xdg-desktop-portal",
+  "widget.wayland",
 ];
 
 // The blacklist, unlike the whitelist, is a list of regular expressions.
@@ -107,9 +115,6 @@ const PREFS_BLACKLIST = [
   /^media[.]webrtc[.]debug[.]aec_log_dir/,
   /^media[.]webrtc[.]debug[.]log_file/,
   /^network[.]proxy[.]/,
-  /[.]print_to_filename$/,
-  /^print[.]macosx[.]pagesetup/,
-  /^print[.]printer/,
 ];
 
 // Table of getters for various preference types.
@@ -129,19 +134,18 @@ const PREFS_UNIMPORTANT_LOCKED = [
   "privacy.restrict3rdpartystorage.url_decorations",
 ];
 
-// Return the preferences filtered by PREFS_BLACKLIST and PREFS_WHITELIST lists
-// and also by the custom 'filter'-ing function.
-function getPrefList(filter) {
-  filter = filter || (name => true);
-  function getPref(name) {
-    let type = Services.prefs.getPrefType(name);
-    if (!(type in PREFS_GETTERS)) {
-      throw new Error("Unknown preference type " + type + " for " + name);
-    }
-    return PREFS_GETTERS[type](Services.prefs, name);
+function getPref(name) {
+  let type = Services.prefs.getPrefType(name);
+  if (!(type in PREFS_GETTERS)) {
+    throw new Error("Unknown preference type " + type + " for " + name);
   }
+  return PREFS_GETTERS[type](Services.prefs, name);
+}
 
-  return PREFS_WHITELIST.reduce(function(prefs, branch) {
+// Return the preferences filtered by PREFS_BLACKLIST and whitelist lists
+// and also by the custom 'filter'-ing function.
+function getPrefList(filter, whitelist = PREFS_WHITELIST) {
+  return whitelist.reduce(function(prefs, branch) {
     Services.prefs.getChildList(branch).forEach(function(name) {
       if (filter(name) && !PREFS_BLACKLIST.some(re => re.test(name))) {
         prefs[name] = getPref(name);
@@ -195,9 +199,14 @@ var dataProviders = {
       osVersion:
         Services.sysinfo.getProperty("name") +
         " " +
-        Services.sysinfo.getProperty("version"),
+        Services.sysinfo.getProperty("version") +
+        " " +
+        Services.sysinfo.getProperty("build"),
       version: AppConstants.MOZ_APP_VERSION_DISPLAY,
       buildID: Services.appinfo.appBuildID,
+      distributionID: Services.prefs
+        .getDefaultBranch("")
+        .getCharPref("distribution.id", ""),
       userAgent: Cc["@mozilla.org/network/protocol;1?name=http"].getService(
         Ci.nsIHttpProtocolHandler
       ).userAgent,
@@ -221,12 +230,21 @@ var dataProviders = {
       );
     } catch (e) {}
 
+    // MacOSX: Check for rosetta status, if it exists
+    try {
+      data.rosetta = Services.sysinfo.getProperty("rosettaStatus");
+    } catch (e) {}
+
     data.numTotalWindows = 0;
+    data.numFissionWindows = 0;
     data.numRemoteWindows = 0;
     for (let { docShell } of Services.wm.getEnumerator("navigator:browser")) {
+      docShell.QueryInterface(Ci.nsILoadContext);
       data.numTotalWindows++;
-      let remote = docShell.QueryInterface(Ci.nsILoadContext).useRemoteTabs;
-      if (remote) {
+      if (docShell.useRemoteSubframes) {
+        data.numFissionWindows++;
+      }
+      if (docShell.useRemoteTabs) {
         data.numRemoteWindows++;
       }
     }
@@ -235,18 +253,10 @@ var dataProviders = {
       data.launcherProcessState = Services.appinfo.launcherProcessState;
     } catch (e) {}
 
-    data.remoteAutoStart = Services.appinfo.browserTabsRemoteAutostart;
+    data.fissionAutoStart = Services.appinfo.fissionAutostart;
+    data.fissionDecisionStatus = Services.appinfo.fissionDecisionStatusString;
 
-    try {
-      let e10sStatus = Cc["@mozilla.org/supports-PRUint64;1"].createInstance(
-        Ci.nsISupportsPRUint64
-      );
-      let appinfo = Services.appinfo.QueryInterface(Ci.nsIObserver);
-      appinfo.observe(e10sStatus, "getE10SBlocked", "");
-      data.autoStartStatus = e10sStatus.data;
-    } catch (e) {
-      data.autoStartStatus = -1;
-    }
+    data.remoteAutoStart = Services.appinfo.browserTabsRemoteAutostart;
 
     if (Services.policies) {
       data.policiesStatus = Services.policies.status;
@@ -275,15 +285,23 @@ var dataProviders = {
     done(data);
   },
 
-  extensions: async function extensions(done) {
-    let extensions = await AddonManager.getAddonsByTypes(["extension"]);
-    extensions = extensions.filter(e => !e.isSystem);
-    extensions.sort(function(a, b) {
+  addons: async function addons(done) {
+    let addons = await AddonManager.getAddonsByTypes([
+      "extension",
+      "locale",
+      "dictionary",
+    ]);
+    addons = addons.filter(e => !e.isSystem);
+    addons.sort(function(a, b) {
       if (a.isActive != b.isActive) {
         return b.isActive ? 1 : -1;
       }
 
-      // In some unfortunate cases addon names can be null.
+      if (a.type != b.type) {
+        return a.type.localeCompare(b.type);
+      }
+
+      // In some unfortunate cases add-on names can be null.
       let aname = a.name || "";
       let bname = b.name || "";
       let lc = aname.localeCompare(bname);
@@ -295,9 +313,9 @@ var dataProviders = {
       }
       return 0;
     });
-    let props = ["name", "version", "isActive", "id"];
+    let props = ["name", "type", "version", "isActive", "id"];
     done(
-      extensions.map(function(ext) {
+      addons.map(function(ext) {
         return props.reduce(function(extData, prop) {
           extData[prop] = ext[prop];
           return extData;
@@ -309,10 +327,6 @@ var dataProviders = {
   securitySoftware: function securitySoftware(done) {
     let data = {};
 
-    let sysInfo = Cc["@mozilla.org/system-info;1"].getService(
-      Ci.nsIPropertyBag2
-    );
-
     const keys = [
       "registeredAntiVirus",
       "registeredAntiSpyware",
@@ -321,7 +335,7 @@ var dataProviders = {
     for (let key of keys) {
       let prop = "";
       try {
-        prop = sysInfo.getProperty(key);
+        prop = Services.sysinfo.getProperty(key);
       } catch (e) {}
 
       data[key] = prop;
@@ -400,6 +414,47 @@ var dataProviders = {
     done(data);
   },
 
+  async experimentalFeatures(done) {
+    if (AppConstants.platform == "android") {
+      done();
+      return;
+    }
+    let gates = await FeatureGate.all();
+    done(
+      gates.map(gate => {
+        return [
+          gate.title,
+          gate.preference,
+          Services.prefs.getBoolPref(gate.preference),
+        ];
+      })
+    );
+  },
+
+  async environmentVariables(done) {
+    let Subprocess;
+    try {
+      // Subprocess is not available in all builds
+      Subprocess = ChromeUtils.import("resource://gre/modules/Subprocess.jsm")
+        .Subprocess;
+    } catch (ex) {
+      done({});
+      return;
+    }
+
+    let environment = Subprocess.getEnvironment();
+    let filteredEnvironment = {};
+    // Limit the environment variables to those that we
+    // know may affect Firefox to reduce leaking PII.
+    let filteredEnvironmentKeys = ["xre_", "moz_", "gdk", "display"];
+    for (let key of Object.keys(environment)) {
+      if (filteredEnvironmentKeys.some(k => key.toLowerCase().startsWith(k))) {
+        filteredEnvironment[key] = environment[key];
+      }
+    }
+    done(filteredEnvironment);
+  },
+
   modifiedPreferences: function modifiedPreferences(done) {
     done(getPrefList(name => Services.prefs.prefHasUserValue(name)));
   },
@@ -412,6 +467,20 @@ var dataProviders = {
           Services.prefs.prefIsLocked(name)
       )
     );
+  },
+
+  printingPreferences: function printingPreferences(done) {
+    let filter = name => Services.prefs.prefHasUserValue(name);
+    let prefs = getPrefList(filter, ["print."]);
+
+    // print_printer is special and is the only pref that is outside of the
+    // "print." branch... Maybe we should change it to print.printer or
+    // something...
+    if (filter("print_printer")) {
+      prefs.print_printer = getPref("print_printer");
+    }
+
+    done(prefs);
   },
 
   graphics: function graphics(done) {
@@ -693,17 +762,6 @@ var dataProviders = {
     done(data);
   },
 
-  javaScript: function javaScript(done) {
-    let data = {};
-    let winEnumer = Services.ww.getWindowEnumerator();
-    if (winEnumer.hasMoreElements()) {
-      data.incrementalGCEnabled = winEnumer
-        .getNext()
-        .windowUtils.isIncrementalGCEnabled();
-    }
-    done(data);
-  },
-
   accessibility: function accessibility(done) {
     let data = {};
     data.isActive = Services.appinfo.accessibilityEnabled;
@@ -771,6 +829,57 @@ var dataProviders = {
         regionalPrefsLocales: osPrefs.regionalPrefsLocales,
       },
     });
+  },
+
+  async thirdPartyModules(done) {
+    if (
+      AppConstants.platform != "win" ||
+      !Services.prefs.getBoolPref("browser.enableAboutThirdParty")
+    ) {
+      done();
+      return;
+    }
+
+    let data = null;
+    try {
+      data = await Services.telemetry.getUntrustedModuleLoadEvents(
+        Services.telemetry.INCLUDE_OLD_LOADEVENTS |
+          Services.telemetry.KEEP_LOADEVENTS_NEW |
+          Services.telemetry.INCLUDE_PRIVATE_FIELDS_IN_LOADEVENTS |
+          Services.telemetry.EXCLUDE_STACKINFO_FROM_LOADEVENTS
+      );
+    } catch (e) {
+      // No error report in case of NS_ERROR_NOT_AVAILABLE
+      // because the method throws it when data is empty.
+      if (
+        !(e instanceof Components.Exception) ||
+        e.result != Cr.NS_ERROR_NOT_AVAILABLE
+      ) {
+        Cu.reportError(e);
+      }
+    }
+
+    if (!data || !data.modules || !data.processes) {
+      done();
+      return;
+    }
+
+    // The original telemetry data structure has an array of modules
+    // and an array of loading events referring to the module array's
+    // item via its index.
+    // To easily display data per module, we put loading events into
+    // a corresponding module object and return the module array.
+    for (const [proc, perProc] of Object.entries(data.processes)) {
+      for (const event of perProc.events) {
+        const module = data.modules[event.moduleIndex];
+        if (!("events" in module)) {
+          module.events = [];
+        }
+        event.processIdAndType = proc;
+        module.events.push(event);
+      }
+    }
+    done(data.modules);
   },
 };
 

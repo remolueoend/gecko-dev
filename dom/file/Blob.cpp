@@ -12,6 +12,7 @@
 #include "mozilla/dom/BodyStream.h"
 #include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "MultipartBlobImpl.h"
 #include "nsIGlobalObject.h"
 #include "nsIInputStream.h"
@@ -20,8 +21,7 @@
 #include "StringBlobImpl.h"
 #include "js/GCAPI.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(Blob)
 
@@ -374,5 +374,4 @@ void Blob::Stream(JSContext* aCx, JS::MutableHandle<JSObject*> aStream,
   aStream.set(holder->GetReadableStreamBody());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

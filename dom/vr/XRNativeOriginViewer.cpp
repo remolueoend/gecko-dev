@@ -5,11 +5,12 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XRNativeOriginViewer.h"
+#include "VRDisplayClient.h"
 
 namespace mozilla {
 namespace dom {
 
-XRNativeOriginViewer::XRNativeOriginViewer(VRDisplayClient* aDisplay)
+XRNativeOriginViewer::XRNativeOriginViewer(gfx::VRDisplayClient* aDisplay)
     : mDisplay(aDisplay) {
   MOZ_ASSERT(aDisplay);
 }
@@ -19,6 +20,13 @@ gfx::PointDouble3D XRNativeOriginViewer::GetPosition() {
   return gfx::PointDouble3D(sensorState.pose.position[0],
                             sensorState.pose.position[1],
                             sensorState.pose.position[2]);
+}
+
+gfx::QuaternionDouble XRNativeOriginViewer::GetOrientation() {
+  const gfx::VRHMDSensorState& sensorState = mDisplay->GetSensorState();
+  return gfx::QuaternionDouble(
+      sensorState.pose.orientation[0], sensorState.pose.orientation[1],
+      sensorState.pose.orientation[2], sensorState.pose.orientation[3]);
 }
 
 }  // namespace dom

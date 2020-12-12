@@ -3,45 +3,67 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import copy
 import contextlib
-import importlib
-import os
 
-from mozperftest.browser import pick_browser
+from mozperftest.test import pick_test
 from mozperftest.system import pick_system
 from mozperftest.metrics import pick_metrics
-from mozperftest.layers import Layers
+from mozperftest.layers import Layers, StopRunError
+from mozperftest.utils import MachLogger
+from mozperftest.hooks import Hooks
+from mozperftest.argparser import FLAVORS
 
 
-SYSTEM, BROWSER, METRICS = 0, 1, 2
+SYSTEM, TEST, METRICS = 0, 1, 2
 
 
-class MachEnvironment:
-    def __init__(self, mach_cmd, flavor="script", **kwargs):
+class MachEnvironment(MachLogger):
+    def __init__(self, mach_cmd, flavor="desktop-browser", hooks=None, **kwargs):
+        MachLogger.__init__(self, mach_cmd)
         self._mach_cmd = mach_cmd
-        self._mach_args = kwargs
+        self._mach_args = dict(
+            [(self._normalize(key), value) for key, value in kwargs.items()]
+        )
         self.layers = []
-        # XXX do something with flavors, etc
-        if flavor != "script":
+        if flavor not in FLAVORS:
             raise NotImplementedError(flavor)
-        for layer in (pick_system, pick_browser, pick_metrics):
+        for layer in (pick_system, pick_test, pick_metrics):
             self.add_layer(layer(self, flavor, mach_cmd))
-        self._load_hooks()
+        if hooks is None:
+            # we just load an empty Hooks instance
+            hooks = Hooks(mach_cmd)
+        self.hooks = hooks
 
     @contextlib.contextmanager
     def frozen(self):
         self.freeze()
         try:
-            yield self
+            # used to trigger __enter__/__exit__
+            with self:
+                yield self
         finally:
             self.unfreeze()
+
+    def _normalize(self, name):
+        if name.startswith("--"):
+            name = name[2:]
+        return name.replace("-", "_")
 
     def set_arg(self, name, value):
         """Sets the argument"""
         # see if we want to restrict to existing keys
-        self._mach_args[name] = value
+        self._mach_args[self._normalize(name)] = value
 
-    def get_arg(self, name, default=None):
-        return self._mach_args.get(name, default)
+    def get_arg(self, name, default=None, layer=None):
+        name = self._normalize(name)
+        marker = object()
+        res = self._mach_args.get(name, marker)
+        if res is marker:
+            # trying with the name prefixed with the layer name
+            if layer is not None and not name.startswith(layer.name):
+                name = "%s_%s" % (layer.name, name)
+                return self._mach_args.get(name, default)
+            return default
+        return res
 
     def get_layer(self, name):
         for layer in self.layers:
@@ -65,31 +87,21 @@ class MachEnvironment:
         self._saved_mach_args = None
 
     def run(self, metadata):
-        for layer in self.layers:
-            metadata = layer(metadata)
+        # run the system and test layers
+        try:
+            with self.layers[SYSTEM] as syslayer, self.layers[TEST] as testlayer:
+                metadata = testlayer(syslayer(metadata))
+
+            # then run the metrics layers
+            with self.layers[METRICS] as metrics:
+                metadata = metrics(metadata)
+        except StopRunError:
+            # ends the cycle but without bubbling up the error
+            pass
         return metadata
 
     def __enter__(self):
-        for layer in self.layers:
-            layer.__enter__()
         return self
 
     def __exit__(self, type, value, traceback):
-        for layer in self.layers:
-            layer.__exit__(type, value, traceback)
-
-    def _load_hooks(self):
-        self._hooks = None
-        hooks = self.get_arg("hooks")
-        if hooks is not None and os.path.exists(hooks):
-            spec = importlib.util.spec_from_file_location("hooks", hooks)
-            hooks = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(hooks)
-            self._hooks = hooks
-
-    def run_hook(self, name, **kw):
-        if self._hooks is None:
-            return
-        if not hasattr(self._hooks, name):
-            return
-        getattr(self._hooks, name)(self, **kw)
+        return

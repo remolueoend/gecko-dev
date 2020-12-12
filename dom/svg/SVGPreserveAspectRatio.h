@@ -4,18 +4,18 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef MOZILLA_CONTENT_SVGPRESERVEASPECTRATIO_H_
-#define MOZILLA_CONTENT_SVGPRESERVEASPECTRATIO_H_
+#ifndef DOM_SVG_SVGPRESERVEASPECTRATIO_H_
+#define DOM_SVG_SVGPRESERVEASPECTRATIO_H_
 
 #include "mozilla/dom/SVGPreserveAspectRatioBinding.h"
 #include "mozilla/HashFunctions.h"  // for HashGeneric
 
 #include "nsWrapperCache.h"
 #include "nsCycleCollectionParticipant.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/SVGElement.h"
 
 namespace mozilla {
+class ErrorResult;
 
 // These constants represent the range of valid enum values for the <align>
 // parameter. They exclude the sentinel _UNKNOWN value.
@@ -81,11 +81,10 @@ class SVGPreserveAspectRatio final {
 
 namespace dom {
 
-class DOMSVGPreserveAspectRatio final : public nsISupports,
-                                        public nsWrapperCache {
+class DOMSVGPreserveAspectRatio final : public nsWrapperCache {
  public:
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMSVGPreserveAspectRatio)
+  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(DOMSVGPreserveAspectRatio)
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(DOMSVGPreserveAspectRatio)
 
   DOMSVGPreserveAspectRatio(SVGAnimatedPreserveAspectRatio* aVal,
                             SVGElement* aSVGElement, bool aIsBaseValue)
@@ -113,4 +112,4 @@ class DOMSVGPreserveAspectRatio final : public nsISupports,
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // MOZILLA_CONTENT_SVGPRESERVEASPECTRATIO_H_
+#endif  // DOM_SVG_SVGPRESERVEASPECTRATIO_H_

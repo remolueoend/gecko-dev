@@ -1,4 +1,6 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,14 +10,45 @@
 
 /* Simple subclasses for things like checkboxes, buttons, etc. */
 
-@interface mozButtonAccessible : mozAccessible {
-}
-- (BOOL)hasPopup;
+@interface mozButtonAccessible : mozAccessible
+
+// override
+- (NSNumber*)moxHasPopup;
+
+// override
+- (NSString*)moxPopupValue;
+
+@end
+
+@interface mozPopupButtonAccessible : mozButtonAccessible
+
+// override
+- (NSString*)moxTitle;
+
+// override
+- (BOOL)moxBlockSelector:(SEL)selector;
+
+// override
+- (NSArray*)moxChildren;
+
+// override
+- (void)stateChanged:(uint64_t)state isEnabled:(BOOL)enabled;
+
 @end
 
 @interface mozCheckboxAccessible : mozButtonAccessible
-// returns one of the constants defined in CheckboxValue
-- (int)isChecked;
+
+// override
+- (id)moxValue;
+
+// override
+- (void)stateChanged:(uint64_t)state isEnabled:(BOOL)enabled;
+
+@end
+
+// Accessible for a radio button
+@interface mozRadioButtonAccessible : mozCheckboxAccessible
+- (id)accessibilityAttributeValue:(NSString*)attribute;
 @end
 
 /**
@@ -23,11 +56,25 @@
  */
 @interface mozPaneAccessible : mozAccessible
 
+// override
+- (NSArray*)moxChildren;
+
 @end
 
 /**
- * Accessible for a slider
+ * Base accessible for an incrementable
  */
-@interface mozSliderAccessible : mozAccessible
+@interface mozIncrementableAccessible : mozAccessible
+
+// override
+- (void)moxPerformIncrement;
+
+// override
+- (void)moxPerformDecrement;
+
+// override
+- (void)handleAccessibleEvent:(uint32_t)eventType;
+
+- (void)changeValueBySteps:(int)factor;
 
 @end

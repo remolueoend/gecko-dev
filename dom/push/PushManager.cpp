@@ -28,6 +28,7 @@
 
 #include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
+#include "nsServiceManagerUtils.h"
 
 namespace mozilla {
 namespace dom {
@@ -44,7 +45,7 @@ nsresult GetPermissionState(nsIPrincipal* aPrincipal,
   }
   uint32_t permission = nsIPermissionManager::UNKNOWN_ACTION;
   nsresult rv = permManager->TestExactPermissionFromPrincipal(
-      aPrincipal, NS_LITERAL_CSTRING("desktop-notification"), &permission);
+      aPrincipal, "desktop-notification"_ns, &permission);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -75,15 +76,15 @@ nsresult GetSubscriptionParams(nsIPushSubscription* aSubscription,
     return rv;
   }
 
-  rv = aSubscription->GetKey(NS_LITERAL_STRING("p256dh"), aRawP256dhKey);
+  rv = aSubscription->GetKey(u"p256dh"_ns, aRawP256dhKey);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-  rv = aSubscription->GetKey(NS_LITERAL_STRING("auth"), aAuthSecret);
+  rv = aSubscription->GetKey(u"auth"_ns, aAuthSecret);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-  rv = aSubscription->GetKey(NS_LITERAL_STRING("appServer"), aAppServerKey);
+  rv = aSubscription->GetKey(u"appServer"_ns, aAppServerKey);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -174,7 +175,9 @@ class GetSubscriptionCallback final : public nsIPushSubscriptionCallback {
         worker, std::move(mProxy), aStatus, endpoint, mScope,
         std::move(rawP256dhKey), std::move(authSecret),
         std::move(appServerKey));
-    MOZ_ALWAYS_TRUE(r->Dispatch());
+    if (!r->Dispatch()) {
+      return NS_ERROR_UNEXPECTED;
+    }
 
     return NS_OK;
   }

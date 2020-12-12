@@ -44,7 +44,7 @@ class XRInputSource final : public nsWrapperCache {
   void GetProfiles(nsTArray<nsString>& aResult);
   Gamepad* GetGamepad();
   void Setup(XRSession* aSession, uint32_t aIndex);
-  void SetGamepadIsConnected(bool aConnected);
+  void SetGamepadIsConnected(bool aConnected, XRSession* aSession);
   void Update(XRSession* aSession);
   int32_t GetIndex();
 
@@ -61,6 +61,8 @@ class XRInputSource final : public nsWrapperCache {
     ActionState_Released = 3
   };
 
+  void CreateGripSpace(XRSession* aSession,
+                       const gfx::VRControllerState& controllerState);
   void DispatchEvent(const nsAString& aEvent, XRSession* aSession);
 
   nsTArray<nsString> mProfiles;

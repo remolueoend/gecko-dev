@@ -8,21 +8,21 @@
 #define nsThreadPool_h__
 
 #include "nsIThreadPool.h"
-#include "nsIThread.h"
 #include "nsIRunnable.h"
 #include "nsCOMArray.h"
 #include "nsCOMPtr.h"
 #include "nsThreadUtils.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/CondVar.h"
 #include "mozilla/EventQueue.h"
 #include "mozilla/Mutex.h"
-#include "mozilla/Monitor.h"
 
-class nsThreadPool final : public nsIThreadPool, public nsIRunnable {
+class nsIThread;
+
+class nsThreadPool final : public mozilla::Runnable, public nsIThreadPool {
  public:
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIEVENTTARGET_FULL
   NS_DECL_NSITHREADPOOL
   NS_DECL_NSIRUNNABLE

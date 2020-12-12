@@ -6,19 +6,19 @@
 
 #include "DecoderDoctorDiagnostics.h"
 
-#include "mozilla/dom/DecoderDoctorNotificationBinding.h"
+#include "VideoUtils.h"
 #include "mozilla/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/dom/DecoderDoctorNotificationBinding.h"
+#include "mozilla/dom/Document.h"
 #include "nsContentUtils.h"
 #include "nsGkAtoms.h"
-#include "mozilla/dom/Document.h"
 #include "nsIObserverService.h"
 #include "nsIScriptError.h"
 #include "nsITimer.h"
 #include "nsPluginHost.h"
 #include "nsPrintfCString.h"
-#include "VideoUtils.h"
 
 #if defined(MOZ_FFMPEG)
 #  include "FFmpegRuntimeLinker.h"
@@ -236,7 +236,8 @@ enum class ReportParam : uint8_t {
 };
 
 struct NotificationAndReportStringId {
-  // Notification type, handled by browser-media.js.
+  // Notification type, handled by DecoderDoctorChild.jsm and
+  // DecoderDoctorParent.jsm.
   dom::DecoderDoctorNotificationType mNotificationType;
   // Console message id. Key in dom/locales/.../chrome/dom/dom.properties.
   const char* mReportStringId;
@@ -364,9 +365,9 @@ static void ReportToConsole(dom::Document* aDocument,
           ? ""
           : NS_ConvertUTF16toUTF8(aParams[0]).get(),
       aParams.Length() < 2 ? "" : ", ...");
-  nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Media"), aDocument,
-      nsContentUtils::eDOM_PROPERTIES, aConsoleStringId, aParams);
+  nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Media"_ns,
+                                  aDocument, nsContentUtils::eDOM_PROPERTIES,
+                                  aConsoleStringId, aParams);
 }
 
 static bool AllowNotification(
@@ -410,13 +411,13 @@ static bool AllowDecodeIssue(const MediaResult& aDecodeIssue,
   return StringListContains(filter, decodeIssueName);
 }
 
-static void ReportAnalysis(
-    dom::Document* aDocument,
-    const NotificationAndReportStringId& aNotification, bool aIsSolved,
-    const nsAString& aFormats = NS_LITERAL_STRING(""),
-    const MediaResult& aDecodeIssue = NS_OK, bool aDecodeIssueIsError = true,
-    const nsACString& aDocURL = NS_LITERAL_CSTRING(""),
-    const nsAString& aResourceURL = NS_LITERAL_STRING("")) {
+static void ReportAnalysis(dom::Document* aDocument,
+                           const NotificationAndReportStringId& aNotification,
+                           bool aIsSolved, const nsAString& aFormats = u""_ns,
+                           const MediaResult& aDecodeIssue = NS_OK,
+                           bool aDecodeIssueIsError = true,
+                           const nsACString& aDocURL = ""_ns,
+                           const nsAString& aResourceURL = u""_ns) {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (!aDocument) {
@@ -478,7 +479,7 @@ static nsString CleanItemForFormatsList(const nsAString& aItem) {
 
 static void AppendToFormatsList(nsAString& aList, const nsAString& aItem) {
   if (!aList.IsEmpty()) {
-    aList += NS_LITERAL_STRING(", ");
+    aList += u", "_ns;
   }
   aList += CleanItemForFormatsList(aItem);
 }
@@ -728,7 +729,7 @@ void DecoderDoctorDocumentWatcher::SynthesizeAnalysis() {
         "DecoderDoctorDocumentWatcher[%p, doc=%p]::SynthesizeAnalysis() - "
         "Decode error: %s",
         this, mDocument, firstDecodeError->Description().get());
-    ReportAnalysis(mDocument, sMediaDecodeError, false, NS_LITERAL_STRING(""),
+    ReportAnalysis(mDocument, sMediaDecodeError, false, u""_ns,
                    *firstDecodeError,
                    true,  // aDecodeIssueIsError=true
                    mDocument->GetDocumentURI()->GetSpecOrDefault(),
@@ -741,7 +742,7 @@ void DecoderDoctorDocumentWatcher::SynthesizeAnalysis() {
         "DecoderDoctorDocumentWatcher[%p, doc=%p]::SynthesizeAnalysis() - "
         "Decode warning: %s",
         this, mDocument, firstDecodeWarning->Description().get());
-    ReportAnalysis(mDocument, sMediaDecodeWarning, false, NS_LITERAL_STRING(""),
+    ReportAnalysis(mDocument, sMediaDecodeWarning, false, u""_ns,
                    *firstDecodeWarning,
                    false,  // aDecodeIssueIsError=false
                    mDocument->GetDocumentURI()->GetSpecOrDefault(),
@@ -877,7 +878,11 @@ void DecoderDoctorDiagnostics::StoreFormatDiagnostics(dom::Document* aDocument,
   }
 
   mFormat = aFormat;
-  mCanPlay = aCanPlay;
+  if (aCanPlay) {
+    mFlags -= Flags::CanPlay;
+  } else {
+    mFlags += Flags::CanPlay;
+  }
 
   // StoreDiagnostics should only be called once, after all data is available,
   // so it is safe to std::move() from this object.
@@ -970,15 +975,13 @@ void DecoderDoctorDiagnostics::StoreEvent(dom::Document* aDocument,
             "DecoderDoctorDocumentWatcher[%p, doc=%p]::AddDiagnostics() - "
             "unable to initialize PulseAudio",
             this, aDocument);
-        ReportAnalysis(aDocument, sCannotInitializePulseAudio, false,
-                       NS_LITERAL_STRING("*"));
+        ReportAnalysis(aDocument, sCannotInitializePulseAudio, false, u"*"_ns);
       } else if (aEvent.mResult == NS_OK) {
         DD_INFO(
             "DecoderDoctorDocumentWatcher[%p, doc=%p]::AddDiagnostics() - now "
             "able to initialize PulseAudio",
             this, aDocument);
-        ReportAnalysis(aDocument, sCannotInitializePulseAudio, true,
-                       NS_LITERAL_STRING("*"));
+        ReportAnalysis(aDocument, sCannotInitializePulseAudio, true, u"*"_ns);
       }
       break;
   }
@@ -1102,20 +1105,20 @@ nsCString DecoderDoctorDiagnostics::GetDescription() const {
     case eFormatSupportCheck:
       s = "format='";
       s += NS_ConvertUTF16toUTF8(mFormat).get();
-      s += mCanPlay ? "', can play" : "', cannot play";
-      if (mVideoNotSupported) {
+      s += mFlags.contains(Flags::CanPlay) ? "', can play" : "', cannot play";
+      if (mFlags.contains(Flags::VideoNotSupported)) {
         s += ", but video format not supported";
       }
-      if (mAudioNotSupported) {
+      if (mFlags.contains(Flags::AudioNotSupported)) {
         s += ", but audio format not supported";
       }
-      if (mWMFFailedToLoad) {
+      if (mFlags.contains(Flags::WMFFailedToLoad)) {
         s += ", Windows platform decoder failed to load";
       }
-      if (mFFmpegFailedToLoad) {
+      if (mFlags.contains(Flags::FFmpegFailedToLoad)) {
         s += ", Linux platform decoder failed to load";
       }
-      if (mGMPPDMFailedToStartup) {
+      if (mFlags.contains(Flags::GMPPDMFailedToStartup)) {
         s += ", GMP PDM failed to startup";
       } else if (!mGMP.IsEmpty()) {
         s += ", Using GMP '";

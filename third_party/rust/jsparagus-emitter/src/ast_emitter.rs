@@ -5,64 +5,77 @@
 use crate::array_emitter::*;
 use crate::block_emitter::BlockEmitter;
 use crate::compilation_info::CompilationInfo;
-use crate::emitter::{EmitError, EmitOptions, EmitResult, InstructionWriter};
+use crate::emitter::{EmitError, EmitOptions, InstructionWriter};
 use crate::emitter_scope::{EmitterScopeStack, NameLocation};
 use crate::expression_emitter::*;
+use crate::function_declaration_emitter::{
+    AnnexBFunctionDeclarationEmitter, LazyFunctionEmitter, LexicalFunctionDeclarationEmitter,
+};
 use crate::object_emitter::*;
-use crate::opcode::Opcode;
 use crate::reference_op_emitter::{
     AssignmentEmitter, CallEmitter, DeclarationEmitter, ElemReferenceEmitter, GetElemEmitter,
     GetNameEmitter, GetPropEmitter, GetSuperElemEmitter, GetSuperPropEmitter, NameReferenceEmitter,
     NewEmitter, PropReferenceEmitter,
 };
-use crate::regexp::RegExpItem;
 use crate::script_emitter::ScriptEmitter;
-use ast::source_atom_set::{CommonSourceAtomSetIndices, SourceAtomSet, SourceAtomSetIndex};
-use ast::source_slice_list::SourceSliceList;
+use ast::source_atom_set::{CommonSourceAtomSetIndices, SourceAtomSetIndex};
 use ast::types::*;
-use scope::data::ScopeDataMap;
+use stencil::opcode::Opcode;
+use stencil::regexp::RegExpItem;
+use stencil::result::EmitResult;
+use stencil::script::ScriptStencil;
 
-use crate::forward_jump_emitter::{ForwardJumpEmitter, JumpKind};
+use crate::control_structures::{
+    BreakEmitter, CForEmitter, ContinueEmitter, ControlStructureStack, DoWhileEmitter,
+    ForwardJumpEmitter, JumpKind, LabelEmitter, WhileEmitter,
+};
 
 /// Emit a program, converting the AST directly to bytecode.
 pub fn emit_program<'alloc>(
     ast: &Program,
     options: &EmitOptions,
-    atoms: SourceAtomSet<'alloc>,
-    slices: SourceSliceList<'alloc>,
-    scope_data_map: ScopeDataMap,
+    mut compilation_info: CompilationInfo<'alloc>,
 ) -> Result<EmitResult<'alloc>, EmitError> {
-    let mut emitter = AstEmitter::new(options, atoms, slices, scope_data_map);
+    let emitter = AstEmitter::new(options, &mut compilation_info);
 
-    match ast {
+    let script = match ast {
         Program::Script(script) => emitter.emit_script(script)?,
         _ => {
             return Err(EmitError::NotImplemented("TODO: modules"));
         }
-    }
+    };
 
-    Ok(emitter.emit.into_emit_result(emitter.compilation_info))
+    compilation_info.scripts.set_top_level(script);
+
+    Ok(EmitResult::new(
+        compilation_info.atoms.into(),
+        compilation_info.slices.into(),
+        compilation_info.scope_data_map.into(),
+        compilation_info.regexps.into(),
+        compilation_info.scripts.into(),
+        compilation_info.script_data_list.into(),
+    ))
 }
 
 pub struct AstEmitter<'alloc, 'opt> {
     pub emit: InstructionWriter,
-    pub options: &'opt EmitOptions,
-    pub compilation_info: CompilationInfo<'alloc>,
     pub scope_stack: EmitterScopeStack,
+    pub options: &'opt EmitOptions,
+    pub compilation_info: &'opt mut CompilationInfo<'alloc>,
+    pub control_stack: ControlStructureStack,
 }
 
 impl<'alloc, 'opt> AstEmitter<'alloc, 'opt> {
     fn new(
         options: &'opt EmitOptions,
-        atoms: SourceAtomSet<'alloc>,
-        slices: SourceSliceList<'alloc>,
-        scope_data_map: ScopeDataMap,
+        compilation_info: &'opt mut CompilationInfo<'alloc>,
     ) -> Self {
         Self {
             emit: InstructionWriter::new(),
-            options,
-            compilation_info: CompilationInfo::new(atoms, slices, scope_data_map),
             scope_stack: EmitterScopeStack::new(),
+            options,
+            compilation_info,
+            control_stack: ControlStructureStack::new(),
         }
     }
 
@@ -70,12 +83,99 @@ impl<'alloc, 'opt> AstEmitter<'alloc, 'opt> {
         self.scope_stack.lookup_name(name)
     }
 
-    fn emit_script(&mut self, ast: &Script) -> Result<(), EmitError> {
+    pub fn lookup_name_in_var(&mut self, name: SourceAtomSetIndex) -> NameLocation {
+        self.scope_stack.lookup_name_in_var(name)
+    }
+
+    fn emit_script(mut self, ast: &Script) -> Result<ScriptStencil, EmitError> {
+        let scope_data_map = &self.compilation_info.scope_data_map;
+        let function_declarations = &self.compilation_info.function_declarations;
+
+        let scope_index = scope_data_map.get_global_index();
+        let scope_data = scope_data_map.get_global_at(scope_index);
+
+        let top_level_functions: Vec<&Function> = scope_data
+            .functions
+            .iter()
+            .map(|key| {
+                *function_declarations
+                    .get(key)
+                    .expect("function should exist")
+            })
+            .collect();
+
         ScriptEmitter {
+            top_level_functions: top_level_functions.iter(),
+            top_level_function: |emitter, fun| emitter.emit_top_level_function_declaration(fun),
             statements: ast.statements.iter(),
             statement: |emitter, statement| emitter.emit_statement(statement),
         }
-        .emit(self)
+        .emit(&mut self)?;
+
+        let script = self.emit.into_stencil(
+            &mut self.compilation_info.script_data_list,
+            self.options.extent.clone(),
+        )?;
+
+        Ok(script)
+    }
+
+    fn emit_top_level_function_declaration(&mut self, fun: &Function) -> Result<(), EmitError> {
+        if fun.is_generator {
+            return Err(EmitError::NotImplemented("TODO: Generator"));
+        }
+        if fun.is_async {
+            return Err(EmitError::NotImplemented("TODO: Async function"));
+        }
+
+        let stencil_index = *self
+            .compilation_info
+            .function_stencil_indices
+            .get(fun)
+            .expect("ScriptStencil should be created");
+
+        // NOTE: GCIndex for the function is implicitly handled by
+        //       global_or_eval_decl_instantiation.
+        LazyFunctionEmitter { stencil_index }.emit(self);
+
+        Ok(())
+    }
+
+    fn emit_non_top_level_function_declaration(&mut self, fun: &Function) -> Result<(), EmitError> {
+        if fun.is_generator {
+            return Err(EmitError::NotImplemented("TODO: Generator"));
+        }
+        if fun.is_async {
+            return Err(EmitError::NotImplemented("TODO: Async function"));
+        }
+
+        let stencil_index = *self
+            .compilation_info
+            .function_stencil_indices
+            .get(fun)
+            .expect("ScriptStencil should be created");
+
+        let is_annex_b = self
+            .compilation_info
+            .function_declaration_properties
+            .is_annex_b(stencil_index);
+
+        let fun_index = LazyFunctionEmitter { stencil_index }.emit(self);
+
+        let name = self
+            .compilation_info
+            .scripts
+            .get(stencil_index)
+            .fun_name()
+            .expect("Function declaration should have name");
+
+        if is_annex_b {
+            AnnexBFunctionDeclarationEmitter { fun_index, name }.emit(self)?;
+        } else {
+            LexicalFunctionDeclarationEmitter { fun_index, name }.emit(self)?;
+        }
+
+        Ok(())
     }
 
     fn emit_statement(&mut self, ast: &Statement) -> Result<(), EmitError> {
@@ -84,24 +184,53 @@ impl<'alloc, 'opt> AstEmitter<'alloc, 'opt> {
                 return Err(EmitError::NotImplemented("TODO: ClassDeclaration"));
             }
             Statement::BlockStatement { block, .. } => {
+                let scope_data_map = &self.compilation_info.scope_data_map;
+                let function_declarations = &self.compilation_info.function_declarations;
+
+                let scope_index = scope_data_map.get_index(block);
+                let scope_data = scope_data_map.get_lexical_at(scope_index);
+
+                let functions: Vec<&Function> = scope_data
+                    .functions
+                    .iter()
+                    .map(|key| {
+                        *function_declarations
+                            .get(key)
+                            .expect("function should exist")
+                    })
+                    .collect();
+
                 BlockEmitter {
                     scope_index: self.compilation_info.scope_data_map.get_index(block),
+                    functions: functions.iter(),
+                    function: |emitter, fun| emitter.emit_non_top_level_function_declaration(fun),
                     statements: block.statements.iter(),
                     statement: |emitter, statement| emitter.emit_statement(statement),
                 }
                 .emit(self)?;
             }
-            Statement::BreakStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: BreakStatement"));
+            Statement::BreakStatement { label, .. } => {
+                BreakEmitter {
+                    label: label.as_ref().map(|x| x.value),
+                }
+                .emit(self);
             }
-            Statement::ContinueStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: ContinueStatement"));
+            Statement::ContinueStatement { label, .. } => {
+                ContinueEmitter {
+                    label: label.as_ref().map(|x| x.value),
+                }
+                .emit(self);
             }
             Statement::DebuggerStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: DebuggerStatement"));
+                self.emit.debugger();
             }
-            Statement::DoWhileStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: DoWhileStatement"));
+            Statement::DoWhileStatement { block, test, .. } => {
+                DoWhileEmitter {
+                    enclosing_emitter_scope_depth: self.scope_stack.current_depth(),
+                    block: |emitter| emitter.emit_statement(block),
+                    test: |emitter| emitter.emit_expression(test),
+                }
+                .emit(self)?;
             }
             Statement::EmptyStatement { .. } => (),
             Statement::ExpressionStatement(ast) => {
@@ -116,14 +245,48 @@ impl<'alloc, 'opt> AstEmitter<'alloc, 'opt> {
             Statement::ForOfStatement { .. } => {
                 return Err(EmitError::NotImplemented("TODO: ForOfStatement"));
             }
-            Statement::ForStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: ForStatement"));
+            Statement::ForStatement {
+                init,
+                test,
+                update,
+                block,
+                ..
+            } => {
+                CForEmitter {
+                    enclosing_emitter_scope_depth: self.scope_stack.current_depth(),
+                    maybe_init: init,
+                    maybe_test: test,
+                    maybe_update: update,
+                    init: |emitter, val| match val {
+                        VariableDeclarationOrExpression::VariableDeclaration(ast) => {
+                            emitter.emit_variable_declaration_statement(ast)
+                        }
+                        VariableDeclarationOrExpression::Expression(expr) => {
+                            emitter.emit_expression(expr)?;
+                            emitter.emit.pop();
+                            Ok(())
+                        }
+                    },
+                    test: |emitter, expr| emitter.emit_expression(expr),
+                    update: |emitter, expr| {
+                        emitter.emit_expression(expr)?;
+                        emitter.emit.pop();
+                        Ok(())
+                    },
+                    block: |emitter| emitter.emit_statement(block),
+                }
+                .emit(self)?;
             }
             Statement::IfStatement(if_statement) => {
                 self.emit_if(if_statement)?;
             }
-            Statement::LabeledStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: LabeledStatement"));
+            Statement::LabelledStatement { label, body, .. } => {
+                LabelEmitter {
+                    enclosing_emitter_scope_depth: self.scope_stack.current_depth(),
+                    name: label.value,
+                    body: |emitter| emitter.emit_statement(body),
+                }
+                .emit(self)?;
             }
             Statement::ReturnStatement { .. } => {
                 return Err(EmitError::NotImplemented("TODO: ReturnStatement"));
@@ -149,15 +312,18 @@ impl<'alloc, 'opt> AstEmitter<'alloc, 'opt> {
             Statement::VariableDeclarationStatement(ast) => {
                 self.emit_variable_declaration_statement(ast)?;
             }
-            Statement::WhileStatement { .. } => {
-                return Err(EmitError::NotImplemented("TODO: WhileStatement"));
+            Statement::WhileStatement { test, block, .. } => {
+                WhileEmitter {
+                    enclosing_emitter_scope_depth: self.scope_stack.current_depth(),
+                    test: |emitter| emitter.emit_expression(test),
+                    block: |emitter| emitter.emit_statement(block),
+                }
+                .emit(self)?;
             }
             Statement::WithStatement { .. } => {
                 return Err(EmitError::NotImplemented("TODO: WithStatement"));
             }
-            Statement::FunctionDeclaration(_) => {
-                return Err(EmitError::NotImplemented("TODO: FunctionDeclaration"));
-            }
+            Statement::FunctionDeclaration(_) => {}
         };
 
         Ok(())
@@ -282,12 +448,13 @@ impl<'alloc, 'opt> AstEmitter<'alloc, 'opt> {
                     sticky: *sticky,
                     unicode: *unicode,
                 };
-                let index = self.emit.get_regexp_gcthing_index(item);
+                let regexp_index = self.compilation_info.regexps.push(item);
+                let index = self.emit.get_regexp_gcthing_index(regexp_index);
                 self.emit.reg_exp(index);
             }
 
             Expression::LiteralStringExpression { value, .. } => {
-                let str_index = self.emit.get_atom_index(*value);
+                let str_index = self.emit.get_atom_gcthing_index(*value);
                 self.emit.string(str_index);
             }
 

@@ -60,13 +60,18 @@ tier_MOZ_AUTOMATION_CHECK = check
 # dependencies between them).
 moz_automation_symbols = \
   MOZ_AUTOMATION_PACKAGE_TESTS \
+  MOZ_AUTOMATION_UPLOAD \
+  $(NULL)
+
+ifneq (,$(COMPILE_ENVIRONMENT)$(MOZ_ARTIFACT_BUILDS))
+moz_automation_symbols += \
   MOZ_AUTOMATION_BUILD_SYMBOLS \
   MOZ_AUTOMATION_UPLOAD_SYMBOLS \
   MOZ_AUTOMATION_PACKAGE \
   MOZ_AUTOMATION_PACKAGE_GENERATED_SOURCES \
-  MOZ_AUTOMATION_UPLOAD \
   MOZ_AUTOMATION_CHECK \
   $(NULL)
+endif
 MOZ_AUTOMATION_TIERS := $(foreach sym,$(moz_automation_symbols),$(if $(filter 1,$($(sym))),$(tier_$(sym))))
 
 # Dependencies between automation build steps
@@ -92,7 +97,7 @@ AUTOMATION_EXTRA_CMDLINE-check = --keep-going
 # However, the target automation/buildsymbols will still be executed in this
 # case because it is a prerequisite of automation/upload.
 define automation_commands
-@+$(PYTHON) $(topsrcdir)/config/run-and-prefix.py $1 $(MAKE) $1 $(AUTOMATION_EXTRA_CMDLINE-$1)
+@+$(PYTHON3) $(topsrcdir)/config/run-and-prefix.py $1 $(MAKE) $1 $(AUTOMATION_EXTRA_CMDLINE-$1)
 $(call BUILDSTATUS,TIER_FINISH $1)
 endef
 

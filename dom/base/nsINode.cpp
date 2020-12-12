@@ -26,13 +26,17 @@
 #include "mozilla/PresShell.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/TextControlElement.h"
 #include "mozilla/TextEditor.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/BindContext.h"
 #include "mozilla/dom/CharacterData.h"
+#include "mozilla/dom/CustomElementRegistry.h"
+#include "mozilla/dom/DebuggerNotificationBinding.h"
 #include "mozilla/dom/DocumentType.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h"
+#include "mozilla/dom/Exceptions.h"
 #include "mozilla/dom/Link.h"
 #include "mozilla/dom/HTMLImageElement.h"
 #include "mozilla/dom/HTMLMediaElement.h"
@@ -86,7 +90,6 @@
 #include "nsRange.h"
 #include "nsString.h"
 #include "nsStyleConsts.h"
-#include "nsSVGUtils.h"
 #include "nsTextNode.h"
 #include "nsUnicharUtils.h"
 #include "nsWindowSizes.h"
@@ -114,6 +117,14 @@
 
 using namespace mozilla;
 using namespace mozilla::dom;
+
+static bool ShouldUseNACScope(const nsINode* aNode) {
+  return aNode->IsInNativeAnonymousSubtree();
+}
+
+static bool ShouldUseUAWidgetScope(const nsINode* aNode) {
+  return aNode->HasBeenInUAWidget();
+}
 
 void* nsINode::operator new(size_t aSize, nsNodeInfoManager* aManager) {
   if (StaticPrefs::dom_arena_allocator_enabled_AtStartup()) {
@@ -388,25 +399,37 @@ bool nsINode::IsSelected(const uint32_t aStartOffset,
   return false;
 }
 
-nsIContent* nsINode::GetTextEditorRootContent(TextEditor** aTextEditor) {
+Element* nsINode::GetAnonymousRootElementOfTextEditor(
+    TextEditor** aTextEditor) {
   if (aTextEditor) {
     *aTextEditor = nullptr;
   }
-  for (auto* element : InclusiveAncestorsOfType<nsGenericHTMLElement>(*this)) {
-    RefPtr<TextEditor> textEditor = element->GetTextEditorInternal();
-    if (!textEditor) {
-      continue;
-    }
-
-    MOZ_ASSERT(!textEditor->AsHTMLEditor(),
-               "If it were an HTML editor, needs to use GetRootElement()");
-    Element* rootElement = textEditor->GetRoot();
-    if (aTextEditor) {
-      textEditor.forget(aTextEditor);
-    }
-    return rootElement;
+  RefPtr<TextControlElement> textControlElement;
+  if (IsInNativeAnonymousSubtree()) {
+    textControlElement = TextControlElement::FromNodeOrNull(
+        GetClosestNativeAnonymousSubtreeRootParent());
+  } else {
+    textControlElement = TextControlElement::FromNode(this);
   }
-  return nullptr;
+  if (!textControlElement) {
+    return nullptr;
+  }
+  RefPtr<TextEditor> textEditor = textControlElement->GetTextEditor();
+  if (!textEditor) {
+    // The found `TextControlElement` may be an input element which is not a
+    // text control element.  In this case, such element must not be in a
+    // native anonymous tree of a `TextEditor` so this node is not in any
+    // `TextEditor`.
+    return nullptr;
+  }
+
+  MOZ_ASSERT(!textEditor->IsHTMLEditor(),
+             "If it were an HTML editor, needs to use GetRootElement()");
+  Element* rootElement = textEditor->GetRoot();
+  if (aTextEditor) {
+    textEditor.forget(aTextEditor);
+  }
+  return rootElement;
 }
 
 nsINode* nsINode::GetRootNode(const GetRootNodeOptions& aOptions) {
@@ -524,8 +547,10 @@ nsIContent* nsINode::GetSelectionRootContent(PresShell* aPresShell) {
 
   if (AsContent()->HasIndependentSelection()) {
     // This node should be a descendant of input/textarea editor.
-    nsIContent* content = GetTextEditorRootContent();
-    if (content) return content;
+    Element* anonymousDivElement = GetAnonymousRootElementOfTextEditor();
+    if (anonymousDivElement) {
+      return anonymousDivElement;
+    }
   }
 
   nsPresContext* presContext = aPresShell->GetPresContext();
@@ -623,9 +648,8 @@ void nsINode::LastRelease() {
   nsINode::nsSlots* slots = GetExistingSlots();
   if (slots) {
     if (!slots->mMutationObservers.IsEmpty()) {
-      NS_OBSERVER_AUTO_ARRAY_NOTIFY_OBSERVERS(slots->mMutationObservers,
-                                              nsIMutationObserver, 1,
-                                              NodeWillBeDestroyed, (this));
+      NS_OBSERVER_ARRAY_NOTIFY_OBSERVERS(slots->mMutationObservers,
+                                         NodeWillBeDestroyed, (this));
     }
 
     delete slots;
@@ -695,14 +719,13 @@ std::ostream& operator<<(std::ostream& aStream, const nsINode& aNode) {
     }
 
     if (!elemDesc.IsEmpty()) {
-      elemDesc = elemDesc + NS_LITERAL_STRING(".");
+      elemDesc = elemDesc + u"."_ns;
     }
 
     elemDesc = elemDesc + localName;
 
     if (!id.IsEmpty()) {
-      elemDesc =
-          elemDesc + NS_LITERAL_STRING("['") + id + NS_LITERAL_STRING("']");
+      elemDesc = elemDesc + u"['"_ns + id + u"']"_ns;
     }
 
     curr = curr->GetParentNode();
@@ -774,7 +797,7 @@ nsINode* nsINode::RemoveChild(nsINode& aOldChild, ErrorResult& aError) {
 
   // Check again, we may not be the child's parent anymore.
   // Can be triggered by dom/base/crashtests/293388-1.html
-  if (aOldChild.AsContent()->IsRootOfAnonymousSubtree() ||
+  if (aOldChild.IsRootOfNativeAnonymousSubtree() ||
       aOldChild.GetParentNode() != this) {
     // aOldChild isn't one of our children.
     aError.ThrowNotFoundError(
@@ -908,7 +931,7 @@ void nsINode::LookupPrefix(const nsAString& aNamespaceURI, nsAString& aPrefix) {
     // Trace up the content parent chain looking for the namespace
     // declaration that defines the aNamespaceURI namespace. Once found,
     // return the prefix (i.e. the attribute localName).
-    for (Element* element : InclusiveAncestorsOfType<Element>(*nsElement)) {
+    for (Element* element : nsElement->InclusiveAncestorsOfType<Element>()) {
       uint32_t attrCount = element->GetAttrCount();
 
       for (uint32_t i = 0; i < attrCount; ++i) {
@@ -1242,6 +1265,12 @@ void nsINode::LookupNamespaceURI(const nsAString& aNamespacePrefix,
                       aNamespacePrefix, aNamespaceURI))) {
     SetDOMStringToNull(aNamespaceURI);
   }
+}
+
+mozilla::Maybe<mozilla::dom::EventCallbackDebuggerNotificationType>
+nsINode::GetDebuggerNotificationType() const {
+  return mozilla::Some(
+      mozilla::dom::EventCallbackDebuggerNotificationType::Node);
 }
 
 bool nsINode::ComputeDefaultWantsUntrusted(ErrorResult& aRv) {
@@ -2025,6 +2054,35 @@ void nsINode::Append(const Sequence<OwningNodeOrString>& aNodes,
   AppendChild(*node, aRv);
 }
 
+// https://dom.spec.whatwg.org/#dom-parentnode-replacechildren
+void nsINode::ReplaceChildren(const Sequence<OwningNodeOrString>& aNodes,
+                              ErrorResult& aRv) {
+  nsCOMPtr<Document> doc = OwnerDoc();
+  nsCOMPtr<nsINode> node = ConvertNodesOrStringsIntoNode(aNodes, doc, aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  EnsurePreInsertionValidity(*node, nullptr, aRv);
+  if (aRv.Failed()) {
+    return;
+  }
+
+  // Needed when used in combination with contenteditable (maybe)
+  mozAutoDocUpdate updateBatch(doc, true);
+
+  nsAutoMutationBatch mb(this, true, false);
+
+  // Replace all with node within this.
+  while (mFirstChild) {
+    RemoveChildNode(mFirstChild, true);
+  }
+  mb.RemovalDone();
+
+  AppendChild(*node, aRv);
+  mb.NodesAdded();
+}
+
 void nsINode::RemoveChildNode(nsIContent* aKid, bool aNotify) {
   // NOTE: This function must not trigger any calls to
   // Document::GetRootElement() calls until *after* it has removed aKid from
@@ -2301,8 +2359,7 @@ void nsINode::EnsurePreInsertionValidity1(ErrorResult& aError) {
 void nsINode::EnsurePreInsertionValidity2(bool aReplace, nsINode& aNewChild,
                                           nsINode* aRefChild,
                                           ErrorResult& aError) {
-  if (aNewChild.IsContent() &&
-      aNewChild.AsContent()->IsRootOfAnonymousSubtree()) {
+  if (aNewChild.IsRootOfNativeAnonymousSubtree()) {
     // This is anonymous content.  Don't allow its insertion
     // anywhere, since it might have UnbindFromTree calls coming
     // its way.
@@ -2748,7 +2805,7 @@ bool nsINode::Contains(const nsINode* aOther) const {
     // document.contains(aOther) returns true if aOther is in the document,
     // but is not in any anonymous subtree.
     // IsInUncomposedDoc() check is done already before this.
-    return !aOther->IsInAnonymousSubtree();
+    return !aOther->IsInNativeAnonymousSubtree();
   }
 
   if (!IsElement() && !IsDocumentFragment()) {
@@ -2806,9 +2863,8 @@ const RawServoSelectorList* nsINode::ParseSelectorList(
   if (list) {
     if (!*list) {
       // Invalid selector.
-      aRv.ThrowSyntaxError(NS_LITERAL_CSTRING("'") +
-                           NS_ConvertUTF16toUTF8(aSelectorString) +
-                           NS_LITERAL_CSTRING("' is not a valid selector"));
+      aRv.ThrowSyntaxError("'"_ns + NS_ConvertUTF16toUTF8(aSelectorString) +
+                           "' is not a valid selector"_ns);
       return nullptr;
     }
 
@@ -2826,8 +2882,8 @@ const RawServoSelectorList* nsINode::ParseSelectorList(
 
   // Now make sure we throw an exception if the selector was invalid.
   if (!ret) {
-    aRv.ThrowSyntaxError(NS_LITERAL_CSTRING("'") + selectorString +
-                         NS_LITERAL_CSTRING("' is not a valid selector"));
+    aRv.ThrowSyntaxError("'"_ns + selectorString +
+                         "' is not a valid selector"_ns);
   }
 
   return ret;
@@ -2946,7 +3002,7 @@ JSObject* nsINode::WrapObject(JSContext* aCx,
   JS::Rooted<JSObject*> obj(aCx, WrapNode(aCx, aGivenProto));
   if (obj && ChromeOnlyAccess()) {
     MOZ_RELEASE_ASSERT(
-        JS::GetNonCCWObjectGlobal(obj) == xpc::UnprivilegedJunkScope() ||
+        xpc::IsUnprivilegedJunkScope(JS::GetNonCCWObjectGlobal(obj)) ||
         xpc::IsInUAWidgetScope(obj) || xpc::AccessCheck::isChrome(obj));
   }
   return obj;
@@ -3148,8 +3204,8 @@ already_AddRefed<nsINode> nsINode::CloneAndAdopt(
       CustomElementData* data = elem->GetCustomElementData();
       if (data && data->mState == CustomElementData::State::eCustom) {
         LifecycleAdoptedCallbackArgs args = {oldDoc, newDoc};
-        nsContentUtils::EnqueueLifecycleCallback(Document::eAdopted, elem,
-                                                 nullptr, &args);
+        nsContentUtils::EnqueueLifecycleCallback(ElementCallbackType::eAdopted,
+                                                 elem, nullptr, &args);
       }
     }
 
@@ -3273,6 +3329,12 @@ already_AddRefed<nsINode> nsINode::CloneAndAdopt(
   if (aDeep && aNode->IsElement()) {
     if (aClone) {
       if (clone->OwnerDoc()->IsStaticDocument()) {
+        // Clone any animations to the node in the static document, including
+        // the current timing. They will need to be paused later after the new
+        // document's pres shell gets initialized.
+        clone->AsElement()->CloneAnimationsFrom(*aNode->AsElement());
+
+        // Clone the Shadow DOM
         ShadowRoot* originalShadowRoot = aNode->AsElement()->GetShadowRoot();
         if (originalShadowRoot) {
           RefPtr<ShadowRoot> newShadowRoot =
@@ -3389,6 +3451,18 @@ DocGroup* nsINode::GetDocGroup() const { return OwnerDoc()->GetDocGroup(); }
 
 nsINode* nsINode::GetFlattenedTreeParentNodeNonInline() const {
   return GetFlattenedTreeParentNode();
+}
+
+ParentObject nsINode::GetParentObject() const {
+  ParentObject p(OwnerDoc());
+  // Note that mReflectionScope is a no-op for chrome, and other places
+  // where we don't check this value.
+  if (ShouldUseNACScope(this)) {
+    p.mReflectionScope = ReflectionScope::NAC;
+  } else if (ShouldUseUAWidgetScope(this)) {
+    p.mReflectionScope = ReflectionScope::UAWidget;
+  }
+  return p;
 }
 
 NS_IMPL_ISUPPORTS(nsNodeWeakReference, nsIWeakReference)

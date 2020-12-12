@@ -18,6 +18,7 @@
 #include "mozilla/dom/PMessagePort.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/StructuredCloneTags.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/dom/WorkerRef.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "mozilla/ipc/BackgroundChild.h"
@@ -41,8 +42,7 @@
 #  undef PostMessage
 #endif
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 void UniqueMessagePortId::ForceClose() {
   if (!mIdentifier.neutered()) {
@@ -156,9 +156,9 @@ class PostMessageRunnable final : public CancelableRunnable {
       return;
     }
 
-    event->InitMessageEvent(nullptr, NS_LITERAL_STRING("message"),
-                            CanBubble::eNo, Cancelable::eNo, value,
-                            EmptyString(), EmptyString(), nullptr, ports);
+    event->InitMessageEvent(nullptr, u"message"_ns, CanBubble::eNo,
+                            Cancelable::eNo, value, u""_ns, u""_ns, nullptr,
+                            ports);
     event->SetTrusted(true);
 
     mPort->DispatchEvent(*event);
@@ -834,22 +834,9 @@ void MessagePort::RemoveDocFromBFCache() {
     return;
   }
 
-  nsPIDOMWindowInner* window = GetOwner();
-  if (!window) {
-    return;
+  if (nsPIDOMWindowInner* window = GetOwner()) {
+    window->RemoveFromBFCacheSync();
   }
-
-  Document* doc = window->GetExtantDoc();
-  if (!doc) {
-    return;
-  }
-
-  nsCOMPtr<nsIBFCacheEntry> bfCacheEntry = doc->GetBFCacheEntry();
-  if (!bfCacheEntry) {
-    return;
-  }
-
-  bfCacheEntry->RemoveFromBFCacheSync();
 }
 
 /* static */
@@ -879,11 +866,10 @@ void MessagePort::DispatchError() {
   init.mCancelable = false;
 
   RefPtr<Event> event =
-      MessageEvent::Constructor(this, NS_LITERAL_STRING("messageerror"), init);
+      MessageEvent::Constructor(this, u"messageerror"_ns, init);
   event->SetTrusted(true);
 
   DispatchEvent(*event);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

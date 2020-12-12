@@ -10,11 +10,11 @@
 #include <bitset>
 #include "nsISupportsUtils.h"
 #include "nsIURI.h"
-#include "nsIHttpChannel.h"
 #include "mozilla/dom/Document.h"
 #include "nsIStreamListener.h"
 #include "nsIChannelEventSink.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
+#include "nsIDOMEventListener.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIHttpHeaderVisitor.h"
 #include "nsIProgressEventSink.h"
@@ -56,10 +56,13 @@ typedef Status __StatusTmp;
 typedef __StatusTmp Status;
 #endif
 
+class nsIHttpChannel;
 class nsIJARChannel;
 class nsILoadGroup;
 
 namespace mozilla {
+class ProfileChunkedBuffer;
+
 namespace dom {
 
 class DOMString;
@@ -154,6 +157,7 @@ class RequestHeaders {
     bool Next();
   };
 
+  bool IsEmpty() const;
   bool Has(const char* aName);
   bool Has(const nsACString& aName);
   void Get(const char* aName, nsACString& aValue);
@@ -163,7 +167,8 @@ class RequestHeaders {
   void MergeOrSet(const char* aName, const nsACString& aValue);
   void MergeOrSet(const nsACString& aName, const nsACString& aValue);
   void Clear();
-  void ApplyToChannel(nsIHttpChannel* aChannel) const;
+  void ApplyToChannel(nsIHttpChannel* aChannel,
+                      bool aStripRequestBodyHeader) const;
   void GetCORSUnsafeHeaders(nsTArray<nsCString>& aArray) const;
 };
 
@@ -209,23 +214,13 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
     ENUM_MAX
   };
 
-  XMLHttpRequestMainThread();
+  explicit XMLHttpRequestMainThread(nsIGlobalObject* aGlobalObject);
 
-  void Construct(nsIPrincipal* aPrincipal, nsIGlobalObject* aGlobalObject,
+  void Construct(nsIPrincipal* aPrincipal,
                  nsICookieJarSettings* aCookieJarSettings, bool aForWorker,
                  nsIURI* aBaseURI = nullptr, nsILoadGroup* aLoadGroup = nullptr,
                  PerformanceStorage* aPerformanceStorage = nullptr,
-                 nsICSPEventListener* aCSPEventListener = nullptr) {
-    MOZ_ASSERT(aPrincipal);
-    mPrincipal = aPrincipal;
-    BindToOwner(aGlobalObject);
-    mBaseURI = aBaseURI;
-    mLoadGroup = aLoadGroup;
-    mCookieJarSettings = aCookieJarSettings;
-    mForWorker = aForWorker;
-    mPerformanceStorage = aPerformanceStorage;
-    mCSPEventListener = aCSPEventListener;
-  }
+                 nsICSPEventListener* aCSPEventListener = nullptr);
 
   void InitParameters(bool aAnon, bool aSystem);
 
@@ -314,7 +309,6 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
 
  public:
   virtual void Send(
-      JSContext* aCx,
       const Nullable<
           DocumentOrBlobOrArrayBufferViewOrArrayBufferOrFormDataOrURLSearchParamsOrUSVString>&
           aData,
@@ -405,7 +399,7 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
 
   void SetOriginStack(UniquePtr<SerializedStackHolder> aOriginStack);
 
-  void SetSource(UniqueProfilerBacktrace aSource);
+  void SetSource(UniquePtr<ProfileChunkedBuffer> aSource);
 
   virtual uint16_t ErrorCode() const override {
     return static_cast<uint16_t>(mErrorLoad);
@@ -465,7 +459,14 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
   // determines if the onreadystatechange listener should be called.
   nsresult ChangeState(uint16_t aState, bool aBroadcast = true);
   already_AddRefed<nsILoadGroup> GetLoadGroup() const;
-  nsIURI* GetBaseURI();
+
+  // Finds a preload for this XHR.  If it is found it's removed from the preload
+  // table of the document and marked as used.  The called doesn't need to do
+  // any more comparative checks.
+  already_AddRefed<PreloaderBase> FindPreload();
+  // If no or unknown mime type is set on the channel this method ensures it's
+  // set to "text/xml".
+  void EnsureChannelContentType();
 
   already_AddRefed<nsIHttpChannel> GetCurrentHttpChannel();
   already_AddRefed<nsIJARChannel> GetCurrentJARChannel();
@@ -561,8 +562,7 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
     NS_DECL_ISUPPORTS
     NS_DECL_NSIHTTPHEADERVISITOR
     nsHeaderVisitor(const XMLHttpRequestMainThread& aXMLHttpRequest,
-                    NotNull<nsIHttpChannel*> aHttpChannel)
-        : mXHR(aXMLHttpRequest), mHttpChannel(aHttpChannel) {}
+                    NotNull<nsIHttpChannel*> aHttpChannel);
     const nsACString& Headers() {
       for (uint32_t i = 0; i < mHeaderList.Length(); i++) {
         HeaderEntry& header = mHeaderList.ElementAt(i);
@@ -576,7 +576,7 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
     }
 
    private:
-    virtual ~nsHeaderVisitor() = default;
+    virtual ~nsHeaderVisitor();
 
     nsTArray<HeaderEntry> mHeaderList;
     nsCString mHeaders;
@@ -754,6 +754,10 @@ class XMLHttpRequestMainThread final : public XMLHttpRequest,
   // processed all the bytes but not the EOF and having
   // processed all the bytes and the EOF.
   bool mEofDecoded;
+
+  // This flag will be set in `Send()` when we successfully reuse a "fetch"
+  // preload to satisfy this XHR.
+  bool mFromPreload = false;
 
   // Our parse-end listener, if we are parsing.
   RefPtr<nsXHRParseEndListener> mParseEndListener;

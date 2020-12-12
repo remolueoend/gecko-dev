@@ -12,18 +12,11 @@ const {
 } = require("devtools/shared/protocol");
 
 types.addDictType("root.listWorkers", {
-  workers: "array:workerTarget",
+  workers: "array:workerDescriptor",
 });
 types.addDictType("root.listServiceWorkerRegistrations", {
   registrations: "array:serviceWorkerRegistration",
 });
-types.addDictType("root.listRemoteFrames", {
-  frames: "array:frameDescriptor",
-});
-types.addPolymorphicType("root.browsingContextDescriptor", [
-  "frameDescriptor",
-  "processDescriptor",
-]);
 
 const rootSpecPrototype = {
   typeName: "root",
@@ -35,11 +28,7 @@ const rootSpecPrototype = {
     },
 
     listTabs: {
-      request: {
-        // Backward compatibility: this is only used for FF75 or older.
-        // The argument can be dropped when FF76 hits the release channel.
-        favicons: Option(0, "boolean"),
-      },
+      request: {},
       response: {
         tabs: RetVal("array:tabDescriptor"),
       },
@@ -97,25 +86,6 @@ const rootSpecPrototype = {
       response: {
         processDescriptor: RetVal("processDescriptor"),
       },
-    },
-
-    listRemoteFrames: {
-      request: {
-        id: Arg(0, "number"),
-      },
-      response: RetVal("root.listRemoteFrames"),
-    },
-
-    getBrowsingContextDescriptor: {
-      request: {
-        id: Arg(0, "number"),
-      },
-      response: RetVal("root.browsingContextDescriptor"),
-    },
-
-    protocolDescription: {
-      request: {},
-      response: RetVal("json"),
     },
 
     requestTypes: {

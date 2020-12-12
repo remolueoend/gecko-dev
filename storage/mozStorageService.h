@@ -57,18 +57,6 @@ class Service : public mozIStorageService,
   NS_DECL_NSIMEMORYREPORTER
 
   /**
-   * Obtains the cached data for the toolkit.storage.synchronous preference.
-   */
-  static int32_t getSynchronousPref();
-
-  /**
-   * Obtains the default page size for this platform. The default value is
-   * specified in the SQLite makefile (SQLITE_DEFAULT_PAGE_SIZE) but it may be
-   * overriden with the PREF_TS_PAGESIZE hidden preference.
-   */
-  static int32_t getDefaultPageSize() { return sDefaultPageSize; }
-
-  /**
    * Returns a boolean value indicating whether or not the given page size is
    * valid (currently understood as a power of 2 between 512 and 65536).
    */
@@ -77,6 +65,8 @@ class Service : public mozIStorageService,
            aPageSize == 4096 || aPageSize == 8192 || aPageSize == 16384 ||
            aPageSize == 32768 || aPageSize == 65536;
   }
+
+  static const int32_t kDefaultPageSize = 32768;
 
   /**
    * Registers the connection with the storage service.  Connections are
@@ -124,7 +114,20 @@ class Service : public mozIStorageService,
    */
   Mutex mMutex;
 
-  sqlite3_vfs* mSqliteVFS;
+  struct AutoVFSRegistration {
+    int Init(UniquePtr<sqlite3_vfs> aVFS);
+    ~AutoVFSRegistration();
+
+   private:
+    UniquePtr<sqlite3_vfs> mVFS;
+  };
+
+  // The order of these members should match the order of Init calls in
+  // initialize(), to ensure that the unregistration takes place in the reverse
+  // order.
+  AutoVFSRegistration mTelemetrySqliteVFS;
+  AutoVFSRegistration mTelemetryExclSqliteVFS;
+  AutoVFSRegistration mObfuscatingSqliteVFS;
 
   /**
    * Protects mConnections.
@@ -166,9 +169,6 @@ class Service : public mozIStorageService,
   nsCOMPtr<nsIMemoryReporter> mStorageSQLiteReporter;
 
   static Service* gService;
-
-  static int32_t sSynchronousPref;
-  static int32_t sDefaultPageSize;
 };
 
 }  // namespace storage

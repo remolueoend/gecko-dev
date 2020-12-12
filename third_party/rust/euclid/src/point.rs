@@ -8,21 +8,21 @@
 // except according to those terms.
 
 use super::UnknownUnit;
-use approxeq::ApproxEq;
-use approxord::{min, max};
-use length::Length;
-use scale::Scale;
-use size::{Size2D, Size3D};
+use crate::approxeq::ApproxEq;
+use crate::approxord::{max, min};
+use crate::length::Length;
+use crate::num::*;
+use crate::scale::Scale;
+use crate::size::{Size2D, Size3D};
+use crate::vector::{vec2, vec3, Vector2D, Vector3D};
+use core::cmp::{Eq, PartialEq};
+use core::fmt;
+use core::hash::Hash;
+use core::marker::PhantomData;
+use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 #[cfg(feature = "mint")]
 use mint;
-use num::*;
-use num_traits::NumCast;
-use vector::{Vector2D, Vector3D, vec2, vec3};
-use core::fmt;
-use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
-use core::marker::PhantomData;
-use core::cmp::{Eq, PartialEq};
-use core::hash::{Hash};
+use num_traits::{Float, NumCast};
 #[cfg(feature = "serde")]
 use serde;
 
@@ -49,22 +49,30 @@ impl<T: Clone, U> Clone for Point2D<T, U> {
 
 #[cfg(feature = "serde")]
 impl<'de, T, U> serde::Deserialize<'de> for Point2D<T, U>
-    where T: serde::Deserialize<'de>
+where
+    T: serde::Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where D: serde::Deserializer<'de>
+    where
+        D: serde::Deserializer<'de>,
     {
         let (x, y) = serde::Deserialize::deserialize(deserializer)?;
-        Ok(Point2D { x, y, _unit: PhantomData })
+        Ok(Point2D {
+            x,
+            y,
+            _unit: PhantomData,
+        })
     }
 }
 
 #[cfg(feature = "serde")]
 impl<T, U> serde::Serialize for Point2D<T, U>
-    where T: serde::Serialize
+where
+    T: serde::Serialize,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: serde::Serializer
+    where
+        S: serde::Serializer,
     {
         (&self.x, &self.y).serialize(serializer)
     }
@@ -73,7 +81,8 @@ impl<T, U> serde::Serialize for Point2D<T, U>
 impl<T, U> Eq for Point2D<T, U> where T: Eq {}
 
 impl<T, U> PartialEq for Point2D<T, U>
-    where T: PartialEq
+where
+    T: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.x == other.x && self.y == other.y
@@ -81,9 +90,10 @@ impl<T, U> PartialEq for Point2D<T, U>
 }
 
 impl<T, U> Hash for Point2D<T, U>
-    where T: Hash
+where
+    T: Hash,
 {
-    fn hash<H: ::core::hash::Hasher>(&self, h: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.x.hash(h);
         self.y.hash(h);
     }
@@ -93,13 +103,7 @@ mint_vec!(Point2D[x, y] = Point2);
 
 impl<T: fmt::Debug, U> fmt::Debug for Point2D<T, U> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({:?},{:?})", self.x, self.y)
-    }
-}
-
-impl<T: fmt::Display, U> fmt::Display for Point2D<T, U> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "({},{})", self.x, self.y)
+        f.debug_tuple("").field(&self.x).field(&self.y).finish()
     }
 }
 
@@ -108,7 +112,6 @@ impl<T: Default, U> Default for Point2D<T, U> {
         Point2D::new(Default::default(), Default::default())
     }
 }
-
 
 impl<T, U> Point2D<T, U> {
     /// Constructor, setting all components to zero.
@@ -155,7 +158,7 @@ impl<T, U> Point2D<T, U> {
 impl<T: Copy, U> Point2D<T, U> {
     /// Create a 3d point from this one, using the specified z value.
     #[inline]
-    pub fn extend(&self, z: T) -> Point3D<T, U> {
+    pub fn extend(self, z: T) -> Point3D<T, U> {
         point3(self.x, self.y, z)
     }
 
@@ -163,7 +166,7 @@ impl<T: Copy, U> Point2D<T, U> {
     ///
     /// Equivalent to subtracting the origin from this point.
     #[inline]
-    pub fn to_vector(&self) -> Vector2D<T, U> {
+    pub fn to_vector(self) -> Vector2D<T, U> {
         Vector2D {
             x: self.x,
             y: self.y,
@@ -184,7 +187,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// assert_eq!(point.yx(), point2(-8, 1));
     /// ```
     #[inline]
-    pub fn yx(&self) -> Self {
+    pub fn yx(self) -> Self {
         point2(self.y, self.x)
     }
 
@@ -202,7 +205,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// assert_eq!(point.y, point.to_untyped().y);
     /// ```
     #[inline]
-    pub fn to_untyped(&self) -> Point2D<T, UnknownUnit> {
+    pub fn to_untyped(self) -> Point2D<T, UnknownUnit> {
         point2(self.x, self.y)
     }
 
@@ -221,7 +224,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// assert_eq!(point.y, point.cast_unit::<Cm>().y);
     /// ```
     #[inline]
-    pub fn cast_unit<V>(&self) -> Point2D<T, V> {
+    pub fn cast_unit<V>(self) -> Point2D<T, V> {
         point2(self.x, self.y)
     }
 
@@ -238,7 +241,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// assert_eq!(point.to_array(), [1, -8]);
     /// ```
     #[inline]
-    pub fn to_array(&self) -> [T; 2] {
+    pub fn to_array(self) -> [T; 2] {
         [self.x, self.y]
     }
 
@@ -255,13 +258,13 @@ impl<T: Copy, U> Point2D<T, U> {
     /// assert_eq!(point.to_tuple(), (1, -8));
     /// ```
     #[inline]
-    pub fn to_tuple(&self) -> (T, T) {
+    pub fn to_tuple(self) -> (T, T) {
         (self.x, self.y)
     }
 
     /// Convert into a 3d point with z-coordinate equals to zero.
     #[inline]
-    pub fn to_3d(&self) -> Point3D<T, U>
+    pub fn to_3d(self) -> Point3D<T, U>
     where
         T: Zero,
     {
@@ -280,7 +283,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn round(&self) -> Self
+    pub fn round(self) -> Self
     where
         T: Round,
     {
@@ -299,7 +302,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn ceil(&self) -> Self
+    pub fn ceil(self) -> Self
     where
         T: Ceil,
     {
@@ -318,7 +321,7 @@ impl<T: Copy, U> Point2D<T, U> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn floor(&self) -> Self
+    pub fn floor(self) -> Self
     where
         T: Floor,
     {
@@ -327,34 +330,28 @@ impl<T: Copy, U> Point2D<T, U> {
 
     /// Linearly interpolate between this point and another point.
     ///
-    /// When `t` is `One::one()`, returned value equals to `other`,
-    /// otherwise equals to `self`.
-    ///
     /// # Example
     ///
     /// ```rust
     /// use euclid::point2;
     /// use euclid::default::Point2D;
     ///
-    /// let first: Point2D<_> = point2(0.0, 10.0);
-    /// let last:  Point2D<_> = point2(8.0, -4.0);
+    /// let from: Point2D<_> = point2(0.0, 10.0);
+    /// let to:  Point2D<_> = point2(8.0, -4.0);
     ///
-    /// assert_eq!(first.lerp(last, -1.0), point2(-8.0,  24.0));
-    /// assert_eq!(first.lerp(last,  0.0), point2( 0.0,  10.0));
-    /// assert_eq!(first.lerp(last,  0.5), point2( 4.0,   3.0));
-    /// assert_eq!(first.lerp(last,  1.0), point2( 8.0,  -4.0));
-    /// assert_eq!(first.lerp(last,  2.0), point2(16.0, -18.0));
+    /// assert_eq!(from.lerp(to, -1.0), point2(-8.0,  24.0));
+    /// assert_eq!(from.lerp(to,  0.0), point2( 0.0,  10.0));
+    /// assert_eq!(from.lerp(to,  0.5), point2( 4.0,   3.0));
+    /// assert_eq!(from.lerp(to,  1.0), point2( 8.0,  -4.0));
+    /// assert_eq!(from.lerp(to,  2.0), point2(16.0, -18.0));
     /// ```
     #[inline]
-    pub fn lerp(&self, other: Self, t: T) -> Self
+    pub fn lerp(self, other: Self, t: T) -> Self
     where
         T: One + Sub<Output = T> + Mul<Output = T> + Add<Output = T>,
     {
         let one_t = T::one() - t;
-        point2(
-            one_t * self.x + t * other.x,
-            one_t * self.y + t * other.y,
-        )
+        point2(one_t * self.x + t * other.x, one_t * self.y + t * other.y)
     }
 }
 
@@ -374,7 +371,7 @@ impl<T: PartialOrd, U> Point2D<T, U> {
     ///
     /// Shortcut for `self.max(start).min(end)`.
     #[inline]
-    pub fn clamp(&self, start: Self, end: Self) -> Self
+    pub fn clamp(self, start: Self, end: Self) -> Self
     where
         T: Copy,
     {
@@ -389,7 +386,7 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
     /// as one would expect from a simple cast, but this behavior does not always make sense
     /// geometrically. Consider using `round()`, `ceil()` or `floor()` before casting.
     #[inline]
-    pub fn cast<NewT: NumCast>(&self) -> Point2D<NewT, U> {
+    pub fn cast<NewT: NumCast>(self) -> Point2D<NewT, U> {
         self.try_cast().unwrap()
     }
 
@@ -398,7 +395,7 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
     /// When casting from floating point to integer coordinates, the decimals are truncated
     /// as one would expect from a simple cast, but this behavior does not always make sense
     /// geometrically. Consider using `round()`, `ceil()` or `floor()` before casting.
-    pub fn try_cast<NewT: NumCast>(&self) -> Option<Point2D<NewT, U>> {
+    pub fn try_cast<NewT: NumCast>(self) -> Option<Point2D<NewT, U>> {
         match (NumCast::from(self.x), NumCast::from(self.y)) {
             (Some(x), Some(y)) => Some(point2(x, y)),
             _ => None,
@@ -409,13 +406,13 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
 
     /// Cast into an `f32` point.
     #[inline]
-    pub fn to_f32(&self) -> Point2D<f32, U> {
+    pub fn to_f32(self) -> Point2D<f32, U> {
         self.cast()
     }
 
     /// Cast into an `f64` point.
     #[inline]
-    pub fn to_f64(&self) -> Point2D<f64, U> {
+    pub fn to_f64(self) -> Point2D<f64, U> {
         self.cast()
     }
 
@@ -425,7 +422,7 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_usize(&self) -> Point2D<usize, U> {
+    pub fn to_usize(self) -> Point2D<usize, U> {
         self.cast()
     }
 
@@ -435,7 +432,7 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_u32(&self) -> Point2D<u32, U> {
+    pub fn to_u32(self) -> Point2D<u32, U> {
         self.cast()
     }
 
@@ -445,7 +442,7 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_i32(&self) -> Point2D<i32, U> {
+    pub fn to_i32(self) -> Point2D<i32, U> {
         self.cast()
     }
 
@@ -455,18 +452,24 @@ impl<T: NumCast + Copy, U> Point2D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_i64(&self) -> Point2D<i64, U> {
+    pub fn to_i64(self) -> Point2D<i64, U> {
         self.cast()
     }
 }
 
 impl<T: Copy + Add<T, Output = T>, U> Point2D<T, U> {
     #[inline]
-    pub fn add_size(&self, other: &Size2D<T, U>) -> Self {
+    pub fn add_size(self, other: &Size2D<T, U>) -> Self {
         point2(self.x + other.width, self.y + other.height)
     }
 }
 
+impl<T: Float + Sub<T, Output = T>, U> Point2D<T, U> {
+    #[inline]
+    pub fn distance_to(self, other: Self) -> T {
+        (self - other).length()
+    }
+}
 
 impl<T: Neg, U> Neg for Point2D<T, U> {
     type Output = Point2D<T::Output, U>;
@@ -476,7 +479,6 @@ impl<T: Neg, U> Neg for Point2D<T, U> {
         point2(-self.x, -self.y)
     }
 }
-
 
 impl<T: Add, U> Add<Size2D<T, U>> for Point2D<T, U> {
     type Output = Point2D<T::Output, U>;
@@ -510,7 +512,6 @@ impl<T: Copy + Add<T, Output = T>, U> AddAssign<Vector2D<T, U>> for Point2D<T, U
         *self = *self + other
     }
 }
-
 
 impl<T: Sub, U> Sub for Point2D<T, U> {
     type Output = Vector2D<T::Output, U>;
@@ -554,13 +555,12 @@ impl<T: Copy + Sub<T, Output = T>, U> SubAssign<Vector2D<T, U>> for Point2D<T, U
     }
 }
 
-
-impl<T: Clone + Mul, U> Mul<T> for Point2D<T, U> {
+impl<T: Copy + Mul, U> Mul<T> for Point2D<T, U> {
     type Output = Point2D<T::Output, U>;
 
     #[inline]
     fn mul(self, scale: T) -> Self::Output {
-        point2(self.x * scale.clone(), self.y * scale)
+        point2(self.x * scale, self.y * scale)
     }
 }
 
@@ -571,30 +571,29 @@ impl<T: Copy + Mul<T, Output = T>, U> MulAssign<T> for Point2D<T, U> {
     }
 }
 
-impl<T: Clone + Mul, U1, U2> Mul<Scale<T, U1, U2>> for Point2D<T, U1> {
+impl<T: Copy + Mul, U1, U2> Mul<Scale<T, U1, U2>> for Point2D<T, U1> {
     type Output = Point2D<T::Output, U2>;
 
     #[inline]
     fn mul(self, scale: Scale<T, U1, U2>) -> Self::Output {
-        point2(self.x * scale.0.clone(), self.y * scale.0)
+        point2(self.x * scale.0, self.y * scale.0)
     }
 }
 
-impl<T: Clone + MulAssign, U> MulAssign<Scale<T, U, U>> for Point2D<T, U> {
+impl<T: Copy + MulAssign, U> MulAssign<Scale<T, U, U>> for Point2D<T, U> {
     #[inline]
     fn mul_assign(&mut self, scale: Scale<T, U, U>) {
-        self.x *= scale.0.clone();
+        self.x *= scale.0;
         self.y *= scale.0;
     }
 }
 
-
-impl<T: Clone + Div, U> Div<T> for Point2D<T, U> {
+impl<T: Copy + Div, U> Div<T> for Point2D<T, U> {
     type Output = Point2D<T::Output, U>;
 
     #[inline]
     fn div(self, scale: T) -> Self::Output {
-        point2(self.x / scale.clone(), self.y / scale)
+        point2(self.x / scale, self.y / scale)
     }
 }
 
@@ -605,23 +604,22 @@ impl<T: Copy + Div<T, Output = T>, U> DivAssign<T> for Point2D<T, U> {
     }
 }
 
-impl<T: Clone + Div, U1, U2> Div<Scale<T, U1, U2>> for Point2D<T, U2> {
+impl<T: Copy + Div, U1, U2> Div<Scale<T, U1, U2>> for Point2D<T, U2> {
     type Output = Point2D<T::Output, U1>;
 
     #[inline]
     fn div(self, scale: Scale<T, U1, U2>) -> Self::Output {
-        point2(self.x / scale.0.clone(), self.y / scale.0)
+        point2(self.x / scale.0, self.y / scale.0)
     }
 }
 
-impl<T: Clone + DivAssign, U> DivAssign<Scale<T, U, U>> for Point2D<T, U> {
+impl<T: Copy + DivAssign, U> DivAssign<Scale<T, U, U>> for Point2D<T, U> {
     #[inline]
     fn div_assign(&mut self, scale: Scale<T, U, U>) {
-        self.x /= scale.0.clone();
+        self.x /= scale.0;
         self.y /= scale.0;
     }
 }
-
 
 impl<T: Zero, U> Zero for Point2D<T, U> {
     #[inline]
@@ -634,7 +632,7 @@ impl<T: Round, U> Round for Point2D<T, U> {
     /// See [Point2D::round()](#method.round)
     #[inline]
     fn round(self) -> Self {
-        (&self).round()
+        self.round()
     }
 }
 
@@ -642,7 +640,7 @@ impl<T: Ceil, U> Ceil for Point2D<T, U> {
     /// See [Point2D::ceil()](#method.ceil)
     #[inline]
     fn ceil(self) -> Self {
-        (&self).ceil()
+        self.ceil()
     }
 }
 
@@ -650,7 +648,7 @@ impl<T: Floor, U> Floor for Point2D<T, U> {
     /// See [Point2D::floor()](#method.floor)
     #[inline]
     fn floor(self) -> Self {
-        (&self).floor()
+        self.floor()
     }
 }
 
@@ -665,7 +663,6 @@ impl<T: ApproxEq<T>, U> ApproxEq<Point2D<T, U>> for Point2D<T, U> {
         self.x.approx_eq_eps(&other.x, &eps.x) && self.y.approx_eq_eps(&other.y, &eps.y)
     }
 }
-
 
 impl<T, U> Into<[T; 2]> for Point2D<T, U> {
     fn into(self) -> [T; 2] {
@@ -690,8 +687,6 @@ impl<T, U> From<(T, T)> for Point2D<T, U> {
         point2(tuple.0, tuple.1)
     }
 }
-
-
 
 /// A 3d Point tagged with a unit.
 #[repr(C)]
@@ -720,22 +715,31 @@ impl<T: Clone, U> Clone for Point3D<T, U> {
 
 #[cfg(feature = "serde")]
 impl<'de, T, U> serde::Deserialize<'de> for Point3D<T, U>
-    where T: serde::Deserialize<'de>
+where
+    T: serde::Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where D: serde::Deserializer<'de>
+    where
+        D: serde::Deserializer<'de>,
     {
         let (x, y, z) = serde::Deserialize::deserialize(deserializer)?;
-        Ok(Point3D { x, y, z, _unit: PhantomData })
+        Ok(Point3D {
+            x,
+            y,
+            z,
+            _unit: PhantomData,
+        })
     }
 }
 
 #[cfg(feature = "serde")]
 impl<T, U> serde::Serialize for Point3D<T, U>
-    where T: serde::Serialize
+where
+    T: serde::Serialize,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where S: serde::Serializer
+    where
+        S: serde::Serializer,
     {
         (&self.x, &self.y, &self.z).serialize(serializer)
     }
@@ -744,7 +748,8 @@ impl<T, U> serde::Serialize for Point3D<T, U>
 impl<T, U> Eq for Point3D<T, U> where T: Eq {}
 
 impl<T, U> PartialEq for Point3D<T, U>
-    where T: PartialEq
+where
+    T: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.x == other.x && self.y == other.y && self.z == other.z
@@ -752,9 +757,10 @@ impl<T, U> PartialEq for Point3D<T, U>
 }
 
 impl<T, U> Hash for Point3D<T, U>
-    where T: Hash
+where
+    T: Hash,
 {
-    fn hash<H: ::core::hash::Hasher>(&self, h: &mut H) {
+    fn hash<H: core::hash::Hasher>(&self, h: &mut H) {
         self.x.hash(h);
         self.y.hash(h);
         self.z.hash(h);
@@ -763,13 +769,11 @@ impl<T, U> Hash for Point3D<T, U>
 
 impl<T: fmt::Debug, U> fmt::Debug for Point3D<T, U> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({:?},{:?},{:?})", self.x, self.y, self.z)
-    }
-}
-
-impl<T: fmt::Display, U> fmt::Display for Point3D<T, U> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({},{},{})", self.x, self.y, self.z)
+        f.debug_tuple("")
+            .field(&self.x)
+            .field(&self.y)
+            .field(&self.z)
+            .finish()
     }
 }
 
@@ -778,7 +782,6 @@ impl<T: Default, U> Default for Point3D<T, U> {
         Point3D::new(Default::default(), Default::default(), Default::default())
     }
 }
-
 
 impl<T, U> Point3D<T, U> {
     /// Constructor, setting all components to zero.
@@ -828,7 +831,7 @@ impl<T: Copy, U> Point3D<T, U> {
     ///
     /// Equivalent to subtracting the origin to this point.
     #[inline]
-    pub fn to_vector(&self) -> Vector3D<T, U> {
+    pub fn to_vector(self) -> Vector3D<T, U> {
         Vector3D {
             x: self.x,
             y: self.y,
@@ -839,19 +842,19 @@ impl<T: Copy, U> Point3D<T, U> {
 
     /// Returns a 2d point using this point's x and y coordinates
     #[inline]
-    pub fn xy(&self) -> Point2D<T, U> {
+    pub fn xy(self) -> Point2D<T, U> {
         point2(self.x, self.y)
     }
 
     /// Returns a 2d point using this point's x and z coordinates
     #[inline]
-    pub fn xz(&self) -> Point2D<T, U> {
+    pub fn xz(self) -> Point2D<T, U> {
         point2(self.x, self.z)
     }
 
     /// Returns a 2d point using this point's x and z coordinates
     #[inline]
-    pub fn yz(&self) -> Point2D<T, U> {
+    pub fn yz(self) -> Point2D<T, U> {
         point2(self.y, self.z)
     }
 
@@ -868,12 +871,12 @@ impl<T: Copy, U> Point3D<T, U> {
     /// assert_eq!(point.to_array(), [1, -8, 0]);
     /// ```
     #[inline]
-    pub fn to_array(&self) -> [T; 3] {
+    pub fn to_array(self) -> [T; 3] {
         [self.x, self.y, self.z]
     }
 
     #[inline]
-    pub fn to_array_4d(&self) -> [T; 4]
+    pub fn to_array_4d(self) -> [T; 4]
     where
         T: One,
     {
@@ -893,12 +896,12 @@ impl<T: Copy, U> Point3D<T, U> {
     /// assert_eq!(point.to_tuple(), (1, -8, 0));
     /// ```
     #[inline]
-    pub fn to_tuple(&self) -> (T, T, T) {
+    pub fn to_tuple(self) -> (T, T, T) {
         (self.x, self.y, self.z)
     }
 
     #[inline]
-    pub fn to_tuple_4d(&self) -> (T, T, T, T)
+    pub fn to_tuple_4d(self) -> (T, T, T, T)
     where
         T: One,
     {
@@ -920,7 +923,7 @@ impl<T: Copy, U> Point3D<T, U> {
     /// assert_eq!(point.z, point.to_untyped().z);
     /// ```
     #[inline]
-    pub fn to_untyped(&self) -> Point3D<T, UnknownUnit> {
+    pub fn to_untyped(self) -> Point3D<T, UnknownUnit> {
         point3(self.x, self.y, self.z)
     }
 
@@ -940,13 +943,13 @@ impl<T: Copy, U> Point3D<T, U> {
     /// assert_eq!(point.z, point.cast_unit::<Cm>().z);
     /// ```
     #[inline]
-    pub fn cast_unit<V>(&self) -> Point3D<T, V> {
+    pub fn cast_unit<V>(self) -> Point3D<T, V> {
         point3(self.x, self.y, self.z)
     }
 
     /// Convert into a 2d point.
     #[inline]
-    pub fn to_2d(&self) -> Point2D<T, U> {
+    pub fn to_2d(self) -> Point2D<T, U> {
         self.xy()
     }
 
@@ -962,7 +965,7 @@ impl<T: Copy, U> Point3D<T, U> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn round(&self) -> Self
+    pub fn round(self) -> Self
     where
         T: Round,
     {
@@ -981,7 +984,7 @@ impl<T: Copy, U> Point3D<T, U> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn ceil(&self) -> Self
+    pub fn ceil(self) -> Self
     where
         T: Ceil,
     {
@@ -1000,7 +1003,7 @@ impl<T: Copy, U> Point3D<T, U> {
     /// ```
     #[inline]
     #[must_use]
-    pub fn floor(&self) -> Self
+    pub fn floor(self) -> Self
     where
         T: Floor,
     {
@@ -1009,26 +1012,23 @@ impl<T: Copy, U> Point3D<T, U> {
 
     /// Linearly interpolate between this point and another point.
     ///
-    /// When `t` is `One::one()`, returned value equals to `other`,
-    /// otherwise equals to `self`.
-    ///
     /// # Example
     ///
     /// ```rust
     /// use euclid::point3;
     /// use euclid::default::Point3D;
     ///
-    /// let first: Point3D<_> = point3(0.0, 10.0, -1.0);
-    /// let last:  Point3D<_> = point3(8.0, -4.0,  0.0);
+    /// let from: Point3D<_> = point3(0.0, 10.0, -1.0);
+    /// let to:  Point3D<_> = point3(8.0, -4.0,  0.0);
     ///
-    /// assert_eq!(first.lerp(last, -1.0), point3(-8.0,  24.0, -2.0));
-    /// assert_eq!(first.lerp(last,  0.0), point3( 0.0,  10.0, -1.0));
-    /// assert_eq!(first.lerp(last,  0.5), point3( 4.0,   3.0, -0.5));
-    /// assert_eq!(first.lerp(last,  1.0), point3( 8.0,  -4.0,  0.0));
-    /// assert_eq!(first.lerp(last,  2.0), point3(16.0, -18.0,  1.0));
+    /// assert_eq!(from.lerp(to, -1.0), point3(-8.0,  24.0, -2.0));
+    /// assert_eq!(from.lerp(to,  0.0), point3( 0.0,  10.0, -1.0));
+    /// assert_eq!(from.lerp(to,  0.5), point3( 4.0,   3.0, -0.5));
+    /// assert_eq!(from.lerp(to,  1.0), point3( 8.0,  -4.0,  0.0));
+    /// assert_eq!(from.lerp(to,  2.0), point3(16.0, -18.0,  1.0));
     /// ```
     #[inline]
-    pub fn lerp(&self, other: Self, t: T) -> Self
+    pub fn lerp(self, other: Self, t: T) -> Self
     where
         T: One + Sub<Output = T> + Mul<Output = T> + Add<Output = T>,
     {
@@ -1065,7 +1065,7 @@ impl<T: PartialOrd, U> Point3D<T, U> {
     ///
     /// Shortcut for `self.max(start).min(end)`.
     #[inline]
-    pub fn clamp(&self, start: Self, end: Self) -> Self
+    pub fn clamp(self, start: Self, end: Self) -> Self
     where
         T: Copy,
     {
@@ -1080,7 +1080,7 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
     /// as one would expect from a simple cast, but this behavior does not always make sense
     /// geometrically. Consider using `round()`, `ceil()` or `floor()` before casting.
     #[inline]
-    pub fn cast<NewT: NumCast>(&self) -> Point3D<NewT, U> {
+    pub fn cast<NewT: NumCast>(self) -> Point3D<NewT, U> {
         self.try_cast().unwrap()
     }
 
@@ -1089,7 +1089,7 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
     /// When casting from floating point to integer coordinates, the decimals are truncated
     /// as one would expect from a simple cast, but this behavior does not always make sense
     /// geometrically. Consider using `round()`, `ceil()` or `floor()` before casting.
-    pub fn try_cast<NewT: NumCast>(&self) -> Option<Point3D<NewT, U>> {
+    pub fn try_cast<NewT: NumCast>(self) -> Option<Point3D<NewT, U>> {
         match (
             NumCast::from(self.x),
             NumCast::from(self.y),
@@ -1104,13 +1104,13 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
 
     /// Cast into an `f32` point.
     #[inline]
-    pub fn to_f32(&self) -> Point3D<f32, U> {
+    pub fn to_f32(self) -> Point3D<f32, U> {
         self.cast()
     }
 
     /// Cast into an `f64` point.
     #[inline]
-    pub fn to_f64(&self) -> Point3D<f64, U> {
+    pub fn to_f64(self) -> Point3D<f64, U> {
         self.cast()
     }
 
@@ -1120,7 +1120,7 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_usize(&self) -> Point3D<usize, U> {
+    pub fn to_usize(self) -> Point3D<usize, U> {
         self.cast()
     }
 
@@ -1130,7 +1130,7 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_u32(&self) -> Point3D<u32, U> {
+    pub fn to_u32(self) -> Point3D<u32, U> {
         self.cast()
     }
 
@@ -1140,7 +1140,7 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_i32(&self) -> Point3D<i32, U> {
+    pub fn to_i32(self) -> Point3D<i32, U> {
         self.cast()
     }
 
@@ -1150,18 +1150,28 @@ impl<T: NumCast + Copy, U> Point3D<T, U> {
     /// to `round()`, `ceil()` or `floor()` before the cast in order to obtain
     /// the desired conversion behavior.
     #[inline]
-    pub fn to_i64(&self) -> Point3D<i64, U> {
+    pub fn to_i64(self) -> Point3D<i64, U> {
         self.cast()
     }
 }
 
 impl<T: Copy + Add<T, Output = T>, U> Point3D<T, U> {
     #[inline]
-    pub fn add_size(&self, other: &Size3D<T, U>) -> Self {
-        point3(self.x + other.width, self.y + other.height, self.z + other.depth)
+    pub fn add_size(self, other: Size3D<T, U>) -> Self {
+        point3(
+            self.x + other.width,
+            self.y + other.height,
+            self.z + other.depth,
+        )
     }
 }
 
+impl<T: Float + Sub<T, Output = T>, U> Point3D<T, U> {
+    #[inline]
+    pub fn distance_to(self, other: Self) -> T {
+        (self - other).length()
+    }
+}
 
 impl<T: Neg, U> Neg for Point3D<T, U> {
     type Output = Point3D<T::Output, U>;
@@ -1172,13 +1182,16 @@ impl<T: Neg, U> Neg for Point3D<T, U> {
     }
 }
 
-
 impl<T: Add, U> Add<Size3D<T, U>> for Point3D<T, U> {
     type Output = Point3D<T::Output, U>;
 
     #[inline]
     fn add(self, other: Size3D<T, U>) -> Self::Output {
-        point3(self.x + other.width, self.y + other.height, self.z + other.depth)
+        point3(
+            self.x + other.width,
+            self.y + other.height,
+            self.z + other.depth,
+        )
     }
 }
 
@@ -1207,7 +1220,6 @@ impl<T: Copy + Add<T, Output = T>, U> AddAssign<Vector3D<T, U>> for Point3D<T, U
     }
 }
 
-
 impl<T: Sub, U> Sub for Point3D<T, U> {
     type Output = Vector3D<T::Output, U>;
 
@@ -1222,7 +1234,11 @@ impl<T: Sub, U> Sub<Size3D<T, U>> for Point3D<T, U> {
 
     #[inline]
     fn sub(self, other: Size3D<T, U>) -> Self::Output {
-        point3(self.x - other.width, self.y - other.height, self.z - other.depth)
+        point3(
+            self.x - other.width,
+            self.y - other.height,
+            self.z - other.depth,
+        )
     }
 }
 
@@ -1251,92 +1267,89 @@ impl<T: Copy + Sub<T, Output = T>, U> SubAssign<Vector3D<T, U>> for Point3D<T, U
     }
 }
 
-
-impl<T: Clone + Mul, U> Mul<T> for Point3D<T, U> {
+impl<T: Copy + Mul, U> Mul<T> for Point3D<T, U> {
     type Output = Point3D<T::Output, U>;
 
     #[inline]
     fn mul(self, scale: T) -> Self::Output {
         point3(
-            self.x * scale.clone(),
-            self.y * scale.clone(),
-            self.z * scale
+            self.x * scale,
+            self.y * scale,
+            self.z * scale,
         )
     }
 }
 
-impl<T: Clone + MulAssign, U> MulAssign<T> for Point3D<T, U> {
+impl<T: Copy + MulAssign, U> MulAssign<T> for Point3D<T, U> {
     #[inline]
     fn mul_assign(&mut self, scale: T) {
-        self.x *= scale.clone();
-        self.y *= scale.clone();
+        self.x *= scale;
+        self.y *= scale;
         self.z *= scale;
     }
 }
 
-impl<T: Clone + Mul, U1, U2> Mul<Scale<T, U1, U2>> for Point3D<T, U1> {
+impl<T: Copy + Mul, U1, U2> Mul<Scale<T, U1, U2>> for Point3D<T, U1> {
     type Output = Point3D<T::Output, U2>;
 
     #[inline]
     fn mul(self, scale: Scale<T, U1, U2>) -> Self::Output {
         point3(
-            self.x * scale.0.clone(),
-            self.y * scale.0.clone(),
-            self.z * scale.0
+            self.x * scale.0,
+            self.y * scale.0,
+            self.z * scale.0,
         )
     }
 }
 
-impl<T: Clone + MulAssign, U> MulAssign<Scale<T, U, U>> for Point3D<T, U> {
+impl<T: Copy + MulAssign, U> MulAssign<Scale<T, U, U>> for Point3D<T, U> {
     #[inline]
     fn mul_assign(&mut self, scale: Scale<T, U, U>) {
         *self *= scale.0;
     }
 }
 
-
-impl<T: Clone + Div, U> Div<T> for Point3D<T, U> {
+impl<T: Copy + Div, U> Div<T> for Point3D<T, U> {
     type Output = Point3D<T::Output, U>;
 
     #[inline]
     fn div(self, scale: T) -> Self::Output {
         point3(
-            self.x / scale.clone(),
-            self.y / scale.clone(),
-            self.z / scale
+            self.x / scale,
+            self.y / scale,
+            self.z / scale,
         )
     }
 }
 
-impl<T: Clone + DivAssign, U> DivAssign<T> for Point3D<T, U> {
+impl<T: Copy + DivAssign, U> DivAssign<T> for Point3D<T, U> {
     #[inline]
     fn div_assign(&mut self, scale: T) {
-        self.x /= scale.clone();
-        self.y /= scale.clone();
+        self.x /= scale;
+        self.y /= scale;
         self.z /= scale;
     }
 }
 
-impl<T: Clone + Div, U1, U2> Div<Scale<T, U1, U2>> for Point3D<T, U2> {
+impl<T: Copy + Div, U1, U2> Div<Scale<T, U1, U2>> for Point3D<T, U2> {
     type Output = Point3D<T::Output, U1>;
 
     #[inline]
     fn div(self, scale: Scale<T, U1, U2>) -> Self::Output {
         point3(
-            self.x / scale.0.clone(),
-            self.y / scale.0.clone(),
-            self.z / scale.0
+            self.x / scale.0,
+            self.y / scale.0,
+            self.z / scale.0,
         )
     }
 }
 
-impl<T: Clone + DivAssign, U> DivAssign<Scale<T, U, U>> for Point3D<T, U> {
+impl<T: Copy + DivAssign, U> DivAssign<Scale<T, U, U>> for Point3D<T, U> {
     #[inline]
     fn div_assign(&mut self, scale: Scale<T, U, U>) {
         *self /= scale.0;
     }
 }
-
 
 impl<T: Zero, U> Zero for Point3D<T, U> {
     #[inline]
@@ -1349,7 +1362,7 @@ impl<T: Round, U> Round for Point3D<T, U> {
     /// See [Point3D::round()](#method.round)
     #[inline]
     fn round(self) -> Self {
-        (&self).round()
+        self.round()
     }
 }
 
@@ -1357,7 +1370,7 @@ impl<T: Ceil, U> Ceil for Point3D<T, U> {
     /// See [Point3D::ceil()](#method.ceil)
     #[inline]
     fn ceil(self) -> Self {
-        (&self).ceil()
+        self.ceil()
     }
 }
 
@@ -1365,7 +1378,7 @@ impl<T: Floor, U> Floor for Point3D<T, U> {
     /// See [Point3D::floor()](#method.floor)
     #[inline]
     fn floor(self) -> Self {
-        (&self).floor()
+        self.floor()
     }
 }
 
@@ -1381,11 +1394,11 @@ impl<T: ApproxEq<T>, U> ApproxEq<Point3D<T, U>> for Point3D<T, U> {
 
     #[inline]
     fn approx_eq_eps(&self, other: &Self, eps: &Self) -> bool {
-        self.x.approx_eq_eps(&other.x, &eps.x) && self.y.approx_eq_eps(&other.y, &eps.y)
+        self.x.approx_eq_eps(&other.x, &eps.x)
+            && self.y.approx_eq_eps(&other.y, &eps.y)
             && self.z.approx_eq_eps(&other.z, &eps.z)
     }
 }
-
 
 impl<T, U> Into<[T; 3]> for Point3D<T, U> {
     fn into(self) -> [T; 3] {
@@ -1432,11 +1445,10 @@ pub const fn point3<T, U>(x: T, y: T, z: T) -> Point3D<T, U> {
     }
 }
 
-
 #[cfg(test)]
 mod point2d {
-    use default::Point2D;
-    use point2;
+    use crate::default::Point2D;
+    use crate::point2;
 
     #[cfg(feature = "mint")]
     use mint;
@@ -1488,10 +1500,23 @@ mod point2d {
         assert_eq!(p.yx(), point2(2, 1));
     }
 
+    #[test]
+    pub fn test_distance_to() {
+        let p1 = Point2D::new(1.0, 2.0);
+        let p2 = Point2D::new(2.0, 2.0);
+
+        assert_eq!(p1.distance_to(p2), 1.0);
+
+        let p1 = Point2D::new(1.0, 2.0);
+        let p2 = Point2D::new(1.0, 4.0);
+
+        assert_eq!(p1.distance_to(p2), 2.0);
+    }
+
     mod ops {
-        use default::Point2D;
-        use {size2, vec2, Vector2D};
-        use scale::Scale;
+        use crate::default::Point2D;
+        use crate::scale::Scale;
+        use crate::{size2, vec2, Vector2D};
 
         pub enum Mm {}
         pub enum Cm {}
@@ -1501,11 +1526,10 @@ mod point2d {
 
         #[test]
         pub fn test_neg() {
-            assert_eq!(-Point2D::new( 1.0,  2.0), Point2D::new(-1.0, -2.0));
-            assert_eq!(-Point2D::new( 0.0,  0.0), Point2D::new(-0.0, -0.0));
-            assert_eq!(-Point2D::new(-1.0, -2.0), Point2D::new( 1.0,  2.0));
+            assert_eq!(-Point2D::new(1.0, 2.0), Point2D::new(-1.0, -2.0));
+            assert_eq!(-Point2D::new(0.0, 0.0), Point2D::new(-0.0, -0.0));
+            assert_eq!(-Point2D::new(-1.0, -2.0), Point2D::new(1.0, 2.0));
         }
-
 
         #[test]
         pub fn test_add_size() {
@@ -1544,7 +1568,6 @@ mod point2d {
 
             assert_eq!(p1, Point2DMm::new(4.0, 6.0));
         }
-
 
         #[test]
         pub fn test_sub() {
@@ -1594,7 +1617,6 @@ mod point2d {
             assert_eq!(p1, Point2DMm::new(-2.0, -2.0));
         }
 
-
         #[test]
         pub fn test_mul_scalar() {
             let p1: Point2D<f32> = Point2D::new(3.0, 5.0);
@@ -1633,7 +1655,6 @@ mod point2d {
             assert_eq!(p1, Point2DMm::new(0.1, 0.2));
         }
 
-
         #[test]
         pub fn test_div_scalar() {
             let p1: Point2D<f32> = Point2D::new(15.0, 25.0);
@@ -1671,14 +1692,25 @@ mod point2d {
 
             assert_eq!(p1, Point2DMm::new(1.0, 2.0));
         }
+
+        #[test]
+        pub fn test_point_debug_formatting() {
+            let n = 1.23456789;
+            let p1 = Point2D::new(n, -n);
+            let should_be = format!("({:.4}, {:.4})", n, -n);
+
+            let got = format!("{:.4?}", p1);
+
+            assert_eq!(got, should_be);
+        }
     }
 }
 
 #[cfg(test)]
 mod point3d {
-    use default;
-    use default::Point3D;
-    use {point2, point3};
+    use crate::default;
+    use crate::default::Point3D;
+    use crate::{point2, point3};
     #[cfg(feature = "mint")]
     use mint;
 
@@ -1704,7 +1736,7 @@ mod point3d {
 
     #[test]
     pub fn test_conv_vector() {
-        use point3;
+        use crate::point3;
         for i in 0..100 {
             // We don't care about these values as long as they are not the same.
             let x = i as f32 * 0.012345;
@@ -1723,6 +1755,24 @@ mod point3d {
         assert_eq!(p.yz(), point2(2, 3));
     }
 
+    #[test]
+    pub fn test_distance_to() {
+        let p1 = Point3D::new(1.0, 2.0, 3.0);
+        let p2 = Point3D::new(2.0, 2.0, 3.0);
+
+        assert_eq!(p1.distance_to(p2), 1.0);
+
+        let p1 = Point3D::new(1.0, 2.0, 3.0);
+        let p2 = Point3D::new(1.0, 4.0, 3.0);
+
+        assert_eq!(p1.distance_to(p2), 2.0);
+
+        let p1 = Point3D::new(1.0, 2.0, 3.0);
+        let p2 = Point3D::new(1.0, 2.0, 6.0);
+
+        assert_eq!(p1.distance_to(p2), 3.0);
+    }
+
     #[cfg(feature = "mint")]
     #[test]
     pub fn test_mint() {
@@ -1734,9 +1784,9 @@ mod point3d {
     }
 
     mod ops {
-        use default::Point3D;
-        use {size3, vec3, Vector3D};
-        use scale::Scale;
+        use crate::default::Point3D;
+        use crate::scale::Scale;
+        use crate::{size3, vec3, Vector3D};
 
         pub enum Mm {}
         pub enum Cm {}
@@ -1746,11 +1796,10 @@ mod point3d {
 
         #[test]
         pub fn test_neg() {
-            assert_eq!(-Point3D::new( 1.0,  2.0,  3.0), Point3D::new(-1.0, -2.0, -3.0));
-            assert_eq!(-Point3D::new( 0.0,  0.0,  0.0), Point3D::new(-0.0, -0.0, -0.0));
-            assert_eq!(-Point3D::new(-1.0, -2.0, -3.0), Point3D::new( 1.0,  2.0,  3.0));
+            assert_eq!(-Point3D::new(1.0, 2.0, 3.0), Point3D::new(-1.0, -2.0, -3.0));
+            assert_eq!(-Point3D::new(0.0, 0.0, 0.0), Point3D::new(-0.0, -0.0, -0.0));
+            assert_eq!(-Point3D::new(-1.0, -2.0, -3.0), Point3D::new(1.0, 2.0, 3.0));
         }
-
 
         #[test]
         pub fn test_add_size() {
@@ -1789,7 +1838,6 @@ mod point3d {
 
             assert_eq!(p1, Point3DMm::new(5.0, 7.0, 9.0));
         }
-
 
         #[test]
         pub fn test_sub() {
@@ -1839,7 +1887,6 @@ mod point3d {
             assert_eq!(p1, Point3DMm::new(-3.0, -3.0, -3.0));
         }
 
-
         #[test]
         pub fn test_mul_scalar() {
             let p1: Point3D<f32> = Point3D::new(3.0, 5.0, 7.0);
@@ -1877,7 +1924,6 @@ mod point3d {
 
             assert_eq!(p1, Point3DMm::new(0.1, 0.2, 0.3));
         }
-
 
         #[test]
         pub fn test_div_scalar() {

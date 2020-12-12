@@ -9,12 +9,18 @@ newtab-unit-tests:
         symbol: node(newtab)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "ubuntu1804-test"}
         max-run-time: 1800
     require-build:
-        linux1804-64/opt: build-linux64-shippable/opt
+        by-project:
+            autoland:
+                linux1804-64/opt: build-linux64/opt
+            try:
+                linux1804-64/opt: build-linux64/opt
+            default:
+                linux1804-64/opt: build-linux64-shippable/opt
     run:
         using: run-task
         cache-dotcache: true
@@ -36,7 +42,7 @@ debugger-tests:
         symbol: node(debugger)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800
@@ -56,11 +62,13 @@ debugger-tests:
 devtools-tests:
     description: devtools node-based tests (for instance jest)
     platform: linux1804-64/opt
+    attributes:
+        code-review: true
     treeherder:
         symbol: node(devtools)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800
@@ -77,6 +85,8 @@ devtools-tests:
             node devtools-node-test-runner.js --suite=compatibility &&
             node devtools-node-test-runner.js --suite=framework &&
             node devtools-node-test-runner.js --suite=netmonitor &&
+            node devtools-node-test-runner.js --suite=performance &&
+            node devtools-node-test-runner.js --suite=shared_components &&
             node devtools-node-test-runner.js --suite=webconsole
     when:
         files-changed:
@@ -90,7 +100,7 @@ eslint-plugin-mozilla:
         symbol: node(epm)
         kind: test
         tier: 1
-    worker-type: t-linux-xlarge
+    worker-type: t-linux-xlarge-source
     worker:
         docker-image: {in-tree: "lint"}
         max-run-time: 1800

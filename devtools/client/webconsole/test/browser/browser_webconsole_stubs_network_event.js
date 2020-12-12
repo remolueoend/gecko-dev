@@ -4,11 +4,12 @@
 "use strict";
 
 const {
+  createResourceWatcherForTab,
   STUBS_UPDATE_ENV,
   getStubFile,
   getCleanedPacket,
   writeStubsToFile,
-} = require("chrome://mochitests/content/browser/devtools/client/webconsole/test/browser/stub-generator-helpers");
+} = require(`${CHROME_URL_ROOT}stub-generator-helpers`);
 
 const TEST_URI =
   "http://example.com/browser/devtools/client/webconsole/test/browser/stub-generators/test-network-event.html";
@@ -28,10 +29,9 @@ add_task(async function() {
 
   const existingStubs = getStubFile(STUB_FILE);
   const FAILURE_MSG =
-    "The network event stubs file needs to be updated by running " +
-    "`mach test devtools/client/webconsole/test/browser/" +
-    "browser_webconsole_stubs_network_event.js --headless " +
-    "--setenv WEBCONSOLE_STUBS_UPDATE=true`";
+    "The network event stubs file needs to be updated by running `" +
+    `mach test ${getCurrentTestFilePath()} --headless --setenv WEBCONSOLE_STUBS_UPDATE=true` +
+    "`";
 
   if (generatedStubs.size !== existingStubs.stubPackets.size) {
     ok(false, FAILURE_MSG);
@@ -40,15 +40,7 @@ add_task(async function() {
 
   let failed = false;
   for (const [key, packet] of generatedStubs) {
-    // packet.updates are handle by the webconsole front, and can be updated after
-    // we cleaned the packet, so the order isn't guaranteed. Let's sort the array
-    // here so the test doesn't fail.
     const existingPacket = existingStubs.stubPackets.get(key);
-    if (packet.updates && existingPacket.updates) {
-      packet.updates.sort();
-      existingPacket.updates.sort();
-    }
-
     const packetStr = JSON.stringify(packet, null, 2);
     const existingPacketStr = JSON.stringify(existingPacket, null, 2);
     is(packetStr, existingPacketStr, `"${key}" packet has expected value`);
@@ -63,31 +55,71 @@ add_task(async function() {
 });
 
 async function generateNetworkEventStubs() {
-  const packets = new Map();
-  const toolbox = await openNewTabAndToolbox(TEST_URI, "webconsole");
-  const { ui } = toolbox.getCurrentPanel().hud;
+  const stubs = new Map();
+  const tab = await addTab(TEST_URI);
+  const resourceWatcher = await createResourceWatcherForTab(tab);
+  const stacktraces = new Map();
+  let addNetworkStub = function() {};
+  let addNetworkUpdateStub = function() {};
+
+  const onAvailable = resources => {
+    for (const resource of resources) {
+      if (resource.resourceType == resourceWatcher.TYPES.NETWORK_EVENT) {
+        if (stacktraces.has(resource.channelId)) {
+          const { stacktraceAvailable, lastFrame } = stacktraces.get(
+            resource.channelId
+          );
+          resource.cause.stacktraceAvailable = stacktraceAvailable;
+          resource.cause.lastFrame = lastFrame;
+          stacktraces.delete(resource.channelId);
+        }
+        addNetworkStub(resource);
+        continue;
+      }
+      if (
+        resource.resourceType == resourceWatcher.TYPES.NETWORK_EVENT_STACKTRACE
+      ) {
+        stacktraces.set(resource.channelId, resource);
+      }
+    }
+  };
+  const onUpdated = updates => {
+    for (const { resource } of updates) {
+      addNetworkUpdateStub(resource);
+    }
+  };
+
+  await resourceWatcher.watchResources(
+    [
+      resourceWatcher.TYPES.NETWORK_EVENT_STACKTRACE,
+      resourceWatcher.TYPES.NETWORK_EVENT,
+    ],
+    {
+      onAvailable,
+      onUpdated,
+    }
+  );
 
   for (const [key, code] of getCommands()) {
-    const consoleFront = await toolbox.target.getFront("console");
-    const onNetwork = consoleFront.once("networkEvent", packet => {
-      packets.set(key, getCleanedPacket(key, packet));
-    });
-
-    const onNetworkUpdate = ui.once("network-message-updated", res => {
-      const updateKey = `${key} update`;
-      // We cannot ensure the form of the network update packet, some properties
-      // might be in another order than in the original packet.
-      // Hand-picking only what we need should prevent this.
-      const packet = {
-        networkInfo: {
-          _type: res.networkInfo._type,
-          actor: res.networkInfo.actor,
-          request: res.networkInfo.request,
-          response: res.networkInfo.response,
-          totalTime: res.networkInfo.totalTime,
-        },
+    const networkEventDone = new Promise(resolve => {
+      addNetworkStub = resource => {
+        stubs.set(key, getCleanedPacket(key, getOrderedResource(resource)));
+        resolve();
       };
-      packets.set(updateKey, getCleanedPacket(updateKey, packet));
+    });
+    const networkEventUpdateDone = new Promise(resolve => {
+      addNetworkUpdateStub = resource => {
+        const updateKey = `${key} update`;
+        stubs.set(key, getCleanedPacket(key, getOrderedResource(resource)));
+        stubs.set(
+          updateKey,
+          // We cannot ensure the form of the resource, some properties
+          // might be in another order than in the original resource.
+          // Hand-picking only what we need should prevent this.
+          getCleanedPacket(updateKey, getOrderedResource(resource))
+        );
+        resolve();
+      };
     });
 
     await SpecialPowers.spawn(gBrowser.selectedBrowser, [code], function(
@@ -101,12 +133,55 @@ async function generateNetworkEventStubs() {
       content.wrappedJSObject.triggerPacket();
       script.remove();
     });
-
-    await Promise.all([onNetwork, onNetworkUpdate]);
+    await Promise.all([networkEventDone, networkEventUpdateDone]);
   }
-
-  await closeTabAndToolbox();
-  return packets;
+  resourceWatcher.unwatchResources(
+    [
+      resourceWatcher.TYPES.NETWORK_EVENT_STACKTRACE,
+      resourceWatcher.TYPES.NETWORK_EVENT,
+    ],
+    {
+      onAvailable,
+      onUpdated,
+    }
+  );
+  return stubs;
+}
+// Ensures the order of the resource properties
+function getOrderedResource(resource) {
+  return {
+    resourceType: resource.resourceType,
+    timeStamp: resource.timeStamp,
+    actor: resource.actor,
+    startedDateTime: resource.startedDateTime,
+    method: resource.method,
+    url: resource.url,
+    isXHR: resource.isXHR,
+    cause: resource.cause,
+    httpVersion: resource.httpVersion,
+    status: resource.status,
+    statusText: resource.statusText,
+    headersSize: resource.headersSize,
+    remoteAddress: resource.remoteAddress,
+    remotePort: resource.remotePort,
+    mimeType: resource.mimeType,
+    waitingTime: resource.waitingTime,
+    contentSize: resource.contentSize,
+    transferredSize: resource.transferredSize,
+    timings: resource.timings,
+    private: resource.private,
+    fromCache: resource.fromCache,
+    fromServiceWorker: resource.fromServiceWorker,
+    isThirdPartyTrackingResource: resource.isThirdPartyTrackingResource,
+    referrerPolicy: resource.referrerPolicy,
+    blockedReason: resource.blockedReason,
+    blockingExtension: resource.blockingExtension,
+    channelId: resource.channelId,
+    totalTime: resource.totalTime,
+    securityState: resource.securityState,
+    responseCache: resource.responseCache,
+    isRacing: resource.isRacing,
+  };
 }
 
 function getCommands() {

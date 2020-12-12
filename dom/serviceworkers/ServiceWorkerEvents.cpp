@@ -11,9 +11,11 @@
 #include "ServiceWorker.h"
 #include "ServiceWorkerManager.h"
 #include "js/Conversions.h"
+#include "js/Exception.h"  // JS::ExceptionStack, JS::StealPendingExceptionStack
 #include "js/TypeDecls.h"
 #include "mozilla/Encoding.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/LoadInfo.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/BodyUtil.h"
@@ -32,6 +34,7 @@
 #include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/WorkerScope.h"
 #include "mozilla/net/NeckoChannelParams.h"
+#include "mozilla/Telemetry.h"
 #include "nsComponentManagerUtils.h"
 #include "nsContentPolicyUtils.h"
 #include "nsContentUtils.h"
@@ -60,12 +63,11 @@ void AsyncLog(nsIInterceptedChannel* aInterceptedChannel,
   nsCOMPtr<nsIConsoleReportCollector> reporter =
       aInterceptedChannel->GetConsoleReportCollector();
   if (reporter) {
-    reporter->AddConsoleReport(
-        nsIScriptError::errorFlag,
-        NS_LITERAL_CSTRING("Service Worker Interception"),
-        nsContentUtils::eDOM_PROPERTIES, aRespondWithScriptSpec,
-        aRespondWithLineNumber, aRespondWithColumnNumber, aMessageName,
-        aParams);
+    reporter->AddConsoleReport(nsIScriptError::errorFlag,
+                               "Service Worker Interception"_ns,
+                               nsContentUtils::eDOM_PROPERTIES,
+                               aRespondWithScriptSpec, aRespondWithLineNumber,
+                               aRespondWithColumnNumber, aMessageName, aParams);
   }
 }
 
@@ -152,6 +154,14 @@ already_AddRefed<FetchEvent> FetchEvent::Constructor(
   e->mRequest = aOptions.mRequest;
   e->mClientId = aOptions.mClientId;
   e->mResultingClientId = aOptions.mResultingClientId;
+  RefPtr<nsIGlobalObject> global = do_QueryObject(aGlobal.GetAsSupports());
+  MOZ_ASSERT(global);
+  ErrorResult rv;
+  e->mHandled = Promise::Create(global, rv);
+  if (rv.Failed()) {
+    rv.SuppressException();
+    return nullptr;
+  }
   return e.forget();
 }
 
@@ -225,8 +235,7 @@ class BodyCopyHandle final : public nsIInterceptedBodyCallback {
       AsyncLog(mClosure->mInterceptedChannel, mClosure->mRespondWithScriptSpec,
                mClosure->mRespondWithLineNumber,
                mClosure->mRespondWithColumnNumber,
-               NS_LITERAL_CSTRING("InterceptionFailedWithURL"),
-               mClosure->mRequestURL);
+               "InterceptionFailedWithURL"_ns, mClosure->mRequestURL);
       event = new CancelChannelRunnable(mClosure->mInterceptedChannel,
                                         mClosure->mRegistration,
                                         NS_ERROR_INTERCEPTION_FAILED);
@@ -315,7 +324,7 @@ class StartResponse final : public Runnable {
         mInternalResponse->GetTainting());
 
     // Get the preferred alternative data type of outter channel
-    nsAutoCString preferredAltDataType(EmptyCString());
+    nsAutoCString preferredAltDataType(""_ns);
     nsCOMPtr<nsICacheInfoChannel> outerChannel =
         do_QueryInterface(underlyingChannel);
     if (outerChannel &&
@@ -377,7 +386,7 @@ class StartResponse final : public Runnable {
     rv = NS_NewURI(getter_AddRefs(uri), url);
     NS_ENSURE_SUCCESS(rv, false);
     int16_t decision = nsIContentPolicy::ACCEPT;
-    rv = NS_CheckContentLoadPolicy(uri, aLoadInfo, EmptyCString(), &decision);
+    rv = NS_CheckContentLoadPolicy(uri, aLoadInfo, ""_ns, &decision);
     NS_ENSURE_SUCCESS(rv, false);
     return decision == nsIContentPolicy::ACCEPT;
   }
@@ -453,7 +462,7 @@ class RespondWithHandler final : public PromiseNativeHandler {
     if (!mRequestWasHandled) {
       ::AsyncLog(mInterceptedChannel, mRespondWithScriptSpec,
                  mRespondWithLineNumber, mRespondWithColumnNumber,
-                 NS_LITERAL_CSTRING("InterceptionFailedWithURL"), mRequestURL);
+                 "InterceptionFailedWithURL"_ns, mRequestURL);
       CancelRequest(NS_ERROR_INTERCEPTION_FAILED);
     }
   }
@@ -472,7 +481,7 @@ class MOZ_STACK_CLASS AutoCancel {
       : mOwner(aOwner),
         mLine(0),
         mColumn(0),
-        mMessageName(NS_LITERAL_CSTRING("InterceptionFailedWithURL")) {
+        mMessageName("InterceptionFailedWithURL"_ns) {
     mParams.AppendElement(aRequestURL);
   }
 
@@ -500,16 +509,14 @@ class MOZ_STACK_CLASS AutoCancel {
     MOZ_ASSERT(!aRv.Failed());
 
     // Let's take the pending exception.
-    JS::Rooted<JS::Value> exn(aCx);
-    if (!JS_GetPendingException(aCx, &exn)) {
+    JS::ExceptionStack exnStack(aCx);
+    if (!JS::StealPendingExceptionStack(aCx, &exnStack)) {
       return;
     }
 
-    JS_ClearPendingException(aCx);
-
-    // Converting the exception in a js::ErrorReport.
-    js::ErrorReport report(aCx);
-    if (!report.init(aCx, exn, js::ErrorReport::WithSideEffects)) {
+    // Converting the exception in a JS::ErrorReportBuilder.
+    JS::ErrorReportBuilder report(aCx);
+    if (!report.init(aCx, exnStack, JS::ErrorReportBuilder::WithSideEffects)) {
       JS_ClearPendingException(aCx);
       return;
     }
@@ -575,10 +582,9 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     nsContentUtils::ExtractErrorValues(aCx, aValue, sourceSpec, &line, &column,
                                        valueString);
 
-    autoCancel.SetCancelMessageAndLocation(
-        sourceSpec, line, column,
-        NS_LITERAL_CSTRING("InterceptedNonResponseWithURL"), mRequestURL,
-        valueString);
+    autoCancel.SetCancelMessageAndLocation(sourceSpec, line, column,
+                                           "InterceptedNonResponseWithURL"_ns,
+                                           mRequestURL, valueString);
     return;
   }
 
@@ -592,10 +598,9 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     nsContentUtils::ExtractErrorValues(aCx, aValue, sourceSpec, &line, &column,
                                        valueString);
 
-    autoCancel.SetCancelMessageAndLocation(
-        sourceSpec, line, column,
-        NS_LITERAL_CSTRING("InterceptedNonResponseWithURL"), mRequestURL,
-        valueString);
+    autoCancel.SetCancelMessageAndLocation(sourceSpec, line, column,
+                                           "InterceptedNonResponseWithURL"_ns,
+                                           mRequestURL, valueString);
     return;
   }
 
@@ -613,8 +618,8 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
   //      has more than one item.
 
   if (response->Type() == ResponseType::Error) {
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("InterceptedErrorResponseWithURL"), mRequestURL);
+    autoCancel.SetCancelMessage("InterceptedErrorResponseWithURL"_ns,
+                                mRequestURL);
     return;
   }
 
@@ -626,24 +631,22 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     NS_ConvertASCIItoUTF16 modeString(
         RequestModeValues::GetString(mRequestMode));
 
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("BadOpaqueInterceptionRequestModeWithURL"),
-        mRequestURL, modeString);
+    autoCancel.SetCancelMessage("BadOpaqueInterceptionRequestModeWithURL"_ns,
+                                mRequestURL, modeString);
     return;
   }
 
   if (mRequestRedirectMode != RequestRedirect::Manual &&
       response->Type() == ResponseType::Opaqueredirect) {
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("BadOpaqueRedirectInterceptionWithURL"),
-        mRequestURL);
+    autoCancel.SetCancelMessage("BadOpaqueRedirectInterceptionWithURL"_ns,
+                                mRequestURL);
     return;
   }
 
   if (mRequestRedirectMode != RequestRedirect::Follow &&
       response->Redirected()) {
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("BadRedirectModeInterceptionWithURL"), mRequestURL);
+    autoCancel.SetCancelMessage("BadRedirectModeInterceptionWithURL"_ns,
+                                mRequestURL);
     return;
   }
 
@@ -656,8 +659,8 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
       return;
     }
     if (NS_WARN_IF(bodyUsed)) {
-      autoCancel.SetCancelMessage(
-          NS_LITERAL_CSTRING("InterceptedUsedResponseWithURL"), mRequestURL);
+      autoCancel.SetCancelMessage("InterceptedUsedResponseWithURL"_ns,
+                                  mRequestURL);
       return;
     }
   }
@@ -686,9 +689,8 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     // The variadic template provided by StringArrayAppender requires exactly
     // an nsString.
     NS_ConvertUTF8toUTF16 responseURL(ir->GetUnfilteredURL());
-    autoCancel.SetCancelMessage(
-        NS_LITERAL_CSTRING("CorsResponseForSameOriginRequest"), mRequestURL,
-        responseURL);
+    autoCancel.SetCancelMessage("CorsResponseForSameOriginRequest"_ns,
+                                mRequestURL, responseURL);
     return;
   }
 
@@ -707,7 +709,7 @@ void RespondWithHandler::ResolvedCallback(JSContext* aCx,
     // fragment and avoid overriding in that case.
     if (!mRequestFragment.IsEmpty() && !responseURL.IsEmpty()) {
       MOZ_ASSERT(!responseURL.Contains('#'));
-      responseURL.Append(NS_LITERAL_CSTRING("#"));
+      responseURL.Append("#"_ns);
       responseURL.Append(mRequestFragment);
     }
   }
@@ -753,8 +755,8 @@ void RespondWithHandler::RejectedCallback(JSContext* aCx,
                                      valueString);
 
   ::AsyncLog(mInterceptedChannel, sourceSpec, line, column,
-             NS_LITERAL_CSTRING("InterceptionRejectedResponseWithURL"),
-             mRequestURL, valueString);
+             "InterceptionRejectedResponseWithURL"_ns, mRequestURL,
+             valueString);
 
   CancelRequest(NS_ERROR_INTERCEPTION_FAILED);
 }
@@ -788,7 +790,7 @@ void FetchEvent::RespondWith(JSContext* aCx, Promise& aArg, ErrorResult& aRv) {
   uint32_t column = 0;
   nsJSUtils::GetCallingLocation(aCx, spec, &line, &column);
 
-  RefPtr<InternalRequest> ir = mRequest->GetInternalRequest();
+  SafeRefPtr<InternalRequest> ir = mRequest->GetInternalRequest();
 
   nsAutoCString requestURL;
   ir->GetURL(requestURL);
@@ -838,7 +840,7 @@ void FetchEvent::PreventDefault(JSContext* aCx, CallerType aCallerType) {
 void FetchEvent::ReportCanceled() {
   MOZ_ASSERT(!mPreventDefaultScriptSpec.IsEmpty());
 
-  RefPtr<InternalRequest> ir = mRequest->GetInternalRequest();
+  SafeRefPtr<InternalRequest> ir = mRequest->GetInternalRequest();
   nsAutoCString url;
   ir->GetURL(url);
 
@@ -851,7 +853,7 @@ void FetchEvent::ReportCanceled() {
   if (mChannel) {
     ::AsyncLog(mChannel.get(), mPreventDefaultScriptSpec,
                mPreventDefaultLineNumber, mPreventDefaultColumnNumber,
-               NS_LITERAL_CSTRING("InterceptionCanceledWithURL"), requestURL);
+               "InterceptionCanceledWithURL"_ns, requestURL);
   } else {
     mRespondWithHandler->ReportCanceled(mPreventDefaultScriptSpec,
                                         mPreventDefaultLineNumber,
@@ -935,7 +937,7 @@ class WaitUntilHandler final : public PromiseNativeHandler {
     // because there is no documeny yet, and the navigation is no longer
     // being intercepted.
 
-    swm->ReportToAllClients(mScope, message, mSourceSpec, EmptyString(), mLine,
+    swm->ReportToAllClients(mScope, message, mSourceSpec, u""_ns, mLine,
                             mColumn, nsIScriptError::errorFlag);
   }
 };
@@ -1110,8 +1112,8 @@ void PushMessageData::ArrayBuffer(JSContext* cx,
 already_AddRefed<mozilla::dom::Blob> PushMessageData::Blob(ErrorResult& aRv) {
   uint8_t* data = GetContentsCopy();
   if (data) {
-    RefPtr<mozilla::dom::Blob> blob = BodyUtil::ConsumeBlob(
-        mOwner, EmptyString(), mBytes.Length(), data, aRv);
+    RefPtr<mozilla::dom::Blob> blob =
+        BodyUtil::ConsumeBlob(mOwner, u""_ns, mBytes.Length(), data, aRv);
     if (blob) {
       return blob.forget();
     }
@@ -1249,7 +1251,7 @@ already_AddRefed<ExtendableMessageEvent> ExtendableMessageEvent::Constructor(
 }
 
 void ExtendableMessageEvent::GetPorts(nsTArray<RefPtr<MessagePort>>& aPorts) {
-  aPorts = mPorts;
+  aPorts = mPorts.Clone();
 }
 
 NS_IMPL_CYCLE_COLLECTION_MULTI_ZONE_JSHOLDER_CLASS(ExtendableMessageEvent)

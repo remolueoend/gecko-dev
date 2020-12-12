@@ -11,6 +11,7 @@
 #include "mozilla/dom/PMessagePort.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundParent.h"
+#include "xpcpublic.h"
 
 namespace mozilla {
 
@@ -109,7 +110,7 @@ void SharedMessageBody::Read(JSContext* aCx,
     return;
   }
 
-  mRefData->CloneData()->Read(aCx, aValue, cloneDataPolicy, aRv);
+  mRefData->Read(aCx, aValue, cloneDataPolicy, aRv);
 }
 
 bool SharedMessageBody::TakeTransferredPortsAsSequence(
@@ -119,7 +120,7 @@ bool SharedMessageBody::TakeTransferredPortsAsSequence(
   }
 
   MOZ_ASSERT(mRefData);
-  return mRefData->CloneData()->TakeTransferredPortsAsSequence(aPorts);
+  return mRefData->TakeTransferredPortsAsSequence(aPorts);
 }
 
 /* static */
@@ -224,7 +225,7 @@ bool SharedMessageBody::FromMessagesToSharedChild(
 bool SharedMessageBody::FromSharedToMessagesParent(
     PBackgroundParent* aManager,
     const nsTArray<RefPtr<SharedMessageBody>>& aData,
-    FallibleTArray<MessageData>& aArray) {
+    nsTArray<MessageData>& aArray) {
   MOZ_ASSERT(aManager);
   MOZ_ASSERT(aArray.IsEmpty());
 
@@ -233,7 +234,7 @@ bool SharedMessageBody::FromSharedToMessagesParent(
   }
 
   for (auto& data : aData) {
-    MessageData* message = aArray.AppendElement(mozilla::fallible);
+    MessageData* message = aArray.AppendElement();
     message->agentClusterId() = data->mAgentClusterId;
 
     if (data->mCloneData) {

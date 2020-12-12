@@ -12,7 +12,7 @@ const { KEYS: defaultVisitorKeys } = require("eslint-visitor-keys");
 const estraverse = require("estraverse");
 const path = require("path");
 const fs = require("fs");
-const ini = require("ini-parser");
+const ini = require("multi-ini");
 const recommendedConfig = require("./configs/recommended");
 
 var gModules = null;
@@ -43,6 +43,7 @@ const callExpressionMultiDefinitions = [
   "XPCOMUtils.defineLazyGlobalGetters(this,",
   "XPCOMUtils.defineLazyModuleGetters(this,",
   "XPCOMUtils.defineLazyServiceGetters(this,",
+  "loader.lazyRequireGetter(this,",
 ];
 
 const imports = [
@@ -52,6 +53,13 @@ const imports = [
 const workerImportFilenameMatch = /(.*\/)*((.*?)\.jsm?)/;
 
 module.exports = {
+  get iniParser() {
+    if (!this._iniParser) {
+      this._iniParser = new ini.Parser();
+    }
+    return this._iniParser;
+  },
+
   get modulesGlobalData() {
     if (!gModules) {
       if (this.isMozillaCentralBased()) {
@@ -68,6 +76,10 @@ module.exports = {
     }
 
     return gModules;
+  },
+
+  get servicesData() {
+    return require("./services.json");
   },
 
   /**
@@ -612,8 +624,9 @@ module.exports = {
       }
 
       try {
-        let manifest = ini.parse(fs.readFileSync(path.join(dir, name), "utf8"));
-
+        let manifest = this.iniParser.parse(
+          fs.readFileSync(path.join(dir, name), "utf8").split("\n")
+        );
         manifests.push({
           file: path.join(dir, name),
           manifest,
@@ -830,6 +843,16 @@ module.exports = {
 
   getSavedRuleData(rule) {
     return require("./rules/saved-rules-data.json").rulesData[rule];
+  },
+
+  getBuildEnvironment() {
+    var { execFileSync } = require("child_process");
+    var output = execFileSync(
+      path.join(this.rootDir, "mach"),
+      ["environment", "--format=json"],
+      { silent: true }
+    );
+    return JSON.parse(output);
   },
 
   /**

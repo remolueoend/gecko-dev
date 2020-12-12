@@ -9,9 +9,8 @@ const TEST_URI_NOT_REPLACED =
   "data:text/html;charset=utf8,<script>console.log('foo')</script>";
 
 add_task(async function() {
-  await SpecialPowers.pushPrefEnv({
-    set: [["devtools.webconsole.persistlog", true]],
-  });
+  await pushPref("devtools.webconsole.timestampMessages", true);
+  await pushPref("devtools.webconsole.persistlog", true);
 
   let hud = await openNewTabAndConsole(TEST_URI_NOT_REPLACED);
 
@@ -22,7 +21,7 @@ add_task(async function() {
   const onBrowserLoaded = BrowserTestUtils.browserLoaded(
     gBrowser.selectedBrowser
   );
-  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, TEST_URI_REPLACED);
+  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, TEST_URI_REPLACED);
   await onBrowserLoaded;
 
   const toolbox = await openToolboxForTab(gBrowser.selectedTab, "webconsole");

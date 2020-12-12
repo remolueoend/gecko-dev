@@ -727,7 +727,7 @@ WMFVideoMFTManager::Input(MediaRawData* aSample) {
     // Check the VP9 profile. the VP9 MFT can only handle correctly profile 0
     // and 2 (yuv420 8/10/12 bits)
     int profile =
-        VPXDecoder::GetVP9Profile(MakeSpan(aSample->Data(), aSample->Size()));
+        VPXDecoder::GetVP9Profile(Span(aSample->Data(), aSample->Size()));
     if (profile != 0 && profile != 2) {
       return E_FAIL;
     }
@@ -868,7 +868,6 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
   b.mPlanes[0].mStride = stride;
   b.mPlanes[0].mHeight = videoHeight;
   b.mPlanes[0].mWidth = videoWidth;
-  b.mPlanes[0].mOffset = 0;
   b.mPlanes[0].mSkip = 0;
 
   MOZ_DIAGNOSTIC_ASSERT(mDecodedImageSize.height % 16 == 0,
@@ -885,7 +884,6 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
     b.mPlanes[1].mStride = halfStride;
     b.mPlanes[1].mHeight = halfHeight;
     b.mPlanes[1].mWidth = halfWidth;
-    b.mPlanes[1].mOffset = 0;
     b.mPlanes[1].mSkip = 0;
 
     // V plane (Cr)
@@ -893,7 +891,6 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
     b.mPlanes[2].mStride = halfStride;
     b.mPlanes[2].mHeight = halfHeight;
     b.mPlanes[2].mWidth = halfWidth;
-    b.mPlanes[2].mOffset = 0;
     b.mPlanes[2].mSkip = 0;
   } else {
     // U plane (Cb)
@@ -901,7 +898,6 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
     b.mPlanes[1].mStride = stride;
     b.mPlanes[1].mHeight = halfHeight;
     b.mPlanes[1].mWidth = halfWidth;
-    b.mPlanes[1].mOffset = 0;
     b.mPlanes[1].mSkip = 1;
 
     // V plane (Cr)
@@ -909,7 +905,6 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
     b.mPlanes[2].mStride = stride;
     b.mPlanes[2].mHeight = halfHeight;
     b.mPlanes[2].mWidth = halfWidth;
-    b.mPlanes[2].mOffset = 0;
     b.mPlanes[2].mSkip = 1;
   }
 
@@ -930,7 +925,7 @@ WMFVideoMFTManager::CreateBasicVideoFrame(IMFSample* aSample,
       !mKnowsCompositor->SupportsD3D11() || !mIMFUsable) {
     RefPtr<VideoData> v = VideoData::CreateAndCopyData(
         mVideoInfo, mImageContainer, aStreamOffset, pts, duration, b, false,
-        TimeUnit::FromMicroseconds(-1), pictureRegion);
+        TimeUnit::FromMicroseconds(-1), pictureRegion, mKnowsCompositor);
     if (twoDBuffer) {
       twoDBuffer->Unlock2D();
     } else {
@@ -1093,7 +1088,7 @@ WMFVideoMFTManager::Output(int64_t aStreamOffset, RefPtr<MediaData>& aOutData) {
       }
       break;
     }
-    // Else unexpected error, assert, and bail.
+    // Else unexpected error so bail.
     NS_WARNING("WMFVideoMFTManager::Output() unexpected error");
     return hr;
   }
@@ -1138,8 +1133,8 @@ bool WMFVideoMFTManager::IsHardwareAccelerated(
 nsCString WMFVideoMFTManager::GetDescriptionName() const {
   nsCString failureReason;
   bool hw = IsHardwareAccelerated(failureReason);
-  return nsPrintfCString("wmf %s video decoder - %s",
-                         hw ? "hardware" : "software",
+  return nsPrintfCString("wmf %s codec %s video decoder - %s",
+                         StreamTypeString(), hw ? "hardware" : "software",
                          hw ? StaticPrefs::media_wmf_use_nv12_format() &&
                                       gfx::DeviceManagerDx::Get()->CanUseNV12()
                                   ? "nv12"

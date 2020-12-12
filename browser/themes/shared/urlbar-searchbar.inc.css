@@ -36,12 +36,12 @@
 #searchbar {
   min-height: 30px;
   text-shadow: none;
-  color: -moz-FieldText;
+  color: FieldText;
 }
 
 #urlbar-background,
 #searchbar {
-  background-color: -moz-Field;
+  background-color: Field;
   background-clip: padding-box;
   border: 1px solid @fieldBorderColor@;
   border-radius: var(--toolbarbutton-border-radius);
@@ -51,7 +51,7 @@
 #urlbar-input-container,
 #searchbar {
   border-radius: var(--toolbarbutton-border-radius);
-  overflow: -moz-hidden-unscrollable;
+  overflow: clip;
 }
 
 #urlbar-input,
@@ -63,6 +63,7 @@
   border: none;
   margin: 0;
   padding: 0;
+  outline: none;
 }
 
 #urlbar:not([focused="true"]):hover > #urlbar-background,
@@ -202,7 +203,11 @@
 }
 
 #urlbar[breakout][breakout-extend] > #urlbar-background {
-  box-shadow: 0 5px 18px rgba(0, 0, 0, .2);
+  box-shadow: 0 3px 8px 0 rgba(0,0,0,.15)
+}
+
+#urlbar[breakout][breakout-extend][open] > #urlbar-background {
+  box-shadow: 0 5px 18px rgba(0,0,0,.2);
 }
 
 #urlbar[breakout][breakout-extend] > #urlbar-input-container {
@@ -268,7 +273,94 @@
   position: relative;
   border: none;
   background: transparent;
-  -moz-appearance: none;
+  appearance: none;
+}
+
+/* Urlbar search mode indicator */
+#urlbar-search-mode-indicator {
+  display: none;
+  -moz-outline-radius: 2px;
+  margin-inline-end: 8px;
+  min-width: 16px; /* So the close button never causes motion */
+  align-items: center;
+
+  background-color: #d6ebff;
+  outline: 1px solid #0060df; /* Blue 60 */
+  color: #0060df; /* Blue 60 */
+}
+
+#urlbar[searchmode][breakout-extend] > #urlbar-input-container > #urlbar-search-mode-indicator {
+  display: inline-flex;
+}
+
+/* Invert the colors in the search mode indicator in dark mode. */
+:root[lwt-toolbar-field-brighttext] #urlbar-search-mode-indicator {
+  background-color: #0060df;
+  outline-color: #d6ebff;
+  color: #d6ebff;
+}
+
+#urlbar-search-mode-indicator-title {
+  padding-inline: 5px;
+}
+
+#urlbar-search-mode-indicator-close {
+  display: none;
+  background: url(chrome://global/skin/icons/close.svg) no-repeat center;
+  background-size: 100% 16px;
+  width: 16px;
+  height: 100%;
+  margin-inline-start: -16px;
+  -moz-context-properties: fill, fill-opacity, stroke-opacity;
+  fill-opacity: 0;
+  stroke-opacity: 0.6;
+  /* fill and background-color should match the urlbar focused color and
+     background. */
+  fill: FieldText;
+  background-color: Field;
+}
+
+#urlbar-search-mode-indicator-close:-moz-lwtheme {
+  /* fill and background-color should match the urlbar focused color and
+     background. */
+  fill: var(--lwt-toolbar-field-focus-color);
+  background-color: var(--lwt-toolbar-field-focus);
+}
+
+#urlbar-search-mode-indicator:hover > #urlbar-search-mode-indicator-close {
+  display: block;
+}
+
+/* Windows high-contrast themes */
+%ifdef XP_WIN
+@media (-moz-windows-default-theme: 0) {
+  #urlbar-search-mode-indicator {
+    background-color: Highlight;
+    outline-color: Highlight;
+    color: HighlightText;
+  }
+
+  #urlbar-search-mode-indicator-close {
+    stroke-opacity: 1.0;
+  }
+}
+%endif
+
+@supports -moz-bool-pref("browser.urlbar.experimental.searchModeIndicatorHover") {
+  #urlbar-search-mode-indicator-close:hover {
+    background-color: #ededf0; /* Grey 20 */
+  }
+  #urlbar-search-mode-indicator-close:hover:active {
+    background-color: #d7d7db; /* Grey 30 */
+  }
+
+  :root[lwt-toolbar-field-brighttext] #urlbar-search-mode-indicator-close:hover {
+    background-color: #737373; /* Grey 50 */
+  }
+
+  :root[lwt-toolbar-field-brighttext] #urlbar-search-mode-indicator-close:hover:active {
+    background-color: #b1b1b3; /* Grey 40 */
+  }
 }
 
 /* Page action panel */
@@ -295,18 +387,9 @@
   list-style-image: url("chrome://browser/skin/pocket-outline.svg");
 }
 
-#pocket-button-box[open="true"] > #pocket-button,
-#pocket-button-box[pocketed="true"] > #pocket-button {
+#pocket-button[open="true"],
+#pocket-button[pocketed="true"] {
   list-style-image: url("chrome://browser/skin/pocket.svg");
-}
-
-#pocket-button-box[animate="true"] > #pocket-button,
-#pocket-button[open="true"][animationsenabled] > .toolbarbutton-icon {
-  fill: transparent;
-}
-
-#pocket-button-box[open="true"] > #pocket-button,
-#pocket-button-box[pocketed="true"] > #pocket-button {
   fill: #ef4056;
   fill-opacity: 1;
 }
@@ -422,7 +505,7 @@
   height: 30px;
 }
 
-#page-action-buttons > :not([hidden]):not(toolbartabstop) ~ #pageActionSeparator {
+#page-action-buttons > :not([hidden], toolbartabstop) ~ #pageActionSeparator {
   /* Show the separator between the page actions and other elements when at
      least one of the latter is shown. */
   visibility: visible;
@@ -492,169 +575,83 @@
   list-style-image: url("chrome://global/skin/icons/more.svg");
 }
 
-@keyframes bookmark-animation {
-  from {
-    transform: translateX(0);
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes bookmark-animation {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-627px);
+    }
   }
-  to {
-    transform: translateX(-627px);
+
+  @keyframes bookmark-animation-rtl {
+    from {
+      transform: scaleX(-1) translateX(0);
+    }
+    to {
+      transform: scaleX(-1) translateX(-627px);
+    }
   }
-}
 
-@keyframes bookmark-animation-rtl {
-  from {
-    transform: scaleX(-1) translateX(0);
+  #star-button-box {
+    position: relative;
   }
-  to {
-    transform: scaleX(-1) translateX(-627px);
+
+  /* Preload the bookmark animations to prevent a flicker during the first playing
+     of the animations. */
+  #star-button[preloadanimations] + #star-button-animatable-box > #star-button-animatable-image {
+    background-image: url("chrome://browser/skin/bookmark-animation.svg"),
+                      url("chrome://browser/skin/library-bookmark-animation.svg");
+    background-size: 0, 0;
   }
-}
 
-#star-button-box[animationsenabled] {
-  position: relative;
-}
-
-/* Preload the bookmark animations to prevent a flicker during the first playing
-   of the animations. */
-#star-button[preloadanimations] + #star-button-animatable-box > #star-button-animatable-image {
-  background-image: url("chrome://browser/skin/bookmark-animation.svg"),
-                    url("chrome://browser/skin/library-bookmark-animation.svg");
-  background-size: 0, 0;
-}
-
-#star-button-box[animationsenabled] > #star-button[starred][animate] {
-  fill: transparent;
-  position: relative;
-}
-
-#star-button-box[animationsenabled] > #star-button[starred][animate] + #star-button-animatable-box {
-  display: block;
-  position: absolute;
-  overflow: hidden;
-  top: calc(50% - 16.5px); /* 16.5px is half the height of the sprite */
-  /* .urlbar-icon has width 28px. Each frame is 33px wide. Set margin-inline-start
-     to be half the difference, -2.5px. */
-  margin-inline-start: -2.5px;
-  width: 33px; /* Width of each frame within the SVG sprite */
-  height: 33px; /* Height of each frame within the SVG sprite */
-}
-
-:root[uidensity=compact] #star-button-box[animationsenabled] > #star-button[starred][animate] + #star-button-animatable-box {
-  /* .urlbar-icon has width 24px in this case */
-  margin-inline-start: -4.5px;
-}
-
-:root[uidensity=touch] #star-button-box[animationsenabled] > #star-button[starred][animate] + #star-button-animatable-box {
-  /* .urlbar-icon has width 30px in this case */
-  margin-inline-start: -1.5px;
-}
-
-#star-button-box[animationsenabled] > #star-button[starred][animate] + #star-button-animatable-box > #star-button-animatable-image {
-  background-image: url("chrome://browser/skin/bookmark-animation.svg");
-  background-size: auto;
-  list-style-image: none;
-  height: var(--toolbarbutton-height);
-  min-height: 33px; /* Minimum height must be equal to the height of the SVG sprite */
-  animation-name: bookmark-animation;
-  animation-fill-mode: forwards;
-  animation-iteration-count: 1;
-  animation-timing-function: steps(19);
-  animation-duration: 317ms;
-  width: 660px;
-  -moz-context-properties: fill, stroke;
-  stroke: var(--toolbarbutton-icon-fill-attention);
-}
-
-#star-button-box[animationsenabled] > #star-button[starred][animate]:-moz-locale-dir(rtl) + #star-button-animatable-box > #star-button-animatable-image {
-  animation-name: bookmark-animation-rtl;
-}
-
-@keyframes pocket-animation {
-  from {
-    transform: translateX(0);
+  #star-button[starred][animate] {
+    fill: transparent;
+    position: relative;
   }
-  to {
-    transform: translateX(-240px);
+
+  #star-button[starred][animate] + #star-button-animatable-box {
+    display: block;
+    position: absolute;
+    overflow: hidden;
+    top: calc(50% - 16.5px); /* 16.5px is half the height of the sprite */
+    /* .urlbar-icon has width 28px. Each frame is 33px wide. Set margin-inline-start
+       to be half the difference, -2.5px. */
+    margin-inline-start: -2.5px;
+    width: 33px; /* Width of each frame within the SVG sprite */
+    height: 33px; /* Height of each frame within the SVG sprite */
   }
-}
 
-@keyframes pocket-animation-rtl {
-  from {
-    transform: scaleX(-1) translateX(0);
+  :root[uidensity=compact] #star-button[starred][animate] + #star-button-animatable-box {
+    /* .urlbar-icon has width 24px in this case */
+    margin-inline-start: -4.5px;
   }
-  to {
-    transform: scaleX(-1) translateX(-240px);
+
+  :root[uidensity=touch] #star-button[starred][animate] + #star-button-animatable-box {
+    /* .urlbar-icon has width 30px in this case */
+    margin-inline-start: -1.5px;
   }
-}
 
-#pocket-button-box[animate="true"] > #pocket-animatable-box,
-#pocket-button > .toolbarbutton-animatable-box {
-  top: calc(50% - 8px); /* 8px is half the height of the sprite */
-  /* Since .toolbarbutton-icon uses a different width than the animatable box,
-     we need to set a padding relative to the difference in widths. */
-  margin-inline-start: calc((16px + 2 * var(--toolbarbutton-inner-padding) - 20px) / 2);
-  width: 20px; /* Width of each frame within the SVG sprite */
-  height: 16px; /* Height of each frame within the SVG sprite */
-}
+  #star-button[starred][animate] + #star-button-animatable-box > #star-button-animatable-image {
+    background-image: url("chrome://browser/skin/bookmark-animation.svg");
+    background-size: auto;
+    list-style-image: none;
+    height: var(--toolbarbutton-height);
+    min-height: 33px; /* Minimum height must be equal to the height of the SVG sprite */
+    animation-name: bookmark-animation;
+    animation-fill-mode: forwards;
+    animation-iteration-count: 1;
+    animation-timing-function: steps(19);
+    animation-duration: 317ms;
+    width: 660px;
+    -moz-context-properties: fill, stroke;
+    stroke: var(--toolbarbutton-icon-fill-attention);
+  }
 
-#pocket-button-box[animate="true"] > #pocket-animatable-box {
-  display: block;
-  position: absolute;
-  overflow: hidden;
-  /* .urlbar-icon has width 28px. Each frame is 20px wide. Set margin-inline-start
-     to be half the difference, 4px. */
-  margin-inline-start: 4px;
-}
-
-:root[uidensity=compact] #pocket-button-box[animate="true"] > #pocket-animatable-box {
-  /* .urlbar-icon has width 24px in this case */
-  margin-inline-start: 2px;
-}
-
-:root[uidensity=touch] #pocket-button-box[animate="true"] > #pocket-animatable-box {
-  /* .urlbar-icon has width 30px in this case */
-  margin-inline-start: 5px;
-}
-
-#pocket-button-box[animate="true"] > #pocket-animatable-box > #pocket-animatable-image,
-#pocket-button > .toolbarbutton-animatable-box > .toolbarbutton-animatable-image {
-  height: var(--toolbarbutton-height); /* Height must be equal to height of toolbarbutton padding-box */
-}
-
-#pocket-button-box[animate="true"],
-#pocket-button[open="true"][animationsenabled][cui-areatype="toolbar"]:not([overflowedItem="true"]) {
-  position: relative;
-}
-
-#pocket-button-box:not([animate="true"]):not(:hover) > #pocket-animatable-box {
-  display: none;
-}
-
-/* Preload pocket-animation.svg and library-pocket-animation.svg to prevent
-   a flicker at the start of either animation. The preloading of the library
-   animation is triggered off of hovering the pocket button since the pocket
-   button always animates before the library button. */
-#pocket-button-box:not([animate="true"]):hover > #pocket-animatable-box > #pocket-animatable-image,
-#pocket-button[animationsenabled][cui-areatype="toolbar"]:not([overflowedItem="true"]):not([open="true"]):hover > .toolbarbutton-animatable-box > .toolbarbutton-animatable-image {
-  background-image: url("chrome://browser/skin/pocket-animation.svg"),
-                    url("chrome://browser/skin/library-pocket-animation.svg");
-  background-size: 0, 0;
-}
-
-#pocket-button-box[animate="true"] > #pocket-animatable-box > #pocket-animatable-image,
-#pocket-button[open="true"][animationsenabled][cui-areatype="toolbar"]:not([overflowedItem="true"]) > .toolbarbutton-animatable-box > .toolbarbutton-animatable-image {
-  animation-name: pocket-animation;
-  animation-timing-function: steps(12);
-  animation-duration: 200ms;
-  background-image: url("chrome://browser/skin/pocket-animation.svg");
-  fill: #ef4056;
-  -moz-context-properties: fill;
-  width: 260px;
-}
-
-#pocket-button-box[animate="true"]:-moz-locale-dir(rtl) > #pocket-animatable-box > #pocket-animatable-image,
-#pocket-button[open="true"][animationsenabled][cui-areatype="toolbar"]:not([overflowedItem="true"]):-moz-locale-dir(rtl) > .toolbarbutton-animatable-box > .toolbarbutton-animatable-image {
-  animation-name: pocket-animation-rtl;
+  #star-button[starred][animate]:-moz-locale-dir(rtl) + #star-button-animatable-box > #star-button-animatable-image {
+    animation-name: bookmark-animation-rtl;
+  }
 }
 
 
@@ -675,9 +672,9 @@
 
 :root {
   --cfr-animation-duration: 0.35s;
-  --cfr-button-addons-icon: url(resource://activity-stream/data/content/assets/glyph-webextension-16.svg);
-  --cfr-button-features-icon: url(resource://activity-stream/data/content/assets/glyph-cfr-feature-16.svg);
-  --cfr-button-highlights-icon: url(resource://activity-stream/data/content/assets/glyph-highlights-16.svg);
+  --cfr-button-addons-icon: url(chrome://activity-stream/content/data/content/assets/glyph-webextension-16.svg);
+  --cfr-button-features-icon: url(chrome://activity-stream/content/data/content/assets/glyph-cfr-feature-16.svg);
+  --cfr-button-highlights-icon: url(chrome://activity-stream/content/data/content/assets/glyph-highlights-16.svg);
   --cfr-active-color: #0060df;
 }
 
@@ -803,7 +800,7 @@
 /* Zoom button */
 
 #urlbar-zoom-button {
-  -moz-appearance: none;
+  appearance: none;
   color: inherit;
   font-size: .8em;
   padding: 0 8px;

@@ -8,9 +8,10 @@ extern crate clap;
 extern crate log;
 #[macro_use]
 extern crate serde;
+#[macro_use]
+extern crate tracy_rs;
 
 mod angle;
-mod binary_frame_reader;
 mod blob;
 mod egl;
 mod parse_function;
@@ -19,16 +20,11 @@ mod png;
 mod premultiply;
 mod rawtest;
 mod reftest;
-mod ron_frame_writer;
-mod scene;
+mod test_invalidation;
 mod wrench;
 mod yaml_frame_reader;
-mod yaml_frame_writer;
 mod yaml_helper;
-#[cfg(target_os = "macos")]
-mod cgfont_to_data;
 
-use crate::binary_frame_reader::BinaryFrameReader;
 use gleam::gl;
 #[cfg(feature = "software")]
 use gleam::gl::Gl;
@@ -51,10 +47,11 @@ use std::slice;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use webrender::DebugFlags;
 use webrender::api::*;
+use webrender::render_api::*;
 use webrender::api::units::*;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::VirtualKeyCode;
-use crate::wrench::{Wrench, WrenchThing};
+use crate::wrench::{CapturedSequence, Wrench, WrenchThing};
 use crate::yaml_frame_reader::YamlFrameReader;
 
 pub const PLATFORM_DEFAULT_FACE_NAME: &str = "Arial";
@@ -161,7 +158,8 @@ impl WindowWrapper {
         let gl = self.native_gl();
         let tex = gl.gen_textures(1)[0];
         gl.bind_texture(gl::TEXTURE_2D, tex);
-        let (data_ptr, w, h) = swgl.get_color_buffer(0, true);
+        let (data_ptr, w, h, stride) = swgl.get_color_buffer(0, true);
+        assert!(stride == w * 4);
         let buffer = unsafe { slice::from_raw_parts(data_ptr as *const u8, w as usize * h as usize * 4) };
         gl.tex_image_2d(gl::TEXTURE_2D, 0, gl::RGBA8 as gl::GLint, w, h, 0, gl::BGRA, gl::UNSIGNED_BYTE, Some(buffer));
         let fb = gl.gen_framebuffers(1)[0];
@@ -237,7 +235,6 @@ impl WindowWrapper {
         }
     }
 
-    #[cfg(feature = "software")]
     pub fn software_gl(&self) -> Option<&swgl::Context> {
         match *self {
             WindowWrapper::WindowedContext(_, _, ref swgl) |
@@ -263,6 +260,10 @@ impl WindowWrapper {
         }
     }
 
+    pub fn is_software(&self) -> bool {
+        self.software_gl().is_some()
+    }
+
     #[cfg(not(feature = "software"))]
     pub fn gl(&self) -> &dyn gl::Gl {
         self.native_gl()
@@ -277,6 +278,7 @@ impl WindowWrapper {
                     #[cfg(feature = "software")]
                     Some(ref swgl) => Rc::new(swgl.clone()),
                     None => gl.clone(),
+                    #[cfg(not(feature = "software"))]
                     _ => panic!(),
                 }
             }
@@ -287,7 +289,7 @@ impl WindowWrapper {
     #[cfg(feature = "software")]
     fn update_software(&self, dim: DeviceIntSize) {
         if let Some(swgl) = self.software_gl() {
-            swgl.init_default_framebuffer(dim.width, dim.height);
+            swgl.init_default_framebuffer(dim.width, dim.height, 0, std::ptr::null_mut());
         }
     }
 
@@ -303,15 +305,15 @@ impl WindowWrapper {
 }
 
 #[cfg(feature = "software")]
-fn make_software_context() -> Option<swgl::Context> {
+fn make_software_context() -> swgl::Context {
     let ctx = swgl::Context::create();
     ctx.make_current();
-    Some(ctx)
+    ctx
 }
 
 #[cfg(not(feature = "software"))]
-fn make_software_context() -> Option<swgl::Context> {
-    None
+fn make_software_context() -> swgl::Context {
+    panic!("software feature not enabled")
 }
 
 fn make_window(
@@ -324,7 +326,7 @@ fn make_window(
     software: bool,
 ) -> WindowWrapper {
     let sw_ctx = if software {
-        make_software_context()
+        Some(make_software_context())
     } else {
         None
     };
@@ -407,6 +409,7 @@ fn make_window(
                         },
                     }
                 }
+                #[cfg(not(feature = "software"))]
                 _ => panic!(),
             };
             WindowWrapper::Headless(HeadlessContext::new(size.width, size.height), gl, sw_ctx)
@@ -433,7 +436,9 @@ fn make_window(
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NotifierEvent {
-    WakeUp,
+    WakeUp {
+        composite_needed: bool,
+    },
     ShutDown,
 }
 
@@ -449,8 +454,14 @@ impl RenderNotifier for Notifier {
         })
     }
 
-    fn wake_up(&self) {
-        self.tx.send(NotifierEvent::WakeUp).unwrap();
+    fn wake_up(
+        &self,
+        composite_needed: bool,
+    ) {
+        let msg = NotifierEvent::WakeUp {
+            composite_needed,
+        };
+        self.tx.send(msg).unwrap();
     }
 
     fn shut_down(&self) {
@@ -460,11 +471,11 @@ impl RenderNotifier for Notifier {
     fn new_frame_ready(&self,
                        _: DocumentId,
                        _scrolled: bool,
-                       _composite_needed: bool,
+                       composite_needed: bool,
                        _render_time: Option<u64>) {
         // TODO(gw): Refactor wrench so that it can take advantage of cases
         //           where no composite is required when appropriate.
-        self.wake_up();
+        self.wake_up(composite_needed);
     }
 }
 
@@ -555,12 +566,6 @@ fn main() {
     // handle some global arguments
     let res_path = args.value_of("shaders").map(|s| PathBuf::from(s));
     let dp_ratio = args.value_of("dp_ratio").map(|v| v.parse::<f32>().unwrap());
-    let save_type = args.value_of("save").map(|s| match s {
-        "yaml" => wrench::SaveType::Yaml,
-        "ron" => wrench::SaveType::Ron,
-        "binary" => wrench::SaveType::Binary,
-        _ => panic!("Save type must be ron, yaml, or binary")
-    });
     let size = args.value_of("size")
         .map(|s| if s == "720p" {
             DeviceIntSize::new(1280, 720)
@@ -641,7 +646,7 @@ fn main() {
     let dp_ratio = dp_ratio.unwrap_or(window.hidpi_factor());
     let dim = window.get_inner_size();
 
-    let needs_frame_notifier = ["perf", "reftest", "png", "rawtest"]
+    let needs_frame_notifier = ["perf", "reftest", "png", "rawtest", "test_invalidation"]
         .iter()
         .any(|s| args.subcommand_matches(s).is_some());
     let (notifier, rx) = if needs_frame_notifier {
@@ -655,12 +660,11 @@ fn main() {
         &mut window,
         events_loop.as_mut().map(|el| el.create_proxy()),
         res_path,
+        !args.is_present("use_unoptimized_shaders"),
         dp_ratio,
-        save_type,
         dim,
         args.is_present("rebuild"),
         args.is_present("no_subpixel_aa"),
-        args.is_present("no_picture_caching"),
         args.is_present("verbose"),
         args.is_present("no_scissor"),
         args.is_present("no_batch"),
@@ -671,6 +675,11 @@ fn main() {
         dump_shader_source,
         notifier,
     );
+
+    if let Some(ui_str) = args.value_of("profiler_ui") {
+        wrench.renderer.set_profiler_ui(&ui_str);
+    }
+
     window.update(&mut wrench);
 
     if let Some(window_title) = wrench.take_title() {
@@ -697,7 +706,7 @@ fn main() {
             Some("gpu-cache") => png::ReadSurface::GpuCache,
             _ => panic!("Unknown surface argument value")
         };
-        let output_path = subargs.value_of("OUTPUT").map(|s| PathBuf::from(s));
+        let output_path = subargs.value_of("OUTPUT").map(PathBuf::from);
         let reader = YamlFrameReader::new_from_args(subargs);
         png::png(&mut wrench, surface, &mut window, reader, rx.unwrap(), output_path);
     } else if let Some(subargs) = args.subcommand_matches("reftest") {
@@ -740,6 +749,14 @@ fn main() {
         }
         harness.run(base_manifest, &filename, as_csv);
         return;
+    } else if let Some(_) = args.subcommand_matches("test_invalidation") {
+        let harness = test_invalidation::TestHarness::new(
+            &mut wrench,
+            &mut window,
+            rx.unwrap(),
+        );
+
+        harness.run();
     } else if let Some(subargs) = args.subcommand_matches("compare_perf") {
         let first_filename = subargs.value_of("first_filename").unwrap();
         let second_filename = subargs.value_of("second_filename").unwrap();
@@ -764,13 +781,18 @@ fn render<'a>(
     let input_path = subargs.value_of("INPUT").map(PathBuf::from).unwrap();
 
     // If the input is a directory, we are looking at a capture.
-    let mut thing = if input_path.as_path().is_dir() {
-        let mut documents = wrench.api.load_capture(input_path);
+    let mut thing = if input_path.join("scenes").as_path().is_dir() {
+        let scene_id = subargs.value_of("scene-id").map(|z| z.parse::<u32>().unwrap());
+        let frame_id = subargs.value_of("frame-id").map(|z| z.parse::<u32>().unwrap());
+        Box::new(CapturedSequence::new(
+            input_path,
+            scene_id.unwrap_or(1),
+            frame_id.unwrap_or(1),
+        ))
+    } else if input_path.as_path().is_dir() {
+        let mut documents = wrench.api.load_capture(input_path, None);
         println!("loaded {:?}", documents.iter().map(|cd| cd.document_id).collect::<Vec<_>>());
         let captured = documents.swap_remove(0);
-        if let Some(fb_size) = wrench.renderer.device_size() {
-            window.resize(fb_size);
-        }
         wrench.document_id = captured.document_id;
         Box::new(captured) as Box<dyn WrenchThing>
     } else {
@@ -782,7 +804,6 @@ fn render<'a>(
 
         match extension {
             "yaml" => Box::new(YamlFrameReader::new_from_args(subargs)) as Box<dyn WrenchThing>,
-            "bin" => Box::new(BinaryFrameReader::new_from_args(subargs)) as Box<dyn WrenchThing>,
             _ => panic!("Tried to render with an unknown file type."),
         }
     };
@@ -794,12 +815,16 @@ fn render<'a>(
     window.update(wrench);
     thing.do_frame(wrench);
 
+    if let Some(fb_size) = wrench.renderer.device_size() {
+        window.resize(fb_size);
+    }
+
     let mut debug_flags = DebugFlags::empty();
     debug_flags.set(DebugFlags::DISABLE_BATCHING, no_batch);
 
     // Default the profile overlay on for android.
     if cfg!(target_os = "android") {
-        debug_flags.toggle(DebugFlags::PROFILER_DBG | DebugFlags::COMPACT_PROFILER);
+        debug_flags.toggle(DebugFlags::PROFILER_DBG);
         wrench.api.send_debug_cmd(DebugCommand::SetFlags(debug_flags));
     }
 
@@ -841,11 +866,6 @@ fn render<'a>(
                         VirtualKeyCode::Escape => {
                             return winit::ControlFlow::Break;
                         }
-                        VirtualKeyCode::A => {
-                            debug_flags.toggle(DebugFlags::DISABLE_PICTURE_CACHING);
-                            wrench.api.send_debug_cmd(DebugCommand::SetFlags(debug_flags));
-                            do_render = true;
-                        }
                         VirtualKeyCode::B => {
                             debug_flags.toggle(DebugFlags::INVALIDATION_DBG);
                             wrench.api.send_debug_cmd(DebugCommand::SetFlags(debug_flags));
@@ -863,11 +883,6 @@ fn render<'a>(
                         }
                         VirtualKeyCode::I => {
                             debug_flags.toggle(DebugFlags::TEXTURE_CACHE_DBG);
-                            wrench.api.send_debug_cmd(DebugCommand::SetFlags(debug_flags));
-                            do_render = true;
-                        }
-                        VirtualKeyCode::S => {
-                            debug_flags.toggle(DebugFlags::COMPACT_PROFILER);
                             wrench.api.send_debug_cmd(DebugCommand::SetFlags(debug_flags));
                             do_render = true;
                         }
@@ -925,21 +940,6 @@ fn render<'a>(
                             let path = PathBuf::from("../captures/wrench");
                             wrench.api.save_capture(path, CaptureBits::all());
                         }
-                        VirtualKeyCode::Up | VirtualKeyCode::Down => {
-                            let mut txn = Transaction::new();
-
-                            let offset = match vk {
-                                winit::VirtualKeyCode::Up => LayoutVector2D::new(0.0, 10.0),
-                                winit::VirtualKeyCode::Down => LayoutVector2D::new(0.0, -10.0),
-                                _ => unreachable!("Should not see non directional keys here.")
-                            };
-
-                            txn.scroll(ScrollLocation::Delta(offset), cursor_position);
-                            txn.generate_frame();
-                            wrench.api.send_transaction(wrench.document_id, txn);
-
-                            do_frame = true;
-                        }
                         VirtualKeyCode::Add => {
                             let current_zoom = wrench.get_page_zoom();
                             let new_zoom_factor = ZoomFactor::new(current_zoom.get() + 0.1);
@@ -957,7 +957,6 @@ fn render<'a>(
                                 wrench.document_id,
                                 None,
                                 cursor_position,
-                                HitTestFlags::FIND_ALL
                             );
 
                             println!("Hit test results:");

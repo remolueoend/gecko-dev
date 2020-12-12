@@ -58,7 +58,7 @@ policy-DisableForgetButton = Prevent access to the Forget button.
 
 policy-DisableFormHistory = Don’t remember search and form history.
 
-policy-DisableMasterPasswordCreation = If true, a master password can’t be created.
+policy-DisablePrimaryPasswordCreation = If true, a Primary Password can’t be created.
 
 policy-DisablePasswordReveal = Do not allow passwords to be revealed in saved logins.
 
@@ -109,6 +109,8 @@ policy-FirefoxHome = Configure Firefox Home.
 
 policy-FlashPlugin = Allow or deny usage of the Flash plugin.
 
+policy-Handlers = Configure default application handlers.
+
 policy-HardwareAcceleration = If false, turn off hardware acceleration.
 
 # “lock” means that the user won’t be able to change this setting
@@ -128,6 +130,10 @@ policy-LegacySameSiteCookieBehaviorEnabledForDomainList = Revert to legacy SameS
 
 policy-LocalFileLinks = Allow specific websites to link to local files.
 
+policy-ManagedBookmarks = Configures a list of bookmarks managed by an administrator that cannot be changed by the user.
+
+policy-PrimaryPassword = Require or prevent using a Primary Password.
+
 policy-NetworkPrediction = Enable or disable network prediction (DNS prefetching).
 
 policy-NewTabPage = Enable or disable the New Tab page.
@@ -144,7 +150,12 @@ policy-OverridePostUpdatePage = Override the post-update “What’s New” page
 
 policy-PasswordManagerEnabled = Enable saving passwords to the password manager.
 
+# PDF.js and PDF should not be translated
+policy-PDFjs = Disable or configure PDF.js, the built-in PDF viewer in { -brand-short-name }.
+
 policy-Permissions2 = Configure permissions for camera, microphone, location, notifications, and autoplay.
+
+policy-PictureInPicture = Enable or disable Picture-in-Picture.
 
 policy-PopupBlocking = Allow certain websites to display popups by default.
 

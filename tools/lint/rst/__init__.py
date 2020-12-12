@@ -8,7 +8,6 @@ import subprocess
 
 from mozlint import result
 from mozlint.pathutils import expand_exclusions
-from mozlint.util import pip
 from mozfile import which
 
 # Error Levels
@@ -19,7 +18,7 @@ from mozfile import which
 # (4, 'severe')
 
 abspath = os.path.abspath(os.path.dirname(__file__))
-rstcheck_requirements_file = os.path.join(abspath, 'requirements.txt')
+rstcheck_requirements_file = os.path.join(abspath, "requirements.txt")
 
 results = []
 
@@ -27,19 +26,28 @@ RSTCHECK_NOT_FOUND = """
 Could not find rstcheck! Install rstcheck and try again.
 
     $ pip install -U --require-hashes -r {}
-""".strip().format(rstcheck_requirements_file)
+""".strip().format(
+    rstcheck_requirements_file
+)
 
 RSTCHECK_INSTALL_ERROR = """
 Unable to install required version of rstcheck
 Try to install it manually with:
     $ pip install -U --require-hashes -r {}
-""".strip().format(rstcheck_requirements_file)
+""".strip().format(
+    rstcheck_requirements_file
+)
 
-RSTCHECK_FORMAT_REGEX = re.compile(r'(.*):(.*): \(.*/([0-9]*)\) (.*)$')
+RSTCHECK_FORMAT_REGEX = re.compile(r"(.*):(.*): \(.*/([0-9]*)\) (.*)$")
 
 
 def setup(root, **lintargs):
-    if not pip.reinstall_program(rstcheck_requirements_file):
+    virtualenv_manager = lintargs["virtualenv_manager"]
+    try:
+        virtualenv_manager.install_pip_requirements(
+            rstcheck_requirements_file, quiet=True
+        )
+    except subprocess.CalledProcessError:
         print(RSTCHECK_INSTALL_ERROR)
         return 1
 
@@ -49,11 +57,11 @@ def get_rstcheck_binary():
     Returns the path of the first rstcheck binary available
     if not found returns None
     """
-    binary = os.environ.get('RSTCHECK')
+    binary = os.environ.get("RSTCHECK")
     if binary:
         return binary
 
-    return which('rstcheck')
+    return which("rstcheck")
 
 
 def parse_with_split(errors):
@@ -64,24 +72,21 @@ def parse_with_split(errors):
 
 
 def lint(files, config, **lintargs):
-    log = lintargs['log']
-    config['root'] = lintargs['root']
-    paths = expand_exclusions(files, config, config['root'])
+    log = lintargs["log"]
+    config["root"] = lintargs["root"]
+    paths = expand_exclusions(files, config, config["root"])
     paths = list(paths)
     chunk_size = 50
     binary = get_rstcheck_binary()
     rstcheck_options = "--ignore-language=cpp,json"
 
     while paths:
-        cmdargs = [
-            which('python'),
-            binary,
-            rstcheck_options,
-        ] + paths[:chunk_size]
-        log.debug("Command: {}".format(' '.join(cmdargs)))
+        cmdargs = [which("python"), binary, rstcheck_options] + paths[:chunk_size]
+        log.debug("Command: {}".format(" ".join(cmdargs)))
 
         proc = subprocess.Popen(
-            cmdargs, stdout=subprocess.PIPE,
+            cmdargs,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=os.environ,
             universal_newlines=True,
@@ -91,10 +96,10 @@ def lint(files, config, **lintargs):
             if len(errors) > 1:
                 filename, lineno, level, message = parse_with_split(errors)
                 res = {
-                    'path': filename,
-                    'message': message,
-                    'lineno': lineno,
-                    'level': "error" if int(level) >= 2 else "warning",
+                    "path": filename,
+                    "message": message,
+                    "lineno": lineno,
+                    "level": "error" if int(level) >= 2 else "warning",
                 }
                 results.append(result.from_config(config, **res))
         paths = paths[chunk_size:]

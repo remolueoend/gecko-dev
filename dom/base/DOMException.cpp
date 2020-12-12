@@ -137,8 +137,7 @@ nsresult NS_GetNameAndMessageForDOMNSResult(nsresult aNSResult,
   return NS_ERROR_NOT_AVAILABLE;
 }
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Exception)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -362,7 +361,7 @@ already_AddRefed<DOMException> DOMException::Constructor(
     const Optional<nsAString>& aName) {
   nsresult exceptionResult = NS_OK;
   uint16_t exceptionCode = 0;
-  nsCString name(NS_LITERAL_CSTRING("Error"));
+  nsCString name("Error"_ns);
 
   if (aName.WasPassed()) {
     CopyUTF16toUTF8(aName.Value(), name);
@@ -406,5 +405,4 @@ already_AddRefed<DOMException> DOMException::Create(
   return inst.forget();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

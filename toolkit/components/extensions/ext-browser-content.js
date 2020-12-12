@@ -3,7 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 var { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
@@ -11,15 +10,9 @@ var { XPCOMUtils } = ChromeUtils.import(
 XPCOMUtils.defineLazyModuleGetters(this, {
   BrowserUtils: "resource://gre/modules/BrowserUtils.jsm",
   clearTimeout: "resource://gre/modules/Timer.jsm",
-  E10SUtils: "resource://gre/modules/E10SUtils.jsm",
   ExtensionCommon: "resource://gre/modules/ExtensionCommon.jsm",
   setTimeout: "resource://gre/modules/Timer.jsm",
 });
-
-var { ExtensionUtils } = ChromeUtils.import(
-  "resource://gre/modules/ExtensionUtils.jsm"
-);
-const { getWinUtils } = ExtensionUtils;
 
 /* eslint-env mozilla/frame-script */
 
@@ -84,7 +77,7 @@ const BrowserListener = {
     this.oldBackground = null;
 
     if (allowScriptsToClose) {
-      getWinUtils(content).allowScriptsToClose();
+      content.windowUtils.allowScriptsToClose();
     }
 
     // Force external links to open in tabs.
@@ -130,12 +123,12 @@ const BrowserListener = {
   },
 
   loadStylesheets() {
-    let winUtils = getWinUtils(content);
+    let { windowUtils } = content;
 
     for (let url of this.stylesheets) {
-      winUtils.addSheet(
+      windowUtils.addSheet(
         ExtensionCommon.stylesheetMap.get(url),
-        winUtils.AGENT_SHEET
+        windowUtils.AGENT_SHEET
       );
     }
   },
@@ -251,6 +244,7 @@ const BrowserListener = {
     }
 
     let result;
+    const zoom = content.browsingContext.fullZoom;
     if (this.fixedWidth) {
       // If we're in a fixed-width area (namely a slide-in subview of the main
       // menu panel), we need to calculate the view height based on the
@@ -280,7 +274,7 @@ const BrowserListener = {
         bodyPadding = Math.min(p, bodyPadding);
       }
 
-      let height = Math.ceil(body.scrollHeight + bodyPadding);
+      let height = Math.ceil((body.scrollHeight + bodyPadding) * zoom);
 
       result = { height, detail };
     } else {
@@ -308,8 +302,8 @@ const BrowserListener = {
         h
       );
 
-      let width = Math.ceil(w.value / ratio);
-      let height = Math.ceil(h.value / ratio);
+      let width = Math.ceil((w.value * zoom) / ratio);
+      let height = Math.ceil((h.value * zoom) / ratio);
 
       result = { width, height, detail };
     }
@@ -341,19 +335,7 @@ var WebBrowserChrome = {
   },
 
   shouldLoadURIInThisProcess(URI) {
-    let remoteSubframes = docShell.QueryInterface(Ci.nsILoadContext)
-      .useRemoteSubframes;
-    return E10SUtils.shouldLoadURIInThisProcess(URI, remoteSubframes);
-  },
-
-  reloadInFreshProcess(
-    docShell,
-    URI,
-    referrerInfo,
-    triggeringPrincipal,
-    loadFlags
-  ) {
-    return false;
+    return true;
   },
 };
 

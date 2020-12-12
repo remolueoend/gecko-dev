@@ -155,10 +155,7 @@ if(USE_PULSE)
   target_sources(cubeb PRIVATE
     src/cubeb_pulse.c)
   target_compile_definitions(cubeb PRIVATE USE_PULSE)
-  target_link_libraries(cubeb PRIVATE pulse pthread)
-  if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-    target_link_libraries(cubeb PRIVATE dl)
-  endif()
+  target_link_libraries(cubeb PRIVATE pthread ${CMAKE_DL_LIBS})
 endif()
 
 check_include_files(alsa/asoundlib.h USE_ALSA)
@@ -166,10 +163,7 @@ if(USE_ALSA)
   target_sources(cubeb PRIVATE
     src/cubeb_alsa.c)
   target_compile_definitions(cubeb PRIVATE USE_ALSA)
-  target_link_libraries(cubeb PRIVATE asound pthread)
-  if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-    target_link_libraries(cubeb PRIVATE dl)
-  endif()
+  target_link_libraries(cubeb PRIVATE pthread ${CMAKE_DL_LIBS})
 endif()
 
 check_include_files(jack/jack.h USE_JACK)
@@ -177,10 +171,7 @@ if(USE_JACK)
   target_sources(cubeb PRIVATE
     src/cubeb_jack.cpp)
   target_compile_definitions(cubeb PRIVATE USE_JACK)
-  target_link_libraries(cubeb PRIVATE jack pthread)
-  if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
-    target_link_libraries(cubeb PRIVATE dl)
-  endif()
+  target_link_libraries(cubeb PRIVATE pthread ${CMAKE_DL_LIBS})
 endif()
 
 check_include_files(audioclient.h USE_WASAPI)
@@ -221,7 +212,7 @@ if(USE_SNDIO)
   target_sources(cubeb PRIVATE
     src/cubeb_sndio.c)
   target_compile_definitions(cubeb PRIVATE USE_SNDIO)
-  target_link_libraries(cubeb PRIVATE sndio)
+  target_link_libraries(cubeb PRIVATE pthread ${CMAKE_DL_LIBS})
 endif()
 
 check_include_files(sys/audioio.h USE_SUN)
@@ -240,7 +231,7 @@ if(USE_KAI)
   target_link_libraries(cubeb PRIVATE kai)
 endif()
 
-if(USE_PULSE_RUST)
+if(USE_PULSE AND USE_PULSE_RUST)
   include(ExternalProject)
   set_directory_properties(PROPERTIES EP_PREFIX ${CMAKE_BINARY_DIR}/rust)
   ExternalProject_Add(
@@ -248,17 +239,18 @@ if(USE_PULSE_RUST)
     DOWNLOAD_COMMAND ""
     CONFIGURE_COMMAND ""
     BUILD_COMMAND cargo build COMMAND cargo build --release
-    BINARY_DIR "${CMAKE_SOURCE_DIR}/src/cubeb-pulse-rs"
+    BUILD_ALWAYS ON
+    BINARY_DIR "${PROJECT_SOURCE_DIR}/src/cubeb-pulse-rs"
     INSTALL_COMMAND ""
     LOG_BUILD ON)
   add_dependencies(cubeb cubeb_pulse_rs)
   target_compile_definitions(cubeb PRIVATE USE_PULSE_RUST)
   target_link_libraries(cubeb PRIVATE
-    debug "${CMAKE_SOURCE_DIR}/src/cubeb-pulse-rs/target/debug/libcubeb_pulse.a"
-    optimized "${CMAKE_SOURCE_DIR}/src/cubeb-pulse-rs/target/release/libcubeb_pulse.a" pulse)
+    debug "${PROJECT_SOURCE_DIR}/src/cubeb-pulse-rs/target/debug/libcubeb_pulse.a"
+    optimized "${PROJECT_SOURCE_DIR}/src/cubeb-pulse-rs/target/release/libcubeb_pulse.a" pulse)
 endif()
 
-if(USE_AUDIOUNIT_RUST)
+if(USE_AUDIOUNIT AND USE_AUDIOUNIT_RUST)
   include(ExternalProject)
   set_directory_properties(PROPERTIES EP_PREFIX ${CMAKE_BINARY_DIR}/rust)
   ExternalProject_Add(
@@ -266,14 +258,15 @@ if(USE_AUDIOUNIT_RUST)
     DOWNLOAD_COMMAND ""
     CONFIGURE_COMMAND ""
     BUILD_COMMAND cargo build COMMAND cargo build --release
-    BINARY_DIR "${CMAKE_SOURCE_DIR}/src/cubeb-coreaudio-rs"
+    BUILD_ALWAYS ON
+    BINARY_DIR "${PROJECT_SOURCE_DIR}/src/cubeb-coreaudio-rs"
     INSTALL_COMMAND ""
     LOG_BUILD ON)
   add_dependencies(cubeb cubeb_coreaudio_rs)
   target_compile_definitions(cubeb PRIVATE USE_AUDIOUNIT_RUST)
   target_link_libraries(cubeb PRIVATE
-    debug "${CMAKE_SOURCE_DIR}/src/cubeb-coreaudio-rs/target/debug/libcubeb_coreaudio.a"
-    optimized "${CMAKE_SOURCE_DIR}/src/cubeb-coreaudio-rs/target/release/libcubeb_coreaudio.a")
+    debug "${PROJECT_SOURCE_DIR}/src/cubeb-coreaudio-rs/target/debug/libcubeb_coreaudio.a"
+    optimized "${PROJECT_SOURCE_DIR}/src/cubeb-coreaudio-rs/target/release/libcubeb_coreaudio.a")
 endif()
 
 find_package(Doxygen)

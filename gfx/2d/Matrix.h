@@ -68,6 +68,9 @@ class BaseMatrix {
 
   friend std::ostream& operator<<(std::ostream& aStream,
                                   const BaseMatrix& aMatrix) {
+    if (aMatrix.IsIdentity()) {
+      return aStream << "[ I ]";
+    }
     return aStream << "[ " << aMatrix._11 << " " << aMatrix._12 << "; "
                    << aMatrix._21 << " " << aMatrix._22 << "; " << aMatrix._31
                    << " " << aMatrix._32 << "; ]";
@@ -441,14 +444,14 @@ class BaseMatrix {
    * The xMajor parameter indicates if the larger scale is
    * to be assumed to be in the X direction or not.
    */
-  MatrixSize ScaleFactors(bool xMajor) const {
+  MatrixSize ScaleFactors() const {
     T det = Determinant();
 
     if (det == 0.0) {
       return MatrixSize(0.0, 0.0);
     }
 
-    MatrixSize sz = xMajor ? MatrixSize(1.0, 0.0) : MatrixSize(0.0, 1.0);
+    MatrixSize sz = MatrixSize(1.0, 0.0);
     sz = TransformSize(sz);
 
     T major = sqrt(sz.width * sz.width + sz.height * sz.height);
@@ -463,11 +466,7 @@ class BaseMatrix {
       minor = det / major;
     }
 
-    if (xMajor) {
-      return MatrixSize(major, minor);
-    }
-
-    return MatrixSize(minor, major);
+    return MatrixSize(major, minor);
   }
 };
 
@@ -586,18 +585,19 @@ class Matrix4x4Typed {
 
   friend std::ostream& operator<<(std::ostream& aStream,
                                   const Matrix4x4Typed& aMatrix) {
+    if (aMatrix.Is2D()) {
+      BaseMatrix<T> matrix = aMatrix.As2D();
+      return aStream << matrix;
+    }
     const T* f = &aMatrix._11;
-    aStream << "[ " << f[0] << " " << f[1] << " " << f[2] << " " << f[3] << " ;"
-            << std::endl;
+    aStream << "[ " << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
     f += 4;
-    aStream << "  " << f[0] << " " << f[1] << " " << f[2] << " " << f[3] << " ;"
-            << std::endl;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
     f += 4;
-    aStream << "  " << f[0] << " " << f[1] << " " << f[2] << " " << f[3] << " ;"
-            << std::endl;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
     f += 4;
-    aStream << "  " << f[0] << " " << f[1] << " " << f[2] << " " << f[3] << " ]"
-            << std::endl;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3]
+            << "; ]";
     return aStream;
   }
 
@@ -837,10 +837,6 @@ class Matrix4x4Typed {
   size_t TransformAndClipRect(const RectTyped<SourceUnits, F>& aRect,
                               const RectTyped<TargetUnits, F>& aClip,
                               PointTyped<TargetUnits, F>* aVerts) const {
-    if (aRect.IsEmpty() || aClip.IsEmpty()) {
-      return 0;
-    }
-
     typedef Point4DTyped<UnknownUnits, F> P4D;
 
     // The initial polygon is made up by the corners of aRect in homogenous
@@ -1437,21 +1433,9 @@ class Matrix4x4Typed {
       // We do not support matrices with a zero scale component
       return false;
     }
-    T invXS = 1.0f / scale.x;
-    T invYS = 1.0f / scale.y;
-    T invZS = 1.0f / scale.z;
-    mat._11 *= invXS;
-    mat._21 *= invXS;
-    mat._31 *= invXS;
-    mat._12 *= invYS;
-    mat._22 *= invYS;
-    mat._32 *= invYS;
-    mat._13 *= invZS;
-    mat._23 *= invZS;
-    mat._33 *= invZS;
 
     // Extract rotation
-    rotation.SetFromRotationMatrix(mat);
+    rotation.SetFromRotationMatrix(*this);
     return true;
   }
 
@@ -1465,17 +1449,17 @@ class Matrix4x4Typed {
     const T wx = q.w * x2, wy = q.w * y2, wz = q.w * z2;
 
     _11 = 1.0f - (yy + zz);
-    _21 = xy + wz;
-    _31 = xz - wy;
+    _21 = xy - wz;
+    _31 = xz + wy;
     _41 = 0.0f;
 
-    _12 = xy - wz;
+    _12 = xy + wz;
     _22 = 1.0f - (xx + zz);
-    _32 = yz + wx;
+    _32 = yz - wx;
     _42 = 0.0f;
 
-    _13 = xz + wy;
-    _23 = yz - wx;
+    _13 = xz - wy;
+    _23 = yz + wx;
     _33 = 1.0f - (xx + yy);
     _43 = 0.0f;
 
@@ -1853,6 +1837,22 @@ class Matrix5x4 {
   Matrix5x4& operator*=(const Matrix5x4& aMatrix) {
     *this = *this * aMatrix;
     return *this;
+  }
+
+  friend std::ostream& operator<<(std::ostream& aStream,
+                                  const Matrix5x4& aMatrix) {
+    const Float* f = &aMatrix._11;
+    aStream << "[ " << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
+    f += 4;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
+    f += 4;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
+    f += 4;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3] << ';';
+    f += 4;
+    aStream << ' ' << f[0] << ' ' << f[1] << ' ' << f[2] << ' ' << f[3]
+            << "; ]";
+    return aStream;
   }
 
   union {

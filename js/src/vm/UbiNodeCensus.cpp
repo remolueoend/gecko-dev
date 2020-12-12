@@ -8,6 +8,7 @@
 
 #include "builtin/MapObject.h"
 #include "js/CharacterEncoding.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "util/Text.h"
 #include "vm/JSContext.h"
 #include "vm/PlainObject.h"  // js::PlainObject
@@ -159,7 +160,7 @@ bool BucketCount::report(JSContext* cx, CountBase& countBase,
   if (!arr) {
     return false;
   }
-  arr->ensureDenseInitializedLength(cx, 0, length);
+  arr->ensureDenseInitializedLength(0, length);
 
   for (size_t i = 0; i < length; i++) {
     arr->setDenseElement(i, NumberValue(count.ids_[i]));

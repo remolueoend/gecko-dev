@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "AnimationSurfaceProvider.h"
+#include "DecodePool.h"
 #include "Decoder.h"
 #include "DecoderFactory.h"
 #include "decoders/nsBMPDecoder.h"
@@ -13,6 +14,7 @@
 #include "ImageOps.h"
 #include "imgIContainer.h"
 #include "ImageFactory.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/gfx/2D.h"
 #include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
@@ -90,9 +92,40 @@ static void CheckDecoderResults(const ImageTestCase& aTestCase,
 }
 
 template <typename Func>
+void WithBadBufferDecode(const ImageTestCase& aTestCase,
+                         const Maybe<IntSize>& aOutputSize,
+                         Func aResultChecker) {
+  // Prepare a SourceBuffer with an error that will immediately move iterators
+  // to COMPLETE.
+  auto sourceBuffer = MakeNotNull<RefPtr<SourceBuffer>>();
+  sourceBuffer->ExpectLength(SIZE_MAX);
+
+  // Create a decoder.
+  DecoderType decoderType = DecoderFactory::GetDecoderType(aTestCase.mMimeType);
+  RefPtr<image::Decoder> decoder = DecoderFactory::CreateAnonymousDecoder(
+      decoderType, sourceBuffer, aOutputSize, DecoderFlags::FIRST_FRAME_ONLY,
+      aTestCase.mSurfaceFlags);
+  ASSERT_TRUE(decoder != nullptr);
+  RefPtr<IDecodingTask> task =
+      new AnonymousDecodingTask(WrapNotNull(decoder), /* aResumable */ false);
+
+  // Run the full decoder synchronously on the main thread.
+  task->Run();
+
+  // Call the lambda to verify the expected results.
+  aResultChecker(decoder);
+}
+
+static void CheckDecoderBadBuffer(const ImageTestCase& aTestCase) {
+  WithBadBufferDecode(aTestCase, Nothing(), [&](image::Decoder* aDecoder) {
+    CheckDecoderResults(aTestCase, aDecoder);
+  });
+}
+
+template <typename Func>
 void WithSingleChunkDecode(const ImageTestCase& aTestCase,
                            const Maybe<IntSize>& aOutputSize,
-                           Func aResultChecker) {
+                           bool aUseDecodePool, Func aResultChecker) {
   nsCOMPtr<nsIInputStream> inputStream = LoadFile(aTestCase.mPath);
   ASSERT_TRUE(inputStream != nullptr);
 
@@ -117,17 +150,26 @@ void WithSingleChunkDecode(const ImageTestCase& aTestCase,
   RefPtr<IDecodingTask> task =
       new AnonymousDecodingTask(WrapNotNull(decoder), /* aResumable */ false);
 
-  // Run the full decoder synchronously.
-  task->Run();
+  if (aUseDecodePool) {
+    DecodePool::Singleton()->AsyncRun(task.get());
+
+    while (!decoder->GetDecodeDone()) {
+      task->Resume();
+    }
+  } else {  // Run the full decoder synchronously on the main thread.
+    task->Run();
+  }
 
   // Call the lambda to verify the expected results.
   aResultChecker(decoder);
 }
 
-static void CheckDecoderSingleChunk(const ImageTestCase& aTestCase) {
-  WithSingleChunkDecode(aTestCase, Nothing(), [&](image::Decoder* aDecoder) {
-    CheckDecoderResults(aTestCase, aDecoder);
-  });
+static void CheckDecoderSingleChunk(const ImageTestCase& aTestCase,
+                                    bool aUseDecodePool = false) {
+  WithSingleChunkDecode(aTestCase, Nothing(), aUseDecodePool,
+                        [&](image::Decoder* aDecoder) {
+                          CheckDecoderResults(aTestCase, aDecoder);
+                        });
 }
 
 template <typename Func>
@@ -232,7 +274,8 @@ static void CheckDownscaleDuringDecode(const ImageTestCase& aTestCase) {
   IntSize outputSize(20, 20);
 
   WithSingleChunkDecode(
-      aTestCase, Some(outputSize), [&](image::Decoder* aDecoder) {
+      aTestCase, Some(outputSize), /* aUseDecodePool */ false,
+      [&](image::Decoder* aDecoder) {
         RefPtr<SourceSurface> surface = CheckDecoderState(aTestCase, aDecoder);
 
         // There are no downscale-during-decode tests that have
@@ -623,6 +666,11 @@ class ImageDecoders : public ::testing::Test {
   TEST_F(ImageDecoders, test_prefix##ForceSRGB) {                            \
     CheckDecoderSingleChunk(Green##test_prefix##TestCase().WithSurfaceFlags( \
         SurfaceFlags::TO_SRGB_COLORSPACE));                                  \
+  }                                                                          \
+                                                                             \
+  TEST_F(ImageDecoders, test_prefix##BadBuffer) {                            \
+    CheckDecoderBadBuffer(Green##test_prefix##TestCase().WithFlags(          \
+        TEST_CASE_HAS_ERROR | TEST_CASE_IGNORE_OUTPUT));                     \
   }
 
 IMAGE_GTEST_DECODER_BASE_F(PNG)
@@ -651,6 +699,37 @@ TEST_F(ImageDecoders, WebPTransparentSingleChunk) {
 
 TEST_F(ImageDecoders, WebPTransparentNoAlphaHeaderSingleChunk) {
   CheckDecoderSingleChunk(TransparentNoAlphaHeaderWebPTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFSingleChunk) {
+  CheckDecoderSingleChunk(GreenAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFMultiLayerSingleChunk) {
+  CheckDecoderSingleChunk(MultiLayerAVIFTestCase());
+}
+
+// This test must use the decode pool in order to check for regressions
+// of crashing the dav1d decoder when the ImgDecoder threads have a standard-
+// sized stack.
+TEST_F(ImageDecoders, AVIFStackCheck) {
+  CheckDecoderSingleChunk(StackCheckAVIFTestCase(), /* aUseDecodePool */ true);
+}
+
+TEST_F(ImageDecoders, AVIFDelayedChunk) {
+  CheckDecoderDelayedChunk(GreenAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFMultiChunk) {
+  CheckDecoderMultiChunk(GreenAVIFTestCase());
+}
+
+TEST_F(ImageDecoders, AVIFLargeMultiChunk) {
+  CheckDecoderMultiChunk(LargeAVIFTestCase(), /* aChunkSize */ 64);
+}
+
+TEST_F(ImageDecoders, AVIFDownscaleDuringDecode) {
+  CheckDownscaleDuringDecode(DownscaledAVIFTestCase());
 }
 
 TEST_F(ImageDecoders, AnimatedGIFSingleChunk) {
@@ -724,6 +803,16 @@ TEST_F(ImageDecoders, CorruptICOWithBadBMPHeightMultiChunk) {
 TEST_F(ImageDecoders, CorruptICOWithBadBppSingleChunk) {
   CheckDecoderSingleChunk(CorruptICOWithBadBppTestCase());
 }
+
+// Running this test under emulation for Android 7 on x86_64 seems to result
+// in the large allocation succeeding, but leaving so little memory left the
+// system falls over and it kills the test run, so we skip it instead.
+// See bug 1655846 for more details.
+#ifndef ANDROID
+TEST_F(ImageDecoders, CorruptAVIFSingleChunk) {
+  CheckDecoderSingleChunk(CorruptAVIFTestCase());
+}
+#endif
 
 TEST_F(ImageDecoders, AnimatedGIFWithFRAME_FIRST) {
   CheckDecoderFrameFirst(GreenFirstFrameAnimatedGIFTestCase());

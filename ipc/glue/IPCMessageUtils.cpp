@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IPCMessageUtils.h"
+
+#include <cstddef>
 #include "mozilla/CheckedInt.h"
 
 namespace IPC {
@@ -18,9 +20,5 @@ bool ByteLengthIsValid(uint32_t aNumElements, size_t aElementSize,
   *aByteLength = length.value();
   return true;
 }
-
-void WriteParams(Message* aMsg) {}
-
-bool ReadParams(const Message* aMsg, PickleIterator* aIter) { return true; }
 
 }  // namespace IPC

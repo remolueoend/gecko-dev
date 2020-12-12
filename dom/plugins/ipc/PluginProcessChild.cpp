@@ -4,26 +4,21 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/ipc/IOThreadChild.h"
 #include "mozilla/plugins/PluginProcessChild.h"
 
-#include "prlink.h"
-
+#include "ClearOnShutdown.h"
 #include "base/command_line.h"
+#include "base/message_loop.h"  // for MessageLoop
 #include "base/string_util.h"
+#include "mozilla/AbstractThread.h"
+#include "mozilla/TaskController.h"
+#include "mozilla/ipc/IOThreadChild.h"
 #include "nsDebugImpl.h"
 #include "nsThreadManager.h"
-#include "ClearOnShutdown.h"
+#include "prlink.h"
 
 #if defined(XP_MACOSX) && defined(MOZ_SANDBOX)
 #  include "mozilla/SandboxSettings.h"
-#endif
-
-#if defined(XP_MACOSX)
-#  include "nsCocoaFeatures.h"
-// An undocumented CoreGraphics framework method, present in the same form
-// since at least OS X 10.5.
-extern "C" CGError CGSSetDebugOptions(int options);
 #endif
 
 #ifdef XP_WIN
@@ -40,8 +35,7 @@ using mozilla::ipc::IOThreadChild;
 #  include <algorithm>
 #endif
 
-namespace mozilla {
-namespace plugins {
+namespace mozilla::plugins {
 
 #if defined(XP_WIN) && defined(MOZ_SANDBOX)
 static void SetSandboxTempPath(const std::wstring& aFullTmpPath) {
@@ -165,21 +159,9 @@ bool PluginProcessChild::Init(int aArgc, char* aArgv[]) {
 #  error Sorry
 #endif
 
-  bool retval = mPlugin.InitForChrome(pluginFilename, ParentPid(),
-                                      IOThreadChild::message_loop(),
-                                      IOThreadChild::TakeChannel());
-#if defined(XP_MACOSX)
-  if (nsCocoaFeatures::OnYosemiteOrLater()) {
-    // Explicitly turn off CGEvent logging.  This works around bug 1092855.
-    // If there are already CGEvents in the log, turning off logging also
-    // causes those events to be written to disk.  But at this point no
-    // CGEvents have yet been processed.  CGEvents are events (usually
-    // input events) pulled from the WindowServer.  An option of 0x80000008
-    // turns on CGEvent logging.
-    CGSSetDebugOptions(0x80000007);
-  }
-#endif
-  return retval;
+  return mPlugin.InitForChrome(pluginFilename, ParentPid(),
+                               IOThreadChild::message_loop(),
+                               IOThreadChild::TakeChannel());
 }
 
 void PluginProcessChild::CleanUp() {
@@ -195,7 +177,10 @@ void PluginProcessChild::CleanUp() {
 #endif
 
   mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownFinal);
+
+  AbstractThread::ShutdownMainThread();
+
+  mozilla::TaskController::Shutdown();
 }
 
-}  // namespace plugins
-}  // namespace mozilla
+}  // namespace mozilla::plugins

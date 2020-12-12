@@ -1,5 +1,7 @@
-commit 4a8e49b3ca7f9f74a4cafe6621ff9ba548ccc353
-Author: Alexey Shvayka <shvaikalesh@gmail.com>
-Date:   Sat Apr 11 01:41:59 2020 +0300
+commit 00014894735c3bee62bed234594abf387ea0c57b
+Author: Rick Waldron <waldron.rick@gmail.com>
+Date:   Wed Oct 21 20:14:28 2020 -0400
 
-    Add test for \0 in Unicode patterns (#2569)
+    Update test/built-ins/TypedArray/prototype/forEach/callbackfn-detachbuffer.js
+    
+    Co-authored-by: Ross Kirsling <rkirsling@gmail.com>

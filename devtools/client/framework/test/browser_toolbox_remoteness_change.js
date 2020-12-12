@@ -39,7 +39,7 @@ async function navigateBetweenProcesses(enableTargetSwitching) {
 
   const onToolboxDestroyed = toolbox.once("destroyed");
   const onToolboxCreated = gDevTools.once("toolbox-created");
-  const onToolboxSwitchedToTarget = toolbox.once("switched-target");
+  const onToolboxSwitchedToTarget = toolbox.targetList.once("switched-target");
 
   info("Navigate to a URL supporting remote process");
   if (enableTargetSwitching) {
@@ -49,7 +49,7 @@ async function navigateBetweenProcesses(enableTargetSwitching) {
     // So, fallback to BrowserTestUtils helpers in this test when
     // the target-switching preference is turned off.
     const onBrowserLoaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-    await BrowserTestUtils.loadURI(tab.linkedBrowser, URL_2);
+    BrowserTestUtils.loadURI(tab.linkedBrowser, URL_2);
     await onBrowserLoaded;
   }
 

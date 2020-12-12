@@ -41,7 +41,7 @@ typedef enum {
     ssl_ct_alert = 21,
     ssl_ct_handshake = 22,
     ssl_ct_application_data = 23,
-    ssl_ct_ack = 25
+    ssl_ct_ack = 26
 } SSLContentType;
 
 typedef enum {
@@ -183,6 +183,12 @@ typedef enum {
     ssl_auth_tls13_any = 10,
     ssl_auth_size /* number of authentication types */
 } SSLAuthType;
+
+typedef enum {
+    ssl_psk_none = 0,
+    ssl_psk_resume = 1,
+    ssl_psk_external = 2,
+} SSLPskType;
 
 /* This is defined for backward compatibility reasons */
 #define ssl_auth_rsa ssl_auth_rsa_decrypt
@@ -358,6 +364,15 @@ typedef struct SSLChannelInfoStr {
      */
     PRBool peerDelegCred;
 
+    /* The following fields were added in NSS 3.54. */
+    /* Indicates what type of PSK, if any, was used in a handshake. */
+    SSLPskType pskType;
+
+    /* The following fields were added in NSS 3.60 */
+    /* This field is PR_TRUE when the connection is established
+     * with TLS 1.3 Encrypted Client Hello. */
+    PRBool echAccepted;
+
     /* When adding new fields to this structure, please document the
      * NSS version in which they were added. */
 } SSLChannelInfo;
@@ -366,12 +381,13 @@ typedef struct SSLChannelInfoStr {
 #define ssl_preinfo_version (1U << 0)
 #define ssl_preinfo_cipher_suite (1U << 1)
 #define ssl_preinfo_0rtt_cipher_suite (1U << 2)
-/* ssl_preinfo_peer_auth covers peerDelegCred, authKeyBits, and scheme. Not
- * included in ssl_preinfo_all as it is client-only. */
+/* ssl_preinfo_peer_auth covers peerDelegCred, authKeyBits,
+ * and scheme. Not included in ssl_preinfo_all as it is client-only. */
 #define ssl_preinfo_peer_auth (1U << 3)
+#define ssl_preinfo_ech (1U << 4)
 /* ssl_preinfo_all doesn't contain ssl_preinfo_0rtt_cipher_suite because that
  * field is only set if 0-RTT is sent (client) or accepted (server). */
-#define ssl_preinfo_all (ssl_preinfo_version | ssl_preinfo_cipher_suite)
+#define ssl_preinfo_all (ssl_preinfo_version | ssl_preinfo_cipher_suite | ssl_preinfo_ech)
 
 typedef struct SSLPreliminaryChannelInfoStr {
     /* On return, SSL_GetPreliminaryChannelInfo sets |length| to the smaller of
@@ -418,6 +434,12 @@ typedef struct SSLPreliminaryChannelInfoStr {
     PRBool peerDelegCred;
     PRUint32 authKeyBits;
     SSLSignatureScheme signatureScheme;
+
+    /* The following fields were added in NSS 3.60. */
+    PRBool echAccepted;
+    /* If the application configured ECH but |!echAccepted|, authCertificate
+     * should use the following hostname extracted from the ECHConfig. */
+    const char* echPublicName;
 
     /* When adding new fields to this structure, please document the
      * NSS version in which they were added. */
@@ -523,7 +545,9 @@ typedef enum {
     ssl_next_proto_nego_xtn = 13172, /* Deprecated. */
     ssl_renegotiation_info_xtn = 0xff01,
     ssl_tls13_short_header_xtn = 0xff03, /* Deprecated. */
-    ssl_tls13_encrypted_sni_xtn = 0xffce,
+    ssl_tls13_outer_extensions_xtn = 0xfd00,
+    ssl_tls13_encrypted_client_hello_xtn = 0xfe08,
+    ssl_tls13_encrypted_sni_xtn = 0xffce, /* Deprecated. */
 } SSLExtensionType;
 
 /* This is the old name for the supported_groups extensions. */

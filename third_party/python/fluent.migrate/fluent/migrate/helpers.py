@@ -6,12 +6,13 @@ nodes.
 
 They take a string argument and immediately return a corresponding AST node.
 (As opposed to Transforms which are AST nodes on their own and only return the
-migrated AST nodes when they are evaluated by a MergeContext.) """
+migrated AST nodes when they are evaluated by a MigrationContext.) """
 
 from __future__ import unicode_literals
 from __future__ import absolute_import
 
 from fluent.syntax import FluentParser, ast as FTL
+from fluent.syntax.visitor import Transformer
 from .transforms import Transform, CONCAT, COPY, COPY_PATTERN
 from .errors import NotSupportedError, InvalidTransformError
 
@@ -50,7 +51,7 @@ def TERM_REFERENCE(name):
     )
 
 
-class IntoTranforms(FTL.Transformer):
+class IntoTranforms(Transformer):
     IMPLICIT_TRANSFORMS = ("CONCAT",)
     FORBIDDEN_TRANSFORMS = ("PLURALS", "REPLACE", "REPLACE_IN_TEXT")
 

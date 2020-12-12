@@ -16,16 +16,6 @@
 
 namespace js {
 
-inline JS_PUBLIC_API bool BytecodeLocation::isValid(
-    const JSScript* script) const {
-  // Note: Don't create a new BytecodeLocation during the implementation of
-  // this, as it is used in the constructor, and will recurse forever.
-  return script->contains(*this) || toRawBytecode() == script->codeEnd();
-}
-
-inline bool BytecodeLocation::isInBounds(const JSScript* script) const {
-  return script->contains(*this);
-}
 inline uint32_t BytecodeLocation::bytecodeToOffset(
     const JSScript* script) const {
   MOZ_ASSERT(this->isInBounds());
@@ -51,8 +41,7 @@ inline JS::BigInt* BytecodeLocation::getBigInt(const JSScript* script) const {
 
 inline JSObject* BytecodeLocation::getObject(const JSScript* script) const {
   MOZ_ASSERT(this->isValid());
-  MOZ_ASSERT(is(JSOp::CallSiteObj) || is(JSOp::Object) ||
-             is(JSOp::NewArrayCopyOnWrite));
+  MOZ_ASSERT(is(JSOp::CallSiteObj) || is(JSOp::Object));
   return script->getObject(this->rawBytecode_);
 }
 

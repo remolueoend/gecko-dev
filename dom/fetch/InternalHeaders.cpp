@@ -11,16 +11,16 @@
 
 #include "nsCharSeparatedTokenizer.h"
 #include "nsContentUtils.h"
+#include "nsIHttpChannel.h"
 #include "nsIHttpHeaderVisitor.h"
 #include "nsNetUtil.h"
 #include "nsReadableUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-InternalHeaders::InternalHeaders(const nsTArray<Entry>&& aHeaders,
+InternalHeaders::InternalHeaders(nsTArray<Entry>&& aHeaders,
                                  HeadersGuardEnum aGuard)
-    : mGuard(aGuard), mList(aHeaders), mListDirty(true) {}
+    : mGuard(aGuard), mList(std::move(aHeaders)), mListDirty(true) {}
 
 InternalHeaders::InternalHeaders(
     const nsTArray<HeadersEntry>& aHeadersEntryList, HeadersGuardEnum aGuard)
@@ -389,7 +389,7 @@ bool InternalHeaders::IsForbiddenRequestHeader(const nsCString& aName) const {
 bool InternalHeaders::IsForbiddenRequestNoCorsHeader(
     const nsCString& aName) const {
   return mGuard == HeadersGuardEnum::Request_no_cors &&
-         !IsSimpleHeader(aName, EmptyCString());
+         !IsSimpleHeader(aName, ""_ns);
 }
 
 bool InternalHeaders::IsForbiddenRequestNoCorsHeader(
@@ -501,9 +501,9 @@ already_AddRefed<InternalHeaders> InternalHeaders::BasicHeaders(
   ErrorResult result;
   // The Set-Cookie headers cannot be invalid mutable headers, so the Delete
   // must succeed.
-  basic->Delete(NS_LITERAL_CSTRING("Set-Cookie"), result);
+  basic->Delete("Set-Cookie"_ns, result);
   MOZ_ASSERT(!result.Failed());
-  basic->Delete(NS_LITERAL_CSTRING("Set-Cookie2"), result);
+  basic->Delete("Set-Cookie2"_ns, result);
   MOZ_ASSERT(!result.Failed());
   return basic.forget();
 }
@@ -515,8 +515,7 @@ already_AddRefed<InternalHeaders> InternalHeaders::CORSHeaders(
   ErrorResult result;
 
   nsAutoCString acExposedNames;
-  aHeaders->Get(NS_LITERAL_CSTRING("Access-Control-Expose-Headers"),
-                acExposedNames, result);
+  aHeaders->Get("Access-Control-Expose-Headers"_ns, acExposedNames, result);
   MOZ_ASSERT(!result.Failed());
 
   bool allowAllHeaders = false;
@@ -636,5 +635,4 @@ void InternalHeaders::ReuseExistingNameIfExists(nsCString& aName) const {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

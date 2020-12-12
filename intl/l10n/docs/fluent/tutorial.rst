@@ -228,7 +228,7 @@ This operation is sanitized, and Fluent takes care of selecting which elements a
 attributes can be safely provided by the localization.
 The list of allowed elements and attributes is `maintained by the W3C`__, and if
 the developer needs to allow for localization of additional attributes, they can
-whitelist them using :code:`data-l10n-attrs` list:
+allow them using :code:`data-l10n-attrs` list:
 
 .. code-block:: html
 
@@ -621,9 +621,7 @@ The three classes of potential problems that this can help with are:
 
  - Bidi adaptation.
 
-   For many developers, testing the UI in right-to-left mode is hard. Mozilla
-   offers a pref :js:`intl.uidirection` which switches the direction of the layout,
-   but that doesn't expose problems related to right-to-left text.
+   For many developers, testing the UI in right-to-left mode is hard.
    Pseudolocalization shows how a right-to-left locale will look like.
 
 To turn on pseudolocalization, add a new string pref :js:`intl.l10n.pseudo` and

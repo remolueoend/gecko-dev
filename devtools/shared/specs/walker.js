@@ -54,6 +54,14 @@ const walkerSpec = generateActorSpec({
     "new-mutations": {
       type: "newMutations",
     },
+    "root-available": {
+      type: "root-available",
+      node: Arg(0, "nullable:domnode"),
+    },
+    "root-destroyed": {
+      type: "root-destroyed",
+      node: Arg(0, "nullable:domnode"),
+    },
     "picker-node-picked": {
       type: "pickerNodePicked",
       node: Arg(0, "disconnectedNode"),
@@ -75,6 +83,10 @@ const walkerSpec = generateActorSpec({
     },
     "scrollable-change": {
       type: "scrollable-change",
+      nodes: Arg(0, "array:domnode"),
+    },
+    "overflow-change": {
+      type: "overflow-change",
       nodes: Arg(0, "array:domnode"),
     },
     // The walker actor emits a useful "resize" event to its front to let
@@ -275,14 +287,6 @@ const walkerSpec = generateActorSpec({
       request: { node: Arg(0, "domnode") },
       response: { attached: RetVal("boolean") },
     },
-    getNodeActorFromObjectActor: {
-      request: {
-        objectActorID: Arg(0, "string"),
-      },
-      response: {
-        nodeFront: RetVal("nullable:disconnectedNode"),
-      },
-    },
     getNodeActorFromWindowID: {
       request: {
         windowID: Arg(0, "string"),
@@ -338,14 +342,6 @@ const walkerSpec = generateActorSpec({
         node: RetVal("nullable:domnode"),
       },
     },
-    hasAccessibilityProperties: {
-      request: {
-        node: Arg(0, "nullable:domnode"),
-      },
-      response: {
-        value: RetVal("boolean"),
-      },
-    },
     setMutationBreakpoints: {
       request: {
         node: Arg(0, "nullable:domnode"),
@@ -361,6 +357,35 @@ const walkerSpec = generateActorSpec({
       },
       response: {
         nodeFront: RetVal("disconnectedNode"),
+      },
+    },
+    pick: {
+      request: {
+        doFocus: Arg(0, "nullable:boolean"),
+      },
+    },
+    cancelPick: {
+      request: {},
+      response: {},
+    },
+    watchRootNode: {
+      request: {},
+      response: {},
+    },
+    getOverflowCausingElements: {
+      request: {
+        node: Arg(0, "domnode"),
+      },
+      response: {
+        list: RetVal("disconnectedNodeArray"),
+      },
+    },
+    getScrollableAncestorNode: {
+      request: {
+        node: Arg(0, "domnode"),
+      },
+      response: {
+        node: RetVal("nullable:domnode"),
       },
     },
   },

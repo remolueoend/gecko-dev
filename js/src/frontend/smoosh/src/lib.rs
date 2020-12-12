@@ -20,13 +20,18 @@ use env_logger;
 use jsparagus::ast::source_atom_set::SourceAtomSet;
 use jsparagus::ast::source_slice_list::SourceSliceList;
 use jsparagus::ast::types::Program;
-use jsparagus::emitter::{
-    emit, EmitError, EmitOptions, EmitResult, GCThing, RegExpItem, ScopeNote,
-};
+use jsparagus::emitter::{emit, EmitError, EmitOptions};
 use jsparagus::parser::{parse_module, parse_script, ParseError, ParseOptions};
-use jsparagus::scope::data::{BindingName, ScopeData};
+use jsparagus::stencil::gcthings::GCThing;
+use jsparagus::stencil::regexp::RegExpItem;
+use jsparagus::stencil::result::EmitResult;
+use jsparagus::stencil::scope::{BindingName, ScopeData};
+use jsparagus::stencil::scope_notes::ScopeNote;
+use jsparagus::stencil::script::{ImmutableScriptData, ScriptStencil, SourceExtent};
 use std::boxed::Box;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::convert::TryInto;
 use std::os::raw::{c_char, c_void};
 use std::rc::Rc;
 use std::{mem, slice, str};
@@ -67,37 +72,28 @@ pub struct SmooshCompileOptions {
     no_script_rval: bool,
 }
 
-#[repr(C)]
-pub enum SmooshGCThingKind {
-    ScopeIndex,
-    RegExpIndex,
+#[repr(C, u8)]
+pub enum SmooshGCThing {
+    Null,
+    Atom(usize),
+    Function(usize),
+    Scope(usize),
+    RegExp(usize),
 }
 
-#[repr(C)]
-pub struct SmooshGCThing {
-    kind: SmooshGCThingKind,
-    index: usize,
-}
-
-impl From<GCThing> for SmooshGCThing {
-    fn from(item: GCThing) -> Self {
-        match item {
-            GCThing::Scope(index) => Self {
-                kind: SmooshGCThingKind::ScopeIndex,
-                index: index.into(),
-            },
-            GCThing::RegExp(index) => Self {
-                kind: SmooshGCThingKind::RegExpIndex,
-                index: index.into(),
-            },
+fn convert_gcthing(item: GCThing, scope_index_map: &HashMap<usize, usize>) -> SmooshGCThing {
+    match item {
+        GCThing::Null => SmooshGCThing::Null,
+        GCThing::Atom(index) => SmooshGCThing::Atom(index.into()),
+        GCThing::Function(index) => SmooshGCThing::Function(index.into()),
+        GCThing::RegExp(index) => SmooshGCThing::RegExp(index.into()),
+        GCThing::Scope(index) => {
+            let mapped_index = *scope_index_map
+                .get(&index.into())
+                .expect("Scope map should be populated");
+            SmooshGCThing::Scope(mapped_index)
         }
     }
-}
-
-#[repr(C)]
-pub enum SmooshScopeDataKind {
-    Global,
-    Lexical,
 }
 
 #[repr(C)]
@@ -118,36 +114,126 @@ impl From<BindingName> for SmooshBindingName {
 }
 
 #[repr(C)]
-pub struct SmooshScopeData {
-    kind: SmooshScopeDataKind,
+pub struct SmooshGlobalScopeData {
     bindings: CVec<SmooshBindingName>,
     let_start: usize,
+    const_start: usize,
+}
+
+#[repr(C)]
+pub struct SmooshVarScopeData {
+    bindings: CVec<SmooshBindingName>,
+    enclosing: usize,
+    function_has_extensible_scope: bool,
+    first_frame_slot: u32,
+}
+
+#[repr(C)]
+pub struct SmooshLexicalScopeData {
+    bindings: CVec<SmooshBindingName>,
     const_start: usize,
     enclosing: usize,
     first_frame_slot: u32,
 }
 
-impl From<ScopeData> for SmooshScopeData {
-    fn from(data: ScopeData) -> Self {
-        match data {
-            ScopeData::Global(data) => Self {
-                kind: SmooshScopeDataKind::Global,
-                bindings: CVec::from(data.bindings.into_iter().map(|x| x.into()).collect()),
-                let_start: data.let_start,
-                const_start: data.const_start,
-                enclosing: 0,
-                first_frame_slot: 0,
-            },
-            ScopeData::Lexical(data) => Self {
-                kind: SmooshScopeDataKind::Lexical,
-                bindings: CVec::from(data.bindings.into_iter().map(|x| x.into()).collect()),
-                let_start: 0,
-                const_start: data.const_start,
-                enclosing: data.enclosing.into(),
+#[repr(C)]
+pub struct SmooshFunctionScopeData {
+    bindings: CVec<COption<SmooshBindingName>>,
+    has_parameter_exprs: bool,
+    non_positional_formal_start: usize,
+    var_start: usize,
+    enclosing: usize,
+    first_frame_slot: u32,
+    function_index: usize,
+    is_arrow: bool,
+}
+
+#[repr(C, u8)]
+pub enum SmooshScopeData {
+    Global(SmooshGlobalScopeData),
+    Var(SmooshVarScopeData),
+    Lexical(SmooshLexicalScopeData),
+    Function(SmooshFunctionScopeData),
+}
+
+/// Convert single Scope data, resolving enclosing index with scope_index_map.
+fn convert_scope(scope: ScopeData, scope_index_map: &mut HashMap<usize, usize>) -> SmooshScopeData {
+    match scope {
+        ScopeData::Alias(_) => panic!("alias should be handled in convert_scopes"),
+        ScopeData::Global(data) => SmooshScopeData::Global(SmooshGlobalScopeData {
+            bindings: CVec::from(data.base.bindings.into_iter().map(|x| x.into()).collect()),
+            let_start: data.let_start,
+            const_start: data.const_start,
+        }),
+        ScopeData::Var(data) => {
+            let enclosing: usize = data.enclosing.into();
+            SmooshScopeData::Var(SmooshVarScopeData {
+                bindings: CVec::from(data.base.bindings.into_iter().map(|x| x.into()).collect()),
+                enclosing: *scope_index_map
+                    .get(&enclosing)
+                    .expect("Alias target should be earlier index"),
+                function_has_extensible_scope: data.function_has_extensible_scope,
                 first_frame_slot: data.first_frame_slot.into(),
-            },
+            })
+        }
+        ScopeData::Lexical(data) => {
+            let enclosing: usize = data.enclosing.into();
+            SmooshScopeData::Lexical(SmooshLexicalScopeData {
+                bindings: CVec::from(data.base.bindings.into_iter().map(|x| x.into()).collect()),
+                const_start: data.const_start,
+                enclosing: *scope_index_map
+                    .get(&enclosing)
+                    .expect("Alias target should be earlier index"),
+                first_frame_slot: data.first_frame_slot.into(),
+            })
+        }
+        ScopeData::Function(data) => {
+            let enclosing: usize = data.enclosing.into();
+            SmooshScopeData::Function(SmooshFunctionScopeData {
+                bindings: CVec::from(
+                    data.base
+                        .bindings
+                        .into_iter()
+                        .map(|x| COption::from(x.map(|x| x.into())))
+                        .collect(),
+                ),
+                has_parameter_exprs: data.has_parameter_exprs,
+                non_positional_formal_start: data.non_positional_formal_start,
+                var_start: data.var_start,
+                enclosing: *scope_index_map
+                    .get(&enclosing)
+                    .expect("Alias target should be earlier index"),
+                first_frame_slot: data.first_frame_slot.into(),
+                function_index: data.function_index.into(),
+                is_arrow: data.is_arrow,
+            })
         }
     }
+}
+
+/// Convert list of Scope data, removing aliases.
+/// Also create a map between original index into index into result vector
+/// without aliases.
+fn convert_scopes(
+    scopes: Vec<ScopeData>,
+    scope_index_map: &mut HashMap<usize, usize>,
+) -> CVec<SmooshScopeData> {
+    let mut result = Vec::with_capacity(scopes.len());
+    for (i, scope) in scopes.into_iter().enumerate() {
+        if let ScopeData::Alias(index) = scope {
+            let mapped_index = *scope_index_map
+                .get(&index.into())
+                .expect("Alias target should be earlier index");
+            scope_index_map.insert(i, mapped_index);
+
+            continue;
+        }
+
+        scope_index_map.insert(i, result.len());
+        result.push(convert_scope(scope, scope_index_map))
+    }
+
+    CVec::from(result)
 }
 
 #[repr(C)]
@@ -201,53 +287,67 @@ impl From<RegExpItem> for SmooshRegExpItem {
 }
 
 #[repr(C)]
+pub struct SmooshImmutableScriptData {
+    pub main_offset: u32,
+    pub nfixed: u32,
+    pub nslots: u32,
+    pub body_scope_index: u32,
+    pub num_ic_entries: u32,
+    pub fun_length: u16,
+    pub bytecode: CVec<u8>,
+    pub scope_notes: CVec<SmooshScopeNote>,
+}
+
+#[repr(C)]
+pub struct SmooshSourceExtent {
+    pub source_start: u32,
+    pub source_end: u32,
+    pub to_string_start: u32,
+    pub to_string_end: u32,
+    pub lineno: u32,
+    pub column: u32,
+}
+
+#[repr(C, u8)]
+pub enum COption<T> {
+    Some(T),
+    None,
+}
+
+impl<T> COption<T> {
+    fn from(v: Option<T>) -> Self {
+        match v {
+            Option::Some(v) => COption::Some(v),
+            Option::None => COption::None,
+        }
+    }
+}
+
+#[repr(C)]
+pub struct SmooshScriptStencil {
+    pub immutable_flags: u32,
+    pub gcthings: CVec<SmooshGCThing>,
+    pub immutable_script_data: COption<usize>,
+    pub extent: SmooshSourceExtent,
+    pub fun_name: COption<usize>,
+    pub fun_nargs: u16,
+    pub fun_flags: u16,
+    pub lazy_function_enclosing_scope_index: COption<usize>,
+    pub is_standalone_function: bool,
+    pub was_function_emitted: bool,
+    pub is_singleton_function: bool,
+}
+
+#[repr(C)]
 pub struct SmooshResult {
     unimplemented: bool,
     error: CVec<u8>,
-    bytecode: CVec<u8>,
-    atoms: CVec<usize>,
-    gcthings: CVec<SmooshGCThing>,
+
     scopes: CVec<SmooshScopeData>,
-    scope_notes: CVec<SmooshScopeNote>,
     regexps: CVec<SmooshRegExpItem>,
 
-    /// Line and column numbers for the first character of source.
-    lineno: usize,
-    column: usize,
-
-    /// Offset of main entry point from code, after predef'ing prologue.
-    main_offset: usize,
-
-    /// Fixed frame slots.
-    max_fixed_slots: u32,
-
-    /// Maximum stack depth before any instruction.
-    ///
-    /// This value is a function of `bytecode`: there's only one correct value
-    /// for a given script.
-    maximum_stack_depth: u32,
-
-    /// Index into the gcthings array of the body scope.
-    body_scope_index: u32,
-
-    /// Number of instructions in this script that have IC entries.
-    ///
-    /// A function of `bytecode`. See `JOF_IC`.
-    num_ic_entries: u32,
-
-    /// Number of instructions in this script that have JOF_TYPESET.
-    num_type_sets: u32,
-
-    /// `See BaseScript::ImmutableFlags`.
-    strict: bool,
-    bindings_accessed_dynamically: bool,
-    has_call_site_obj: bool,
-    is_for_eval: bool,
-    is_module: bool,
-    is_function: bool,
-    has_non_syntactic_scope: bool,
-    needs_function_environment_objects: bool,
-    has_module_goal: bool,
+    scripts: CVec<SmooshScriptStencil>,
+    script_data_list: CVec<SmooshImmutableScriptData>,
 
     all_atoms: *mut c_void,
     all_atoms_len: usize,
@@ -270,29 +370,12 @@ impl SmooshResult {
         Self {
             unimplemented,
             error,
-            bytecode: CVec::empty(),
-            atoms: CVec::empty(),
-            gcthings: CVec::empty(),
+
             scopes: CVec::empty(),
-            scope_notes: CVec::empty(),
             regexps: CVec::empty(),
-            lineno: 0,
-            column: 0,
-            main_offset: 0,
-            max_fixed_slots: 0,
-            maximum_stack_depth: 0,
-            body_scope_index: 0,
-            num_ic_entries: 0,
-            num_type_sets: 0,
-            strict: false,
-            bindings_accessed_dynamically: false,
-            has_call_site_obj: false,
-            is_for_eval: false,
-            is_module: false,
-            is_function: false,
-            has_non_syntactic_scope: false,
-            needs_function_environment_objects: false,
-            has_module_goal: false,
+
+            scripts: CVec::empty(),
+            script_data_list: CVec::empty(),
 
             all_atoms: std::ptr::null_mut(),
             all_atoms_len: 0,
@@ -322,6 +405,95 @@ pub unsafe extern "C" fn smoosh_init() {
     }
 }
 
+fn convert_extent(extent: SourceExtent) -> SmooshSourceExtent {
+    SmooshSourceExtent {
+        source_start: extent.source_start,
+        source_end: extent.source_end,
+        to_string_start: extent.to_string_start,
+        to_string_end: extent.to_string_end,
+        lineno: extent.lineno,
+        column: extent.column,
+    }
+}
+
+fn convert_script(
+    script: ScriptStencil,
+    scope_index_map: &HashMap<usize, usize>,
+) -> SmooshScriptStencil {
+    let immutable_flags = script.immutable_flags.into();
+
+    let gcthings = CVec::from(
+        script
+            .gcthings
+            .into_iter()
+            .map(|x| convert_gcthing(x, scope_index_map))
+            .collect(),
+    );
+
+    let immutable_script_data = COption::from(script.immutable_script_data.map(|n| n.into()));
+
+    let extent = convert_extent(script.extent);
+
+    let fun_name = COption::from(script.fun_name.map(|n| n.into()));
+    let fun_nargs = script.fun_nargs;
+    let fun_flags = script.fun_flags.into();
+
+    let lazy_function_enclosing_scope_index =
+        COption::from(script.lazy_function_enclosing_scope_index.map(|index| {
+            *scope_index_map
+                .get(&index.into())
+                .expect("Alias target should be earlier index")
+        }));
+
+    let is_standalone_function = script.is_standalone_function;
+    let was_function_emitted = script.was_function_emitted;
+    let is_singleton_function = script.is_singleton_function;
+
+    SmooshScriptStencil {
+        immutable_flags,
+        gcthings,
+        immutable_script_data,
+        extent,
+        fun_name,
+        fun_nargs,
+        fun_flags,
+        lazy_function_enclosing_scope_index,
+        is_standalone_function,
+        was_function_emitted,
+        is_singleton_function,
+    }
+}
+
+fn convert_script_data(script_data: ImmutableScriptData) -> SmooshImmutableScriptData {
+    let main_offset = script_data.main_offset;
+    let nfixed = script_data.nfixed.into();
+    let nslots = script_data.nslots;
+    let body_scope_index = script_data.body_scope_index;
+    let num_ic_entries = script_data.num_ic_entries;
+    let fun_length = script_data.fun_length;
+
+    let bytecode = CVec::from(script_data.bytecode);
+
+    let scope_notes = CVec::from(
+        script_data
+            .scope_notes
+            .into_iter()
+            .map(|x| x.into())
+            .collect(),
+    );
+
+    SmooshImmutableScriptData {
+        main_offset,
+        nfixed,
+        nslots,
+        body_scope_index,
+        num_ic_entries,
+        fun_length,
+        bytecode,
+        scope_notes,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn smoosh_run(
     text: *const u8,
@@ -332,34 +504,29 @@ pub unsafe extern "C" fn smoosh_run(
     let allocator = Box::new(bumpalo::Bump::new());
     match smoosh(&allocator, text, options) {
         Ok(result) => {
-            let bytecode = CVec::from(result.bytecode);
-            let atoms = CVec::from(result.atoms.into_iter().map(|s| s.into()).collect());
-            let gcthings = CVec::from(result.gcthings.into_iter().map(|x| x.into()).collect());
-            let scopes = CVec::from(result.scopes.into_iter().map(|x| x.into()).collect());
-            let scope_notes =
-                CVec::from(result.scope_notes.into_iter().map(|x| x.into()).collect());
+            let mut scope_index_map = HashMap::new();
+
+            let scopes = convert_scopes(result.scopes, &mut scope_index_map);
             let regexps = CVec::from(result.regexps.into_iter().map(|x| x.into()).collect());
 
-            let lineno = result.lineno;
-            let column = result.column;
-            let main_offset = result.main_offset;
-            let max_fixed_slots = result.max_fixed_slots.into();
-            let maximum_stack_depth = result.maximum_stack_depth;
-            let body_scope_index = result.body_scope_index;
-            let num_ic_entries = result.num_ic_entries;
-            let num_type_sets = result.num_type_sets;
-            let strict = result.strict;
-            let bindings_accessed_dynamically = result.bindings_accessed_dynamically;
-            let has_call_site_obj = result.has_call_site_obj;
-            let is_for_eval = result.is_for_eval;
-            let is_module = result.is_module;
-            let is_function = result.is_function;
-            let has_non_syntactic_scope = result.has_non_syntactic_scope;
-            let needs_function_environment_objects = result.needs_function_environment_objects;
-            let has_module_goal = result.has_module_goal;
+            let scripts = CVec::from(
+                result
+                    .scripts
+                    .into_iter()
+                    .map(|x| convert_script(x, &scope_index_map))
+                    .collect(),
+            );
 
-            let all_atoms_len = result.all_atoms.len();
-            let all_atoms = Box::new(result.all_atoms);
+            let script_data_list = CVec::from(
+                result
+                    .script_data_list
+                    .into_iter()
+                    .map(convert_script_data)
+                    .collect(),
+            );
+
+            let all_atoms_len = result.atoms.len();
+            let all_atoms = Box::new(result.atoms);
             let raw_all_atoms = Box::into_raw(all_atoms);
             let opaque_all_atoms = raw_all_atoms as *mut c_void;
 
@@ -374,29 +541,12 @@ pub unsafe extern "C" fn smoosh_run(
             SmooshResult {
                 unimplemented: false,
                 error: CVec::empty(),
-                bytecode,
-                atoms,
-                gcthings,
+
                 scopes,
-                scope_notes,
                 regexps,
-                lineno,
-                column,
-                main_offset,
-                max_fixed_slots,
-                maximum_stack_depth,
-                body_scope_index,
-                num_ic_entries,
-                num_type_sets,
-                strict,
-                bindings_accessed_dynamically,
-                has_call_site_obj,
-                is_for_eval,
-                is_module,
-                is_function,
-                has_non_syntactic_scope,
-                needs_function_environment_objects,
-                has_module_goal,
+
+                scripts,
+                script_data_list,
 
                 all_atoms: opaque_all_atoms,
                 all_atoms_len,
@@ -422,7 +572,7 @@ fn convert_parse_result<'alloc, T>(r: jsparagus::parser::Result<T>) -> SmooshPar
             unimplemented: false,
             error: CVec::empty(),
         },
-        Err(err) => match err {
+        Err(err) => match *err {
             ParseError::NotImplemented(_) => {
                 let message = err.message();
                 SmooshParseResult {
@@ -528,16 +678,29 @@ pub unsafe extern "C" fn smoosh_get_slice_len_at(result: SmooshResult, index: us
     slice.len()
 }
 
+unsafe fn free_script(script: SmooshScriptStencil) {
+    let _ = script.gcthings.into();
+}
+
+unsafe fn free_script_data(script_data: SmooshImmutableScriptData) {
+    let _ = script_data.bytecode.into();
+    let _ = script_data.scope_notes.into();
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn smoosh_free(result: SmooshResult) {
     let _ = result.error.into();
-    let _ = result.bytecode.into();
-    let _ = result.atoms.into();
-    let _ = result.gcthings.into();
+
     let _ = result.scopes.into();
-    let _ = result.scope_notes.into();
     let _ = result.regexps.into();
-    //Vec::from_raw_parts(bytecode.data, bytecode.len, bytecode.capacity);
+
+    for fun in result.scripts.into() {
+        free_script(fun);
+    }
+
+    for script_data in result.script_data_list.into() {
+        free_script_data(script_data);
+    }
 
     if !result.all_atoms.is_null() {
         let _ = Box::from_raw(result.all_atoms as *mut Vec<&str>);
@@ -558,6 +721,8 @@ fn smoosh<'alloc>(
     let parse_options = ParseOptions::new();
     let atoms = Rc::new(RefCell::new(SourceAtomSet::new()));
     let slices = Rc::new(RefCell::new(SourceSliceList::new()));
+    let text_length = text.len();
+
     let parse_result = match parse_script(
         &allocator,
         text,
@@ -566,7 +731,7 @@ fn smoosh<'alloc>(
         slices.clone(),
     ) {
         Ok(result) => result,
-        Err(err) => match err {
+        Err(err) => match *err {
             ParseError::NotImplemented(_) => {
                 println!("Unimplemented: {}", err.message());
                 return Err(SmooshError::NotImplemented);
@@ -577,7 +742,8 @@ fn smoosh<'alloc>(
         },
     };
 
-    let mut emit_options = EmitOptions::new();
+    let extent = SourceExtent::top_level_script(text_length.try_into().unwrap(), 1, 0);
+    let mut emit_options = EmitOptions::new(extent);
     emit_options.no_script_rval = options.no_script_rval;
     let script = parse_result.unbox();
     match emit(

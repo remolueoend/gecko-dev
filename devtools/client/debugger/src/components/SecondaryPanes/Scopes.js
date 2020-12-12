@@ -4,10 +4,9 @@
 
 // @flow
 import React, { PureComponent } from "react";
-import { showMenu } from "devtools-contextmenu";
+import { showMenu } from "../../context-menu/menu";
 import { connect } from "../../utils/connect";
 import actions from "../../actions";
-import { features } from "../../utils/prefs";
 
 import {
   getSelectedSource,
@@ -22,8 +21,8 @@ import {
 import { getScopes } from "../../utils/pause/scopes";
 import { getScopeItemPath } from "../../utils/pause/scopes/utils";
 
-// eslint-disable-next-line import/named
-import { objectInspector } from "devtools-reps";
+// $FlowIgnore
+import { objectInspector } from "devtools/client/shared/components/reps/index";
 
 import type { ThreadContext, Why } from "../../types";
 import type { NamedValue } from "../../utils/pause/scopes/types";
@@ -126,7 +125,7 @@ class Scopes extends PureComponent<Props, State> {
   onContextMenu = (event: any, item: any) => {
     const { addWatchpoint, removeWatchpoint } = this.props;
 
-    if (!features.watchpoints || !item.parent || !item.contents.configurable) {
+    if (!item.parent || !item.contents.configurable) {
       return;
     }
 
@@ -252,6 +251,7 @@ class Scopes extends PureComponent<Props, State> {
             setExpanded={(path, expand) => setExpandedScope(cx, path, expand)}
             initiallyExpanded={initiallyExpanded}
             renderItemActions={this.renderWatchpointButton}
+            shouldRenderTooltip={true}
           />
         </div>
       );

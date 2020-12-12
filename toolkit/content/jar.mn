@@ -25,6 +25,11 @@ toolkit.jar:
    content/global/aboutwebrtc/aboutWebrtc.html (aboutwebrtc/aboutWebrtc.html)
    content/global/aboutSupport.js
 *  content/global/aboutSupport.xhtml
+#ifdef MOZ_GLEAN
+   content/global/aboutGlean.js
+   content/global/aboutGlean.html
+   content/global/aboutGlean.css
+#endif
    content/global/aboutTelemetry.js
    content/global/aboutTelemetry.xhtml
    content/global/aboutTelemetry.css
@@ -35,7 +40,6 @@ toolkit.jar:
    content/global/plugins.css
    content/global/plugins.js
    content/global/browser-child.js
-   content/global/browser-content.js
 *   content/global/buildconfig.html
    content/global/buildconfig.css
    content/global/contentAreaUtils.js
@@ -46,7 +50,7 @@ toolkit.jar:
    content/global/filepicker.properties
    content/global/customElements.js
    content/global/globalOverlay.js
-   content/global/mozilla.xhtml
+   content/global/mozilla.html
    content/global/aboutMozilla.css
    content/global/preferencesBindings.js
    content/global/process-content.js
@@ -105,3 +109,6 @@ toolkit.jar:
 #endif
    content/global/gmp-sources/openh264.json    (gmp-sources/openh264.json)
    content/global/gmp-sources/widevinecdm.json (gmp-sources/widevinecdm.json)
+
+# Third party files
+   content/global/third_party/d3/d3.js         (/third_party/js/d3/d3.js)

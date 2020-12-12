@@ -3,28 +3,38 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use super::{range::RangedStates, PendingTransition, ResourceState, Unit};
-use crate::{device::MAX_MIP_LEVELS, id::TextureId};
+use crate::{
+    device::MAX_MIP_LEVELS,
+    id::{TextureId, Valid},
+    resource::TextureUse,
+};
 
 use arrayvec::ArrayVec;
-use wgt::TextureUsage;
 
 use std::{iter, ops::Range};
 
 //TODO: store `hal::image::State` here to avoid extra conversions
-type PlaneStates = RangedStates<hal::image::Layer, Unit<TextureUsage>>;
+type PlaneStates = RangedStates<hal::image::Layer, Unit<TextureUse>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureSelector {
+    //pub aspects: hal::format::Aspects,
+    pub levels: Range<hal::image::Level>,
+    pub layers: Range<hal::image::Layer>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct TextureState {
-    mips: ArrayVec<[PlaneStates; MAX_MIP_LEVELS]>,
+pub(crate) struct TextureState {
+    mips: ArrayVec<[PlaneStates; MAX_MIP_LEVELS as usize]>,
     /// True if we have the information about all the subresources here
     full: bool,
 }
 
 impl PendingTransition<TextureState> {
-    fn collapse(self) -> Result<TextureUsage, Self> {
+    fn collapse(self) -> Result<TextureUse, Self> {
         if self.usage.start.is_empty()
             || self.usage.start == self.usage.end
-            || !TextureUsage::WRITE_ALL.intersects(self.usage.start | self.usage.end)
+            || !TextureUse::WRITE_ALL.intersects(self.usage.start | self.usage.end)
         {
             Ok(self.usage.start | self.usage.end)
         } else {
@@ -34,14 +44,12 @@ impl PendingTransition<TextureState> {
 }
 
 impl TextureState {
-    pub fn with_range(range: &hal::image::SubresourceRange) -> Self {
-        debug_assert_eq!(range.layers.start, 0);
-        debug_assert_eq!(range.levels.start, 0);
-        TextureState {
+    pub fn new(mip_level_count: hal::image::Level, array_layer_count: hal::image::Layer) -> Self {
+        Self {
             mips: iter::repeat_with(|| {
-                PlaneStates::from_range(0..range.layers.end, Unit::new(TextureUsage::UNINITIALIZED))
+                PlaneStates::from_range(0..array_layer_count, Unit::new(TextureUse::UNINITIALIZED))
             })
-            .take(range.levels.end as usize)
+            .take(mip_level_count as usize)
             .collect(),
             full: true,
         }
@@ -50,8 +58,8 @@ impl TextureState {
 
 impl ResourceState for TextureState {
     type Id = TextureId;
-    type Selector = hal::image::SubresourceRange;
-    type Usage = TextureUsage;
+    type Selector = TextureSelector;
+    type Usage = TextureUse;
 
     fn query(&self, selector: Self::Selector) -> Option<Self::Usage> {
         let mut result = None;
@@ -80,7 +88,7 @@ impl ResourceState for TextureState {
 
     fn change(
         &mut self,
-        id: Self::Id,
+        id: Valid<Self::Id>,
         selector: Self::Selector,
         usage: Self::Usage,
         mut output: Option<&mut Vec<PendingTransition<Self>>>,
@@ -99,17 +107,15 @@ impl ResourceState for TextureState {
             let level = selector.levels.start + mip_id as hal::image::Level;
             let layers = mip.isolate(&selector.layers, Unit::new(usage));
             for &mut (ref range, ref mut unit) in layers {
-                if unit.last == usage && TextureUsage::ORDERED.contains(usage) {
+                if unit.last == usage && TextureUse::ORDERED.contains(usage) {
                     continue;
                 }
                 // TODO: Can't satisfy clippy here unless we modify
-                // `hal::image::SubresourceRange` in gfx to use
-                // `std::ops::RangeBounds`.
+                // `TextureSelector` to use `std::ops::RangeBounds`.
                 #[allow(clippy::range_plus_one)]
                 let pending = PendingTransition {
                     id,
-                    selector: hal::image::SubresourceRange {
-                        aspects: hal::format::Aspects::empty(),
+                    selector: TextureSelector {
                         levels: level..level + 1,
                         layers: range.clone(),
                     },
@@ -137,9 +143,43 @@ impl ResourceState for TextureState {
         Ok(())
     }
 
+    fn prepend(
+        &mut self,
+        id: Valid<Self::Id>,
+        selector: Self::Selector,
+        usage: Self::Usage,
+    ) -> Result<(), PendingTransition<Self>> {
+        assert!(self.mips.len() >= selector.levels.end as usize);
+        for (mip_id, mip) in self.mips[selector.levels.start as usize..selector.levels.end as usize]
+            .iter_mut()
+            .enumerate()
+        {
+            let level = selector.levels.start + mip_id as hal::image::Level;
+            let layers = mip.isolate(&selector.layers, Unit::new(usage));
+            for &mut (ref range, ref mut unit) in layers {
+                match unit.first {
+                    Some(old) if old != usage => {
+                        return Err(PendingTransition {
+                            id,
+                            selector: TextureSelector {
+                                levels: level..level + 1,
+                                layers: range.clone(),
+                            },
+                            usage: old..usage,
+                        });
+                    }
+                    _ => {
+                        unit.first = Some(usage);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn merge(
         &mut self,
-        id: Self::Id,
+        id: Valid<Self::Id>,
         other: &Self,
         mut output: Option<&mut Vec<PendingTransition<Self>>>,
     ) -> Result<(), PendingTransition<Self>> {
@@ -176,7 +216,7 @@ impl ResourceState for TextureState {
                         end: Some(end),
                     } => {
                         let to_usage = end.port();
-                        if start.last == to_usage && TextureUsage::ORDERED.contains(to_usage) {
+                        if start.last == to_usage && TextureUse::ORDERED.contains(to_usage) {
                             Unit {
                                 first: match output {
                                     None => start.first,
@@ -186,13 +226,11 @@ impl ResourceState for TextureState {
                             }
                         } else {
                             // TODO: Can't satisfy clippy here unless we modify
-                            // `hal::image::SubresourceRange` in gfx to use
-                            // `std::ops::RangeBounds`.
+                            // `TextureSelector` to use `std::ops::RangeBounds`.
                             #[allow(clippy::range_plus_one)]
                             let pending = PendingTransition {
                                 id,
-                                selector: hal::image::SubresourceRange {
-                                    aspects: hal::format::Aspects::empty(),
+                                selector: TextureSelector {
                                     levels: level..level + 1,
                                     layers: layers.clone(),
                                 },
@@ -238,48 +276,43 @@ mod test {
     //TODO: change() tests
     use super::*;
     use crate::id::Id;
-    use hal::{format::Aspects, image::SubresourceRange};
 
     #[test]
     fn query() {
         let mut ts = TextureState::default();
         ts.mips.push(PlaneStates::empty());
         ts.mips.push(PlaneStates::from_slice(&[
-            (1..3, Unit::new(TextureUsage::SAMPLED)),
-            (3..5, Unit::new(TextureUsage::SAMPLED)),
-            (5..6, Unit::new(TextureUsage::STORAGE)),
+            (1..3, Unit::new(TextureUse::SAMPLED)),
+            (3..5, Unit::new(TextureUse::SAMPLED)),
+            (5..6, Unit::new(TextureUse::STORAGE_LOAD)),
         ]));
 
         assert_eq!(
-            ts.query(SubresourceRange {
-                aspects: Aspects::COLOR,
+            ts.query(TextureSelector {
                 levels: 1..2,
                 layers: 2..5,
             }),
             // level 1 matches
-            Some(TextureUsage::SAMPLED),
+            Some(TextureUse::SAMPLED),
         );
         assert_eq!(
-            ts.query(SubresourceRange {
-                aspects: Aspects::COLOR,
+            ts.query(TextureSelector {
                 levels: 0..2,
                 layers: 2..5,
             }),
             // level 0 is empty, level 1 matches
-            Some(TextureUsage::SAMPLED),
+            Some(TextureUse::SAMPLED),
         );
         assert_eq!(
-            ts.query(SubresourceRange {
-                aspects: Aspects::COLOR,
+            ts.query(TextureSelector {
                 levels: 1..2,
                 layers: 1..5,
             }),
             // level 1 matches with gaps
-            Some(TextureUsage::SAMPLED),
+            Some(TextureUse::SAMPLED),
         );
         assert_eq!(
-            ts.query(SubresourceRange {
-                aspects: Aspects::COLOR,
+            ts.query(TextureSelector {
                 levels: 1..2,
                 layers: 4..6,
             }),
@@ -290,11 +323,11 @@ mod test {
 
     #[test]
     fn merge() {
-        let id = Id::default();
+        let id = Id::dummy();
         let mut ts1 = TextureState::default();
         ts1.mips.push(PlaneStates::from_slice(&[(
             1..3,
-            Unit::new(TextureUsage::SAMPLED),
+            Unit::new(TextureUse::SAMPLED),
         )]));
         let mut ts2 = TextureState::default();
         assert_eq!(
@@ -305,10 +338,10 @@ mod test {
 
         ts2.mips.push(PlaneStates::from_slice(&[(
             1..2,
-            Unit::new(TextureUsage::COPY_SRC),
+            Unit::new(TextureUse::COPY_SRC),
         )]));
         assert_eq!(
-            ts1.merge(Id::default(), &ts2, None),
+            ts1.merge(Id::dummy(), &ts2, None),
             Ok(()),
             "failed to extend a compatible state"
         );
@@ -316,60 +349,57 @@ mod test {
             ts1.mips[0].query(&(1..2), |&v| v),
             Some(Ok(Unit {
                 first: None,
-                last: TextureUsage::SAMPLED | TextureUsage::COPY_SRC,
+                last: TextureUse::SAMPLED | TextureUse::COPY_SRC,
             })),
             "wrong extension result"
         );
 
-        ts2.mips[0] = PlaneStates::from_slice(&[(1..2, Unit::new(TextureUsage::COPY_DST))]);
+        ts2.mips[0] = PlaneStates::from_slice(&[(1..2, Unit::new(TextureUse::COPY_DST))]);
         assert_eq!(
-            ts1.clone().merge(Id::default(), &ts2, None),
+            ts1.clone().merge(Id::dummy(), &ts2, None),
             Err(PendingTransition {
                 id,
-                selector: SubresourceRange {
-                    aspects: Aspects::empty(),
+                selector: TextureSelector {
                     levels: 0..1,
                     layers: 1..2,
                 },
-                usage: TextureUsage::SAMPLED | TextureUsage::COPY_SRC..TextureUsage::COPY_DST,
+                usage: TextureUse::SAMPLED | TextureUse::COPY_SRC..TextureUse::COPY_DST,
             }),
             "wrong error on extending with incompatible state"
         );
 
         let mut list = Vec::new();
         ts2.mips[0] = PlaneStates::from_slice(&[
-            (1..2, Unit::new(TextureUsage::COPY_DST)),
+            (1..2, Unit::new(TextureUse::COPY_DST)),
             (
                 2..3,
                 Unit {
-                    first: Some(TextureUsage::COPY_SRC),
-                    last: TextureUsage::OUTPUT_ATTACHMENT,
+                    first: Some(TextureUse::COPY_SRC),
+                    last: TextureUse::ATTACHMENT_WRITE,
                 },
             ),
         ]);
-        ts1.merge(Id::default(), &ts2, Some(&mut list)).unwrap();
+        ts1.merge(Id::dummy(), &ts2, Some(&mut list)).unwrap();
         assert_eq!(
             &list,
             &[
                 PendingTransition {
                     id,
-                    selector: SubresourceRange {
-                        aspects: Aspects::empty(),
+                    selector: TextureSelector {
                         levels: 0..1,
                         layers: 1..2,
                     },
-                    usage: TextureUsage::SAMPLED | TextureUsage::COPY_SRC..TextureUsage::COPY_DST,
+                    usage: TextureUse::SAMPLED | TextureUse::COPY_SRC..TextureUse::COPY_DST,
                 },
                 PendingTransition {
                     id,
-                    selector: SubresourceRange {
-                        aspects: Aspects::empty(),
+                    selector: TextureSelector {
                         levels: 0..1,
                         layers: 2..3,
                     },
                     // the transition links the end of the base rage (..SAMPLED)
                     // with the start of the next range (COPY_SRC..)
-                    usage: TextureUsage::SAMPLED..TextureUsage::COPY_SRC,
+                    usage: TextureUse::SAMPLED..TextureUse::COPY_SRC,
                 },
             ],
             "replacing produced wrong transitions"
@@ -377,16 +407,16 @@ mod test {
         assert_eq!(
             ts1.mips[0].query(&(1..2), |&v| v),
             Some(Ok(Unit {
-                first: Some(TextureUsage::SAMPLED | TextureUsage::COPY_SRC),
-                last: TextureUsage::COPY_DST,
+                first: Some(TextureUse::SAMPLED | TextureUse::COPY_SRC),
+                last: TextureUse::COPY_DST,
             })),
             "wrong final layer 1 state"
         );
         assert_eq!(
             ts1.mips[0].query(&(2..3), |&v| v),
             Some(Ok(Unit {
-                first: Some(TextureUsage::SAMPLED),
-                last: TextureUsage::OUTPUT_ATTACHMENT,
+                first: Some(TextureUse::SAMPLED),
+                last: TextureUse::ATTACHMENT_WRITE,
             })),
             "wrong final layer 2 state"
         );
@@ -395,32 +425,31 @@ mod test {
         ts2.mips[0] = PlaneStates::from_slice(&[(
             2..3,
             Unit {
-                first: Some(TextureUsage::OUTPUT_ATTACHMENT),
-                last: TextureUsage::COPY_SRC,
+                first: Some(TextureUse::ATTACHMENT_WRITE),
+                last: TextureUse::COPY_SRC,
             },
         )]);
-        ts1.merge(Id::default(), &ts2, Some(&mut list)).unwrap();
+        ts1.merge(Id::dummy(), &ts2, Some(&mut list)).unwrap();
         assert_eq!(&list, &[], "unexpected replacing transition");
 
         list.clear();
         ts2.mips[0] = PlaneStates::from_slice(&[(
             2..3,
             Unit {
-                first: Some(TextureUsage::COPY_DST),
-                last: TextureUsage::COPY_DST,
+                first: Some(TextureUse::COPY_DST),
+                last: TextureUse::COPY_DST,
             },
         )]);
-        ts1.merge(Id::default(), &ts2, Some(&mut list)).unwrap();
+        ts1.merge(Id::dummy(), &ts2, Some(&mut list)).unwrap();
         assert_eq!(
             &list,
             &[PendingTransition {
                 id,
-                selector: SubresourceRange {
-                    aspects: Aspects::empty(),
+                selector: TextureSelector {
                     levels: 0..1,
                     layers: 2..3,
                 },
-                usage: TextureUsage::COPY_SRC..TextureUsage::COPY_DST,
+                usage: TextureUse::COPY_SRC..TextureUse::COPY_DST,
             },],
             "invalid replacing transition"
         );
@@ -428,8 +457,8 @@ mod test {
             ts1.mips[0].query(&(2..3), |&v| v),
             Some(Ok(Unit {
                 // the initial state here is never expected to change
-                first: Some(TextureUsage::SAMPLED),
-                last: TextureUsage::COPY_DST,
+                first: Some(TextureUse::SAMPLED),
+                last: TextureUse::COPY_DST,
             })),
             "wrong final layer 2 state"
         );

@@ -6,8 +6,10 @@
 
 #include "places_test_harness.h"
 #include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsString.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "nsNetUtil.h"
 
@@ -33,7 +35,7 @@ void expect_no_visit(nsLinkState aState) {
 already_AddRefed<nsIURI> new_test_uri() {
   // Create a unique spec.
   static int32_t specNumber = 0;
-  nsCString spec = NS_LITERAL_CSTRING("http://mozilla.org/");
+  nsCString spec = "http://mozilla.org/"_ns;
   spec.AppendInt(specNumber++);
 
   // Create the URI for the spec.
@@ -103,8 +105,7 @@ void test_wait_checkpoint() {
   // and cause concurrent readers to access an older checkpoint.
   nsCOMPtr<mozIStorageConnection> db = do_get_db();
   nsCOMPtr<mozIStorageAsyncStatement> stmt;
-  db->CreateAsyncStatement(NS_LITERAL_CSTRING("SELECT 1"),
-                           getter_AddRefs(stmt));
+  db->CreateAsyncStatement("SELECT 1"_ns, getter_AddRefs(stmt));
   RefPtr<PlacesAsyncStatementSpinner> spinner =
       new PlacesAsyncStatementSpinner();
   nsCOMPtr<mozIStoragePendingStatement> pending;
@@ -262,105 +263,6 @@ void test_RegisterVisitedCallback_returns_before_notifying() {
   // Remove ourselves as an observer.  We would have failed if we had been
   // notified.
   history->UnregisterVisitedCallback(testURI, link);
-
-  run_next_test();
-}
-
-namespace test_observer_topic_dispatched_helpers {
-#define URI_VISITED "visited"
-#define URI_NOT_VISITED "not visited"
-#define URI_VISITED_RESOLUTION_TOPIC "visited-status-resolution"
-class statusObserver final : public nsIObserver {
-  ~statusObserver() = default;
-
- public:
-  NS_DECL_ISUPPORTS
-
-  statusObserver(nsIURI* aURI, const bool aExpectVisit, bool& _notified)
-      : mURI(aURI), mExpectVisit(aExpectVisit), mNotified(_notified) {
-    nsCOMPtr<nsIObserverService> observerService =
-        do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
-    do_check_true(observerService);
-    (void)observerService->AddObserver(this, URI_VISITED_RESOLUTION_TOPIC,
-                                       false);
-  }
-
-  NS_IMETHOD Observe(nsISupports* aSubject, const char* aTopic,
-                     const char16_t* aData) override {
-    // Make sure we got notified of the right topic.
-    do_check_false(strcmp(aTopic, URI_VISITED_RESOLUTION_TOPIC));
-
-    // If this isn't for our URI, do not do anything.
-    nsCOMPtr<nsIURI> notifiedURI = do_QueryInterface(aSubject);
-    do_check_true(notifiedURI);
-
-    bool isOurURI;
-    nsresult rv = notifiedURI->Equals(mURI, &isOurURI);
-    do_check_success(rv);
-    if (!isOurURI) {
-      return NS_OK;
-    }
-
-    // Check that we have either the visited or not visited string.
-    bool visited = !!NS_LITERAL_STRING(URI_VISITED).Equals(aData);
-    bool notVisited = !!NS_LITERAL_STRING(URI_NOT_VISITED).Equals(aData);
-    do_check_true(visited || notVisited);
-
-    // Check to make sure we got the state we expected.
-    do_check_eq(visited, mExpectVisit);
-
-    // Indicate that we've been notified.
-    mNotified = true;
-
-    // Remove ourselves as an observer.
-    nsCOMPtr<nsIObserverService> observerService =
-        do_GetService(NS_OBSERVERSERVICE_CONTRACTID);
-    (void)observerService->RemoveObserver(this, URI_VISITED_RESOLUTION_TOPIC);
-    return NS_OK;
-  }
-
- private:
-  nsCOMPtr<nsIURI> mURI;
-  const bool mExpectVisit;
-  bool& mNotified;
-};
-NS_IMPL_ISUPPORTS(statusObserver, nsIObserver)
-}  // namespace test_observer_topic_dispatched_helpers
-void test_observer_topic_dispatched() {
-  using namespace test_observer_topic_dispatched_helpers;
-
-  // Create two URIs, making sure only one is in history.
-  nsCOMPtr<nsIURI> visitedURI = new_test_uri();
-  nsCOMPtr<nsIURI> notVisitedURI = new_test_uri();
-  bool urisEqual;
-  nsresult rv = visitedURI->Equals(notVisitedURI, &urisEqual);
-  do_check_success(rv);
-  do_check_false(urisEqual);
-  addURI(visitedURI);
-
-  // Need two Link objects as well - one for each URI.
-  RefPtr<Link> visitedLink = new mock_Link(expect_visit, false);
-  RefPtr<Link> notVisitedLink = new mock_Link(expect_no_visit, false);
-  RefPtr<Link> visitedLinkCopy = visitedLink;
-
-  // Add the right observers for the URIs to check results.
-  bool visitedNotified = false;
-  nsCOMPtr<nsIObserver> visitedObs =
-      new statusObserver(visitedURI, true, visitedNotified);
-  bool notVisitedNotified = false;
-  nsCOMPtr<nsIObserver> unvisitedObs =
-      new statusObserver(notVisitedURI, false, notVisitedNotified);
-
-  // Register our Links to be notified.
-  nsCOMPtr<IHistory> history = do_get_IHistory();
-  history->RegisterVisitedCallback(visitedURI, visitedLink);
-  history->RegisterVisitedCallback(notVisitedURI, notVisitedLink);
-
-  // Spin the event loop as long as we have not been properly notified.
-  SpinEventLoopUntil([&]() { return visitedNotified && notVisitedNotified; });
-
-  // Unregister our observer that would not have been released.
-  history->UnregisterVisitedCallback(notVisitedURI, notVisitedLink);
 
   run_next_test();
 }
@@ -548,7 +450,6 @@ Test gTests[] = {
     PTEST(test_unregistered_visited_does_not_notify),  // Order Important!
     PTEST(test_new_visit_notifies_waiting_Link),
     PTEST(test_RegisterVisitedCallback_returns_before_notifying),
-    PTEST(test_observer_topic_dispatched),
     PTEST(test_visituri_inserts),
     PTEST(test_visituri_updates),
     PTEST(test_visituri_preserves_shown_and_typed),

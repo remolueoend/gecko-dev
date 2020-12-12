@@ -16,6 +16,7 @@ var TelemetryReportingPolicy = ChromeUtils.import(
 ).TelemetryReportingPolicy;
 
 const PREF_BRANCH = "datareporting.policy.";
+const PREF_FIRST_RUN = "toolkit.telemetry.reportingpolicy.firstRun";
 const PREF_BYPASS_NOTIFICATION =
   PREF_BRANCH + "dataSubmissionPolicyBypassNotification";
 const PREF_CURRENT_POLICY_VERSION = PREF_BRANCH + "currentPolicyVersion";
@@ -114,11 +115,13 @@ var checkInfobarButton = async function(aNotification) {
 };
 
 add_task(async function setup() {
+  const isFirstRun = Preferences.get(PREF_FIRST_RUN, true);
   const bypassNotification = Preferences.get(PREF_BYPASS_NOTIFICATION, true);
   const currentPolicyVersion = Preferences.get(PREF_CURRENT_POLICY_VERSION, 1);
 
   // Register a cleanup function to reset our preferences.
   registerCleanupFunction(() => {
+    Preferences.set(PREF_FIRST_RUN, isFirstRun);
     Preferences.set(PREF_BYPASS_NOTIFICATION, bypassNotification);
     Preferences.set(PREF_CURRENT_POLICY_VERSION, currentPolicyVersion);
 
@@ -129,6 +132,9 @@ add_task(async function setup() {
   Preferences.set(PREF_BYPASS_NOTIFICATION, false);
   // Set the current policy version.
   Preferences.set(PREF_CURRENT_POLICY_VERSION, TEST_POLICY_VERSION);
+  // Ensure this isn't the first run, because then we open the first run page.
+  Preferences.set(PREF_FIRST_RUN, false);
+  TelemetryReportingPolicy.testUpdateFirstRun();
 });
 
 function clearAcceptedPolicy() {
@@ -137,12 +143,7 @@ function clearAcceptedPolicy() {
   Preferences.reset(PREF_ACCEPTED_POLICY_DATE);
 }
 
-add_task(async function test_single_window() {
-  clearAcceptedPolicy();
-
-  // Close all the notifications, then try to trigger the data choices infobar.
-  await closeAllNotifications();
-
+function assertCoherentInitialState() {
   // Make sure that we have a coherent initial state.
   Assert.equal(
     Preferences.get(PREF_ACCEPTED_POLICY_VERSION, 0),
@@ -158,6 +159,15 @@ add_task(async function test_single_window() {
     !TelemetryReportingPolicy.testIsUserNotified(),
     "User not notified about datareporting policy."
   );
+}
+
+add_task(async function test_single_window() {
+  clearAcceptedPolicy();
+
+  // Close all the notifications, then try to trigger the data choices infobar.
+  await closeAllNotifications();
+
+  assertCoherentInitialState();
 
   let alertShownPromise = promiseWaitForAlertActive(gNotificationBox);
   Assert.ok(
@@ -213,9 +223,11 @@ add_task(async function test_single_window() {
 
 add_task(async function test_multiple_windows() {
   clearAcceptedPolicy();
+  assertCoherentInitialState(); // bug 1571932
 
   // Close all the notifications, then try to trigger the data choices infobar.
   await closeAllNotifications();
+  assertCoherentInitialState(); // bug 1571932
 
   // Ensure we see the notification on all windows and that action on one window
   // results in dismiss on every window.
@@ -226,21 +238,7 @@ add_task(async function test_multiple_windows() {
     "2nd window has a global notification box."
   );
 
-  // Make sure that we have a coherent initial state.
-  Assert.equal(
-    Preferences.get(PREF_ACCEPTED_POLICY_VERSION, 0),
-    0,
-    "No version should be set on init."
-  );
-  Assert.equal(
-    Preferences.get(PREF_ACCEPTED_POLICY_DATE, 0),
-    0,
-    "No date should be set on init."
-  );
-  Assert.ok(
-    !TelemetryReportingPolicy.testIsUserNotified(),
-    "User not notified about datareporting policy."
-  );
+  assertCoherentInitialState();
 
   let showAlertPromises = [
     promiseWaitForAlertActive(gNotificationBox),

@@ -11,15 +11,16 @@
 
 #include <utility>
 
+#include "jit/InlineScriptTree.h"
 #include "jit/JitcodeMap.h"
-#include "jit/JitFrames.h"
 #include "jit/LIR.h"
 #include "jit/MacroAssembler.h"
 #include "jit/MIRGenerator.h"
 #include "jit/MIRGraph.h"
+#include "jit/SafepointIndex.h"
 #include "jit/Safepoints.h"
 #include "jit/Snapshots.h"
-#include "jit/VMFunctions.h"
+#include "vm/TraceLoggingTypes.h"
 
 namespace js {
 namespace jit {
@@ -42,6 +43,8 @@ class CodeGeneratorShared : public LElementVisitor {
   MacroAssembler& ensureMasm(MacroAssembler* masm);
   mozilla::Maybe<IonHeapMacroAssembler> maybeMasm_;
 
+  bool useWasmStackArgumentAbi_;
+
  public:
   MacroAssembler& masm;
 
@@ -63,7 +66,7 @@ class CodeGeneratorShared : public LElementVisitor {
   // Label for the common return path.
   NonAssertingLabel returnLabel_;
 
-  js::Vector<SafepointIndex, 0, SystemAllocPolicy> safepointIndices_;
+  js::Vector<CodegenSafepointIndex, 0, SystemAllocPolicy> safepointIndices_;
   js::Vector<OsiIndex, 0, SystemAllocPolicy> osiIndices_;
 
   // Mapping from bailout table ID to an offset in the snapshot buffer.
@@ -109,32 +112,24 @@ class CodeGeneratorShared : public LElementVisitor {
 
   bool stringsCanBeInNursery() const { return gen->stringsCanBeInNursery(); }
 
+  bool bigIntsCanBeInNursery() const { return gen->bigIntsCanBeInNursery(); }
+
  protected:
   // The offset of the first instruction of the OSR entry block from the
   // beginning of the code buffer.
-  size_t osrEntryOffset_;
+  mozilla::Maybe<size_t> osrEntryOffset_ = {};
 
   TempAllocator& alloc() const { return graph.mir().alloc(); }
 
-  inline void setOsrEntryOffset(size_t offset) {
-    MOZ_ASSERT(osrEntryOffset_ == 0);
-    osrEntryOffset_ = offset;
-  }
-  inline size_t getOsrEntryOffset() const { return osrEntryOffset_; }
+  void setOsrEntryOffset(size_t offset) { osrEntryOffset_.emplace(offset); }
 
-  // The offset of the first instruction of the body.
-  // This skips the arguments type checks.
-  size_t skipArgCheckEntryOffset_;
-
-  inline void setSkipArgCheckEntryOffset(size_t offset) {
-    MOZ_ASSERT(skipArgCheckEntryOffset_ == 0);
-    skipArgCheckEntryOffset_ = offset;
-  }
-  inline size_t getSkipArgCheckEntryOffset() const {
-    return skipArgCheckEntryOffset_;
+  size_t getOsrEntryOffset() const {
+    MOZ_RELEASE_ASSERT(osrEntryOffset_.isSome());
+    return *osrEntryOffset_;
   }
 
-  typedef js::Vector<SafepointIndex, 8, SystemAllocPolicy> SafepointIndices;
+  typedef js::Vector<CodegenSafepointIndex, 8, SystemAllocPolicy>
+      SafepointIndices;
 
  protected:
 #ifdef CHECK_OSIPOINT_REGISTERS
@@ -164,8 +159,13 @@ class CodeGeneratorShared : public LElementVisitor {
   inline int32_t ToStackOffset(LAllocation a) const;
   inline int32_t ToStackOffset(const LAllocation* a) const;
 
-  inline Address ToAddress(const LAllocation& a);
-  inline Address ToAddress(const LAllocation* a);
+  inline Address ToAddress(const LAllocation& a) const;
+  inline Address ToAddress(const LAllocation* a) const;
+
+  // Returns the offset from FP to address incoming stack arguments
+  // when we use wasm stack argument abi (useWasmStackArgumentAbi()).
+  inline int32_t ToFramePointerOffset(LAllocation a) const;
+  inline int32_t ToFramePointerOffset(const LAllocation* a) const;
 
   uint32_t frameSize() const {
     return frameClass_ == FrameSizeClass::None() ? frameDepth_
@@ -176,6 +176,10 @@ class CodeGeneratorShared : public LElementVisitor {
   bool addNativeToBytecodeEntry(const BytecodeSite* site);
   void dumpNativeToBytecodeEntries();
   void dumpNativeToBytecodeEntry(uint32_t idx);
+
+  void setUseWasmStackArgumentAbi() { useWasmStackArgumentAbi_ = true; }
+
+  bool useWasmStackArgumentAbi() const { return useWasmStackArgumentAbi_; }
 
  public:
   MIRGenerator& mirGen() const { return *gen; }
@@ -264,14 +268,12 @@ class CodeGeneratorShared : public LElementVisitor {
 
   OutOfLineCode* oolTruncateDouble(
       FloatRegister src, Register dest, MInstruction* mir,
-      wasm::BytecodeOffset callOffset = wasm::BytecodeOffset());
-  void emitTruncateDouble(FloatRegister src, Register dest,
-                          MTruncateToInt32* mir);
-  void emitTruncateFloat32(FloatRegister src, Register dest,
-                           MTruncateToInt32* mir);
+      wasm::BytecodeOffset callOffset = wasm::BytecodeOffset(),
+      bool preserveTls = false);
+  void emitTruncateDouble(FloatRegister src, Register dest, MInstruction* mir);
+  void emitTruncateFloat32(FloatRegister src, Register dest, MInstruction* mir);
 
-  void emitPreBarrier(Register elements, const LAllocation* index,
-                      int32_t offsetAdjustment);
+  void emitPreBarrier(Register elements, const LAllocation* index);
   void emitPreBarrier(Address address);
 
   // We don't emit code for trivial blocks, so if we want to branch to the
@@ -354,7 +356,8 @@ class CodeGeneratorShared : public LElementVisitor {
   inline void restoreLive(LInstruction* ins);
   inline void restoreLiveIgnore(LInstruction* ins, LiveRegisterSet reg);
 
-  // Save/restore all registers that are both live and volatile.
+  // Get/save/restore all registers that are both live and volatile.
+  inline LiveRegisterSet liveVolatileRegs(LInstruction* ins);
   inline void saveLiveVolatile(LInstruction* ins);
   inline void restoreLiveVolatile(LInstruction* ins);
 
@@ -362,6 +365,13 @@ class CodeGeneratorShared : public LElementVisitor {
   template <typename T>
   void pushArg(const T& t) {
     masm.Push(t);
+#ifdef DEBUG
+    pushedArgs_++;
+#endif
+  }
+
+  void pushArg(jsid id, Register temp) {
+    masm.Push(id, temp);
 #ifdef DEBUG
     pushedArgs_++;
 #endif
@@ -526,6 +536,16 @@ class OutOfLineWasmTruncateCheckBase : public OutOfLineCodeBase<CodeGen> {
         input_(input),
         output_(output),
         output64_(Register64::Invalid()),
+        flags_(mir->flags()),
+        bytecodeOffset_(mir->bytecodeOffset()) {}
+
+  OutOfLineWasmTruncateCheckBase(MWasmBuiltinTruncateToInt64* mir,
+                                 FloatRegister input, Register64 output)
+      : fromType_(mir->input()->type()),
+        toType_(MIRType::Int64),
+        input_(input),
+        output_(Register::Invalid()),
+        output64_(output),
         flags_(mir->flags()),
         bytecodeOffset_(mir->bytecodeOffset()) {}
 

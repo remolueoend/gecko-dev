@@ -10,6 +10,7 @@
 #include "mozilla/dom/XRInputSourceEvent.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/dom/Promise.h"
 #include "XRSystem.h"
 #include "XRRenderState.h"
 #include "XRBoundedReferenceSpace.h"
@@ -19,13 +20,22 @@
 #include "XRNativeOriginViewer.h"
 #include "XRNativeOriginLocal.h"
 #include "XRNativeOriginLocalFloor.h"
+#include "XRView.h"
+#include "XRViewerPose.h"
 #include "VRLayerChild.h"
 #include "XRInputSourceArray.h"
 #include "nsGlobalWindow.h"
 #include "nsIObserverService.h"
 #include "nsISupportsPrimitives.h"
+#include "nsRefreshDriver.h"
 #include "VRDisplayClient.h"
 #include "VRDisplayPresentation.h"
+
+/**
+ * Maximum instances of XRFrame and XRViewerPose objects
+ * created in the pool.
+ */
+const uint32_t kMaxPoolSize = 16;
 
 namespace mozilla {
 namespace dom {
@@ -38,6 +48,8 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(XRSession,
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mActiveRenderState)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingRenderState)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputSources)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mViewerPosePool)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFramePool)
 
   for (uint32_t i = 0; i < tmp->mFrameRequestCallbacks.Length(); ++i) {
     NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mFrameRequestCallbacks[i]");
@@ -51,6 +63,8 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(XRSession, DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mActiveRenderState)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingRenderState)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mInputSources)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mViewerPosePool)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mFramePool)
 
   tmp->mFrameRequestCallbacks.Clear();
 
@@ -83,7 +97,7 @@ already_AddRefed<XRSession> XRSession::CreateInlineSession(
   RefPtr<XRSession> session =
       new XRSession(aWindow, aXRSystem, driver, nullptr, gfx::kVRGroupContent,
                     aEnabledReferenceSpaceTypes);
-  driver->AddRefreshObserver(session, FlushType::Display);
+  driver->AddRefreshObserver(session, FlushType::Display, "XR Session");
   return session.forget();
 }
 
@@ -109,7 +123,9 @@ XRSession::XRSession(
       mRefreshDriver(aRefreshDriver),
       mDisplayClient(aClient),
       mFrameRequestCallbackCounter(0),
-      mEnabledReferenceSpaceTypes(aEnabledReferenceSpaceTypes) {
+      mEnabledReferenceSpaceTypes(aEnabledReferenceSpaceTypes.Clone()),
+      mViewerPosePoolIndex(0),
+      mFramePoolIndex(0) {
   if (aClient) {
     aClient->SessionStarted(this);
   }
@@ -129,7 +145,9 @@ XRSession::XRSession(
 
 XRSession::~XRSession() { MOZ_ASSERT(mShutdown); }
 
-gfx::VRDisplayClient* XRSession::GetDisplayClient() { return mDisplayClient; }
+gfx::VRDisplayClient* XRSession::GetDisplayClient() const {
+  return mDisplayClient;
+}
 
 JSObject* XRSession::WrapObject(JSContext* aCx,
                                 JS::Handle<JSObject*> aGivenProto) {
@@ -278,9 +296,13 @@ void XRSession::WillRefresh(mozilla::TimeStamp aTime) {
 }
 
 void XRSession::StartFrame() {
+  if (mShutdown || mEnded) {
+    return;
+  }
   ApplyPendingRenderState();
 
-  if (mActiveRenderState->GetBaseLayer() == nullptr) {
+  XRWebGLLayer* baseLayer = mActiveRenderState->GetBaseLayer();
+  if (!baseLayer) {
     return;
   }
 
@@ -294,11 +316,10 @@ void XRSession::StartFrame() {
   DOMHighResTimeStamp timeStamp = duration.ToMilliseconds();
 
   // Create an XRFrame for the callbacks
-  RefPtr<XRFrame> frame = new XRFrame(GetParentObject(), this);
-
+  RefPtr<XRFrame> frame = PooledFrame();
   frame->StartAnimationFrame();
 
-  mActiveRenderState->GetBaseLayer()->StartAnimationFrame();
+  baseLayer->StartAnimationFrame();
   nsTArray<XRFrameRequest> callbacks;
   callbacks.AppendElements(mFrameRequestCallbacks);
   mFrameRequestCallbacks.Clear();
@@ -306,7 +327,7 @@ void XRSession::StartFrame() {
     callback.Call(timeStamp, *frame);
   }
 
-  mActiveRenderState->GetBaseLayer()->EndAnimationFrame();
+  baseLayer->EndAnimationFrame();
   frame->EndAnimationFrame();
   if (mDisplayPresentation) {
     mDisplayPresentation->SubmitFrame();
@@ -324,7 +345,7 @@ already_AddRefed<Promise> XRSession::RequestReferenceSpace(
   NS_ENSURE_TRUE(!aRv.Failed(), nullptr);
 
   if (!mEnabledReferenceSpaceTypes.Contains(aReferenceSpaceType)) {
-    promise->MaybeRejectWithNotSupportedError(NS_LITERAL_CSTRING(
+    promise->MaybeRejectWithNotSupportedError(nsLiteralCString(
         "Requested XRReferenceSpaceType not available for the XRSession."));
     return promise.forget();
   }
@@ -365,7 +386,9 @@ already_AddRefed<Promise> XRSession::RequestReferenceSpace(
   return promise.forget();
 }
 
-XRRenderState* XRSession::GetActiveRenderState() { return mActiveRenderState; }
+XRRenderState* XRSession::GetActiveRenderState() const {
+  return mActiveRenderState;
+}
 
 void XRSession::XRFrameRequest::Call(const DOMHighResTimeStamp& aTimeStamp,
                                      XRFrame& aFrame) {
@@ -381,9 +404,7 @@ int32_t XRSession::RequestAnimationFrame(XRFrameRequestCallback& aCallback,
 
   int32_t handle = ++mFrameRequestCallbackCounter;
 
-  DebugOnly<XRFrameRequest*> request =
-      mFrameRequestCallbacks.AppendElement(XRFrameRequest(aCallback, handle));
-  NS_ASSERTION(request, "This is supposed to be infallible!");
+  mFrameRequestCallbacks.AppendElement(XRFrameRequest(aCallback, handle));
 
   return handle;
 }
@@ -395,6 +416,13 @@ void XRSession::CancelAnimationFrame(int32_t aHandle, ErrorResult& aError) {
 void XRSession::Shutdown() {
   mShutdown = true;
   ExitPresentInternal();
+  mViewerPosePool.Clear();
+  mViewerPosePoolIndex = 0;
+  mFramePool.Clear();
+  mFramePoolIndex = 0;
+  mActiveRenderState = nullptr;
+  mPendingRenderState = nullptr;
+  mFrameRequestCallbacks.Clear();
 
   // Unregister from nsRefreshObserver
   if (mRefreshDriver) {
@@ -432,7 +460,7 @@ void XRSession::ExitPresentInternal() {
     init.mCancelable = false;
     init.mSession = this;
     RefPtr<XRSessionEvent> event =
-        XRSessionEvent::Constructor(this, NS_LITERAL_STRING("end"), init);
+        XRSessionEvent::Constructor(this, u"end"_ns, init);
 
     event->SetTrusted(true);
     this->DispatchEvent(*event);
@@ -449,6 +477,46 @@ void XRSession::LastRelease() {
   // We don't want to wait for the GC to free up the presentation
   // for use in other documents, so we do this in LastRelease().
   Shutdown();
+}
+
+RefPtr<XRViewerPose> XRSession::PooledViewerPose(
+    const gfx::Matrix4x4Double& aTransform, bool aEmulatedPosition) {
+  RefPtr<XRViewerPose> pose;
+  if (mViewerPosePool.Length() > mViewerPosePoolIndex) {
+    pose = mViewerPosePool.ElementAt(mViewerPosePoolIndex);
+    pose->Transform()->Update(aTransform);
+    pose->SetEmulatedPosition(aEmulatedPosition);
+  } else {
+    RefPtr<XRRigidTransform> transform = new XRRigidTransform(this, aTransform);
+    nsTArray<RefPtr<XRView>> views;
+    if (IsImmersive()) {
+      views.AppendElement(new XRView(GetParentObject(), XREye::Left));
+      views.AppendElement(new XRView(GetParentObject(), XREye::Right));
+    } else {
+      views.AppendElement(new XRView(GetParentObject(), XREye::None));
+    }
+    pose = new XRViewerPose(this, transform, aEmulatedPosition, views);
+    mViewerPosePool.AppendElement(pose);
+  }
+
+  mViewerPosePoolIndex++;
+  if (mViewerPosePoolIndex >= kMaxPoolSize) {
+    mViewerPosePoolIndex = 0;
+  }
+
+  return pose;
+}
+
+RefPtr<XRFrame> XRSession::PooledFrame() {
+  RefPtr<XRFrame> frame;
+  if (mFramePool.Length() > mFramePoolIndex) {
+    frame = mFramePool.ElementAt(mFramePoolIndex);
+  } else {
+    frame = new XRFrame(GetParentObject(), this);
+    mFramePool.AppendElement(frame);
+  }
+
+  return frame;
 }
 
 }  // namespace dom

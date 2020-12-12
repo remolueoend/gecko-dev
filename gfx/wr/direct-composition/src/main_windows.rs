@@ -12,6 +12,7 @@ use euclid::size2;
 use direct_composition::DirectComposition;
 use std::sync::mpsc;
 use webrender::api;
+use webrender::render_api::*;
 use winit::os::windows::{WindowExt, WindowBuilderExt};
 use winit::dpi::LogicalSize;
 
@@ -93,7 +94,7 @@ fn direct_composition_from_window(window: &winit::Window) -> DirectComposition {
 struct Rectangle {
     visual: direct_composition::AngleVisual,
     renderer: Option<webrender::Renderer>,
-    api: api::RenderApi,
+    api: RenderApi,
     document_id: api::DocumentId,
     size: api::units::DeviceIntSize,
     color: api::ColorF,
@@ -115,14 +116,13 @@ impl Rectangle {
                 ..webrender::RendererOptions::default()
             },
             None,
-            size,
         ).unwrap();
         let api = sender.create_api();
 
        Rectangle {
             visual,
             renderer: Some(renderer),
-            document_id: api.add_document(size, 0),
+            document_id: api.add_document(size),
             api,
             size,
             color: api::ColorF { r, g, b, a },
@@ -134,7 +134,7 @@ impl Rectangle {
 
         let pipeline_id = api::PipelineId(0, 0);
         let layout_size = self.size.to_f32() / euclid::Scale::new(device_pixel_ratio);
-        let mut builder = api::DisplayListBuilder::new(pipeline_id, layout_size);
+        let mut builder = api::DisplayListBuilder::new(pipeline_id);
 
         let rect = euclid::Rect::new(euclid::Point2D::zero(), layout_size);
 
@@ -143,11 +143,9 @@ impl Rectangle {
             api::BorderRadius::uniform(20.),
             api::ClipMode::Clip
         );
-        let clip_id = builder.define_clip(
+        let clip_id = builder.define_clip_rounded_rect(
             &api::SpaceAndClipInfo::root_scroll(pipeline_id),
-            rect,
-            vec![region],
-            None,
+            region,
         );
 
         builder.push_rect(
@@ -162,7 +160,7 @@ impl Rectangle {
             self.color,
         );
 
-        let mut transaction = api::Transaction::new();
+        let mut transaction = Transaction::new();
         transaction.set_display_list(
             api::Epoch(0),
             None,
@@ -171,12 +169,12 @@ impl Rectangle {
             true,
         );
         transaction.set_root_pipeline(pipeline_id);
-        transaction.generate_frame();
+        transaction.generate_frame(0);
         self.api.send_transaction(self.document_id, transaction);
         rx.recv().unwrap();
         let renderer = self.renderer.as_mut().unwrap();
         renderer.update();
-        renderer.render(self.size).unwrap();
+        renderer.render(self.size, 0).unwrap();
         let _ = renderer.flush_pipeline_info();
         self.visual.present();
     }
@@ -199,7 +197,7 @@ impl api::RenderNotifier for Notifier {
         Box::new(Clone::clone(self))
     }
 
-    fn wake_up(&self) {
+    fn wake_up(&self, _composite_needed: bool) {
         self.tx.send(()).unwrap();
         let _ = self.events_proxy.wakeup();
     }
@@ -207,8 +205,8 @@ impl api::RenderNotifier for Notifier {
     fn new_frame_ready(&self,
                        _: api::DocumentId,
                        _: bool,
-                       _: bool,
+                       composite_needed: bool,
                        _: Option<u64>) {
-        self.wake_up();
+        self.wake_up(composite_needed);
     }
 }

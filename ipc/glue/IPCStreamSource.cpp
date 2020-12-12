@@ -5,8 +5,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "IPCStreamSource.h"
+
 #include "BackgroundParent.h"  // for AssertIsOnBackgroundThread
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/RemoteWorkerService.h"
+#include "mozilla/dom/WorkerCommon.h"
 #include "mozilla/webrender/WebRenderTypes.h"
 #include "nsIAsyncInputStream.h"
 #include "nsICancelableRunnable.h"
@@ -20,13 +23,13 @@ using mozilla::wr::ByteBuffer;
 namespace mozilla {
 namespace ipc {
 
-class IPCStreamSource::Callback final : public nsIInputStreamCallback,
-                                        public nsIRunnable,
-                                        public nsICancelableRunnable {
+class IPCStreamSource::Callback final : public DiscardableRunnable,
+                                        public nsIInputStreamCallback {
  public:
   explicit Callback(IPCStreamSource* aSource)
-      : mSource(aSource),
-        mOwningEventTarget(GetCurrentThreadSerialEventTarget()) {
+      : DiscardableRunnable("IPCStreamSource::Callback"),
+        mSource(aSource),
+        mOwningEventTarget(GetCurrentSerialEventTarget()) {
     MOZ_ASSERT(mSource);
   }
 
@@ -58,12 +61,9 @@ class IPCStreamSource::Callback final : public nsIInputStreamCallback,
     return NS_OK;
   }
 
-  nsresult Cancel() override {
-    // Cancel() gets called when the Worker thread is being shutdown.  We have
-    // nothing to do here because IPCStreamChild handles this case via
-    // the WorkerRef.
-    return NS_OK;
-  }
+  // OnDiscard() gets called when the Worker thread is being shutdown.  We have
+  // nothing to do here because IPCStreamChild handles this case via
+  // the WorkerRef.
 
   void ClearSource() {
     MOZ_ASSERT(mOwningEventTarget->IsOnCurrentThread());
@@ -86,11 +86,11 @@ class IPCStreamSource::Callback final : public nsIInputStreamCallback,
 
   nsCOMPtr<nsISerialEventTarget> mOwningEventTarget;
 
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_ISUPPORTS_INHERITED
 };
 
-NS_IMPL_ISUPPORTS(IPCStreamSource::Callback, nsIInputStreamCallback,
-                  nsIRunnable, nsICancelableRunnable);
+NS_IMPL_ISUPPORTS_INHERITED(IPCStreamSource::Callback, DiscardableRunnable,
+                            nsIInputStreamCallback);
 
 IPCStreamSource::IPCStreamSource(nsIAsyncInputStream* aInputStream)
     : mStream(aInputStream), mState(ePending) {
@@ -181,7 +181,7 @@ void IPCStreamSource::DoRead() {
   static_assert(kMaxBytesPerMessage <= static_cast<uint64_t>(UINT32_MAX),
                 "kMaxBytesPerMessage must cleanly cast to uint32_t");
 
-  char buffer[kMaxBytesPerMessage];
+  UniquePtr<char[]> buffer(new char[kMaxBytesPerMessage]);
 
   while (true) {
     // It should not be possible to transition to closed state without
@@ -197,7 +197,7 @@ void IPCStreamSource::DoRead() {
     }
 
     uint32_t bytesRead = 0;
-    rv = mStream->Read(buffer, kMaxBytesPerMessage, &bytesRead);
+    rv = mStream->Read(buffer.get(), kMaxBytesPerMessage, &bytesRead);
 
     if (rv == NS_BASE_STREAM_WOULD_BLOCK) {
       MOZ_ASSERT(bytesRead == 0);
@@ -218,7 +218,7 @@ void IPCStreamSource::DoRead() {
     }
 
     // We read some data from the stream, send it across.
-    SendData(ByteBuffer(bytesRead, reinterpret_cast<uint8_t*>(buffer)));
+    SendData(ByteBuffer(bytesRead, reinterpret_cast<uint8_t*>(buffer.get())));
   }
 }
 

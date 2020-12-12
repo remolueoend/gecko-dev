@@ -11,6 +11,10 @@ const { CFRMessageProvider } = ChromeUtils.import(
   "resource://activity-stream/lib/CFRMessageProvider.jsm"
 );
 
+const { TelemetryFeed } = ChromeUtils.import(
+  "resource://activity-stream/lib/TelemetryFeed.jsm"
+);
+
 const createDummyRecommendation = ({
   action,
   category,
@@ -167,7 +171,7 @@ function trigger_cfr_panel(
   browser,
   trigger,
   {
-    action = { type: "FOO" },
+    action = { type: "CANCEL" },
     heading_text,
     category = "cfrAddons",
     layout,
@@ -195,20 +199,12 @@ function trigger_cfr_panel(
   }
 
   clearNotifications();
-  if (recommendation.template === "milestone_message") {
-    return CFRPageActions.showMilestone(
-      browser,
-      recommendation,
-      // Use the real AS dispatch method to trigger real notifications
-      ASRouter.dispatch
-    );
-  }
   return CFRPageActions.addRecommendation(
     browser,
     trigger,
     recommendation,
     // Use the real AS dispatch method to trigger real notifications
-    ASRouter.dispatch
+    ASRouter.dispatchCFRAction
   );
 }
 
@@ -226,9 +222,13 @@ add_task(async function setup() {
 });
 
 add_task(async function test_cfr_notification_show() {
+  const sendPingStub = sinon.stub(
+    TelemetryFeed.prototype,
+    "sendStructuredIngestionEvent"
+  );
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   const response = await trigger_cfr_panel(browser, "example.com");
@@ -277,12 +277,17 @@ add_task(async function test_cfr_notification_show() {
     0,
     "Should have removed the notification"
   );
+
+  Assert.ok(sendPingStub.callCount >= 1, "Recorded some events");
+  let cfrPing = sendPingStub.args.find(args => args[2] === "cfr");
+  Assert.equal(cfrPing[0].source, "CFR", "Got a CFR event");
+  sendPingStub.restore();
 });
 
 add_task(async function test_cfr_notification_show() {
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   let response = await trigger_cfr_panel(browser, "example.com", {
@@ -348,7 +353,7 @@ add_task(async function test_cfr_notification_show() {
 add_task(async function test_cfr_notification_minimize() {
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   let response = await trigger_cfr_panel(browser, "example.com");
@@ -395,7 +400,7 @@ add_task(async function test_cfr_notification_minimize() {
 add_task(async function test_cfr_notification_minimize_2() {
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   let response = await trigger_cfr_panel(browser, "example.com");
@@ -457,7 +462,7 @@ add_task(async function test_cfr_notification_minimize_2() {
 add_task(async function test_cfr_addon_install() {
   // addRecommendation checks that scheme starts with http and host matches
   const browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   const response = await trigger_cfr_panel(browser, "example.com", {
@@ -516,7 +521,7 @@ add_task(async function test_cfr_addon_install() {
 add_task(async function test_cfr_pin_tab_notification_show() {
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   const response = await trigger_cfr_panel(browser, "example.com", {
@@ -572,7 +577,7 @@ add_task(
   async function test_cfr_social_tracking_protection_notification_show() {
     // addRecommendation checks that scheme starts with http and host matches
     let browser = gBrowser.selectedBrowser;
-    await BrowserTestUtils.loadURI(browser, "http://example.com/");
+    BrowserTestUtils.loadURI(browser, "http://example.com/");
     await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
     const showPanel = BrowserTestUtils.waitForEvent(
@@ -618,14 +623,14 @@ add_task(
         ["browser.contentblocking.cfr-milestone.milestone-achieved", 1000],
         [
           "browser.newtabpage.activity-stream.asrouter.providers.cfr",
-          `{"id":"cfr","enabled":true,"type":"local","localProvider":"CFRMessageProvider","frequency":{"custom":[{"period":"daily","cap":10}]},"categories":["cfrAddons","cfrFeatures"],"updateCycleInMs":3600000}`,
+          `{"id":"cfr","enabled":true,"type":"local","localProvider":"CFRMessageProvider","updateCycleInMs":3600000}`,
         ],
       ],
     });
 
     // addRecommendation checks that scheme starts with http and host matches
     let browser = gBrowser.selectedBrowser;
-    await BrowserTestUtils.loadURI(browser, "http://example.com/");
+    BrowserTestUtils.loadURI(browser, "http://example.com/");
     await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
     const showPanel = BrowserTestUtils.waitForEvent(
@@ -638,6 +643,7 @@ add_task(
       category: "cfrFeatures",
       layout: "short_message",
       skip_address_bar_notifier: true,
+      use_single_secondary_button: true,
       heading_text: "Test Milestone Message",
       template: "milestone_message",
     });
@@ -659,18 +665,85 @@ add_task(
       PopupNotifications.panel,
       "popuphidden"
     );
+
+    let protectionsTabPromise = BrowserTestUtils.waitForNewTab(gBrowser);
+
     document
       .getElementById("contextual-feature-recommendation-notification")
       .button.click();
-    await BrowserTestUtils.removeTab(gBrowser.selectedTab);
+
+    let protectionsTab = await protectionsTabPromise;
+
+    await BrowserTestUtils.removeTab(protectionsTab);
     await hidePanel;
+  }
+);
+
+add_task(
+  async function test_cfr_tracking_protection_milestone_notification_remove() {
+    await SpecialPowers.pushPrefEnv({
+      set: [
+        ["browser.contentblocking.cfr-milestone.milestone-achieved", 1000],
+        [
+          "browser.newtabpage.activity-stream.asrouter.providers.cfr",
+          `{"id":"cfr","enabled":true,"type":"local","localProvider":"CFRMessageProvider","updateCycleInMs":3600000}`,
+        ],
+      ],
+    });
+
+    // addRecommendation checks that scheme starts with http and host matches
+    let browser = gBrowser.selectedBrowser;
+    BrowserTestUtils.loadURI(browser, "http://example.com/");
+    await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
+
+    const showPanel = BrowserTestUtils.waitForEvent(
+      PopupNotifications.panel,
+      "popupshown"
+    );
+
+    const response = await trigger_cfr_panel(browser, "example.com", {
+      action: { type: "OPEN_PROTECTION_REPORT" },
+      category: "cfrFeatures",
+      layout: "short_message",
+      skip_address_bar_notifier: true,
+      use_single_secondary_button: true,
+      heading_text: "Test Milestone Message",
+      template: "milestone_message",
+    });
+    Assert.ok(
+      response,
+      "Should return true if addRecommendation checks were successful"
+    );
+    await showPanel;
+
+    const notification = document.getElementById(
+      "contextual-feature-recommendation-notification"
+    );
+    // checkCFRSocialTrackingProtection(notification);
+    checkCFRTrackingProtectionMilestone(notification);
+
+    Assert.ok(notification.secondaryButton);
+    let hidePanel = BrowserTestUtils.waitForEvent(
+      PopupNotifications.panel,
+      "popuphidden"
+    );
+
+    document
+      .getElementById("contextual-feature-recommendation-notification")
+      .secondaryButton.click();
+    await hidePanel;
+    Assert.equal(
+      PopupNotifications._currentNotifications.length,
+      0,
+      "Should have removed the notification"
+    );
   }
 );
 
 add_task(async function test_cfr_features_and_addon_show() {
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   // Trigger Feature CFR
@@ -761,7 +834,7 @@ add_task(async function test_cfr_features_and_addon_show() {
 add_task(async function test_cfr_addon_and_features_show() {
   // addRecommendation checks that scheme starts with http and host matches
   let browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   // Trigger Feature CFR
@@ -859,17 +932,17 @@ add_task(async function test_onLocationChange_cb() {
     "example.com",
   ]);
 
-  await BrowserTestUtils.loadURI(browser, "about:blank");
+  BrowserTestUtils.loadURI(browser, "about:blank");
   await BrowserTestUtils.browserLoaded(browser, false, "about:blank");
 
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   Assert.equal(count, 1, "Count navigation to example.com");
 
   // Anchor scroll triggers a location change event with the same document
   // https://searchfox.org/mozilla-central/rev/8848b9741fc4ee4e9bc3ae83ea0fc048da39979f/uriloader/base/nsIWebProgressListener.idl#400-403
-  await BrowserTestUtils.loadURI(browser, "http://example.com/#foo");
+  BrowserTestUtils.loadURI(browser, "http://example.com/#foo");
   await BrowserTestUtils.waitForLocationChange(
     gBrowser,
     "http://example.com/#foo"
@@ -877,7 +950,7 @@ add_task(async function test_onLocationChange_cb() {
 
   Assert.equal(count, 1, "It should ignore same page navigation");
 
-  await BrowserTestUtils.loadURI(browser, TEST_URL);
+  BrowserTestUtils.loadURI(browser, TEST_URL);
   await BrowserTestUtils.browserLoaded(browser, false, TEST_URL);
 
   Assert.equal(count, 2, "We moved to a new document");
@@ -894,7 +967,7 @@ add_task(async function test_matchPattern() {
   await frequentVisitsTrigger.init(triggerHandler, [], ["*://*.example.com/"]);
 
   const browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   await BrowserTestUtils.waitForCondition(
@@ -902,7 +975,7 @@ add_task(async function test_matchPattern() {
     "Registered pattern matched the current location"
   );
 
-  await BrowserTestUtils.loadURI(browser, "about:config");
+  BrowserTestUtils.loadURI(browser, "about:config");
   await BrowserTestUtils.browserLoaded(browser, false, "about:config");
 
   await BrowserTestUtils.waitForCondition(
@@ -910,7 +983,7 @@ add_task(async function test_matchPattern() {
     "Navigated to a new page but not a match"
   );
 
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   await BrowserTestUtils.waitForCondition(
@@ -918,7 +991,7 @@ add_task(async function test_matchPattern() {
     "Navigated to a location that matches the pattern but within 15 mins"
   );
 
-  await BrowserTestUtils.loadURI(browser, "http://www.example.com/");
+  BrowserTestUtils.loadURI(browser, "http://www.example.com/");
   await BrowserTestUtils.browserLoaded(
     browser,
     false,
@@ -945,7 +1018,7 @@ add_task(async function test_providerNames() {
   const cfrProviderPrefs = Services.prefs.getChildList(providersBranch);
   for (const prefName of cfrProviderPrefs) {
     const prefValue = JSON.parse(Services.prefs.getStringPref(prefName));
-    if (prefValue.id) {
+    if (prefValue && prefValue.id) {
       // Snippets are disabled in tests and value is set to []
       Assert.equal(
         prefValue.id,
@@ -959,7 +1032,7 @@ add_task(async function test_providerNames() {
 add_task(async function test_cfr_notification_keyboard() {
   // addRecommendation checks that scheme starts with http and host matches
   const browser = gBrowser.selectedBrowser;
-  await BrowserTestUtils.loadURI(browser, "http://example.com/");
+  BrowserTestUtils.loadURI(browser, "http://example.com/");
   await BrowserTestUtils.browserLoaded(browser, false, "http://example.com/");
 
   const response = await trigger_cfr_panel(browser, "example.com");
@@ -1016,7 +1089,7 @@ add_task(function test_updateCycleForProviders() {
     .getChildList("browser.newtabpage.activity-stream.asrouter.providers.")
     .forEach(provider => {
       const prefValue = JSON.parse(Services.prefs.getStringPref(provider, ""));
-      if (prefValue.type === "remote-settings") {
+      if (prefValue && prefValue.type === "remote-settings") {
         Assert.ok(prefValue.updateCycleInMs);
       }
     });
@@ -1030,7 +1103,7 @@ add_task(async function test_heartbeat_tactic_2() {
     clearNotifications();
   });
 
-  const msg = CFRMessageProvider.getMessages().find(
+  const msg = (await CFRMessageProvider.getMessages()).find(
     m => m.id === "HEARTBEAT_TACTIC_2"
   );
   const shown = await CFRPageActions.addRecommendation(
@@ -1043,7 +1116,7 @@ add_task(async function test_heartbeat_tactic_2() {
       targeting: true,
     },
     // Use the real AS dispatch method to trigger real notifications
-    ASRouter.dispatch
+    ASRouter.dispatchCFRAction
   );
 
   Assert.ok(shown, "Heartbeat CFR added");
@@ -1054,12 +1127,13 @@ add_task(async function test_heartbeat_tactic_2() {
     "Heartbeat button exists"
   );
 
+  let newTabPromise = BrowserTestUtils.waitForNewTab(
+    gBrowser,
+    Services.urlFormatter.formatURL(msg.content.action.url),
+    true
+  );
+
   document.getElementById("contextual-feature-recommendation").click();
 
-  // This will fail if the URL from the message does not load
-  await BrowserTestUtils.browserLoaded(
-    gBrowser.selectedBrowser,
-    false,
-    Services.urlFormatter.formatURL(msg.content.action.url)
-  );
+  await newTabPromise;
 });

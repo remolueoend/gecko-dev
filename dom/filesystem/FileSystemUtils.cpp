@@ -5,9 +5,11 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/FileSystemUtils.h"
+#include "nsCharSeparatedTokenizer.h"
+#include "nsIEventTarget.h"
+#include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -41,8 +43,8 @@ bool FileSystemUtils::IsValidRelativeDOMPath(const nsAString& aPath,
     return false;
   }
 
-  NS_NAMED_LITERAL_STRING(kCurrentDir, ".");
-  NS_NAMED_LITERAL_STRING(kParentDir, "..");
+  constexpr auto kCurrentDir = u"."_ns;
+  constexpr auto kParentDir = u".."_ns;
 
   // Split path and check each path component.
   nsCharSeparatedTokenizerTemplate<TokenizerIgnoreNothing> tokenizer(
@@ -86,5 +88,4 @@ nsresult FileSystemUtils::DispatchRunnable(
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

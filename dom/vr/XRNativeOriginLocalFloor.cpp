@@ -5,11 +5,13 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "XRNativeOriginLocalFloor.h"
+#include "VRDisplayClient.h"
 
 namespace mozilla {
 namespace dom {
 
-XRNativeOriginLocalFloor::XRNativeOriginLocalFloor(VRDisplayClient* aDisplay)
+XRNativeOriginLocalFloor::XRNativeOriginLocalFloor(
+    gfx::VRDisplayClient* aDisplay)
     : mDisplay(aDisplay), mInitialPositionValid(false) {
   MOZ_ASSERT(aDisplay);
 
@@ -29,7 +31,6 @@ gfx::PointDouble3D XRNativeOriginLocalFloor::GetPosition() {
       mDisplay->GetDisplayInfo().GetSittingToStandingTransform();
   if (!mInitialPositionValid || standing != mStandingTransform) {
     const gfx::VRHMDSensorState& sensorState = mDisplay->GetSensorState();
-    gfx::PointDouble3D origin;
     mInitialPosition.x = sensorState.pose.position[0];
     mInitialPosition.y = -mFloorRandom - standing._42;
     mInitialPosition.z = sensorState.pose.position[2];

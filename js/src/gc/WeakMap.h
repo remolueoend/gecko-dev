@@ -10,11 +10,11 @@
 #include "mozilla/LinkedList.h"
 
 #include "gc/Barrier.h"
-#include "gc/DeletePolicy.h"
 #include "gc/Tracer.h"
 #include "gc/ZoneAllocator.h"
 #include "js/HashTable.h"
 #include "js/HeapAPI.h"
+#include "js/shadow/Zone.h"  // JS::shadow::Zone
 
 namespace js {
 
@@ -150,6 +150,12 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
   virtual void traceMappings(WeakMapTracer* tracer) = 0;
   virtual void clearAndCompact() = 0;
 
+  // We have a key that, if it or its delegate is marked, may lead to a WeakMap
+  // value getting marked. Insert it or its delegate (if any) into the
+  // appropriate zone's gcWeakKeys or gcNurseryWeakKeys.
+  static inline void addWeakEntry(GCMarker* marker, gc::Cell* key,
+                                  const gc::WeakMarkable& markable);
+
   // Any weakmap key types that want to participate in the non-iterative
   // ephemeron marking must override this method.
   virtual void markKey(GCMarker* marker, gc::Cell* markedCell, gc::Cell* l) = 0;
@@ -157,8 +163,12 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
   // An unmarked CCW with a delegate will add a weakKeys entry for the
   // delegate. If the delegate is removed with NukeCrossCompartmentWrapper,
   // then the (former) CCW needs to be added to weakKeys instead.
-  virtual void postSeverDelegate(GCMarker* marker, JSObject* key,
-                                 Compartment* comp) = 0;
+  virtual void postSeverDelegate(GCMarker* marker, JSObject* key) = 0;
+
+  // When a wrapper is remapped, it will have its delegate removed then
+  // re-added. Update the delegate zone's gcWeakKeys accordingly.
+  virtual void postRestoreDelegate(GCMarker* marker, JSObject* key,
+                                   JSObject* delegate) = 0;
 
   virtual bool markEntries(GCMarker* marker) = 0;
 
@@ -170,7 +180,7 @@ class WeakMapBase : public mozilla::LinkedListElement<WeakMapBase> {
 #endif
 
   // Object that this weak map is part of, if any.
-  GCPtrObject memberOf;
+  HeapPtrObject memberOf;
 
   // Zone containing this weak map.
   JS::Zone* zone_;
@@ -319,8 +329,11 @@ class WeakMap
   bool markEntry(GCMarker* marker, Key& key, Value& value);
 
   // 'key' has lost its delegate, update our weak key state.
-  void postSeverDelegate(GCMarker* marker, JSObject* key,
-                         Compartment* comp) override;
+  void postSeverDelegate(GCMarker* marker, JSObject* key) override;
+
+  // 'key' regained its delegate, update our weak key state.
+  void postRestoreDelegate(GCMarker* marker, JSObject* key,
+                           JSObject* delegate) override;
 
   void trace(JSTracer* trc) override;
 
@@ -328,6 +341,7 @@ class WeakMap
   inline void forgetKey(UnbarrieredKey key);
 
   void barrierForInsert(Key k, const Value& v) {
+    assertMapIsSameZoneWithValue(v);
     if (!mapColor) {
       return;
     }
@@ -342,13 +356,14 @@ class WeakMap
     MOZ_ASSERT(tmp == v);
   }
 
-  // We have a key that, if it or its delegate is marked, may lead to a WeakMap
-  // value getting marked. Insert it or its delegate (if any) into the
-  // appropriate zone's gcWeakKeys or gcNurseryWeakKeys.
-  static void addWeakEntry(GCMarker* marker, gc::Cell* key,
-                           const gc::WeakMarkable& markable);
+  inline void assertMapIsSameZoneWithValue(const Value& v);
 
   bool markEntries(GCMarker* marker) override;
+
+ protected:
+  // Find sweep group edges for delegates, if the key type has delegates. (If
+  // not, the optimizer should make this a nop.)
+  bool findSweepGroupEdges() override;
 
   /**
    * If a wrapper is used as a key in a weakmap, the garbage collector should
@@ -365,11 +380,6 @@ class WeakMap
   }
   void exposeGCThingToActiveJS(JSObject* obj) const {
     JS::ExposeObjectToActiveJS(obj);
-  }
-
-  bool findSweepGroupEdges() override {
-    // This is overridden by ObjectValueWeakMap and DebuggerWeakMap.
-    return true;
   }
 
   void sweep() override;
@@ -396,8 +406,6 @@ class WeakMap
 class ObjectValueWeakMap : public WeakMap<HeapPtr<JSObject*>, HeapPtr<Value>> {
  public:
   ObjectValueWeakMap(JSContext* cx, JSObject* obj) : WeakMap(cx, obj) {}
-
-  bool findSweepGroupEdges() override;
 
   size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
 };
@@ -430,13 +438,5 @@ class ObjectWeakMap {
 };
 
 } /* namespace js */
-
-namespace JS {
-
-template <>
-struct DeletePolicy<js::ObjectValueWeakMap>
-    : public js::GCManagedDeletePolicy<js::ObjectValueWeakMap> {};
-
-} /* namespace JS */
 
 #endif /* gc_WeakMap_h */

@@ -6,10 +6,19 @@
 
 #include "StorageActivityService.h"
 
+#include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundUtils.h"
+#include "mozilla/ipc/PBackgroundChild.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/SchedulerGroup.h"
+#include "mozilla/Services.h"
 #include "mozilla/StaticPtr.h"
+#include "nsCOMPtr.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIMutableArray.h"
+#include "nsIObserverService.h"
+#include "nsIPrincipal.h"
 #include "nsSupportsPrimitives.h"
 #include "nsXPCOM.h"
 
@@ -54,10 +63,17 @@ void StorageActivityService::SendActivity(
       "StorageActivityService::SendActivity", [aPrincipalInfo]() {
         MOZ_ASSERT(NS_IsMainThread());
 
-        nsCOMPtr<nsIPrincipal> principal =
+        auto principalOrErr =
             mozilla::ipc::PrincipalInfoToPrincipal(aPrincipalInfo);
 
-        StorageActivityService::SendActivity(principal);
+        if (principalOrErr.isOk()) {
+          nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+          StorageActivityService::SendActivity(principal);
+        } else {
+          NS_WARNING(
+              "Could not obtain principal from "
+              "mozilla::ipc::PrincipalInfoToPrincipal");
+        }
       });
 
   SchedulerGroup::Dispatch(TaskCategory::Other, r.forget());
@@ -154,7 +170,8 @@ void StorageActivityService::SendActivityToParent(nsIPrincipal* aPrincipal) {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!XRE_IsParentProcess());
 
-  PBackgroundChild* actor = BackgroundChild::GetOrCreateForCurrentThread();
+  ::mozilla::ipc::PBackgroundChild* actor =
+      ::mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!actor)) {
     return;
   }

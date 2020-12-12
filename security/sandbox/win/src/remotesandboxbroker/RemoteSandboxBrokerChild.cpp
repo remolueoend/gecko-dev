@@ -5,6 +5,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #include "RemoteSandboxBrokerChild.h"
+#include "chrome/common/ipc_channel.h"
 #include "mozilla/ipc/CrashReporterClient.h"
 #include "nsDebugImpl.h"
 #include "mozilla/ipc/CrashReporterClient.h"
@@ -82,7 +83,7 @@ mozilla::ipc::IPCResult RemoteSandboxBrokerChild::AnswerLaunchApp(
   *aOutOk =
       mSandboxBroker.LaunchApp(aParams.path().get(), aParams.args().get(),
                                envmap, GeckoProcessType(aParams.processType()),
-                               aParams.enableLogging(), (void**)&p);
+                               aParams.enableLogging(), nullptr, (void**)&p);
   if (*aOutOk) {
     *aOutHandle = uint64_t(p);
   }

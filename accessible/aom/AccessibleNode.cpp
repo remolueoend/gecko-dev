@@ -8,12 +8,16 @@
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/DOMStringList.h"
 #include "mozilla/StaticPrefs_accessibility.h"
+#include "nsContentUtils.h"
 #include "nsIPersistentProperties2.h"
 #include "nsISimpleEnumerator.h"
 
 #include "Accessible-inl.h"
 #include "nsAccessibilityService.h"
 #include "DocAccessible.h"
+
+#include "mozilla/dom/Document.h"  // for inline nsINode::GetParentObject
+#include "mozilla/dom/ToJSValue.h"
 
 using namespace mozilla;
 using namespace mozilla::a11y;
@@ -82,17 +86,17 @@ void AccessibleNode::GetComputedRole(nsAString& aRole) {
 void AccessibleNode::GetStates(nsTArray<nsString>& aStates) {
   nsAccessibilityService* accService = GetOrCreateAccService();
   if (!mIntl || !accService) {
-    aStates.AppendElement(NS_LITERAL_STRING("defunct"));
+    aStates.AppendElement(u"defunct"_ns);
     return;
   }
 
   if (mStates) {
-    aStates = mStates->StringArray();
+    aStates = mStates->StringArray().Clone();
     return;
   }
 
   mStates = accService->GetStringStates(mIntl->State());
-  aStates = mStates->StringArray();
+  aStates = mStates->StringArray().Clone();
 }
 
 void AccessibleNode::GetAttributes(nsTArray<nsString>& aAttributes) {

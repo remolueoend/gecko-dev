@@ -173,7 +173,7 @@ function PreviewController(win, tab) {
 }
 
 PreviewController.prototype = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsITaskbarPreviewController]),
+  QueryInterface: ChromeUtils.generateQI(["nsITaskbarPreviewController"]),
 
   destroy() {
     this.tab.removeEventListener("TabAttrModified", this);
@@ -770,7 +770,11 @@ var AeroPeek = {
     if (!this._observersAdded) {
       this.prefs.addObserver(DISABLE_THRESHOLD_PREF_NAME, this, true);
       this.prefs.addObserver(CACHE_EXPIRATION_TIME_PREF_NAME, this, true);
-      PlacesUtils.history.addObserver(this, true);
+      this._placesListener = this.handlePlacesEvents.bind(this);
+      PlacesUtils.observers.addListener(
+        ["favicon-changed"],
+        this._placesListener
+      );
       this._observersAdded = true;
     }
 
@@ -798,6 +802,10 @@ var AeroPeek = {
       tabWinObject.destroy(); // This will remove us from the array.
       delete tabWinObject.win.gTaskbarTabGroup; // Tidy up the window.
     }
+    PlacesUtils.observers.removeListener(
+      ["favicon-changed"],
+      this._placesListener
+    );
   },
 
   addPreview(preview) {
@@ -879,24 +887,16 @@ var AeroPeek = {
     }
   },
 
-  /* nsINavHistoryObserver implementation */
-  onBeginUpdateBatch() {},
-  onEndUpdateBatch() {},
-  onTitleChanged() {},
-  onFrecencyChanged() {},
-  onManyFrecenciesChanged() {},
-  onDeleteURI() {},
-  onClearHistory() {},
-  onDeleteVisits() {},
-  onPageChanged(uri, changedConst, newValue) {
-    if (
-      this.enabled &&
-      changedConst == Ci.nsINavHistoryObserver.ATTRIBUTE_FAVICON
-    ) {
-      for (let win of this.windows) {
-        for (let [tab] of win.previews) {
-          if (tab.getAttribute("image") == newValue) {
-            win.updateFavicon(tab, newValue);
+  handlePlacesEvents(events) {
+    for (let event of events) {
+      switch (event.type) {
+        case "favicon-changed": {
+          for (let win of this.windows) {
+            for (let [tab] of win.previews) {
+              if (tab.getAttribute("image") == event.faviconUrl) {
+                win.updateFavicon(tab, event.faviconUrl);
+              }
+            }
           }
         }
       }
@@ -904,9 +904,8 @@ var AeroPeek = {
   },
 
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsISupportsWeakReference,
-    Ci.nsINavHistoryObserver,
-    Ci.nsIObserver,
+    "nsISupportsWeakReference",
+    "nsIObserver",
   ]),
 };
 

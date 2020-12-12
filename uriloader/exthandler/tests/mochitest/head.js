@@ -1,4 +1,7 @@
 var { FileUtils } = ChromeUtils.import("resource://gre/modules/FileUtils.jsm");
+var { HandlerServiceTestUtils } = ChromeUtils.import(
+  "resource://testing-common/HandlerServiceTestUtils.jsm"
+);
 
 var gMimeSvc = Cc["@mozilla.org/mime;1"].getService(Ci.nsIMIMEService);
 var gHandlerSvc = Cc["@mozilla.org/uriloader/handler-service;1"].getService(
@@ -77,8 +80,8 @@ function createMockedObjects(createHandlerApp) {
     // PRTime is microseconds since epoch, Date.now() returns milliseconds:
     timeDownloadStarted: Date.now() * 1000,
     QueryInterface: ChromeUtils.generateQI([
-      Ci.nsICancelable,
-      Ci.nsIHelperAppLauncher,
+      "nsICancelable",
+      "nsIHelperAppLauncher",
     ]),
   };
 
@@ -101,7 +104,7 @@ async function openHelperAppDialog(launcher) {
     "@mozilla.org/helperapplauncherdialog;1"
   ].createInstance(Ci.nsIHelperAppLauncherDialog);
 
-  let helperAppDialogShownPromise = BrowserTestUtils.domWindowOpened();
+  let helperAppDialogShownPromise = BrowserTestUtils.domWindowOpenedAndLoaded();
   try {
     helperAppDialog.show(launcher, window, "foopy");
   } catch (ex) {
@@ -113,8 +116,6 @@ async function openHelperAppDialog(launcher) {
   }
   let dlg = await helperAppDialogShownPromise;
 
-  await BrowserTestUtils.waitForEvent(dlg, "load", false);
-
   is(
     dlg.location.href,
     "chrome://mozapps/content/downloads/unknownContentType.xhtml",
@@ -122,4 +123,128 @@ async function openHelperAppDialog(launcher) {
   );
 
   return dlg;
+}
+
+async function waitForSubDialog(browser, url, state) {
+  let eventStr = state ? "dialogopen" : "dialogclose";
+
+  let tabDialogBox = gBrowser.getTabDialogBox(browser);
+  let dialogStack = tabDialogBox._dialogManager._dialogStack;
+
+  let checkFn;
+
+  if (state) {
+    checkFn = dialogEvent => dialogEvent.detail.dialog?._openedURL == url;
+  }
+
+  let event = await BrowserTestUtils.waitForEvent(
+    dialogStack,
+    eventStr,
+    true,
+    checkFn
+  );
+
+  let { dialog } = event.detail;
+
+  // If the dialog is closing wait for it to be fully closed before resolving
+  if (!state) {
+    await dialog._closingPromise;
+  }
+
+  return event.detail.dialog;
+}
+
+/**
+ * Wait for protocol permission dialog open/close.
+ * @param {MozBrowser} browser - Browser element the dialog belongs to.
+ * @param {boolean} state - true: dialog open, false: dialog close
+ * @returns {Promise<SubDialog>} - Returns a promise which resolves with the
+ * SubDialog object of the dialog which closed or opened.
+ */
+async function waitForProtocolPermissionDialog(browser, state) {
+  return waitForSubDialog(
+    browser,
+    "chrome://mozapps/content/handling/permissionDialog.xhtml",
+    state
+  );
+}
+
+/**
+ * Wait for protocol app chooser dialog open/close.
+ * @param {MozBrowser} browser - Browser element the dialog belongs to.
+ * @param {boolean} state - true: dialog open, false: dialog close
+ * @returns {Promise<SubDialog>} - Returns a promise which resolves with the
+ * SubDialog object of the dialog which closed or opened.
+ */
+async function waitForProtocolAppChooserDialog(browser, state) {
+  return waitForSubDialog(
+    browser,
+    "chrome://mozapps/content/handling/appChooser.xhtml",
+    state
+  );
+}
+
+async function promiseDownloadFinished(list) {
+  return new Promise(resolve => {
+    list.addView({
+      onDownloadChanged(download) {
+        info("Download changed!");
+        if (download.succeeded || download.error) {
+          info("Download succeeded or errored");
+          list.removeView(this);
+          resolve(download);
+        }
+      },
+    });
+  });
+}
+
+function setupMailHandler() {
+  let mailHandlerInfo = HandlerServiceTestUtils.getHandlerInfo("mailto");
+  let gOldMailHandlers = [];
+
+  // Remove extant web handlers because they have icons that
+  // we fetch from the web, which isn't allowed in tests.
+  let handlers = mailHandlerInfo.possibleApplicationHandlers;
+  for (let i = handlers.Count() - 1; i >= 0; i--) {
+    try {
+      let handler = handlers.queryElementAt(i, Ci.nsIWebHandlerApp);
+      gOldMailHandlers.push(handler);
+      // If we get here, this is a web handler app. Remove it:
+      handlers.removeElementAt(i);
+    } catch (ex) {}
+  }
+
+  let previousHandling = mailHandlerInfo.alwaysAskBeforeHandling;
+  mailHandlerInfo.alwaysAskBeforeHandling = true;
+
+  // Create a dummy web mail handler so we always know the mailto: protocol.
+  // Without this, the test fails on VMs without a default mailto: handler,
+  // because no dialog is ever shown, as we ignore subframe navigations to
+  // protocols that cannot be handled.
+  let dummy = Cc["@mozilla.org/uriloader/web-handler-app;1"].createInstance(
+    Ci.nsIWebHandlerApp
+  );
+  dummy.name = "Handler 1";
+  dummy.uriTemplate = "https://example.com/first/%s";
+  mailHandlerInfo.possibleApplicationHandlers.appendElement(dummy);
+
+  gHandlerSvc.store(mailHandlerInfo);
+  registerCleanupFunction(() => {
+    // Re-add the original protocol handlers:
+    let mailHandlers = mailHandlerInfo.possibleApplicationHandlers;
+    for (let i = handlers.Count() - 1; i >= 0; i--) {
+      try {
+        // See if this is a web handler. If it is, it'll throw, otherwise,
+        // we will remove it.
+        mailHandlers.queryElementAt(i, Ci.nsIWebHandlerApp);
+        mailHandlers.removeElementAt(i);
+      } catch (ex) {}
+    }
+    for (let h of gOldMailHandlers) {
+      mailHandlers.appendElement(h);
+    }
+    mailHandlerInfo.alwaysAskBeforeHandling = previousHandling;
+    gHandlerSvc.store(mailHandlerInfo);
+  });
 }

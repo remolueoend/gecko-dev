@@ -744,7 +744,7 @@ var TelemetrySendImpl = {
     Services.obs.addObserver(this, TOPIC_QUIT_APPLICATION_GRANTED);
   },
 
-  QueryInterface: ChromeUtils.generateQI([Ci.nsISupportsWeakReference]),
+  QueryInterface: ChromeUtils.generateQI(["nsISupportsWeakReference"]),
 
   async setup(testing) {
     this._log.trace("setup");
@@ -1579,7 +1579,7 @@ var TelemetrySendImpl = {
 
   runPingSender(pings, observer) {
     if (AppConstants.platform === "android") {
-      throw Cr.NS_ERROR_NOT_IMPLEMENTED;
+      throw Components.Exception("", Cr.NS_ERROR_NOT_IMPLEMENTED);
     }
 
     const exeName =

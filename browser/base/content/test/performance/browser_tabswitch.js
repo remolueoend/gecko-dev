@@ -4,10 +4,9 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS.
+ * Instead of adding reflows to the list, you should be modifying your code to
+ * avoid the reflow.
  *
  * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
  * for tips on how to do that.
@@ -26,6 +25,13 @@ const EXPECTED_REFLOWS = [
 add_task(async function() {
   await ensureNoPreloadedBrowser();
   await disableFxaBadge();
+
+  // The test starts on about:blank and opens an about:blank
+  // tab which triggers opening the toolbar since
+  // ensureNoPreloadedBrowser sets AboutNewTab.newTabURL to about:blank.
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.toolbars.bookmarks.visibility", "never"]],
+  });
 
   // At the time of writing, there are no reflows on simple tab switching.
   // Mochitest will fail if we have no assertions, so we add one here

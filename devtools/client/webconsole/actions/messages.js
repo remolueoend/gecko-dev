@@ -17,13 +17,14 @@ const {
 
 const {
   MESSAGES_ADD,
-  NETWORK_MESSAGE_UPDATE,
-  NETWORK_UPDATE_REQUEST,
+  NETWORK_MESSAGES_UPDATE,
+  NETWORK_UPDATES_REQUEST,
   MESSAGES_CLEAR,
   MESSAGES_CLEAR_LOGPOINT,
   MESSAGE_OPEN,
   MESSAGE_CLOSE,
   MESSAGE_TYPE,
+  MESSAGE_REMOVE,
   MESSAGE_UPDATE_PAYLOAD,
   PRIVATE_MESSAGES_CLEAR,
 } = require("devtools/client/webconsole/constants");
@@ -101,10 +102,19 @@ function messageClose(id) {
  * @return {[type]} [description]
  */
 function messageGetMatchingElements(id, cssSelectors) {
-  return async ({ dispatch, client }) => {
+  return async ({ dispatch, client, getState }) => {
     try {
+      // We need to do the querySelectorAll using the target the message is coming from,
+      // as well as with the window the warning message was emitted from.
+      const message = getState().messages.messagesById.get(id);
+      const selectedTargetFront = message?.targetFront;
+
       const response = await client.evaluateJSAsync(
-        `document.querySelectorAll('${cssSelectors}')`
+        `document.querySelectorAll('${cssSelectors}')`,
+        {
+          selectedTargetFront,
+          innerWindowID: message.innerWindowID,
+        }
       );
       dispatch(messageUpdatePayload(id, response.result));
     } catch (err) {
@@ -129,25 +139,30 @@ function messageUpdatePayload(id, data) {
   };
 }
 
-function networkMessageUpdate(packet, idGenerator = null, response) {
+function messageRemove(id) {
+  return {
+    type: MESSAGE_REMOVE,
+    id,
+  };
+}
+
+function networkMessageUpdates(packets, idGenerator = null) {
   if (idGenerator == null) {
     idGenerator = defaultIdGenerator;
   }
 
-  const message = prepareMessage(packet, idGenerator);
+  const messages = packets.map(packet => prepareMessage(packet, idGenerator));
 
   return {
-    type: NETWORK_MESSAGE_UPDATE,
-    message,
-    response,
+    type: NETWORK_MESSAGES_UPDATE,
+    messages,
   };
 }
 
-function networkUpdateRequest(id, data) {
+function networkUpdateRequests(updates) {
   return {
-    type: NETWORK_UPDATE_REQUEST,
-    id,
-    data,
+    type: NETWORK_UPDATES_REQUEST,
+    updates,
   };
 }
 
@@ -157,9 +172,10 @@ module.exports = {
   messagesClearLogpoint,
   messageOpen,
   messageClose,
+  messageRemove,
   messageGetMatchingElements,
   messageUpdatePayload,
-  networkMessageUpdate,
-  networkUpdateRequest,
+  networkMessageUpdates,
+  networkUpdateRequests,
   privateMessagesClear,
 };

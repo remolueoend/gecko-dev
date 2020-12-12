@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -114,10 +118,11 @@ mod tests {
             secure: false,
             http_only: false,
             expiry: None,
+            same_site: Some("Strict".into()),
         });
         assert_ser_de(
             &MarionetteResult::Cookies(data),
-            json!([{"name":"foo","value":"bar","path":"/common","domain":"web-platform.test","secure":false,"httpOnly":false}]),
+            json!([{"name":"foo","value":"bar","path":"/common","domain":"web-platform.test","secure":false,"httpOnly":false,"sameSite":"Strict"}]),
         );
     }
 

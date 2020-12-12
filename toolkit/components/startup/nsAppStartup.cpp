@@ -24,10 +24,11 @@
 #include "nsString.h"
 #include "mozilla/AppShutdown.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/ProfilerMarkers.h"
 #include "mozilla/ResultExtensions.h"
 #include "mozilla/Unused.h"
-#include "GeckoProfiler.h"
 
+#include "GeckoProfiler.h"
 #include "prprf.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsWidgetsCID.h"
@@ -183,26 +184,25 @@ nsresult nsAppStartup::Init() {
   // This last event is only interesting to us for xperf-based measures
 
   // Initialize interaction with profiler
-  mProbesManager = new ProbeManager(
-      kApplicationTracingCID, NS_LITERAL_CSTRING("Application startup probe"));
+  mProbesManager =
+      new ProbeManager(kApplicationTracingCID, "Application startup probe"_ns);
   // Note: The operation is meant mostly for in-house profiling.
   // Therefore, we do not warn if probes manager cannot be initialized
 
   if (mProbesManager) {
     mPlacesInitCompleteProbe = mProbesManager->GetProbe(
-        kPlacesInitCompleteCID, NS_LITERAL_CSTRING("places-init-complete"));
+        kPlacesInitCompleteCID, "places-init-complete"_ns);
     NS_WARNING_ASSERTION(mPlacesInitCompleteProbe,
                          "Cannot initialize probe 'places-init-complete'");
 
     mSessionWindowRestoredProbe = mProbesManager->GetProbe(
-        kSessionStoreWindowRestoredCID,
-        NS_LITERAL_CSTRING("sessionstore-windows-restored"));
+        kSessionStoreWindowRestoredCID, "sessionstore-windows-restored"_ns);
     NS_WARNING_ASSERTION(
         mSessionWindowRestoredProbe,
         "Cannot initialize probe 'sessionstore-windows-restored'");
 
-    mXPCOMShutdownProbe = mProbesManager->GetProbe(
-        kXPCOMShutdownCID, NS_LITERAL_CSTRING("xpcom-shutdown"));
+    mXPCOMShutdownProbe =
+        mProbesManager->GetProbe(kXPCOMShutdownCID, "xpcom-shutdown"_ns);
     NS_WARNING_ASSERTION(mXPCOMShutdownProbe,
                          "Cannot initialize probe 'xpcom-shutdown'");
 
@@ -275,7 +275,8 @@ nsAppStartup::Run(void) {
   // Make sure that the appropriate quit notifications have been dispatched
   // regardless of whether the event loop has spun or not. Note that this call
   // is a no-op if Quit has already been called previously.
-  Quit(eForceQuit);
+  bool userAllowedQuit = true;
+  Quit(eForceQuit, 0, &userAllowedQuit);
 
   nsresult retval = NS_OK;
   if (mozilla::AppShutdown::IsRestarting()) {
@@ -286,8 +287,13 @@ nsAppStartup::Run(void) {
 }
 
 NS_IMETHODIMP
-nsAppStartup::Quit(uint32_t aMode) {
+nsAppStartup::Quit(uint32_t aMode, int aExitCode, bool* aUserAllowedQuit) {
   uint32_t ferocity = (aMode & 0xF);
+
+  // If the shutdown was cancelled due to a hidden window or
+  // because one of the windows was not permitted to be closed,
+  // return NS_OK with |aUserAllowedQuit| = false.
+  *aUserAllowedQuit = false;
 
   // Quit the application. We will asynchronously call the appshell's
   // Exit() method via nsAppExitEvent to allow one last pass
@@ -349,21 +355,24 @@ nsAppStartup::Quit(uint32_t aMode) {
           windowEnumerator->GetNext(getter_AddRefs(window));
           nsCOMPtr<nsPIDOMWindowOuter> domWindow(do_QueryInterface(window));
           if (domWindow) {
-            if (!domWindow->CanClose()) return NS_OK;
+            if (!domWindow->CanClose()) {
+              return NS_OK;
+            }
           }
           windowEnumerator->HasMoreElements(&more);
         }
       }
     }
 
-    PROFILER_ADD_MARKER("Shutdown start", OTHER);
+    PROFILER_MARKER_UNTYPED("Shutdown start", OTHER);
     mozilla::RecordShutdownStartTimeStamp();
 
+    *aUserAllowedQuit = true;
     mShuttingDown = true;
     auto shutdownMode = ((aMode & eRestart) != 0)
                             ? mozilla::AppShutdownMode::Restart
                             : mozilla::AppShutdownMode::Normal;
-    mozilla::AppShutdown::Init(shutdownMode);
+    mozilla::AppShutdown::Init(shutdownMode, aExitCode);
 
     if (mozilla::AppShutdown::IsRestarting()) {
       // Mark the next startup as a restart.
@@ -496,7 +505,15 @@ nsAppStartup::ExitLastWindowClosingSurvivalArea(void) {
   NS_ASSERTION(mConsiderQuitStopper > 0, "consider quit stopper out of bounds");
   --mConsiderQuitStopper;
 
-  if (mRunning) Quit(eConsiderQuit);
+  if (mRunning) {
+    bool userAllowedQuit = false;
+
+    // A previous call to Quit may have told all windows to close and then
+    // bailed out waiting for that to happen. This is how we get back into Quit
+    // after each window closes so the exit process can continue when ready.
+    // Make sure to pass along the exit code that was initially passed to Quit.
+    Quit(eConsiderQuit, mozilla::AppShutdown::GetExitCode(), &userAllowedQuit);
+  }
 
   return NS_OK;
 }
@@ -940,7 +957,8 @@ nsAppStartup::TrackStartupCrashEnd() {
 NS_IMETHODIMP
 nsAppStartup::RestartInSafeMode(uint32_t aQuitMode) {
   PR_SetEnv("MOZ_SAFE_MODE_RESTART=1");
-  this->Quit(aQuitMode | nsIAppStartup::eRestart);
+  bool userAllowedQuit = false;
+  this->Quit(aQuitMode | nsIAppStartup::eRestart, 0, &userAllowedQuit);
 
   return NS_OK;
 }

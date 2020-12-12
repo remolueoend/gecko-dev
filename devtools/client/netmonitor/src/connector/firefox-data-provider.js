@@ -27,18 +27,24 @@ class FirefoxDataProvider {
    * Constructor for data provider
    *
    * @param {Object} webConsoleFront represents the client object for Console actor.
-   * @param {Object} actions set of actions fired during data fetching process
-   * @params {Object} owner all events are fired on this object
+   * @param {Object} actions set of actions fired during data fetching process.
+   * @param {Object} owner all events are fired on this object.
+   * @param {Object} resourceWatcher enables checking for watcher support
    */
-  constructor({ webConsoleFront, actions, owner }) {
+  constructor({ webConsoleFront, actions, owner, resourceWatcher }) {
     // Options
     this.webConsoleFront = webConsoleFront;
     this.actions = actions || {};
     this.actionsEnabled = true;
     this.owner = owner;
+    this.resourceWatcher = resourceWatcher;
+    // Map of all stacktrace resources keyed by network event's resourceId
+    this.stackTraces = new Map();
+    // Map of the stacktrace information keyed by the actor id's
+    this.stackTraceRequestInfoByActorID = new Map();
 
-    // Internal properties
-    this.payloadQueue = new Map();
+    // For tracking unfinished requests
+    this.pendingRequests = new Set();
 
     // Map[key string => Promise] used by `requestData` to prevent requesting the same
     // request data twice.
@@ -48,13 +54,21 @@ class FirefoxDataProvider {
     this.getLongString = this.getLongString.bind(this);
 
     // Event handlers
-    this.onNetworkEvent = this.onNetworkEvent.bind(this);
-    this.onNetworkEventUpdate = this.onNetworkEventUpdate.bind(this);
+    this.onNetworkResourceAvailable = this.onNetworkResourceAvailable.bind(
+      this
+    );
+    this.onNetworkResourceUpdated = this.onNetworkResourceUpdated.bind(this);
 
     this.onWebSocketOpened = this.onWebSocketOpened.bind(this);
     this.onWebSocketClosed = this.onWebSocketClosed.bind(this);
     this.onFrameSent = this.onFrameSent.bind(this);
     this.onFrameReceived = this.onFrameReceived.bind(this);
+
+    this.onEventSourceConnectionClosed = this.onEventSourceConnectionClosed.bind(
+      this
+    );
+    this.onEventReceived = this.onEventReceived.bind(this);
+    this.setEventStreamFlag = this.setEventStreamFlag.bind(this);
   }
 
   /**
@@ -70,54 +84,14 @@ class FirefoxDataProvider {
    * Add a new network request to application state.
    *
    * @param {string} id request id
-   * @param {object} data data payload will be added to application state
+   * @param {object} resource resource payload will be added to application state
    */
-  async addRequest(id, data) {
-    const {
-      method,
-      url,
-      isXHR,
-      cause,
-      startedDateTime,
-      fromCache,
-      fromServiceWorker,
-      isThirdPartyTrackingResource,
-      referrerPolicy,
-      blockedReason,
-      channelId,
-    } = data;
-
-    // Insert blocked reason in the payload queue as well, as we'll need it later
-    // when deciding if the request is complete.
-    this.pushRequestToQueue(id, {
-      blockedReason,
-    });
+  async addRequest(id, resource) {
+    // Add to the pending requests which helps when deciding if the request is complete.
+    this.pendingRequests.add(id);
 
     if (this.actionsEnabled && this.actions.addRequest) {
-      await this.actions.addRequest(
-        id,
-        {
-          // Convert the received date/time string to a unix timestamp.
-          startedMs: Date.parse(startedDateTime),
-          method,
-          url,
-          isXHR,
-          cause,
-
-          // Compatibility code to support Firefox 58 and earlier that always
-          // send stack-trace immediately on networkEvent message.
-          // FF59+ supports fetching the traces lazily via requestData.
-          stacktrace: cause.stacktrace,
-
-          fromCache,
-          fromServiceWorker,
-          isThirdPartyTrackingResource,
-          referrerPolicy,
-          blockedReason,
-          channelId,
-        },
-        true
-      );
+      await this.actions.addRequest(id, resource, true);
     }
 
     this.emit(EVENTS.REQUEST_ADDED, id);
@@ -295,35 +269,10 @@ class FirefoxDataProvider {
   /**
    * Public API used by the Toolbox: Tells if there is still any pending request.
    *
-   * @return {boolean} returns true if the payload queue is empty
+   * @return {boolean} returns true if pending requests still exist in the queue.
    */
-  isPayloadQueueEmpty() {
-    return this.payloadQueue.size === 0;
-  }
-
-  /**
-   * Merge upcoming networkEventUpdate payload into existing one.
-   *
-   * @param {string} id request actor id
-   * @param {object} payload request data payload
-   */
-  pushRequestToQueue(id, payload) {
-    let payloadFromQueue = this.payloadQueue.get(id);
-    if (!payloadFromQueue) {
-      payloadFromQueue = {};
-      this.payloadQueue.set(id, payloadFromQueue);
-    }
-    Object.assign(payloadFromQueue, payload);
-  }
-
-  /**
-   * Fetches the network information packet from actor server
-   *
-   * @param {string} id request id
-   * @return {object} networkInfo data packet
-   */
-  getNetworkRequest(id) {
-    return this.webConsoleFront.getNetworkRequest(id);
+  hasPendingRequests() {
+    return this.pendingRequests.size > 0;
   }
 
   /**
@@ -345,96 +294,92 @@ class FirefoxDataProvider {
   }
 
   /**
-   * The "networkEvent" message type handler.
+   * Retrieve the stack-trace information for the given StackTracesActor.
    *
-   * @param {object} networkInfo network request information
+   * @param object actor
+   *        - {Object} targetFront: the target front.
+   *
+   *        - {String} resourceId: the resource id for the network request".
+   * @return {object}
    */
-  async onNetworkEvent(networkInfo) {
-    const {
-      actor,
-      cause,
-      fromCache,
-      fromServiceWorker,
-      isXHR,
-      request: { method, url },
-      startedDateTime,
-      isThirdPartyTrackingResource,
-      referrerPolicy,
-      blockedReason,
-      channelId,
-    } = networkInfo;
-
-    await this.addRequest(actor, {
-      cause,
-      fromCache,
-      fromServiceWorker,
-      isXHR,
-      method,
-      startedDateTime,
-      url,
-      isThirdPartyTrackingResource,
-      referrerPolicy,
-      blockedReason,
-      channelId,
-    });
-
-    this.emitForTests(TEST_EVENTS.NETWORK_EVENT, actor);
+  async _getStackTraceFromWatcher(actor) {
+    const networkContentFront = await actor.targetFront.getFront(
+      "networkContent"
+    );
+    const stacktrace = await networkContentFront.getStackTrace(
+      actor.stacktraceResourceId
+    );
+    return { stacktrace };
   }
 
   /**
-   * The "networkEventUpdate" message type handler.
-   *
-   * @param {object} packet the message received from the server.
-   * @param {object} networkInfo the network request information.
+   * The handler for when the network event stacktrace resource is available.
+   * The resource contains basic info, the actual stacktrace is fetched lazily
+   * using requestData.
+   * @param {object} resource The network event stacktrace resource
    */
-  onNetworkEventUpdate(data) {
-    const { packet, networkInfo } = data;
-    const { actor } = networkInfo;
-    const { updateType } = packet;
+  onStackTraceAvailable(resource) {
+    this.stackTraces.set(resource.resourceId, resource);
+  }
 
-    switch (updateType) {
-      case "securityInfo":
-        this.pushRequestToQueue(actor, {
-          securityState: networkInfo.securityState,
-          isRacing: packet.isRacing,
-        });
-        break;
-      case "responseStart":
-        this.pushRequestToQueue(actor, {
-          httpVersion: networkInfo.response.httpVersion,
-          remoteAddress: networkInfo.response.remoteAddress,
-          remotePort: networkInfo.response.remotePort,
-          status: networkInfo.response.status,
-          statusText: networkInfo.response.statusText,
-          headersSize: networkInfo.response.headersSize,
-        });
-        this.emitForTests(TEST_EVENTS.STARTED_RECEIVING_RESPONSE, actor);
-        break;
-      case "responseContent":
-        this.pushRequestToQueue(actor, {
-          contentSize: networkInfo.response.bodySize,
-          transferredSize: networkInfo.response.transferredSize,
-          mimeType: networkInfo.response.content.mimeType,
-        });
-        break;
-      case "eventTimings":
-        // Total time doesn't have to be always set e.g. net provider enhancer
-        // in Console panel is using this method to fetch data when network log
-        // is expanded. So, make sure to not push undefined into the payload queue
-        // (it could overwrite an existing value).
-        if (typeof networkInfo.totalTime !== "undefined") {
-          this.pushRequestToQueue(actor, { totalTime: networkInfo.totalTime });
-        }
-        break;
+  /**
+   * The handler for when the network event resource is available.
+   *
+   * @param {object} resource The network event resource
+   */
+  async onNetworkResourceAvailable(resource) {
+    const { actor, stacktraceResourceId } = resource;
+
+    // Check if a stacktrace resource exists for this network resource.
+    // The stacktrace event is expected to happen before the network
+    // event so any neccesary stacktrace info should be available.
+    if (this.stackTraces.has(stacktraceResourceId)) {
+      const {
+        stacktraceAvailable,
+        lastFrame,
+        targetFront,
+      } = this.stackTraces.get(stacktraceResourceId);
+
+      resource.cause.stacktraceAvailable = stacktraceAvailable;
+      resource.cause.lastFrame = lastFrame;
+
+      this.stackTraces.delete(stacktraceResourceId);
+      // We retrieve preliminary information about the stacktrace from the
+      // NETWORK_EVENT_STACKTRACE resource via `this.stackTraces` Map,
+      // The actual stacktrace is fetched lazily based on the actor id, using
+      // the targetFront and the stacktrace resource id therefore we
+      // map these for easy access.
+      this.stackTraceRequestInfoByActorID.set(actor, {
+        targetFront,
+        stacktraceResourceId,
+      });
+    }
+    await this.addRequest(actor, resource);
+    this.emitForTests(TEST_EVENTS.NETWORK_EVENT, resource);
+  }
+
+  /**
+   * The handler for when the network event resource is updated.
+   *
+   * @param {object} resource The updated network event resource.
+   */
+  async onNetworkResourceUpdated(resource) {
+    // Identify the channel as SSE if mimeType is event-stream.
+    if (resource?.mimeType?.includes("text/event-stream")) {
+      await this.setEventStreamFlag(resource.actor);
     }
 
-    // This available field helps knowing when/if updateType property is arrived
-    // and can be requested via `requestData`
-    this.pushRequestToQueue(actor, { [`${updateType}Available`]: true });
+    this.pendingRequests.delete(resource.actor);
+    if (this.actionsEnabled && this.actions.updateRequest) {
+      await this.actions.updateRequest(resource.actor, resource, true);
+    }
 
-    this.onPayloadDataReceived(actor);
-
-    this.emitForTests(TEST_EVENTS.NETWORK_EVENT_UPDATED, actor);
+    // This event is fired only once per request, once all the properties are fetched
+    // from `onNetworkResourceUpdated`. There should be no more RDP requests after this.
+    // Note that this event might be consumed by extension so, emit it in production
+    // release as well.
+    this.emitForTests(TEST_EVENTS.NETWORK_EVENT_UPDATED, resource.actor);
+    this.emit(EVENTS.PAYLOAD_READY, resource);
   }
 
   /**
@@ -468,7 +413,7 @@ class FirefoxDataProvider {
    * @param {object} data websocket frame information
    */
   async onFrameSent(httpChannelId, data) {
-    this.addFrame(httpChannelId, data);
+    this.addMessage(httpChannelId, data);
   }
 
   /**
@@ -478,7 +423,7 @@ class FirefoxDataProvider {
    * @param {object} data websocket frame information
    */
   async onFrameReceived(httpChannelId, data) {
-    this.addFrame(httpChannelId, data);
+    this.addMessage(httpChannelId, data);
   }
 
   /**
@@ -487,47 +432,11 @@ class FirefoxDataProvider {
    * @param {number} httpChannelId the channel ID
    * @param {object} data websocket frame information
    */
-  async addFrame(httpChannelId, data) {
-    if (this.actionsEnabled && this.actions.addFrame) {
-      await this.actions.addFrame(httpChannelId, data, true);
+  async addMessage(httpChannelId, data) {
+    if (this.actionsEnabled && this.actions.addMessage) {
+      await this.actions.addMessage(httpChannelId, data, true);
     }
     // TODO: Emit an event for test here
-  }
-
-  /**
-   * Notify actions when messages from onNetworkEventUpdate are done, networkEventUpdate
-   * messages contain initial network info for each updateType and then we can invoke
-   * requestData to fetch its corresponded data lazily.
-   * Once all updateTypes of networkEventUpdate message are arrived, we flush merged
-   * request payload from pending queue and then update component.
-   */
-  async onPayloadDataReceived(actor) {
-    const payload = this.payloadQueue.get(actor) || {};
-
-    // For blocked requests, we should only expect the request portions and not
-    // the response portions to be available.
-    if (!payload.requestHeadersAvailable || !payload.requestCookiesAvailable) {
-      return;
-    }
-    // For unblocked requests, we should wait for all major portions to be available.
-    if (
-      !payload.blockedReason &&
-      (!payload.eventTimingsAvailable || !payload.responseContentAvailable)
-    ) {
-      return;
-    }
-
-    this.payloadQueue.delete(actor);
-
-    if (this.actionsEnabled && this.actions.updateRequest) {
-      await this.actions.updateRequest(actor, payload, true);
-    }
-
-    // This event is fired only once per request, once all the properties are fetched
-    // from `onNetworkEventUpdate`. There should be no more RDP requests after this.
-    // Note that this event might be consumed by extension so, emit it in production
-    // release as well.
-    this.emit(EVENTS.PAYLOAD_READY, actor);
   }
 
   /**
@@ -611,7 +520,15 @@ class FirefoxDataProvider {
 
     let response = await new Promise((resolve, reject) => {
       // Do a RDP request to fetch data from the actor.
-      if (typeof this.webConsoleFront[clientMethodName] === "function") {
+      if (
+        clientMethodName == "getStackTrace" &&
+        this.resourceWatcher.hasResourceWatcherSupport(
+          this.resourceWatcher.TYPES.NETWORK_EVENT_STACKTRACE
+        )
+      ) {
+        const requestInfo = this.stackTraceRequestInfoByActorID.get(actor);
+        resolve(this._getStackTraceFromWatcher(requestInfo));
+      } else if (typeof this.webConsoleFront[clientMethodName] === "function") {
         // Make sure we fetch the real actor data instead of cloned actor
         // e.g. CustomRequestPanel will clone a request with additional '-clone' actor id
         this.webConsoleFront[clientMethodName](
@@ -653,7 +570,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       requestHeaders: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_REQUEST_HEADERS, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_REQUEST_HEADERS, response);
     return payload.requestHeaders;
   }
 
@@ -666,7 +583,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       responseHeaders: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_HEADERS, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_HEADERS, response);
     return payload.responseHeaders;
   }
 
@@ -679,7 +596,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       requestCookies: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_REQUEST_COOKIES, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_REQUEST_COOKIES, response);
     return payload.requestCookies;
   }
 
@@ -692,7 +609,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       requestPostData: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_REQUEST_POST_DATA, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_REQUEST_POST_DATA, response);
     return payload.requestPostData;
   }
 
@@ -705,7 +622,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       securityInfo: response.securityInfo,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_SECURITY_INFO, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_SECURITY_INFO, response);
     return payload.securityInfo;
   }
 
@@ -718,7 +635,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       responseCookies: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_COOKIES, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_COOKIES, response);
     return payload.responseCookies;
   }
 
@@ -730,7 +647,7 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       responseCache: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_CACHE, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_CACHE, response);
     return payload.responseCache;
   }
 
@@ -747,7 +664,7 @@ class FirefoxDataProvider {
       mimeType: response.content.mimeType,
       responseContent: response,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_CONTENT, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_RESPONSE_CONTENT, response);
     return payload.responseContent;
   }
 
@@ -765,7 +682,7 @@ class FirefoxDataProvider {
     // and running DAMP test doesn't set the `devtools.testing` flag.
     // So, emit this event even in the production mode.
     // See also: https://bugzilla.mozilla.org/show_bug.cgi?id=1578215
-    this.emit(EVENTS.RECEIVED_EVENT_TIMINGS, response.from);
+    this.emit(EVENTS.RECEIVED_EVENT_TIMINGS, response);
     return payload.eventTimings;
   }
 
@@ -778,8 +695,29 @@ class FirefoxDataProvider {
     const payload = await this.updateRequest(response.from, {
       stacktrace: response.stacktrace,
     });
-    this.emitForTests(TEST_EVENTS.RECEIVED_EVENT_STACKTRACE, response.from);
+    this.emitForTests(TEST_EVENTS.RECEIVED_EVENT_STACKTRACE, response);
     return payload.stacktrace;
+  }
+
+  /**
+   * Handle EventSource events.
+   */
+
+  async onEventSourceConnectionClosed(httpChannelId) {
+    if (this.actionsEnabled && this.actions.closeConnection) {
+      await this.actions.closeConnection(httpChannelId);
+    }
+  }
+
+  async onEventReceived(httpChannelId, data) {
+    // Dispatch the same action used by websocket inspector.
+    this.addMessage(httpChannelId, data);
+  }
+
+  async setEventStreamFlag(actorId) {
+    if (this.actionsEnabled && this.actions.setEventStreamFlag) {
+      await this.actions.setEventStreamFlag(actorId, true);
+    }
   }
 
   /**

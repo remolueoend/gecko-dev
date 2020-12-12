@@ -286,6 +286,7 @@ function generateDocumentation() {
   // map specific policies to a different string ID, to allow updates to
   // existing descriptions
   let string_mapping = {
+    DisableMasterPasswordCreation: "DisablePrimaryPasswordCreation",
     DisableSetDesktopBackground: "DisableSetAsDesktopBackground",
     Certificates: "CertificatesDescription",
     SanitizeOnShutdown: "SanitizeOnShutdown2",
@@ -403,7 +404,7 @@ function show(button) {
   button.setAttribute("selected", "true");
 
   let title = document.getElementById("sectionTitle");
-  title.textContent = button.children[1].textContent;
+  title.textContent = button.textContent;
   location.hash = category;
   restoreScrollPosition(category);
 }

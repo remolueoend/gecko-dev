@@ -374,7 +374,7 @@ function HTMLTooltip(
   // consumeOutsideClicks cannot be used if the tooltip is not closed on click
   this.consumeOutsideClicks = this.noAutoHide ? false : consumeOutsideClicks;
   this.isMenuTooltip = isMenuTooltip;
-  this.useXulWrapper = this._isXUL() && useXulWrapper;
+  this.useXulWrapper = this._isXULPopupAvailable() && useXulWrapper;
   this.preferredWidth = "auto";
   this.preferredHeight = "auto";
 
@@ -404,7 +404,7 @@ function HTMLTooltip(
     this.doc.documentElement.appendChild(this.xulPanelWrapper);
     this.xulPanelWrapper.appendChild(inner);
     inner.appendChild(this.container);
-  } else if (this._isXUL()) {
+  } else if (this._hasXULRootElement()) {
     this.doc.documentElement.appendChild(this.container);
   } else {
     // In non-XUL context the container is ready to use as is.
@@ -514,24 +514,25 @@ HTMLTooltip.prototype = {
     this._focusedElement = this.doc.activeElement;
 
     if (this.doc.defaultView) {
-      if (this.attachEventsTimer) {
-        this.doc.defaultView.clearTimeout(this.attachEventsTimer);
+      if (!this._pendingEventListenerPromise) {
+        // On Windows and Linux, if the tooltip is shown on mousedown/click (which is the
+        // case for the MenuButton component for example), attaching the events listeners
+        // on the window right away would trigger the callbacks; which means the tooltip
+        // would be instantly hidden. To prevent such thing, the event listeners are set
+        // on the next tick.
+        this._pendingEventListenerPromise = new Promise(resolve => {
+          this.doc.defaultView.setTimeout(() => {
+            // Update the top window reference each time in case the host changes.
+            this.topWindow = this._getTopWindow();
+            this.topWindow.addEventListener("click", this._onClick, true);
+            this.topWindow.addEventListener("mouseup", this._onMouseup, true);
+            resolve();
+          }, 0);
+        });
       }
 
-      // On Windows and Linux, if the tooltip is shown on mousedown/click (which is the
-      // case for the MenuButton component for example), attaching the events listeners
-      // on the window right away would trigger the callbacks; which means the tooltip
-      // would be instantly hidden. To prevent such thing, the event listeners are set
-      // on the next tick.
-      await new Promise(resolve => {
-        this.attachEventsTimer = this.doc.defaultView.setTimeout(() => {
-          // Update the top window reference each time in case the host changes.
-          this.topWindow = this._getTopWindow();
-          this.topWindow.addEventListener("click", this._onClick, true);
-          this.topWindow.addEventListener("mouseup", this._onMouseup, true);
-          resolve();
-        }, 0);
-      });
+      await this._pendingEventListenerPromise;
+      this._pendingEventListenerPromise = null;
     }
 
     this.emit("shown");
@@ -804,17 +805,17 @@ HTMLTooltip.prototype = {
       return;
     }
 
-    if (this.doc && this.doc.defaultView) {
-      this.doc.defaultView.clearTimeout(this.attachEventsTimer);
-    }
-
     // If the tooltip is hidden from a mouseup event, wait for a potential click event
     // to be consumed before removing event listeners.
     if (fromMouseup) {
       await new Promise(resolve => this.topWindow.setTimeout(resolve, 0));
     }
 
-    this.removeEventListeners();
+    if (this._pendingEventListenerPromise) {
+      this._pendingEventListenerPromise.then(() => this.removeEventListeners());
+    } else {
+      this.removeEventListeners();
+    }
 
     this.container.classList.remove("tooltip-visible");
     if (this.useXulWrapper) {
@@ -979,10 +980,14 @@ HTMLTooltip.prototype = {
   },
 
   /**
-   * Check if the tooltip's owner document is a XUL document.
+   * Check if the tooltip's owner document has XUL root element.
    */
-  _isXUL: function() {
+  _hasXULRootElement: function() {
     return this.doc.documentElement.namespaceURI === XUL_NS;
+  },
+
+  _isXULPopupAvailable: function() {
+    return this.doc.nodePrincipal.isSystemPrincipal;
   },
 
   _createXulPanelWrapper: function() {
@@ -1004,6 +1009,9 @@ HTMLTooltip.prototype = {
 
     panel.setAttribute("level", "top");
     panel.setAttribute("class", "tooltip-xul-wrapper");
+
+    // Stop this appearing as an alert to accessibility.
+    panel.setAttribute("role", "presentation");
 
     return panel;
   },

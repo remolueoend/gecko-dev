@@ -28,6 +28,7 @@ const kDebuggerPrefs = [
 ];
 
 const DEVTOOLS_ENABLED_PREF = "devtools.enabled";
+const DEVTOOLS_F12_DISABLED_PREF = "devtools.experiment.f12.shortcut_disabled";
 
 const DEVTOOLS_POLICY_DISABLED_PREF = "devtools.policy.disabled";
 
@@ -35,11 +36,6 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "ActorManagerParent",
-  "resource://gre/modules/ActorManagerParent.jsm"
-);
 ChromeUtils.defineModuleGetter(
   this,
   "Services",
@@ -74,6 +70,11 @@ ChromeUtils.defineModuleGetter(
   this,
   "WebChannel",
   "resource://gre/modules/WebChannel.jsm"
+);
+ChromeUtils.defineModuleGetter(
+  this,
+  "PanelMultiView",
+  "resource:///modules/PanelMultiView.jsm"
 );
 
 // We don't want to spend time initializing the full loader here so we create
@@ -281,8 +282,9 @@ function validateProfilerWebChannelUrl(targetUrl) {
       // Allows the following:
       //   "https://deploy-preview-1234--perf-html.netlify.com"
       //   "https://deploy-preview-1234--perf-html.netlify.com/"
-      //   "https://deploy-preview-1234567--perf-html.netlify.com"
-      /^https:\/\/deploy-preview-\d+--perf-html\.netlify\.com\/?$/.test(
+      //   "https://deploy-preview-1234567--perf-html.netlify.app"
+      //   "https://main--perf-html.netlify.app"
+      /^https:\/\/(?:deploy-preview-\d+|main)--perf-html\.netlify\.(?:com|app)\/?$/.test(
         targetUrl
       )
     ) {
@@ -358,11 +360,16 @@ DevToolsStartup.prototype = {
     const isInitialLaunch =
       cmdLine.state == Ci.nsICommandLine.STATE_INITIAL_LAUNCH;
     if (isInitialLaunch) {
-      this._registerDevToolsJsWindowActors();
-
       // Enable devtools for all users on startup (onboarding experiment from Bug 1408969
       // is over).
       Services.prefs.setBoolPref(DEVTOOLS_ENABLED_PREF, true);
+
+      // The F12 shortcut might be disabled to avoid accidental usage.
+      // Users who are already considered as devtools users should not be
+      // impacted.
+      if (this.isDevToolsUser()) {
+        Services.prefs.setBoolPref(DEVTOOLS_F12_DISABLED_PREF, false);
+      }
 
       // Store devtoolsFlag to check it later in onWindowReady.
       this.devtoolsFlag = flags.devtools;
@@ -476,9 +483,10 @@ DevToolsStartup.prototype = {
       .getElementById("webDeveloperMenu")
       .setAttribute("hidden", "true");
     // This will hide the "Web Developer" item in the hamburger menu.
-    window.document
-      .getElementById("appMenu-developer-button")
-      .setAttribute("hidden", "true");
+    PanelMultiView.getViewNode(
+      window.document,
+      "appMenu-developer-button"
+    ).setAttribute("hidden", "true");
   },
 
   onFirstWindowReady(window) {
@@ -533,7 +541,7 @@ DevToolsStartup.prototype = {
    * Also, this menu duplicates its own entries from the "Web Developer"
    * menu in the system menu, under "Tools" main menu item. The system
    * menu is being hooked by "hookWebDeveloperMenu" which ends up calling
-   * devtools/client/framework/browser-menu to create the items for real,
+   * devtools/client/framework/browser-menus to create the items for real,
    * initDevTools, from onViewShowing is also calling browser-menu.
    */
   hookDeveloperToggle() {
@@ -574,7 +582,10 @@ DevToolsStartup.prototype = {
         });
         itemsToDisplay.push(doc.getElementById("goOfflineMenuitem"));
 
-        const developerItems = doc.getElementById("PanelUI-developerItems");
+        const developerItems = PanelMultiView.getViewNode(
+          doc,
+          "PanelUI-developerItems"
+        );
         CustomizableUI.clearSubview(developerItems);
         CustomizableUI.fillSubviewFromMenuItems(itemsToDisplay, developerItems);
       },
@@ -589,8 +600,7 @@ DevToolsStartup.prototype = {
         // not called yet when CustomizableUI creates the widget.
         this.hookKeyShortcuts(doc.defaultView);
 
-        // Bug 1223127, CUI should make this easier to do.
-        if (doc.getElementById("PanelUI-developerItems")) {
+        if (PanelMultiView.getViewNode(doc, "PanelUI-developerItems")) {
           return;
         }
         const view = doc.createXULElement("panelview");
@@ -856,7 +866,7 @@ DevToolsStartup.prototype = {
           return;
         }
         case "profilerCapture": {
-          ProfilerPopupBackground.captureProfile();
+          ProfilerPopupBackground.captureProfile("aboutprofiling");
           return;
         }
       }
@@ -1219,23 +1229,6 @@ DevToolsStartup.prototype = {
     this.recorded = true;
   },
 
-  _registerDevToolsJsWindowActors() {
-    ActorManagerParent.addActors({
-      DevToolsFrame: {
-        parent: {
-          moduleURI:
-            "resource://devtools/server/connectors/js-window-actor/DevToolsFrameParent.jsm",
-        },
-        child: {
-          moduleURI:
-            "resource://devtools/server/connectors/js-window-actor/DevToolsFrameChild.jsm",
-        },
-        allFrames: true,
-      },
-    });
-    ActorManagerParent.flush();
-  },
-
   // Used by tests and the toolbox to register the same key shortcuts in toolboxes loaded
   // in a window window.
   get KeyShortcuts() {
@@ -1260,7 +1253,7 @@ DevToolsStartup.prototype = {
   /* eslint-disable max-len */
 
   classID: Components.ID("{9e9a9283-0ce9-4e4a-8f1c-ba129a032c32}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsICommandLineHandler]),
+  QueryInterface: ChromeUtils.generateQI(["nsICommandLineHandler"]),
 };
 
 /**
@@ -1276,15 +1269,6 @@ const JsonView = {
       return;
     }
     this.initialized = true;
-
-    // Load JSON converter module. This converter is responsible
-    // for handling 'application/json' documents and converting
-    // them into a simple web-app that allows easy inspection
-    // of the JSON data.
-    Services.ppmm.loadProcessScript(
-      "resource://devtools/client/jsonview/converter-observer.js",
-      true
-    );
 
     // Register for messages coming from the child process.
     // This is never removed as there is no particular need to unregister
@@ -1320,7 +1304,7 @@ const JsonView = {
       //   principal is from the child. Null principals don't survive crossing
       //   over IPC, so there's no other principal that'll work.
       const persistable = browser.frameLoader;
-      persistable.startPersistence(0, {
+      persistable.startPersistence(null, {
         onDocumentReady(doc) {
           const uri = chrome.makeURI(doc.documentURI, doc.characterSet);
           const filename = chrome.getDefaultFileName(undefined, uri, doc, null);
@@ -1334,6 +1318,7 @@ const JsonView = {
             null /* filepicker title key */,
             null /* file chosen */,
             null /* referrer */,
+            doc.cookieJarSettings,
             null /* initiating document */,
             false /* don't skip prompt for a location */,
             null /* cache key */,

@@ -9,6 +9,7 @@
 
 #include <functional>
 #include "mozilla/Maybe.h"
+#include "mozilla/ResultExtensions.h"
 #include "nsCOMPtr.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -61,6 +62,11 @@ class ClientInfo;
 class PerformanceStorage;
 class ServiceWorkerDescriptor;
 }  // namespace dom
+
+namespace ipc {
+class FileDescriptor;
+}  // namespace ipc
+
 }  // namespace mozilla
 
 template <class>
@@ -288,12 +294,13 @@ nsresult NS_NewInputStreamChannelInternal(
     nsIPrincipal* aLoadingPrincipal, nsIPrincipal* aTriggeringPrincipal,
     nsSecurityFlags aSecurityFlags, nsContentPolicyType aContentPolicyType);
 
-nsresult NS_NewInputStreamChannel(
-    nsIChannel** outChannel, nsIURI* aUri,
-    already_AddRefed<nsIInputStream> aStream, nsIPrincipal* aLoadingPrincipal,
-    nsSecurityFlags aSecurityFlags, nsContentPolicyType aContentPolicyType,
-    const nsACString& aContentType = EmptyCString(),
-    const nsACString& aContentCharset = EmptyCString());
+nsresult NS_NewInputStreamChannel(nsIChannel** outChannel, nsIURI* aUri,
+                                  already_AddRefed<nsIInputStream> aStream,
+                                  nsIPrincipal* aLoadingPrincipal,
+                                  nsSecurityFlags aSecurityFlags,
+                                  nsContentPolicyType aContentPolicyType,
+                                  const nsACString& aContentType = ""_ns,
+                                  const nsACString& aContentCharset = ""_ns);
 
 nsresult NS_NewInputStreamChannelInternal(
     nsIChannel** outChannel, nsIURI* aUri, const nsAString& aData,
@@ -458,9 +465,20 @@ nsresult NS_NewLocalFileInputStream(nsIInputStream** result, nsIFile* file,
                                     int32_t ioFlags = -1, int32_t perm = -1,
                                     int32_t behaviorFlags = 0);
 
+mozilla::Result<nsCOMPtr<nsIInputStream>, nsresult> NS_NewLocalFileInputStream(
+    nsIFile* file, int32_t ioFlags = -1, int32_t perm = -1,
+    int32_t behaviorFlags = 0);
+
 nsresult NS_NewLocalFileOutputStream(nsIOutputStream** result, nsIFile* file,
                                      int32_t ioFlags = -1, int32_t perm = -1,
                                      int32_t behaviorFlags = 0);
+
+mozilla::Result<nsCOMPtr<nsIOutputStream>, nsresult>
+NS_NewLocalFileOutputStream(nsIFile* file, int32_t ioFlags = -1,
+                            int32_t perm = -1, int32_t behaviorFlags = 0);
+
+nsresult NS_NewLocalFileOutputStream(nsIOutputStream** result,
+                                     const mozilla::ipc::FileDescriptor& fd);
 
 // returns a file output stream which can be QI'ed to nsISafeOutputStream.
 nsresult NS_NewAtomicFileOutputStream(nsIOutputStream** result, nsIFile* file,
@@ -477,9 +495,16 @@ nsresult NS_NewLocalFileStream(nsIFileStream** result, nsIFile* file,
                                int32_t ioFlags = -1, int32_t perm = -1,
                                int32_t behaviorFlags = 0);
 
+mozilla::Result<nsCOMPtr<nsIFileStream>, nsresult> NS_NewLocalFileStream(
+    nsIFile* file, int32_t ioFlags = -1, int32_t perm = -1,
+    int32_t behaviorFlags = 0);
+
 [[nodiscard]] nsresult NS_NewBufferedInputStream(
     nsIInputStream** aResult, already_AddRefed<nsIInputStream> aInputStream,
     uint32_t aBufferSize);
+
+mozilla::Result<nsCOMPtr<nsIInputStream>, nsresult> NS_NewBufferedInputStream(
+    already_AddRefed<nsIInputStream> aInputStream, uint32_t aBufferSize);
 
 // note: the resulting stream can be QI'ed to nsISafeOutputStream iff the
 // provided stream supports it.
@@ -583,36 +608,15 @@ inline void NS_QueryNotificationCallbacks(nsIInterfaceRequestor* callbacks,
 bool NS_UsePrivateBrowsing(nsIChannel* channel);
 
 /**
- * Extract the OriginAttributes from the channel's triggering principal.
- * If aUsingStoragePrincipal is set to true, the originAttributes could have
- * first-party isolation domain set to the top-level URI.
- */
-bool NS_GetOriginAttributes(nsIChannel* aChannel,
-                            mozilla::OriginAttributes& aAttributes,
-                            bool aUsingStoragePrincipal = false);
-
-/**
  * Returns true if the channel has visited any cross-origin URLs on any
  * URLs that it was redirected through.
  */
 bool NS_HasBeenCrossOrigin(nsIChannel* aChannel, bool aReport = false);
 
 /**
- * Returns true if the channel is a safe top-level navigation.
- */
-bool NS_IsSafeTopLevelNav(nsIChannel* aChannel);
-
-/**
  * Returns true if the channel has a safe method.
  */
 bool NS_IsSafeMethodNav(nsIChannel* aChannel);
-
-/**
- * Returns true if the channel is a foreign with respect to the host-uri.
- * For loads of TYPE_DOCUMENT, this function returns true if it's a
- * cross origin navigation.
- */
-bool NS_IsSameSiteForeign(nsIChannel* aChannel, nsIURI* aHostURI);
 
 // Unique first-party domain for separating the safebrowsing cookie.
 // Note if this value is changed, code in test_cookiejars_safebrowsing.js and
@@ -784,7 +788,7 @@ bool NS_IsInternalSameURIRedirect(nsIChannel* aOldChannel,
 bool NS_IsHSTSUpgradeRedirect(nsIChannel* aOldChannel, nsIChannel* aNewChannel,
                               uint32_t aFlags);
 
-nsresult NS_LinkRedirectChannels(uint32_t channelId,
+nsresult NS_LinkRedirectChannels(uint64_t channelId,
                                  nsIParentChannel* parentChannel,
                                  nsIChannel** _result);
 
@@ -803,6 +807,15 @@ nsresult NS_MaybeOpenChannelUsingOpen(nsIChannel* aChannel,
  */
 nsresult NS_MaybeOpenChannelUsingAsyncOpen(nsIChannel* aChannel,
                                            nsIStreamListener* aListener);
+
+/**
+ * Returns nsILoadInfo::EMBEDDER_POLICY_REQUIRE_CORP if `aHeader` is
+ * "require-corp" and nsILoadInfo::EMBEDDER_POLICY_NULL otherwise.
+ *
+ * See: https://mikewest.github.io/corpp/#parsing
+ */
+nsILoadInfo::CrossOriginEmbedderPolicy
+NS_GetCrossOriginEmbedderPolicyFromHeader(const nsACString& aHeader);
 
 /** Given the first (disposition) token from a Content-Disposition header,
  * tell whether it indicates the content is inline or attachment

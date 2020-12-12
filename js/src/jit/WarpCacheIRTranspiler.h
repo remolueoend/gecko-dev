@@ -7,58 +7,27 @@
 #ifndef jit_WarpCacheIRTranspiler_h
 #define jit_WarpCacheIRTranspiler_h
 
-#include "js/AllocPolicy.h"
-#include "js/Vector.h"
+#include "mozilla/Attributes.h"
+
+#include <initializer_list>
 
 namespace js {
+
+class BytecodeLocation;
+
 namespace jit {
 
-class MBasicBlock;
+class CallInfo;
 class MDefinition;
-class MInstruction;
-class MIRGenerator;
+class WarpBuilder;
 class WarpCacheIR;
 
-using MDefinitionStackVector = Vector<MDefinition*, 8, SystemAllocPolicy>;
-
-// List of supported ops. Eventually we should use the full CacheIR ops list
-// instead.
-#define WARP_CACHE_IR_OPS(_)          \
-  _(GuardClass)                       \
-  _(GuardShape)                       \
-  _(GuardToObject)                    \
-  _(GuardToString)                    \
-  _(GuardToInt32Index)                \
-  _(LoadEnclosingEnvironment)         \
-  _(LoadDynamicSlotResult)            \
-  _(LoadFixedSlotResult)              \
-  _(LoadEnvironmentFixedSlotResult)   \
-  _(LoadEnvironmentDynamicSlotResult) \
-  _(LoadInt32ArrayLengthResult)       \
-  _(LoadStringLengthResult)           \
-  _(LoadDenseElementResult)           \
-  _(LoadStringCharResult)             \
-  _(TypeMonitorResult)                \
-  _(ReturnFromIC)
-
-// TranspilerOutput contains information from the transpiler that needs to be
-// passed back to WarpBuilder.
-struct MOZ_STACK_CLASS TranspilerOutput {
-  // For ICs that return a result, this is the corresponding MIR instruction.
-  MDefinition* result = nullptr;
-
-  TranspilerOutput() = default;
-
-  TranspilerOutput(const TranspilerOutput&) = delete;
-  void operator=(const TranspilerOutput&) = delete;
-};
-
 // Generate MIR from a Baseline ICStub's CacheIR.
-MOZ_MUST_USE bool TranspileCacheIRToMIR(MIRGenerator& mirGen,
-                                        MBasicBlock* current,
-                                        const WarpCacheIR* snapshot,
-                                        const MDefinitionStackVector& inputs,
-                                        TranspilerOutput& output);
+MOZ_MUST_USE bool TranspileCacheIRToMIR(
+    WarpBuilder* builder, BytecodeLocation loc,
+    const WarpCacheIR* cacheIRSnapshot,
+    std::initializer_list<MDefinition*> inputs,
+    CallInfo* maybeCallInfo = nullptr);
 
 }  // namespace jit
 }  // namespace js

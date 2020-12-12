@@ -7,13 +7,11 @@
 #include "OSPreferences.h"
 #include "mozilla/Preferences.h"
 
-#include "GeneratedJNIWrappers.h"
+#include "mozilla/java/GeckoAppShellWrappers.h"
 
 using namespace mozilla::intl;
 
 OSPreferences::OSPreferences() {}
-
-OSPreferences::~OSPreferences() {}
 
 bool OSPreferences::ReadSystemLocales(nsTArray<nsCString>& aLocaleList) {
   if (!mozilla::jni::IsAvailable()) {
@@ -43,6 +41,8 @@ bool OSPreferences::ReadRegionalPrefsLocales(nsTArray<nsCString>& aLocaleList) {
 bool OSPreferences::ReadDateTimePattern(DateTimeFormatStyle aDateStyle,
                                         DateTimeFormatStyle aTimeStyle,
                                         const nsACString& aLocale,
-                                        nsAString& aRetVal) {
+                                        nsACString& aRetVal) {
   return false;
 }
+
+void OSPreferences::RemoveObservers() {}

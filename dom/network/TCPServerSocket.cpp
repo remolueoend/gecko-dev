@@ -13,6 +13,7 @@
 #include "mozilla/ErrorResult.h"
 #include "TCPServerSocket.h"
 #include "TCPSocket.h"
+#include "nsComponentManagerUtils.h"
 
 using namespace mozilla::dom;
 
@@ -59,7 +60,7 @@ nsresult TCPServerSocket::Init() {
   }
 
   if (XRE_GetProcessType() == GeckoProcessType_Content) {
-    nsCOMPtr<nsIEventTarget> target;
+    nsCOMPtr<nsISerialEventTarget> target;
     if (nsCOMPtr<nsIGlobalObject> global = GetOwnerGlobal()) {
       target = global->EventTargetFor(TaskCategory::Other);
     }
@@ -135,7 +136,7 @@ TCPServerSocket::OnSocketAccepted(nsIServerSocket* aServer,
   nsCOMPtr<nsIGlobalObject> global = GetOwnerGlobal();
   RefPtr<TCPSocket> socket =
       TCPSocket::CreateAcceptedSocket(global, aTransport, mUseArrayBuffers);
-  FireEvent(NS_LITERAL_STRING("connect"), socket);
+  FireEvent(u"connect"_ns, socket);
   return NS_OK;
 }
 
@@ -143,7 +144,7 @@ NS_IMETHODIMP
 TCPServerSocket::OnStopListening(nsIServerSocket* aServer, nsresult aStatus) {
   if (aStatus != NS_BINDING_ABORTED) {
     RefPtr<Event> event = new Event(GetOwner());
-    event->InitEvent(NS_LITERAL_STRING("error"), false, false);
+    event->InitEvent(u"error"_ns, false, false);
     event->SetTrusted(true);
     DispatchEvent(*event);
 
@@ -160,7 +161,7 @@ nsresult TCPServerSocket::AcceptChildSocket(TCPSocketChild* aSocketChild) {
   RefPtr<TCPSocket> socket =
       TCPSocket::CreateAcceptedSocket(global, aSocketChild, mUseArrayBuffers);
   NS_ENSURE_TRUE(socket, NS_ERROR_FAILURE);
-  FireEvent(NS_LITERAL_STRING("connect"), socket);
+  FireEvent(u"connect"_ns, socket);
   return NS_OK;
 }
 

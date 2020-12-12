@@ -47,6 +47,20 @@ void VsyncSource::DeregisterCompositorVsyncDispatcher(
       aCompositorVsyncDispatcher);
 }
 
+void VsyncSource::AddGenericObserver(VsyncObserver* aObserver) {
+  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_ASSERT(NS_IsMainThread());
+
+  GetGlobalDisplay().AddGenericObserver(aObserver);
+}
+
+void VsyncSource::RemoveGenericObserver(VsyncObserver* aObserver) {
+  MOZ_ASSERT(XRE_IsParentProcess());
+  MOZ_ASSERT(NS_IsMainThread());
+
+  GetGlobalDisplay().RemoveGenericObserver(aObserver);
+}
+
 void VsyncSource::MoveListenersToNewSource(
     const RefPtr<VsyncSource>& aNewSource) {
   GetGlobalDisplay().MoveListenersToNewSource(aNewSource);
@@ -74,7 +88,8 @@ VsyncSource::Display::~Display() {
   MOZ_ASSERT(mEnabledCompositorVsyncDispatchers.Length() == 0);
 }
 
-void VsyncSource::Display::NotifyVsync(TimeStamp aVsyncTimestamp) {
+void VsyncSource::Display::NotifyVsync(const TimeStamp& aVsyncTimestamp,
+                                       const TimeStamp& aOutputTimestamp) {
   // Called on the vsync thread
   MutexAutoLock lock(mDispatcherLock);
 
@@ -86,14 +101,39 @@ void VsyncSource::Display::NotifyVsync(TimeStamp aVsyncTimestamp) {
     return;
   }
 
+  // If the task posted to the main thread from the last NotifyVsync call
+  // hasn't been processed yet, then don't send another one. Otherwise we might
+  // end up flooding the main thread.
+  bool dispatchToMainThread =
+      (mLastVsyncIdSentToMainThread == mLastMainThreadProcessedVsyncId);
+
   mVsyncId = mVsyncId.Next();
-  VsyncEvent event(mVsyncId, aVsyncTimestamp);
+  const VsyncEvent event(mVsyncId, aVsyncTimestamp, aOutputTimestamp);
 
   for (size_t i = 0; i < mEnabledCompositorVsyncDispatchers.Length(); i++) {
     mEnabledCompositorVsyncDispatchers[i]->NotifyVsync(event);
   }
 
   mRefreshTimerVsyncDispatcher->NotifyVsync(event);
+
+  if (dispatchToMainThread) {
+    mLastVsyncIdSentToMainThread = mVsyncId;
+    NS_DispatchToMainThread(NewRunnableMethod<VsyncEvent>(
+        "VsyncSource::Display::NotifyGenericObservers", this,
+        &VsyncSource::Display::NotifyGenericObservers, event));
+  }
+}
+
+void VsyncSource::Display::NotifyGenericObservers(VsyncEvent aEvent) {
+  MOZ_ASSERT(NS_IsMainThread());
+  for (size_t i = 0; i < mGenericObservers.Length(); i++) {
+    mGenericObservers[i]->NotifyVsync(aEvent);
+  }
+
+  {  // Scope lock
+    MutexAutoLock lock(mDispatcherLock);
+    mLastMainThreadProcessedVsyncId = aEvent.mId;
+  }
 }
 
 TimeDuration VsyncSource::Display::GetVsyncRate() {
@@ -153,6 +193,22 @@ void VsyncSource::Display::DisableCompositorVsyncDispatcher(
   UpdateVsyncStatus();
 }
 
+void VsyncSource::Display::AddGenericObserver(VsyncObserver* aObserver) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aObserver);
+  mGenericObservers.AppendElement(aObserver);
+
+  UpdateVsyncStatus();
+}
+
+void VsyncSource::Display::RemoveGenericObserver(VsyncObserver* aObserver) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aObserver);
+  mGenericObservers.RemoveElement(aObserver);
+
+  UpdateVsyncStatus();
+}
+
 void VsyncSource::Display::MoveListenersToNewSource(
     const RefPtr<VsyncSource>& aNewSource) {
   MOZ_ASSERT(NS_IsMainThread());
@@ -163,6 +219,7 @@ void VsyncSource::Display::MoveListenersToNewSource(
       std::move(mRegisteredCompositorVsyncDispatchers));
   aNewDisplay.mEnabledCompositorVsyncDispatchers.AppendElements(
       std::move(mEnabledCompositorVsyncDispatchers));
+  aNewDisplay.mGenericObservers.AppendElements(std::move(mGenericObservers));
 
   for (size_t i = 0;
        i < aNewDisplay.mRegisteredCompositorVsyncDispatchers.Length(); i++) {
@@ -192,7 +249,7 @@ void VsyncSource::Display::UpdateVsyncStatus() {
   {  // scope lock
     MutexAutoLock lock(mDispatcherLock);
     enableVsync = !mEnabledCompositorVsyncDispatchers.IsEmpty() ||
-                  mRefreshTimerNeedsVsync;
+                  mRefreshTimerNeedsVsync || !mGenericObservers.IsEmpty();
   }
 
   if (enableVsync) {

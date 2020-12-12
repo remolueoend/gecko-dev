@@ -1,3 +1,4 @@
+// |reftest| skip-if(!this.hasOwnProperty('FinalizationRegistry')) -- FinalizationRegistry is not enabled unconditionally
 // Copyright (C) 2019 Leo Balter. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 
@@ -12,7 +13,7 @@ info: |
   has the attributes { [[Writable]]: true, [[Enumerable]]: false,
   [[Configurable]]: true } unless otherwise specified.
 includes: [propertyHelper.js]
-features: [FinalizationRegistry]
+features: [FinalizationRegistry.prototype.cleanupSome, cleanupSome, FinalizationRegistry]
 ---*/
 
 assert.sameValue(typeof FinalizationRegistry.prototype.cleanupSome, 'function');

@@ -40,15 +40,13 @@
   -moz-user-focus: ignore;
 }
 
-#identity-box:hover:not(.no-hover):not([open=true]),
-#notification-popup-box:hover,
+#identity-box:hover:not(.no-hover, [open=true]),
 #tracking-protection-icon-container:hover:not([open=true]) {
   background-color: hsla(0,0%,70%,.2);
   fill-opacity: .8;
 }
 
 #identity-box:hover:active:not(.no-hover),
-#notification-popup-box:hover:active,
 #identity-box[open=true],
 #tracking-protection-icon-container:hover:active,
 #tracking-protection-icon-container[open=true] {
@@ -71,7 +69,7 @@
 #identity-icon-label {
   padding-inline-start: 4px;
 }
-#identity-box:not(.chromeUI):not(.extensionPage):not(.notSecureText) {
+#identity-box:not(.chromeUI, .extensionPage, .notSecureText) {
   --urlbar-separator-color: transparent;
 }
 
@@ -94,6 +92,16 @@
 #urlbar-label-box {
   padding-inline: 4px;
   border-inline-start: 1px solid var(--urlbar-separator-color);
+}
+
+#urlbar[searchmode]:not([breakout-extend]) > #urlbar-input-container > #urlbar-label-box {
+  border-inline-start-color: transparent;
+  border-image-width: 0 1px 0 0;
+  pointer-events: none;
+}
+
+#urlbar[searchmode]:not([breakout-extend]) > #urlbar-input-container > #urlbar-label-box:-moz-locale-dir(rtl) {
+  border-image-width: 0 0 0 1px;
 }
 
 .urlbar-label {
@@ -126,6 +134,10 @@
   list-style-image: url(chrome://branding/content/identity-icons-brand.svg);
 }
 
+#identity-box[pageproxystate="valid"].localResource > #identity-icon {
+  list-style-image: url(chrome://global/skin/icons/document.svg);
+}
+
 #urlbar:not(.searchButton) > #urlbar-input-container > #identity-box[pageproxystate="invalid"] > #identity-icon {
   list-style-image: url(chrome://browser/skin/search-glass.svg);
   fill-opacity: .4;
@@ -155,13 +167,14 @@
 #identity-box[pageproxystate="valid"].mixedDisplayContentLoadedActiveBlocked > #identity-icon,
 #identity-box[pageproxystate="valid"].certUserOverridden > #identity-icon,
 #identity-box[pageproxystate="valid"].certErrorPage > #identity-icon {
-  list-style-image: url(chrome://browser/skin/connection-mixed-passive-loaded.svg);
+  list-style-image: url(chrome://global/skin/icons/connection-mixed-passive-loaded.svg);
   fill: unset;
 }
 
 #identity-box[pageproxystate="valid"].notSecure > #identity-icon,
-#identity-box[pageproxystate="valid"].mixedActiveContent > #identity-icon {
-  list-style-image: url(chrome://browser/skin/connection-mixed-active-loaded.svg);
+#identity-box[pageproxystate="valid"].mixedActiveContent > #identity-icon,
+#identity-box[pageproxystate="valid"].httpsOnlyErrorPage > #identity-icon {
+  list-style-image: url(chrome://global/skin/icons/connection-mixed-active-loaded.svg);
 }
 
 #permissions-granted-icon {
@@ -225,14 +238,13 @@
   width: 16px;
   height: 16px;
 }
-#tracking-protection-icon-box:not([hasException])[active][animationsenabled] > #tracking-protection-icon,
-#tracking-protection-icon-box:not([animationsenabled])[active] > #tracking-protection-icon,
-#tracking-protection-icon-box:not([animationsenabled]):not([active]) > #tracking-protection-icon-animatable-box,
+
+#tracking-protection-icon-box:not([hasException])[active] > #tracking-protection-icon,
 #tracking-protection-icon-box:not([active]) > #tracking-protection-icon-animatable-box {
   display: none;
 }
 
-#tracking-protection-icon-box > #tracking-protection-icon-animatable-box {
+#tracking-protection-icon-animatable-box {
   display: block;
   position: absolute;
   overflow: hidden;
@@ -240,7 +252,7 @@
   height: 16px;
 }
 
-#tracking-protection-icon-box:not([hasException])[active] #tracking-protection-icon-animatable-image {
+#tracking-protection-icon-box:not([hasException])[active] > #tracking-protection-icon-animatable-box > #tracking-protection-icon-animatable-image {
   /* Overrides the default 'display: -moz-box' to prevent icon shifting issue
      with scaled text, see Bug 1591049 */
   display: block;
@@ -253,6 +265,10 @@
   -moz-context-properties: fill, fill-opacity;
 }
 
+#tracking-protection-icon-box:not([hasException])[active] > #tracking-protection-icon-animatable-box > #tracking-protection-icon-animatable-image:-moz-locale-dir(rtl) {
+  transform: translateX(0);
+}
+
 #tracking-protection-icon-box[hasException]:-moz-locale-dir(rtl)::before {
   left: 0;
   right: unset;
@@ -261,23 +277,21 @@
   z-index: 1;
 }
 
-:root[lwt-toolbar-field-brighttext] #tracking-protection-icon-box:not([hasException])[active] #tracking-protection-icon-animatable-image {
+:root[lwt-toolbar-field-brighttext] #tracking-protection-icon-box:not([hasException])[active] > #tracking-protection-icon-animatable-box > #tracking-protection-icon-animatable-image {
   background-image: url(chrome://browser/skin/tracking-protection-animation-brighttext.svg);
 }
 
-#tracking-protection-icon-box[active] #tracking-protection-icon-animatable-image:-moz-locale-dir(rtl) {
-  transform: scaleX(-1) translateX(-256px);
-}
+@media (prefers-reduced-motion: no-preference) {
+  #tracking-protection-icon-box[active][animate] > #tracking-protection-icon-animatable-box > #tracking-protection-icon-animatable-image {
+    animation-name: tp-icon-animation;
+    animation-timing-function: steps(16);
+    animation-duration: 1s;
+    animation-fill-mode: forwards;
+  }
 
-#tracking-protection-icon-box[animationsenabled][active][animate] #tracking-protection-icon-animatable-image {
-  animation-name: tp-icon-animation;
-  animation-timing-function: steps(16);
-  animation-duration: 1s;
-  animation-fill-mode: forwards;
-}
-
-#tracking-protection-icon-box[animationsenabled][active][animate] #tracking-protection-icon-animatable-image:-moz-locale-dir(rtl) {
-  animation-name: tp-icon-animation-rtl;
+  #tracking-protection-icon-box[active][animate] > #tracking-protection-icon-animatable-box > #tracking-protection-icon-animatable-image:-moz-locale-dir(rtl) {
+    animation-name: tp-icon-animation-rtl;
+  }
 }
 
 #tracking-protection-icon-tooltip {
@@ -290,10 +304,6 @@
 
 #urlbar-input-container[pageproxystate="valid"] > #tracking-protection-icon-container > #tracking-protection-icon-box[hasException] > #tracking-protection-icon {
   list-style-image: url(chrome://browser/skin/tracking-protection-disabled.svg);
-}
-
-#urlbar-input-container[pageproxystate="valid"] > #tracking-protection-icon-container > #tracking-protection-icon-box > #tracking-protection-icon:-moz-locale-dir(rtl) {
-  transform: scaleX(-1);
 }
 
 #urlbar-input-container[pageproxystate="invalid"] > #tracking-protection-icon-container {
@@ -311,10 +321,10 @@
 
 @keyframes tp-icon-animation-rtl {
   from {
-    transform: scaleX(-1) translateX(0);
+    transform: translateX(256px);
   }
   100% {
-    transform: scaleX(-1) translateX(-256px);
+    transform: translateX(0);
   }
 }
 

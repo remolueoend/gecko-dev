@@ -5,6 +5,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XRPose.h"
+#include "mozilla/dom/XRRigidTransform.h"
 
 namespace mozilla {
 namespace dom {
@@ -27,6 +28,10 @@ XRPose::XRPose(nsISupports* aParent, XRRigidTransform* aTransform,
 JSObject* XRPose::WrapObject(JSContext* aCx,
                              JS::Handle<JSObject*> aGivenProto) {
   return XRPose_Binding::Wrap(aCx, this, aGivenProto);
+}
+
+void XRPose::SetEmulatedPosition(bool aEmulated) {
+  mEmulatedPosition = aEmulated;
 }
 
 XRRigidTransform* XRPose::Transform() { return mTransform; }

@@ -5,20 +5,21 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "gtest/gtest.h"
 #include "AudioCompactor.h"
+#include "nsDeque.h"
+#include "nsIMemoryReporter.h"
 
 using mozilla::AudioCompactor;
 using mozilla::AudioData;
 using mozilla::AudioDataValue;
 using mozilla::MediaQueue;
 
-class MemoryFunctor : public nsDequeFunctor {
+class MemoryFunctor : public nsDequeFunctor<AudioData> {
  public:
   MemoryFunctor() : mSize(0) {}
   MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf);
 
-  void operator()(void* aObject) override {
-    const AudioData* audioData = static_cast<const AudioData*>(aObject);
-    mSize += audioData->SizeOfIncludingThis(MallocSizeOf);
+  void operator()(AudioData* aObject) override {
+    mSize += aObject->SizeOfIncludingThis(MallocSizeOf);
   }
 
   size_t mSize;

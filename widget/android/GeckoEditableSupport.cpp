@@ -13,6 +13,10 @@
 
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/IMEStateManager.h"
+#include "mozilla/java/GeckoEditableChildWrappers.h"
+#include "mozilla/java/GeckoServiceChildProcessWrappers.h"
+#include "mozilla/Logging.h"
+#include "mozilla/MiscEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_intl.h"
 #include "mozilla/TextComposition.h"
@@ -20,23 +24,21 @@
 #include "mozilla/TextEvents.h"
 #include "mozilla/ToString.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/widget/GeckoViewSupport.h"
 
 #include <android/api-level.h>
 #include <android/input.h>
 #include <android/log.h>
 
-#ifdef DEBUG_ANDROID_IME
-#  define ALOGIME(args...) \
-    __android_log_print(ANDROID_LOG_INFO, "GeckoEditableSupport", ##args)
+#ifdef NIGHTLY_BUILD
+static mozilla::LazyLogModule sGeckoEditableSupportLog("GeckoEditableSupport");
+#  define ALOGIME(...) \
+    MOZ_LOG(sGeckoEditableSupportLog, LogLevel::Debug, (__VA_ARGS__))
 #else
 #  define ALOGIME(args...) \
     do {                   \
     } while (0)
 #endif
-
-template <>
-const char nsWindow::NativePtr<mozilla::widget::GeckoEditableSupport>::sName[] =
-    "GeckoEditableSupport";
 
 static uint32_t ConvertAndroidKeyCodeToDOMKeyCode(int32_t androidKeyCode) {
   // Special-case alphanumeric keycodes because they are most common.
@@ -460,11 +462,14 @@ void GeckoEditableSupport::OnKeyEvent(int32_t aAction, int32_t aKeyCode,
   nsCOMPtr<nsIWidget> widget = GetWidget();
   RefPtr<TextEventDispatcher> dispatcher =
       mDispatcher ? mDispatcher.get()
-                  : widget ? widget->GetTextEventDispatcher() : nullptr;
+      : widget    ? widget->GetTextEventDispatcher()
+                  : nullptr;
   NS_ENSURE_TRUE_VOID(dispatcher && widget);
 
-  if (!aIsSynthesizedImeKey && mWindow) {
-    mWindow->UserActivity();
+  if (!aIsSynthesizedImeKey) {
+    if (nsWindow* window = GetNsWindow()) {
+      window->UserActivity();
+    }
   } else if (aIsSynthesizedImeKey && mIMEMaskEventsCount > 0) {
     // Don't synthesize editor keys when not focused.
     return;
@@ -500,7 +505,6 @@ void GeckoEditableSupport::OnKeyEvent(int32_t aAction, int32_t aKeyCode,
     // these keys are dispatched in sequence.
     mIMEKeyEvents.AppendElement(UniquePtr<WidgetEvent>(event.Duplicate()));
   } else {
-    RemoveComposition();
     NS_ENSURE_SUCCESS_VOID(BeginInputTransaction(dispatcher));
     dispatcher->DispatchKeyboardEvent(msg, event, status);
     if (widget->Destroyed() || status == nsEventStatus_eConsumeNoDefault) {
@@ -594,24 +598,30 @@ void GeckoEditableSupport::AddIMETextChange(const IMETextChange& aChange) {
       // No overlap between ranges
       continue;
     }
-    // When merging two ranges, there are generally four posibilities:
-    // [----(----]----), (----[----]----),
-    // [----(----)----], (----[----)----]
-    // where [----] is the first range and (----) is the second range
-    // As seen above, the start of the merged range is always the lesser
-    // of the two start offsets. OldEnd and NewEnd then need to be
-    // adjusted separately depending on the case. In any case, the change
-    // in text length of the merged range should be the sum of text length
-    // changes of the two original ranges, i.e.,
-    // newNewEnd - newOldEnd == newEnd1 - oldEnd1 + newEnd2 - oldEnd2
-    dst.mStart = std::min(dst.mStart, src.mStart);
-    if (src.mOldEnd < dst.mNewEnd) {
-      // New range overlaps or is within previous range; merge
-      dst.mNewEnd += src.mNewEnd - src.mOldEnd;
-    } else {  // src.mOldEnd >= dst.mNewEnd
-      // New range overlaps previous range; merge
-      dst.mOldEnd += src.mOldEnd - dst.mNewEnd;
-      dst.mNewEnd = src.mNewEnd;
+
+    if (src.mStart == dst.mStart && src.mNewEnd == dst.mNewEnd) {
+      // Same range. Adjust old end offset.
+      dst.mOldEnd = std::min(src.mOldEnd, dst.mOldEnd);
+    } else {
+      // When merging two ranges, there are generally four posibilities:
+      // [----(----]----), (----[----]----),
+      // [----(----)----], (----[----)----]
+      // where [----] is the first range and (----) is the second range
+      // As seen above, the start of the merged range is always the lesser
+      // of the two start offsets. OldEnd and NewEnd then need to be
+      // adjusted separately depending on the case. In any case, the change
+      // in text length of the merged range should be the sum of text length
+      // changes of the two original ranges, i.e.,
+      // newNewEnd - newOldEnd == newEnd1 - oldEnd1 + newEnd2 - oldEnd2
+      dst.mStart = std::min(dst.mStart, src.mStart);
+      if (src.mOldEnd < dst.mNewEnd) {
+        // New range overlaps or is within previous range; merge
+        dst.mNewEnd += src.mNewEnd - src.mOldEnd;
+      } else {  // src.mOldEnd >= dst.mNewEnd
+        // New range overlaps previous range; merge
+        dst.mOldEnd += src.mOldEnd - dst.mNewEnd;
+        dst.mNewEnd = src.mNewEnd;
+      }
     }
     // src merged to dst; delete src.
     mIMETextChanges.RemoveElementAt(srcIndex);
@@ -685,35 +695,42 @@ void GeckoEditableSupport::FlushIMEChanges(FlushChangesFlag aFlags) {
       continue;
     }
 
-    WidgetQueryContentEvent event(true, eQueryTextContent, widget);
+    nsString insertedString;
+    WidgetQueryContentEvent queryTextContentEvent(true, eQueryTextContent,
+                                                  widget);
 
     if (change.mNewEnd != change.mStart) {
-      event.InitForQueryTextContent(change.mStart,
-                                    change.mNewEnd - change.mStart);
-      widget->DispatchEvent(&event, status);
+      queryTextContentEvent.InitForQueryTextContent(
+          change.mStart, change.mNewEnd - change.mStart);
+      widget->DispatchEvent(&queryTextContentEvent, status);
 
-      if (shouldAbort(NS_WARN_IF(!event.mSucceeded))) {
+      if (shouldAbort(NS_WARN_IF(queryTextContentEvent.Failed()))) {
         return;
       }
+
+      insertedString = queryTextContentEvent.mReply->DataRef();
     }
 
-    textTransaction.AppendElement(TextRecord{
-        event.mReply.mString, change.mStart, change.mOldEnd, change.mNewEnd});
+    textTransaction.AppendElement(TextRecord{insertedString, change.mStart,
+                                             change.mOldEnd, change.mNewEnd});
   }
 
   int32_t selStart = -1;
   int32_t selEnd = -1;
 
   if (mIMESelectionChanged) {
-    WidgetQueryContentEvent event(true, eQuerySelectedText, widget);
-    widget->DispatchEvent(&event, status);
+    WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                   widget);
+    widget->DispatchEvent(&querySelectedTextEvent, status);
 
-    if (shouldAbort(NS_WARN_IF(!event.mSucceeded))) {
+    if (shouldAbort(NS_WARN_IF(querySelectedTextEvent.DidNotFindSelection()))) {
       return;
     }
 
-    selStart = int32_t(event.GetSelectionStart());
-    selEnd = int32_t(event.GetSelectionEnd());
+    selStart = static_cast<int32_t>(
+        querySelectedTextEvent.mReply->SelectionStartOffset());
+    selEnd = static_cast<int32_t>(
+        querySelectedTextEvent.mReply->SelectionEndOffset());
 
     if (aFlags == FLUSH_FLAG_RECOVER) {
       // Sometimes we get out-of-bounds selection during recovery.
@@ -775,6 +792,10 @@ void GeckoEditableSupport::FlushIMEChanges(FlushChangesFlag aFlags) {
 }
 
 void GeckoEditableSupport::FlushIMEText(FlushChangesFlag aFlags) {
+  NS_WARNING_ASSERTION(
+      !mIMEDelaySynchronizeReply || !mIMEActiveCompositionCount,
+      "Cannot synchronize Java text with Gecko text");
+
   // Notify Java of the newly focused content
   mIMETextChanges.Clear();
   mIMESelectionChanged = true;
@@ -802,12 +823,17 @@ void GeckoEditableSupport::UpdateCompositionRects() {
 
   nsEventStatus status = nsEventStatus_eIgnore;
   uint32_t offset = composition->NativeOffsetOfStartComposition();
-  WidgetQueryContentEvent textRects(true, eQueryTextRectArray, widget);
-  textRects.InitForQueryTextRectArray(offset, composition->String().Length());
-  widget->DispatchEvent(&textRects, status);
+  WidgetQueryContentEvent queryTextRectsEvent(true, eQueryTextRectArray,
+                                              widget);
+  queryTextRectsEvent.InitForQueryTextRectArray(offset,
+                                                composition->String().Length());
+  widget->DispatchEvent(&queryTextRectsEvent, status);
 
-  auto rects = ConvertRectArrayToJavaRectFArray(textRects.mReply.mRectArray,
-                                                widget->GetDefaultScale());
+  auto rects = ConvertRectArrayToJavaRectFArray(
+      queryTextRectsEvent.Succeeded()
+          ? queryTextRectsEvent.mReply->mRectArray
+          : CopyableTArray<mozilla::LayoutDeviceIntRect>(),
+      widget->GetDefaultScale());
 
   mEditable->UpdateCompositionRects(rects);
 }
@@ -848,8 +874,8 @@ bool GeckoEditableSupport::DoReplaceText(int32_t aStart, int32_t aEnd,
     return false;
   }
 
-  if (mWindow) {
-    mWindow->UserActivity();
+  if (nsWindow* window = GetNsWindow()) {
+    window->UserActivity();
   }
 
   /*
@@ -877,7 +903,23 @@ bool GeckoEditableSupport::DoReplaceText(int32_t aStart, int32_t aEnd,
     // the replaced text does not match our composition.
     textChanged |= RemoveComposition();
 
+#ifdef NIGHTLY_BUILD
     {
+      nsEventStatus status = nsEventStatus_eIgnore;
+      WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                     widget);
+      widget->DispatchEvent(&querySelectedTextEvent, status);
+      if (querySelectedTextEvent.Succeeded()) {
+        ALOGIME(
+            "IME: Current selection: %s",
+            ToString(querySelectedTextEvent.mReply->mOffsetAndData).c_str());
+      }
+    }
+#endif
+
+    // If aStart or aEnd is negative value, we use current selection instead
+    // of updating the selection.
+    if (aStart >= 0 && aEnd >= 0) {
       // Use text selection to set target position(s) for
       // insert, or replace, of text.
       WidgetSelectionEvent event(true, eSetSelection, widget);
@@ -889,6 +931,7 @@ bool GeckoEditableSupport::DoReplaceText(int32_t aStart, int32_t aEnd,
     }
 
     if (!mIMEKeyEvents.IsEmpty()) {
+      bool ignoreNextKeyPress = false;
       for (uint32_t i = 0; i < mIMEKeyEvents.Length(); i++) {
         const auto event = mIMEKeyEvents[i]->AsKeyboardEvent();
         // widget for duplicated events is initially nullptr.
@@ -897,7 +940,16 @@ bool GeckoEditableSupport::DoReplaceText(int32_t aStart, int32_t aEnd,
         status = nsEventStatus_eIgnore;
         if (event->mMessage != eKeyPress) {
           mDispatcher->DispatchKeyboardEvent(event->mMessage, *event, status);
+          // Skip default processing. It means that next key press shouldn't
+          // be dispatched.
+          ignoreNextKeyPress = event->mMessage == eKeyDown &&
+                               status == nsEventStatus_eConsumeNoDefault;
         } else {
+          if (ignoreNextKeyPress) {
+            // Don't dispatch key press since previous key down is consumed.
+            ignoreNextKeyPress = false;
+            continue;
+          }
           mDispatcher->MaybeDispatchKeypressEvents(*event, status);
           if (status == nsEventStatus_eConsumeNoDefault) {
             textChanged = true;
@@ -1074,10 +1126,13 @@ bool GeckoEditableSupport::DoUpdateComposition(int32_t aStart, int32_t aEnd,
     }
 
     {
-      WidgetQueryContentEvent event(true, eQuerySelectedText, widget);
-      widget->DispatchEvent(&event, status);
-      MOZ_ASSERT(event.mSucceeded);
-      string = event.mReply.mString;
+      WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                     widget);
+      widget->DispatchEvent(&querySelectedTextEvent, status);
+      MOZ_ASSERT(querySelectedTextEvent.Succeeded());
+      if (querySelectedTextEvent.FoundSelection()) {
+        string = querySelectedTextEvent.mReply->DataRef();
+      }
     }
   } else {
     // If the new composition matches the existing composition,
@@ -1085,12 +1140,9 @@ bool GeckoEditableSupport::DoUpdateComposition(int32_t aStart, int32_t aEnd,
     string = composition->String();
   }
 
-#ifdef DEBUG_ANDROID_IME
-  const NS_ConvertUTF16toUTF8 data(string);
-  const char* text = data.get();
-  ALOGIME("IME: IME_SET_TEXT: text=\"%s\", length=%u, range=%u", text,
-          string.Length(), mIMERanges->Length());
-#endif  // DEBUG_ANDROID_IME
+  ALOGIME("IME: IME_SET_TEXT: text=\"%s\", length=%u, range=%zu",
+          NS_ConvertUTF16toUTF8(string).get(), string.Length(),
+          mIMERanges->Length());
 
   if (NS_WARN_IF(NS_FAILED(BeginInputTransaction(mDispatcher)))) {
     mIMERanges->Clear();
@@ -1112,11 +1164,64 @@ void GeckoEditableSupport::OnImeRequestCursorUpdates(int aRequestMode) {
   mIMEMonitorCursor = (aRequestMode == EditableClient::START_MONITOR);
 }
 
+class MOZ_STACK_CLASS AutoSelectionRestore final {
+ public:
+  explicit AutoSelectionRestore(nsIWidget* widget,
+                                TextEventDispatcher* dispatcher)
+      : mWidget(widget), mDispatcher(dispatcher) {
+    MOZ_ASSERT(widget);
+    if (!dispatcher || !dispatcher->IsComposing()) {
+      mOffset = UINT32_MAX;
+      mLength = UINT32_MAX;
+      return;
+    }
+    WidgetQueryContentEvent querySelectedTextEvent(true, eQuerySelectedText,
+                                                   widget);
+    nsEventStatus status = nsEventStatus_eIgnore;
+    widget->DispatchEvent(&querySelectedTextEvent, status);
+    if (querySelectedTextEvent.DidNotFindSelection()) {
+      mOffset = UINT32_MAX;
+      mLength = UINT32_MAX;
+      return;
+    }
+
+    mOffset = querySelectedTextEvent.mReply->StartOffset();
+    mLength = querySelectedTextEvent.mReply->DataLength();
+  }
+
+  ~AutoSelectionRestore() {
+    if (mWidget->Destroyed() || mOffset == UINT32_MAX) {
+      return;
+    }
+
+    WidgetSelectionEvent selection(true, eSetSelection, mWidget);
+    selection.mOffset = mOffset;
+    selection.mLength = mLength;
+    selection.mExpandToClusterBoundary = false;
+    selection.mReason = nsISelectionListener::IME_REASON;
+    nsEventStatus status = nsEventStatus_eIgnore;
+    mWidget->DispatchEvent(&selection, status);
+  }
+
+ private:
+  nsCOMPtr<nsIWidget> mWidget;
+  RefPtr<TextEventDispatcher> mDispatcher;
+  uint32_t mOffset;
+  uint32_t mLength;
+};
+
 void GeckoEditableSupport::OnImeRequestCommit() {
   if (mIMEMaskEventsCount > 0) {
     // Not focused.
     return;
   }
+
+  nsCOMPtr<nsIWidget> widget = GetWidget();
+  if (NS_WARN_IF(!widget)) {
+    return;
+  }
+
+  AutoSelectionRestore restore(widget, mDispatcher);
 
   RemoveComposition(COMMIT_IME_COMPOSITION);
 }
@@ -1177,7 +1282,8 @@ nsresult GeckoEditableSupport::NotifyIME(
         if (mIsRemote) {
           if (!mEditableAttached) {
             // Re-attach on focus; see OnRemovedFrom().
-            AttachNative(mEditable, this);
+            jni::NativeWeakPtrHolder<GeckoEditableSupport>::AttachExisting(
+                mEditable, do_AddRef(this));
             mEditableAttached = true;
           }
           // Because GeckoEditableSupport in content process doesn't
@@ -1188,6 +1294,9 @@ nsresult GeckoEditableSupport::NotifyIME(
         }
         mDispatcher = dispatcher;
         mIMEKeyEvents.Clear();
+
+        mIMEDelaySynchronizeReply = false;
+        mIMEActiveCompositionCount = 0;
         FlushIMEText();
 
         // IME will call requestCursorUpdates after getting context.
@@ -1211,6 +1320,7 @@ nsresult GeckoEditableSupport::NotifyIME(
           mIMEDelaySynchronizeReply = false;
           mIMEActiveSynchronizeCount = 0;
           mIMEActiveCompositionCount = 0;
+          mInputContext.ShutDown();
           mEditable->NotifyIME(EditableListener::NOTIFY_IME_OF_BLUR);
           OnRemovedFrom(mDispatcher);
         }
@@ -1287,7 +1397,7 @@ void GeckoEditableSupport::OnRemovedFrom(
 
   if (mIsRemote && mEditable->HasEditableParent()) {
     // When we're remote, detach every time.
-    OnDetach(NS_NewRunnableFunction(
+    OnWeakNonIntrusiveDetach(NS_NewRunnableFunction(
         "GeckoEditableSupport::OnRemovedFrom",
         [editable = java::GeckoEditableChild::GlobalRef(mEditable)] {
           DisposeNative(editable);
@@ -1307,14 +1417,15 @@ GeckoEditableSupport::GetIMENotificationRequests() {
 
 void GeckoEditableSupport::SetInputContext(const InputContext& aContext,
                                            const InputContextAction& aAction) {
+  // SetInputContext is called from chrome process only
+  MOZ_ASSERT(XRE_IsParentProcess());
   MOZ_ASSERT(mEditable);
 
   ALOGIME(
-      "IME: SetInputContext: aContext.mIMEState={mEnabled=%s, mOpen=%s}, "
+      "IME: SetInputContext: aContext=%s, "
       "aAction={mCause=%s, mFocusChange=%s}",
-      ToString(aContext.mIMEState.mEnabled).c_str(),
-      ToString(aContext.mIMEState.mOpen).c_str(),
-      ToString(aAction.mCause).c_str(), ToString(aAction.mFocusChange).c_str());
+      ToString(aContext).c_str(), ToString(aAction.mCause).c_str(),
+      ToString(aAction.mFocusChange).c_str());
 
   mInputContext = aContext;
 
@@ -1354,10 +1465,13 @@ void GeckoEditableSupport::NotifyIMEContext(const InputContext& aContext,
 
   mEditable->NotifyIMEContext(
       aContext.mIMEState.mEnabled, aContext.mHTMLInputType,
-      aContext.mHTMLInputInputmode, aContext.mActionHint, flags);
+      aContext.mHTMLInputInputmode, aContext.mActionHint,
+      aContext.mAutocapitalize, flags);
 }
 
 InputContext GeckoEditableSupport::GetInputContext() {
+  // GetInputContext is called from chrome process only
+  MOZ_ASSERT(XRE_IsParentProcess());
   InputContext context = mInputContext;
   context.mIMEState.mOpen = IMEState::OPEN_STATE_NOT_SUPPORTED;
   return context;
@@ -1370,7 +1484,20 @@ void GeckoEditableSupport::TransferParent(jni::Object::Param aEditableParent) {
   // and focus information, so it can accept additional calls from us.
   if (mIMEFocusCount > 0) {
     mEditable->NotifyIME(EditableListener::NOTIFY_IME_OF_TOKEN);
-    NotifyIMEContext(mInputContext, InputContextAction());
+    if (mIsRemote) {
+      // GeckoEditableSupport::SetInputContext is called on chrome process
+      // only, so mInputContext may be still invalid since it is set after
+      // we have gotton focus.
+      RefPtr<GeckoEditableSupport> self(this);
+      nsAppShell::PostEvent([self = std::move(self)] {
+        NS_WARNING_ASSERTION(
+            self->mDispatcher,
+            "Text dispatcher is still null. Why don't we get focus yet?");
+        self->NotifyIMEContext(self->mInputContext, InputContextAction());
+      });
+    } else {
+      NotifyIMEContext(mInputContext, InputContextAction());
+    }
     mEditable->NotifyIME(EditableListener::NOTIFY_IME_OF_FOCUS);
     // We have focus, so don't destroy editable child.
     return;
@@ -1407,15 +1534,19 @@ void GeckoEditableSupport::SetOnBrowserChild(dom::BrowserChild* aBrowserChild) {
     // We need to set a new listener.
     const auto editableChild = java::GeckoEditableChild::New(
         /* parent */ nullptr, /* default */ false);
-    RefPtr<widget::GeckoEditableSupport> editableSupport =
-        new widget::GeckoEditableSupport(editableChild);
-
-    // Tell PuppetWidget to use our listener for IME operations.
-    widget->SetNativeTextEventDispatcherListener(editableSupport);
 
     // Temporarily attach so we can receive the initial editable parent.
-    AttachNative(editableChild, editableSupport);
-    editableSupport->mEditableAttached = true;
+    auto editableSupport =
+        jni::NativeWeakPtrHolder<GeckoEditableSupport>::Attach(editableChild,
+                                                               editableChild);
+    auto accEditableSupport(editableSupport.Access());
+    MOZ_RELEASE_ASSERT(accEditableSupport);
+
+    // Tell PuppetWidget to use our listener for IME operations.
+    widget->SetNativeTextEventDispatcherListener(
+        accEditableSupport.AsRefPtr().get());
+
+    accEditableSupport->mEditableAttached = true;
 
     // Connect the new child to a parent that corresponds to the BrowserChild.
     java::GeckoServiceChildProcess::GetEditableParent(editableChild, contentId,
@@ -1437,13 +1568,30 @@ void GeckoEditableSupport::SetOnBrowserChild(dom::BrowserChild* aBrowserChild) {
       static_cast<widget::GeckoEditableSupport*>(listener.get());
   if (!support->mEditableAttached) {
     // Temporarily attach so we can receive the initial editable parent.
-    AttachNative(support->GetJavaEditable(), support);
+    jni::NativeWeakPtrHolder<GeckoEditableSupport>::AttachExisting(
+        support->GetJavaEditable(), do_AddRef(support));
     support->mEditableAttached = true;
   }
 
   // Transfer to a new parent that corresponds to the BrowserChild.
   java::GeckoServiceChildProcess::GetEditableParent(support->GetJavaEditable(),
                                                     contentId, tabId);
+}
+
+nsIWidget* GeckoEditableSupport::GetWidget() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  return mDispatcher ? mDispatcher->GetWidget() : GetNsWindow();
+}
+
+nsWindow* GeckoEditableSupport::GetNsWindow() const {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  auto acc(mWindow.Access());
+  if (!acc) {
+    return nullptr;
+  }
+
+  return acc->GetNsWindow();
 }
 
 }  // namespace widget

@@ -9,8 +9,7 @@
 #include "mozilla/StaticPrefs_dom.h"
 #include <cstdlib>
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(StorageAccessPermissionRequest,
                                    ContentPermissionRequestBase)
@@ -22,8 +21,8 @@ StorageAccessPermissionRequest::StorageAccessPermissionRequest(
     nsPIDOMWindowInner* aWindow, nsIPrincipal* aNodePrincipal,
     AllowCallback&& aAllowCallback, CancelCallback&& aCancelCallback)
     : ContentPermissionRequestBase(aNodePrincipal, aWindow,
-                                   NS_LITERAL_CSTRING("dom.storage_access"),
-                                   NS_LITERAL_CSTRING("storage-access")),
+                                   "dom.storage_access"_ns,
+                                   "storage-access"_ns),
       mAllowCallback(std::move(aAllowCallback)),
       mCancelCallback(std::move(aCancelCallback)),
       mCallbackCalled(false) {
@@ -126,5 +125,4 @@ unsigned StorageAccessPermissionRequest::CalculateSimulatedDelay() {
   return kMin + random % (kMax - kMin);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

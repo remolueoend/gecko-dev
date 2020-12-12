@@ -14,11 +14,11 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
 
   void NativeInit() final;
   virtual void RefreshImpl() override;
-  virtual nsresult NativeGetColor(ColorID aID, nscolor& aResult) override;
-  virtual nsresult GetIntImpl(IntID aID, int32_t& aResult) override;
-  virtual nsresult GetFloatImpl(FloatID aID, float& aResult) override;
-  virtual bool GetFontImpl(FontID aID, nsString& aFontName,
-                           gfxFontStyle& aFontStyle) override;
+  nsresult NativeGetColor(ColorID aID, nscolor& aResult) override;
+  nsresult NativeGetInt(IntID aID, int32_t& aResult) override;
+  nsresult NativeGetFloat(FloatID aID, float& aResult) override;
+  bool NativeGetFont(FontID aID, nsString& aFontName,
+                     gfxFontStyle& aFontStyle) override;
 
   virtual char16_t GetPasswordCharacterImpl() override {
     // unicode value for the bullet character, used for password textfields.
@@ -27,12 +27,10 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
 
   static bool UseOverlayScrollbars();
 
-  virtual nsTArray<LookAndFeelInt> GetIntCacheImpl() override;
-  virtual void SetIntCacheImpl(
-      const nsTArray<LookAndFeelInt>& aLookAndFeelIntCache) override;
+  LookAndFeelCache GetCacheImpl() override;
+  void SetCacheImpl(const LookAndFeelCache& aCache) override;
 
  protected:
-  static bool SystemWantsOverlayScrollbars();
   static bool AllowOverlayScrollbarsOverlap();
 
   static bool SystemWantsDarkTheme();
@@ -47,6 +45,9 @@ class nsLookAndFeel final : public nsXPLookAndFeel {
 
   int32_t mSystemUsesDarkTheme;
   bool mSystemUsesDarkThemeCached;
+
+  int32_t mPrefersReducedMotion = -1;
+  bool mPrefersReducedMotionCached = false;
 
   nscolor mColorTextSelectBackground;
   nscolor mColorTextSelectBackgroundDisabled;

@@ -10,7 +10,7 @@
 #include "mozilla/dom/ClientOpPromise.h"
 #include "mozilla/dom/ClientThing.h"
 #include "mozilla/dom/ServiceWorkerDescriptor.h"
-#include "mozilla/Result.h"
+#include "mozilla/ResultVariant.h"
 #include "mozilla/Variant.h"
 
 #ifdef XP_WIN
@@ -24,6 +24,8 @@ class nsISerialEventTarget;
 class nsPIDOMWindowInner;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class ClientClaimArgs;
@@ -77,7 +79,7 @@ class ClientSource final : public ClientThing<ClientSourceChild> {
 
   nsIGlobalObject* GetGlobal() const;
 
-  void MaybeCreateInitialDocument();
+  Result<bool, ErrorResult> MaybeCreateInitialDocument();
 
   Result<ClientState, ErrorResult> SnapshotWindowState();
 

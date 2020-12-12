@@ -4,13 +4,7 @@
 
 "use strict";
 
-var EXPORTED_SYMBOLS = [
-  "DOMContentLoadedPromise",
-  "EventPromise",
-  "executeSoon",
-  "MessagePromise",
-  "PollPromise",
-];
+var EXPORTED_SYMBOLS = ["EventPromise", "executeSoon", "PollPromise"];
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
@@ -96,41 +90,6 @@ function executeSoon(fn) {
   }
 
   Services.tm.dispatchToMainThread(fn);
-}
-
-function DOMContentLoadedPromise(window, options = { mozSystemGroup: true }) {
-  if (
-    window.document.readyState == "complete" ||
-    window.document.readyState == "interactive"
-  ) {
-    return Promise.resolve();
-  }
-  return new EventPromise(window, "DOMContentLoaded", options);
-}
-
-/**
- * Awaits a single IPC message.
- *
- * @param {nsIMessageSender} target
- * @param {string} name
- *
- * @return {Promise}
- *
- * @throws {TypeError}
- *     If target is not an nsIMessageSender.
- */
-function MessagePromise(target, name) {
-  if (!(target instanceof Ci.nsIMessageSender)) {
-    throw new TypeError();
-  }
-
-  return new Promise(resolve => {
-    const onMessage = (...args) => {
-      target.removeMessageListener(name, onMessage);
-      resolve(...args);
-    };
-    target.addMessageListener(name, onMessage);
-  });
 }
 
 /**

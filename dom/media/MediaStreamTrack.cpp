@@ -27,8 +27,7 @@ static mozilla::LazyLogModule gMediaStreamTrackLog("MediaStreamTrack");
 
 using namespace mozilla::media;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(MediaStreamTrackSource)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(MediaStreamTrackSource)
@@ -51,8 +50,7 @@ auto MediaStreamTrackSource::ApplyConstraints(
     const dom::MediaTrackConstraints& aConstraints, CallerType aCallerType)
     -> RefPtr<ApplyConstraintsPromise> {
   return ApplyConstraintsPromise::CreateAndReject(
-      MakeRefPtr<MediaMgrError>(MediaMgrError::Name::OverconstrainedError,
-                                NS_LITERAL_STRING("")),
+      MakeRefPtr<MediaMgrError>(MediaMgrError::Name::OverconstrainedError, ""),
       __func__);
 }
 
@@ -240,14 +238,11 @@ MediaStreamTrack::~MediaStreamTrack() { Destroy(); }
 void MediaStreamTrack::Destroy() {
   SetReadyState(MediaStreamTrackState::Ended);
   // Remove all listeners -- avoid iterating over the list we're removing from
-  const nsTArray<RefPtr<MediaTrackListener>> trackListeners(mTrackListeners);
-  for (auto listener : trackListeners) {
+  for (const auto& listener : mTrackListeners.Clone()) {
     RemoveListener(listener);
   }
   // Do the same as above for direct listeners
-  const nsTArray<RefPtr<DirectMediaTrackListener>> directTrackListeners(
-      mDirectTrackListeners);
-  for (auto listener : directTrackListeners) {
+  for (const auto& listener : mDirectTrackListeners.Clone()) {
     RemoveDirectListener(listener);
   }
 }
@@ -298,8 +293,8 @@ void MediaStreamTrack::SetEnabled(bool aEnabled) {
     return;
   }
 
-  mTrack->SetEnabled(mEnabled ? DisabledTrackMode::ENABLED
-                              : DisabledTrackMode::SILENCE_BLACK);
+  mTrack->SetDisabledTrackMode(mEnabled ? DisabledTrackMode::ENABLED
+                                        : DisabledTrackMode::SILENCE_BLACK);
   NotifyEnabledChanged();
 }
 
@@ -364,7 +359,7 @@ already_AddRefed<Promise> MediaStreamTrack::ApplyConstraints(
   GetSource()
       .ApplyConstraints(aConstraints, aCallerType)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [this, self, promise, aConstraints](bool aDummy) {
             if (!mWindow || !mWindow->IsCurrentInnerWindow()) {
               return;  // Leave Promise pending after navigation by design.
@@ -462,16 +457,19 @@ void MediaStreamTrack::MutedChanged(bool aNewState) {
       ("MediaStreamTrack %p became %s", this, aNewState ? "muted" : "unmuted"));
 
   mMuted = aNewState;
-  nsString eventName =
-      aNewState ? NS_LITERAL_STRING("mute") : NS_LITERAL_STRING("unmute");
+
+  if (Ended()) {
+    return;
+  }
+
+  nsString eventName = aNewState ? u"mute"_ns : u"unmute"_ns;
   DispatchTrustedEvent(eventName);
 }
 
 void MediaStreamTrack::NotifyEnded() {
   MOZ_ASSERT(mReadyState == MediaStreamTrackState::Ended);
 
-  auto consumers(mConsumers);
-  for (const auto& consumer : consumers) {
+  for (const auto& consumer : mConsumers.Clone()) {
     if (consumer) {
       consumer->NotifyEnded(this);
     } else {
@@ -484,8 +482,7 @@ void MediaStreamTrack::NotifyEnded() {
 void MediaStreamTrack::NotifyEnabledChanged() {
   GetSource().SinkEnabledStateChanged();
 
-  auto consumers(mConsumers);
-  for (const auto& consumer : consumers) {
+  for (const auto& consumer : mConsumers.Clone()) {
     if (consumer) {
       consumer->NotifyEnabledChanged(this, Enabled());
     } else {
@@ -497,7 +494,10 @@ void MediaStreamTrack::NotifyEnabledChanged() {
 
 bool MediaStreamTrack::AddPrincipalChangeObserver(
     PrincipalChangeObserver<MediaStreamTrack>* aObserver) {
-  return mPrincipalChangeObservers.AppendElement(aObserver) != nullptr;
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  mPrincipalChangeObservers.AppendElement(aObserver);
+  return true;
 }
 
 bool MediaStreamTrack::RemovePrincipalChangeObserver(
@@ -575,7 +575,7 @@ void MediaStreamTrack::OverrideEnded() {
 
   NotifyEnded();
 
-  DispatchTrustedEvent(NS_LITERAL_STRING("ended"));
+  DispatchTrustedEvent(u"ended"_ns);
 }
 
 void MediaStreamTrack::AddListener(MediaTrackListener* aListener) {
@@ -633,5 +633,4 @@ already_AddRefed<MediaInputPort> MediaStreamTrack::ForwardTrackContentsTo(
   return aTrack->AllocateInputPort(mTrack);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

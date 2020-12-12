@@ -13,11 +13,11 @@
 
 #include "nsClassHashtable.h"
 #include "nsDataHashtable.h"
-#include "mozilla/dom/Document.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIDocumentObserver.h"
 #include "nsIObserver.h"
 #include "nsITimer.h"
+#include "nsWeakReference.h"
 
 class nsAccessiblePivot;
 
@@ -65,7 +65,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
   virtual void Init();
   virtual void Shutdown() override;
   virtual nsIFrame* GetFrame() const override;
-  virtual nsINode* GetNode() const override { return mDocumentNode; }
+  virtual nsINode* GetNode() const override;
   Document* DocumentNode() const { return mDocumentNode; }
 
   virtual mozilla::a11y::ENameValueFlag Name(nsString& aName) const override;
@@ -99,15 +99,12 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Return DOM document title.
    */
-  void Title(nsString& aTitle) const { mDocumentNode->GetTitle(aTitle); }
+  void Title(nsString& aTitle) const;
 
   /**
    * Return DOM document mime type.
    */
-  void MimeType(nsAString& aType) const {
-    mDocumentNode->GetContentType(aType);
-  }
-
+  void MimeType(nsAString& aType) const;
   /**
    * Return DOM document type.
    */
@@ -134,20 +131,14 @@ class DocAccessible : public HyperTextAccessibleWrap,
   /**
    * Return the presentation shell's context.
    */
-  nsPresContext* PresContext() const { return mPresShell->GetPresContext(); }
+  nsPresContext* PresContext() const;
 
   /**
    * Return true if associated DOM document was loaded and isn't unloading.
    */
-  bool IsContentLoaded() const {
-    // eDOMLoaded flag check is used for error pages as workaround to make this
-    // method return correct result since error pages do not receive 'pageshow'
-    // event and as consequence Document::IsShowing() returns false.
-    return mDocumentNode && mDocumentNode->IsVisible() &&
-           (mDocumentNode->IsShowing() || HasLoadState(eDOMLoaded));
-  }
+  bool IsContentLoaded() const;
 
-  bool IsHidden() const { return mDocumentNode->Hidden(); }
+  bool IsHidden() const;
 
   /**
    * Document load states.
@@ -239,10 +230,7 @@ class DocAccessible : public HyperTextAccessibleWrap,
    *
    * @return the accessible object
    */
-  Accessible* GetAccessible(nsINode* aNode) const {
-    return aNode == mDocumentNode ? const_cast<DocAccessible*>(this)
-                                  : mNodeToAccessibleMap.Get(aNode);
-  }
+  Accessible* GetAccessible(nsINode* aNode) const;
 
   /**
    * Return an accessible for the given node even if the node is not in
@@ -424,7 +412,10 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * accessibles.
    */
   bool AppendChildDocument(DocAccessible* aChildDocument) {
-    return mChildDocuments.AppendElement(aChildDocument);
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier, or change the return type to void.
+    mChildDocuments.AppendElement(aChildDocument);
+    return true;
   }
 
   /**
@@ -472,9 +463,10 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * @param aAccessible   [in] accessible the DOM attribute is changed for
    * @param aNameSpaceID  [in] namespace of changed attribute
    * @param aAttribute    [in] changed attribute
+   * @param aModType      [in] modification type (changed/added/removed)
    */
   void AttributeChangedImpl(Accessible* aAccessible, int32_t aNameSpaceID,
-                            nsAtom* aAttribute);
+                            nsAtom* aAttribute, int32_t aModType);
 
   /**
    * Fire accessible events when ARIA attribute is changed.
@@ -602,8 +594,8 @@ class DocAccessible : public HyperTextAccessibleWrap,
    * State and property flags, kept by mDocFlags.
    */
   enum {
-    // Whether the document is a tab document.
-    eTabDocument = 1 << 0
+    // Whether the document is a top level content document in this process.
+    eTopLevelContentDocInProcess = 1 << 0
   };
 
   /**

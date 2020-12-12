@@ -258,7 +258,8 @@
       'target_name': 'gcm-aes-ppc_c_lib',
       'type': 'static_library',
       'sources': [
-        'gcm-ppc.c'
+        'gcm-ppc.c',
+        'sha512-p8.s',
       ],
       'dependencies': [
         '<(DEPTH)/exports.gyp:nss_exports'
@@ -270,13 +271,66 @@
       'cflags_mozilla': [
         '-mcrypto',
         '-maltivec'
-      ]
+      ],
+    },
+    {
+      'target_name': 'gcm-sha512-nodepend-ppc_c_lib',
+      'type': 'static_library',
+      'sources': [
+        'sha512.c',
+      ],
+      'dependencies': [
+        '<(DEPTH)/exports.gyp:nss_exports'
+      ],
+      'cflags': [
+        '-mcrypto',
+        '-maltivec',
+        '-mvsx',
+        '-funroll-loops',
+        '-fpeel-loops',
+      ],
+      'cflags_mozilla': [
+        '-mcrypto',
+        '-maltivec',
+        '-mvsx',
+        '-funroll-loops',
+        '-fpeel-loops',
+      ],
+    },
+    {
+      'target_name': 'gcm-sha512-ppc_c_lib',
+      'type': 'static_library',
+      'sources': [
+        'sha512.c',
+      ],
+      'dependencies': [
+        '<(DEPTH)/exports.gyp:nss_exports'
+      ],
+      'cflags': [
+        '-mcrypto',
+        '-maltivec',
+        '-mvsx',
+        '-funroll-loops',
+        '-fpeel-loops',
+      ],
+      'cflags_mozilla': [
+        '-mcrypto',
+        '-maltivec',
+        '-mvsx',
+        '-funroll-loops',
+        '-fpeel-loops',
+      ],
+      'defines!': [
+        'FREEBL_NO_DEPEND',
+      ],
     },
     {
       'target_name': 'armv8_c_lib',
       'type': 'static_library',
       'sources': [
         'aes-armv8.c',
+        'sha1-armv8.c',
+        'sha256-armv8.c',
       ],
       'dependencies': [
         '<(DEPTH)/exports.gyp:nss_exports'
@@ -332,7 +386,7 @@
           'dependencies': [
             'gcm-aes-x86_c_lib',
           ],
-        }, 'disable_arm_hw_aes==0 and (target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64")', {
+        }, '(disable_arm_hw_aes==0 or disable_arm_hw_sha1==0 or disable_arm_hw_sha2==0) and (target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64")', {
           'dependencies': [
             'armv8_c_lib'
           ],
@@ -355,6 +409,7 @@
         [ 'disable_altivec==0 and (target_arch=="ppc64" or target_arch=="ppc64le")', {
           'dependencies': [
             'gcm-aes-ppc_c_lib',
+            'gcm-sha512-ppc_c_lib',
           ],
         }],
         [ 'disable_altivec==1 and (target_arch=="ppc64" or target_arch=="ppc64le")', {
@@ -422,6 +477,7 @@
         [ 'disable_altivec==0 and (target_arch=="ppc64" or target_arch=="ppc64le")', {
           'dependencies': [
             'gcm-aes-ppc_c_lib',
+            'gcm-sha512-nodepend-ppc_c_lib',
           ],
         }],
         [ 'disable_altivec==1 and (target_arch=="ppc64" or target_arch=="ppc64le")', {
@@ -539,6 +595,7 @@
       'verified',
       'verified/kremlin/include',
       'verified/kremlin/kremlib/dist/minimal',
+      'deprecated',
     ],
     'defines': [
       'SHLIB_SUFFIX=\"<(dll_suffix)\"',
@@ -582,9 +639,19 @@
           },
         },
       }],
-      [ 'OS=="win" and (target_arch=="arm64" or target_arch=="aarch64") and disable_arm_hw_aes==0', {
+      [ '(OS=="win" or OS=="mac" or OS=="ios") and (target_arch=="arm64" or target_arch=="aarch64") and disable_arm_hw_aes==0', {
         'defines': [
           'USE_HW_AES',
+        ],
+      }],
+      [ '(OS=="win" or OS=="mac" or OS=="ios") and (target_arch=="arm64" or target_arch=="aarch64") and disable_arm_hw_sha1==0', {
+        'defines': [
+          'USE_HW_SHA1',
+        ],
+      }],
+      [ '(OS=="win" or OS=="mac" or OS=="ios") and (target_arch=="arm64" or target_arch=="aarch64") and disable_arm_hw_sha2==0', {
+        'defines': [
+          'USE_HW_SHA2',
         ],
       }],
       [ 'cc_use_gnu_ld==1 and OS=="win" and target_arch=="x64"', {
@@ -593,7 +660,9 @@
           'MP_IS_LITTLE_ENDIAN',
          ],
       }],
-      [ 'have_int128_support==1', {
+      # MSVC has no __int128 type. Use emulated int128 and leave
+      # have_int128_support as-is for Curve25519 impl. selection.
+      [ 'have_int128_support==1 and (OS!="win" or cc_is_clang==1 or cc_is_gcc==1)', {
         'defines': [
           # The Makefile does version-tests on GCC, but we're not doing that here.
           'HAVE_INT128_SUPPORT',
@@ -649,6 +718,16 @@
               'USE_HW_AES',
             ],
           }],
+          [ 'disable_arm_hw_sha1==0 and (target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64")', {
+            'defines': [
+              'USE_HW_SHA1',
+            ],
+          }],
+          [ 'disable_arm_hw_sha2==0 and (target_arch=="arm" or target_arch=="arm64" or target_arch=="aarch64")', {
+            'defines': [
+              'USE_HW_SHA2',
+            ],
+          }],
         ],
       }],
     ],
@@ -656,14 +735,8 @@
   'variables': {
     'module': 'nss',
     'conditions': [
-      [ 'OS!="win"', {
-        'conditions': [
-          [ 'target_arch=="x64" or target_arch=="arm64" or target_arch=="aarch64"', {
-            'have_int128_support%': 1,
-          }, {
-            'have_int128_support%': 0,
-          }],
-        ],
+      [ 'target_arch=="x64" or target_arch=="arm64" or target_arch=="aarch64"', {
+        'have_int128_support%': 1,
       }, {
         'have_int128_support%': 0,
       }],

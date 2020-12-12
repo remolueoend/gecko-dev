@@ -31,7 +31,7 @@ async function run_test() {
     case "Linux":
       break;
     case "Darwin":
-      gfxInfo.spoofOSVersion(0x1090);
+      gfxInfo.spoofOSVersion(0xa0900);
       break;
     case "Android":
       break;
@@ -46,6 +46,9 @@ async function run_test() {
     var driverVersion = gfxInfo.adapterDriverVersion;
     if (driverVersion) {
       var status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_DIRECT2D);
+      Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
+
+      status = gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBRENDER);
       Assert.equal(status, Ci.nsIGfxInfo.FEATURE_BLOCKED_DEVICE);
 
       // Make sure unrelated features aren't affected

@@ -17,9 +17,7 @@
 #include "nsPrintfCString.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-
-namespace gmp {
+namespace mozilla::gmp {
 
 // States:
 // Initial: mIsOpen == false
@@ -176,8 +174,8 @@ nsresult GMPVideoDecoderParent::Reset() {
             "waiting for ResetComplete",
             self.get());
         self->mResetCompleteTimeout = nullptr;
-        LogToBrowserConsole(NS_LITERAL_STRING(
-            "GMPVideoDecoderParent timed out waiting for ResetComplete()"));
+        LogToBrowserConsole(nsLiteralString(
+            u"GMPVideoDecoderParent timed out waiting for ResetComplete()"));
       });
   CancelResetCompleteTimeout();
   nsCOMPtr<nsISerialEventTarget> target = mPlugin->GMPEventTarget();
@@ -489,5 +487,4 @@ void GMPVideoDecoderParent::UnblockResetAndDrain() {
   CancelResetCompleteTimeout();
 }
 
-}  // namespace gmp
-}  // namespace mozilla
+}  // namespace mozilla::gmp

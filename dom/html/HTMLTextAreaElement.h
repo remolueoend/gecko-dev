@@ -39,6 +39,8 @@ class HTMLTextAreaElement final : public TextControlElement,
                                   public nsIConstraintValidation {
  public:
   using nsIConstraintValidation::GetValidationMessage;
+  using ValueSetterOption = TextControlState::ValueSetterOption;
+  using ValueSetterOptions = TextControlState::ValueSetterOptions;
 
   explicit HTMLTextAreaElement(
       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -52,9 +54,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   virtual int32_t TabIndexDefault() override;
 
   // Element
-  virtual bool IsInteractiveHTMLContent(bool aIgnoreTabindex) const override {
-    return true;
-  }
+  virtual bool IsInteractiveHTMLContent() const override { return true; }
 
   // nsIFormControl
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
@@ -256,7 +256,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   // via bindings.
   void SetCustomValidity(const nsAString& aError);
 
-  void Select();
+  MOZ_CAN_RUN_SCRIPT void Select();
   Nullable<uint32_t> GetSelectionStart(ErrorResult& aError);
   MOZ_CAN_RUN_SCRIPT void SetSelectionStart(
       const Nullable<uint32_t>& aSelectionStart, ErrorResult& aError);
@@ -273,10 +273,7 @@ class HTMLTextAreaElement final : public TextControlElement,
   // XPCOM adapter function widely used throughout code, leaving it as is.
   nsresult GetControllers(nsIControllers** aResult);
 
-  MOZ_CAN_RUN_SCRIPT nsIEditor* GetEditor() {
-    MOZ_ASSERT(mState);
-    return mState->GetTextEditor();
-  }
+  MOZ_CAN_RUN_SCRIPT nsIEditor* GetEditorForBindings();
   bool HasEditor() {
     MOZ_ASSERT(mState);
     return !!mState->GetTextEditorWithoutCreation();
@@ -340,10 +337,10 @@ class HTMLTextAreaElement final : public TextControlElement,
    * Setting the value.
    *
    * @param aValue      String to set.
-   * @param aFlags      See TextControlState::SetValueFlags.
+   * @param aOptions    See TextControlState::ValueSetterOption.
    */
-  MOZ_CAN_RUN_SCRIPT
-  nsresult SetValueInternal(const nsAString& aValue, uint32_t aFlags);
+  MOZ_CAN_RUN_SCRIPT nsresult
+  SetValueInternal(const nsAString& aValue, const ValueSetterOptions& aOptions);
 
   /**
    * Common method to call from the various mutation observer methods.

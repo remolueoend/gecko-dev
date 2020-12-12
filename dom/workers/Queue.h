@@ -7,8 +7,6 @@
 #ifndef mozilla_dom_workerinternal_Queue_h
 #define mozilla_dom_workerinternal_Queue_h
 
-#include "mozilla/dom/WorkerCommon.h"
-
 #include "mozilla/Mutex.h"
 #include "nsTArray.h"
 
@@ -37,8 +35,8 @@ struct StorageWithTArray {
     return !!aStorage.IsEmpty();
   }
 
-  static bool Push(StorageType& aStorage, const T& aEntry) {
-    return !!aStorage.AppendElement(aEntry);
+  static void Push(StorageType& aStorage, const T& aEntry) {
+    aStorage.AppendElement(aEntry);
   }
 
   static bool Pop(StorageType& aStorage, T& aEntry) {
@@ -46,9 +44,7 @@ struct StorageWithTArray {
       return false;
     }
 
-    uint32_t index = aStorage.Length() - 1;
-    aEntry = aStorage.ElementAt(index);
-    aStorage.RemoveElementAt(index);
+    aEntry = aStorage.PopLastElement();
     return true;
   }
 
@@ -114,9 +110,9 @@ class Queue : public LockingPolicy {
     return StoragePolicy::IsEmpty(*mFront) && StoragePolicy::IsEmpty(*mBack);
   }
 
-  bool Push(const T& aEntry) {
+  void Push(const T& aEntry) {
     AutoLock lock(*this);
-    return StoragePolicy::Push(*mBack, aEntry);
+    StoragePolicy::Push(*mBack, aEntry);
   }
 
   bool Pop(T& aEntry) {

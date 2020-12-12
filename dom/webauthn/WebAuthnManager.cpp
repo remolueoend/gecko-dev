@@ -9,7 +9,10 @@
 #include "nsIURIMutator.h"
 #include "nsThreadUtils.h"
 #include "WebAuthnCoseIdentifiers.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/dom/AuthenticatorAssertionResponse.h"
 #include "mozilla/dom/AuthenticatorAttestationResponse.h"
+#include "mozilla/dom/PublicKeyCredential.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PWebAuthnTransaction.h"
 #include "mozilla/dom/WebAuthnManager.h"
@@ -17,6 +20,7 @@
 #include "mozilla/dom/WebAuthnUtil.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/PBackgroundChild.h"
+#include "authenticator/src/u2fhid-capi.h"
 
 #ifdef OS_WIN
 #  include "WinWebAuthnManager.h"
@@ -39,15 +43,17 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(WebAuthnManager,
                                                WebAuthnManagerBase)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WebAuthnManager)
+
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WebAuthnManager,
                                                 WebAuthnManagerBase)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mFollowingSignal)
+  AbortFollower::Unlink(static_cast<AbortFollower*>(tmp));
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mTransaction)
   tmp->mTransaction.reset();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WebAuthnManager,
                                                   WebAuthnManagerBase)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFollowingSignal)
+  AbortFollower::Traverse(static_cast<AbortFollower*>(tmp), cb);
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTransaction)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
@@ -110,7 +116,8 @@ nsresult GetOrigin(nsPIDOMWindowInner* aParent,
   }
 
   nsCOMPtr<nsIURI> originUri;
-  if (NS_FAILED(principal->GetURI(getter_AddRefs(originUri)))) {
+  auto* basePrin = BasePrincipal::Cast(principal);
+  if (NS_FAILED(basePrin->GetURI(getter_AddRefs(originUri)))) {
     return NS_ERROR_FAILURE;
   }
   if (NS_FAILED(originUri->GetAsciiHost(aHost))) {
@@ -128,8 +135,10 @@ nsresult RelaxSameOrigin(nsPIDOMWindowInner* aParent,
   MOZ_ASSERT(doc);
 
   nsCOMPtr<nsIPrincipal> principal = doc->NodePrincipal();
+  auto* basePrin = BasePrincipal::Cast(principal);
   nsCOMPtr<nsIURI> uri;
-  if (NS_FAILED(principal->GetURI(getter_AddRefs(uri)))) {
+
+  if (NS_FAILED(basePrin->GetURI(getter_AddRefs(uri)))) {
     return NS_ERROR_FAILURE;
   }
   nsAutoCString originHost;
@@ -342,8 +351,7 @@ already_AddRefed<Promise> WebAuthnManager::MakeCredential(
   }
 
   nsAutoCString clientDataJSON;
-  nsresult srv = AssembleClientData(origin, challenge,
-                                    NS_LITERAL_STRING("webauthn.create"),
+  nsresult srv = AssembleClientData(origin, challenge, u"webauthn.create"_ns,
                                     aOptions.mExtensions, clientDataJSON);
   if (NS_WARN_IF(NS_FAILED(srv))) {
     promise->MaybeReject(NS_ERROR_DOM_SECURITY_ERR);
@@ -408,9 +416,15 @@ already_AddRefed<Promise> WebAuthnManager::MakeCredential(
   WebAuthnMakeCredentialExtraInfo extra(rpInfo, userInfo, coseAlgos, extensions,
                                         authSelection, attestation);
 
-  WebAuthnMakeCredentialInfo info(origin, NS_ConvertUTF8toUTF16(rpId),
-                                  challenge, clientDataJSON, adjustedTimeout,
-                                  excludeList, Some(extra));
+  BrowsingContext* context = mParent->GetBrowsingContext();
+  if (!context) {
+    promise->MaybeReject(NS_ERROR_DOM_OPERATION_ERR);
+    return promise.forget();
+  }
+
+  WebAuthnMakeCredentialInfo info(
+      origin, NS_ConvertUTF8toUTF16(rpId), challenge, clientDataJSON,
+      adjustedTimeout, excludeList, Some(extra), context->Top()->Id());
 
 #ifdef OS_WIN
   if (!WinWebAuthnManager::AreWebAuthNApisAvailable()) {
@@ -517,9 +531,8 @@ already_AddRefed<Promise> WebAuthnManager::GetAssertion(
   }
 
   nsAutoCString clientDataJSON;
-  nsresult srv =
-      AssembleClientData(origin, challenge, NS_LITERAL_STRING("webauthn.get"),
-                         aOptions.mExtensions, clientDataJSON);
+  nsresult srv = AssembleClientData(origin, challenge, u"webauthn.get"_ns,
+                                    aOptions.mExtensions, clientDataJSON);
   if (NS_WARN_IF(NS_FAILED(srv))) {
     promise->MaybeReject(NS_ERROR_DOM_SECURITY_ERR);
     return promise.forget();
@@ -609,9 +622,15 @@ already_AddRefed<Promise> WebAuthnManager::GetAssertion(
 
   WebAuthnGetAssertionExtraInfo extra(extensions, aOptions.mUserVerification);
 
+  BrowsingContext* context = mParent->GetBrowsingContext();
+  if (!context) {
+    promise->MaybeReject(NS_ERROR_DOM_OPERATION_ERR);
+    return promise.forget();
+  }
+
   WebAuthnGetAssertionInfo info(origin, NS_ConvertUTF8toUTF16(rpId), challenge,
                                 clientDataJSON, adjustedTimeout, allowList,
-                                Some(extra));
+                                Some(extra), context->Top()->Id());
 
 #ifdef OS_WIN
   if (!WinWebAuthnManager::AreWebAuthNApisAvailable()) {
@@ -709,7 +728,7 @@ void WebAuthnManager::FinishMakeCredential(
 
   RefPtr<PublicKeyCredential> credential = new PublicKeyCredential(mParent);
   credential->SetId(keyHandleBase64Url);
-  credential->SetType(NS_LITERAL_STRING("public-key"));
+  credential->SetType(u"public-key"_ns);
   credential->SetRawId(keyHandleBuf);
   credential->SetResponse(attestation);
 
@@ -788,7 +807,7 @@ void WebAuthnManager::FinishGetAssertion(
 
   RefPtr<PublicKeyCredential> credential = new PublicKeyCredential(mParent);
   credential->SetId(credentialBase64Url);
-  credential->SetType(NS_LITERAL_STRING("public-key"));
+  credential->SetType(u"public-key"_ns);
   credential->SetRawId(credentialBuf);
   credential->SetResponse(assertion);
 
@@ -813,7 +832,9 @@ void WebAuthnManager::RequestAborted(const uint64_t& aTransactionId,
   }
 }
 
-void WebAuthnManager::Abort() { CancelTransaction(NS_ERROR_DOM_ABORT_ERR); }
+void WebAuthnManager::RunAbortAlgorithm() {
+  CancelTransaction(NS_ERROR_DOM_ABORT_ERR);
+}
 
 }  // namespace dom
 }  // namespace mozilla

@@ -34,6 +34,7 @@ var _tests_pending = 0;
 var _cleanupFunctions = [];
 var _pendingTimers = [];
 var _profileInitialized = false;
+var _fastShutdownDisabled = false;
 
 // Assigned in do_load_child_test_harness.
 var _XPCSHELL_PROCESS;
@@ -43,6 +44,11 @@ var _XPCSHELL_PROCESS;
 var _Services = ChromeUtils.import("resource://gre/modules/Services.jsm", null)
   .Services;
 _register_modules_protocol_handler();
+
+var _AppConstants = ChromeUtils.import(
+  "resource://gre/modules/AppConstants.jsm",
+  null
+).AppConstants;
 
 var _PromiseTestUtils = ChromeUtils.import(
   "resource://testing-common/PromiseTestUtils.jsm",
@@ -114,19 +120,6 @@ if (runningInParent && "mozIAsyncHistory" in Ci) {
   // apps disable it.
   _Services.prefs.setBoolPref("places.history.enabled", true);
 }
-
-try {
-  if (runningInParent) {
-    // disable necko IPC security checks for xpcshell, as they lack the
-    // docshells needed to pass them
-    _Services.prefs.setBoolPref("network.disable.ipc.security", true);
-
-    // Disable IPv6 lookups for 'localhost' on windows.
-    if ("@mozilla.org/windows-registry-key;1" in Cc) {
-      _Services.prefs.setCharPref("network.dns.ipv4OnlyDomains", "localhost");
-    }
-  }
-} catch (e) {}
 
 // Configure crash reporting, if possible
 // We rely on the Python harness to set MOZ_CRASHREPORTER,
@@ -275,7 +268,7 @@ var _fakeIdleService = {
       Ci.nsIComponentRegistrar
     ));
   },
-  contractID: "@mozilla.org/widget/idleservice;1",
+  contractID: "@mozilla.org/widget/useridleservice;1",
   CID: Components.ID("{9163a4ae-70c2-446c-9ac1-bbe4ab93004e}"),
 
   activate: function FIS_activate() {
@@ -320,7 +313,7 @@ var _fakeIdleService = {
     QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
   },
 
-  // nsIIdleService
+  // nsIUserIdleService
   get idleTime() {
     return 0;
   },
@@ -333,7 +326,7 @@ var _fakeIdleService = {
     if (aIID.equals(Ci.nsIFactory)) {
       return this.factory;
     }
-    if (aIID.equals(Ci.nsIIdleService) || aIID.equals(Ci.nsISupports)) {
+    if (aIID.equals(Ci.nsIUserIdleService) || aIID.equals(Ci.nsISupports)) {
       return this;
     }
     throw Components.Exception("", Cr.NS_ERROR_NO_INTERFACE);
@@ -346,7 +339,7 @@ var _fakeIdleService = {
  */
 function do_get_idle() {
   _fakeIdleService.deactivate();
-  return Cc[_fakeIdleService.contractID].getService(Ci.nsIIdleService);
+  return Cc[_fakeIdleService.contractID].getService(Ci.nsIUserIdleService);
 }
 
 // Map resource://test/ to current working directory and
@@ -539,6 +532,8 @@ function _execute_test() {
     coverageCollector = new _CoverageCollector(_JSCOV_DIR);
   }
 
+  let startTime = Cu.now();
+
   // _HEAD_FILES is dynamically defined by <runxpcshelltests.py>.
   _load_files(_HEAD_FILES);
   // _TEST_FILE is dynamically defined by <runxpcshelltests.py>.
@@ -630,6 +625,7 @@ function _execute_test() {
   };
 
   let complete = _cleanupFunctions.length == 0;
+  let cleanupStartTime = complete ? 0 : Cu.now();
   (async () => {
     for (let func of _cleanupFunctions.reverse()) {
       try {
@@ -646,7 +642,15 @@ function _execute_test() {
     .catch(reportCleanupError)
     .then(() => (complete = true));
   _Services.tm.spinEventLoopUntil(() => complete);
+  if (cleanupStartTime) {
+    ChromeUtils.addProfilerMarker(
+      "xpcshell-test",
+      cleanupStartTime,
+      "Cleanup functions"
+    );
+  }
 
+  ChromeUtils.addProfilerMarker("xpcshell-test", startTime, _TEST_NAME);
   _Services.obs.notifyObservers(null, "test-complete");
 
   // Restore idle service to avoid leaks.
@@ -671,6 +675,28 @@ function _execute_test() {
     // It's important to terminate the module to avoid crashes on shutdown.
     _PromiseTestUtils.uninit();
   }
+
+  // Skip the normal shutdown path for optimized builds that don't do leak checking.
+  if (
+    runningInParent &&
+    !_AppConstants.RELEASE_OR_BETA &&
+    !_AppConstants.DEBUG &&
+    !_AppConstants.MOZ_CODE_COVERAGE &&
+    !_AppConstants.ASAN &&
+    !_AppConstants.TSAN
+  ) {
+    if (_fastShutdownDisabled) {
+      _testLogger.info("fast shutdown disabled by the test.");
+      return;
+    }
+
+    // Setting this pref is required for Cu.isInAutomation to return true.
+    _Services.prefs.setBoolPref(
+      "security.turn_off_all_security_so_that_viruses_can_take_over_this_computer",
+      true
+    );
+    Cu.exitIfInAutomation();
+  }
 }
 
 /**
@@ -681,7 +707,13 @@ function _execute_test() {
 function _load_files(aFiles) {
   function load_file(element, index, array) {
     try {
+      let startTime = Cu.now();
       load(element);
+      ChromeUtils.addProfilerMarker(
+        "xpcshell-test",
+        startTime,
+        "load " + element.replace(/.*\/_?tests\/xpcshell\//, "")
+      );
     } catch (e) {
       let extra = {
         source_file: element,
@@ -706,6 +738,7 @@ function _wrap_with_quotes_if_necessary(val) {
  * Prints a message to the output log.
  */
 function info(msg, data) {
+  ChromeUtils.addProfilerMarker("xpcshell-test", undefined, "INFO " + msg);
   msg = _wrap_with_quotes_if_necessary(msg);
   data = data ? data : null;
   _testLogger.info(msg, data);
@@ -1150,6 +1183,14 @@ function registerCleanupFunction(aFunction) {
 }
 
 /**
+ * Ensure the test finishes with a normal shutdown even when it could have
+ * otherwise used the fast Cu.exitIfInAutomation shutdown.
+ */
+function do_disable_fast_shutdown() {
+  _fastShutdownDisabled = true;
+}
+
+/**
  * Returns the directory for a temp dir, which is created by the
  * test harness. Every test gets its own temp dir.
  *
@@ -1414,6 +1455,18 @@ function do_send_remote_message(name, data) {
 }
 
 /**
+ * Schedules and awaits a precise GC, and forces CC, `maxCount` number of times.
+ * @param maxCount
+ *        How many times GC and CC should be scheduled.
+ */
+async function schedulePreciseGCAndForceCC(maxCount) {
+  for (let count = 0; count < maxCount; count++) {
+    await new Promise(resolve => Cu.schedulePreciseGC(resolve));
+    Cu.forceCC();
+  }
+}
+
+/**
  * Add a test function to the list of tests that are to be run asynchronously.
  *
  * @param funcOrProperties
@@ -1564,9 +1617,15 @@ function run_next_test() {
 
       if (_properties.isTask) {
         _gTaskRunning = true;
+        let startTime = Cu.now();
         (async () => _gRunningTest())().then(
           result => {
             _gTaskRunning = false;
+            ChromeUtils.addProfilerMarker(
+              "xpcshell-test",
+              startTime,
+              _gRunningTest.name || "task"
+            );
             if (_isGenerator(result)) {
               Assert.ok(false, "Task returned a generator");
             }
@@ -1574,6 +1633,11 @@ function run_next_test() {
           },
           ex => {
             _gTaskRunning = false;
+            ChromeUtils.addProfilerMarker(
+              "xpcshell-test",
+              startTime,
+              _gRunningTest.name || "task"
+            );
             try {
               do_report_unexpected_exception(ex);
             } catch (error) {
@@ -1584,10 +1648,17 @@ function run_next_test() {
         );
       } else {
         // Exceptions do not kill asynchronous tests, so they'll time out.
+        let startTime = Cu.now();
         try {
           _gRunningTest();
         } catch (e) {
           do_throw(e);
+        } finally {
+          ChromeUtils.addProfilerMarker(
+            "xpcshell-test",
+            startTime,
+            _gRunningTest.name || undefined
+          );
         }
       }
     }
@@ -1624,22 +1695,24 @@ try {
  * so we help out users by loading at least the dynamic-builtin probes.
  */
 try {
-  let _AppConstants = ChromeUtils.import(
-    "resource://gre/modules/AppConstants.jsm",
-    null
-  ).AppConstants;
-
   // We only need to run this in the parent process.
   // We only want to run this for local developer builds (which should have a "default" update channel).
   if (runningInParent && _AppConstants.MOZ_UPDATE_CHANNEL == "default") {
+    let startTime = Cu.now();
     let _TelemetryController = ChromeUtils.import(
       "resource://gre/modules/TelemetryController.jsm",
       null
     ).TelemetryController;
 
     let complete = false;
-    let doComplete = () => (complete = true);
-    _TelemetryController.testRegisterJsProbes().then(doComplete, doComplete);
+    _TelemetryController.testRegisterJsProbes().finally(() => {
+      ChromeUtils.addProfilerMarker(
+        "xpcshell-test",
+        startTime,
+        "TelemetryController.testRegisterJsProbes"
+      );
+      complete = true;
+    });
     _Services.tm.spinEventLoopUntil(() => complete);
   }
 } catch (e) {

@@ -8,6 +8,7 @@
 #define jit_BaselineFrameInfo_h
 
 #include "mozilla/Attributes.h"
+#include "mozilla/Maybe.h"
 
 #include <new>
 
@@ -21,6 +22,7 @@ namespace js {
 namespace jit {
 
 struct BytecodeInfo;
+class MacroAssembler;
 
 // [SMDOC] Baseline FrameInfo overview.
 //
@@ -196,6 +198,9 @@ class FrameInfo {
     return Address(BaselineFrameReg,
                    BaselineFrame::reverseOffsetOfEnvironmentChain());
   }
+  Address addressOfICScript() const {
+    return Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfICScript());
+  }
   Address addressOfFlags() const {
     return Address(BaselineFrameReg, BaselineFrame::reverseOffsetOfFlags());
   }
@@ -340,6 +345,14 @@ class CompilerFrameInfo : public FrameInfo {
     return peek(depth)->hasKnownType(type);
   }
 
+  mozilla::Maybe<Value> knownStackValue(int32_t depth) const {
+    StackValue* val = peek(depth);
+    if (val->kind() == StackValue::Constant) {
+      return mozilla::Some(val->constant());
+    }
+    return mozilla::Nothing();
+  }
+
   void storeStackValue(int32_t depth, const Address& dest,
                        const ValueOperand& scratch);
 
@@ -370,6 +383,10 @@ class InterpreterFrameInfo : public FrameInfo {
 
   bool stackValueHasKnownType(int32_t depth, JSValueType type) const {
     return false;
+  }
+
+  mozilla::Maybe<Value> knownStackValue(int32_t depth) const {
+    return mozilla::Nothing();
   }
 
   Address addressOfStackValue(int depth) const {

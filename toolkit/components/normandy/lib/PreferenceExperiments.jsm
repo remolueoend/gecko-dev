@@ -92,7 +92,6 @@ ChromeUtils.defineModuleGetter(
   "JSONFile",
   "resource://gre/modules/JSONFile.jsm"
 );
-ChromeUtils.defineModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
 ChromeUtils.defineModuleGetter(
   this,
   "LogManager",
@@ -148,7 +147,10 @@ const PreferenceBranchType = {
 let gStorePromise;
 function ensureStorage() {
   if (gStorePromise === undefined) {
-    const path = OS.Path.join(OS.Constants.Path.profileDir, EXPERIMENT_FILE);
+    const path = PathUtils.join(
+      Services.dirsvc.get("ProfD", Ci.nsIFile).path,
+      EXPERIMENT_FILE
+    );
     const storage = new JSONFile({ path });
     gStorePromise = storage.load().then(() => {
       return storage;
@@ -248,7 +250,7 @@ var PreferenceExperiments = {
    * default preference branch.
    */
   async init() {
-    CleanupManager.addCleanupHandler(this.saveStartupPrefs.bind(this));
+    CleanupManager.addCleanupHandler(() => this.saveStartupPrefs());
 
     for (const experiment of await this.getAllActive()) {
       // Check that the current value of the preference is still what we set it to
@@ -267,6 +269,7 @@ var PreferenceExperiments = {
           await this.stop(experiment.slug, {
             resetValue: false,
             reason: "user-preference-changed-sideload",
+            changedPref: prefName,
           });
           stopped = true;
           break;
@@ -609,6 +612,7 @@ var PreferenceExperiments = {
           PreferenceExperiments.stop(experimentSlug, {
             resetValue: false,
             reason: "user-preference-changed",
+            changedPref: preferenceName,
           }).catch(Cu.reportError);
         }
       },
@@ -700,7 +704,10 @@ var PreferenceExperiments = {
    *   If there is no stored experiment with the given slug, or if the
    *   experiment has already expired.
    */
-  async stop(experimentSlug, { resetValue = true, reason = "unknown" } = {}) {
+  async stop(
+    experimentSlug,
+    { resetValue = true, reason = "unknown", changedPref } = {}
+  ) {
     log.debug(
       `PreferenceExperiments.stop(${experimentSlug}, {resetValue: ${resetValue}, reason: ${reason}})`
     );
@@ -714,7 +721,11 @@ var PreferenceExperiments = {
         "unenrollFailed",
         "preference_study",
         experimentSlug,
-        { reason: "does-not-exist" }
+        {
+          reason: "does-not-exist",
+
+          ...(changedPref ? { changedPref } : {}),
+        }
       );
       throw new Error(
         `Could not find a preference experiment with the slug "${experimentSlug}"`
@@ -731,6 +742,7 @@ var PreferenceExperiments = {
           reason: "already-unenrolled",
           enrollmentId:
             experiment.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+          ...(changedPref ? { changedPref } : {}),
         }
       );
       throw new Error(
@@ -788,6 +800,7 @@ var PreferenceExperiments = {
       reason,
       enrollmentId:
         experiment.enrollmentId || TelemetryEvents.NO_ENROLLMENT_ID_MARKER,
+      ...(changedPref ? { changedPref } : {}),
     });
     await this.saveStartupPrefs();
     Services.obs.notifyObservers(

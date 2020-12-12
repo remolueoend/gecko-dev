@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef __NS_SVGELEMENT_H__
-#define __NS_SVGELEMENT_H__
+#ifndef DOM_SVG_SVGELEMENT_H_
+#define DOM_SVG_SVGELEMENT_H_
 
 /*
   SVGElement is the base class for all SVG content elements.
@@ -14,18 +14,27 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/SVGAnimatedClass.h"
 #include "mozilla/SVGContentUtils.h"
 #include "mozilla/dom/DOMRect.h"
 #include "mozilla/dom/Element.h"
-#include "mozilla/dom/SVGAnimatedClass.h"
 #include "mozilla/gfx/MatrixFwd.h"
 #include "mozilla/UniquePtr.h"
+#include "nsCSSPropertyID.h"
 #include "nsChangeHint.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsError.h"
 #include "nsISupportsImpl.h"
 #include "nsStyledElement.h"
 #include "gfxMatrix.h"
+
+// {70db954d-e452-4be3-83aa-f54a51cf7890}
+#define MOZILLA_SVGELEMENT_IID                       \
+  {                                                  \
+    0x70db954d, 0xe452, 0x4be3, {                    \
+      0x82, 0xaa, 0xf5, 0x4a, 0x51, 0xcf, 0x78, 0x90 \
+    }                                                \
+  }
 
 nsresult NS_NewSVGElement(mozilla::dom::Element** aResult,
                           already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
@@ -62,7 +71,7 @@ class DOMSVGStringList;
 class SVGSVGElement;
 class SVGViewportElement;
 
-typedef nsStyledElement SVGElementBase;
+using SVGElementBase = nsStyledElement;
 
 class SVGElement : public SVGElementBase  // nsIContent
 {
@@ -81,10 +90,13 @@ class SVGElement : public SVGElementBase  // nsIContent
   // From Element
   nsresult CopyInnerTo(mozilla::dom::Element* aDest);
 
+  NS_DECLARE_STATIC_IID_ACCESSOR(MOZILLA_SVGELEMENT_IID)
   // nsISupports
   NS_INLINE_DECL_REFCOUNTING_INHERITED(SVGElement, SVGElementBase)
 
   NS_DECL_ADDSIZEOFEXCLUDINGTHIS
+
+  NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr) override;
 
   void DidAnimateClass();
 
@@ -165,7 +177,7 @@ class SVGElement : public SVGElementBase  // nsIContent
       SVGTransformTypes aWhich = eAllTransforms) const;
 
   // Setter for to set the current <animateMotion> transformation
-  // Only visible for nsSVGGraphicElement, so it's a no-op here, and that
+  // Only visible for SVGGraphicElement, so it's a no-op here, and that
   // subclass has the useful implementation.
   virtual void SetAnimateMotionTransform(
       const mozilla::gfx::Matrix* aMatrix) { /*no-op*/
@@ -271,6 +283,7 @@ class SVGElement : public SVGElementBase  // nsIContent
     DO_ALLOCATE = 0x1
   };
 
+  SVGAnimatedLength* GetAnimatedLength(uint8_t aAttrEnum);
   SVGAnimatedLength* GetAnimatedLength(const nsAtom* aAttrName);
   void GetAnimatedLengthValues(float* aFirst, ...);
   void GetAnimatedNumberValues(float* aFirst, ...);
@@ -281,7 +294,7 @@ class SVGElement : public SVGElementBase  // nsIContent
   SVGAnimatedLengthList* GetAnimatedLengthList(uint8_t aAttrEnum);
   virtual SVGAnimatedPointList* GetAnimatedPointList() { return nullptr; }
   virtual SVGAnimatedPathSegList* GetAnimPathSegList() {
-    // DOM interface 'SVGAnimatedPathData' (*inherited* by nsSVGPathElement)
+    // DOM interface 'SVGAnimatedPathData' (*inherited* by SVGPathElement)
     // has a member called 'animatedPathSegList' member, so we have a shorter
     // name so we don't get hidden by the GetAnimatedPathSegList declared by
     // NS_DECL_NSIDOMSVGANIMATEDPATHDATA.
@@ -368,7 +381,7 @@ class SVGElement : public SVGElementBase  // nsIContent
                       const mozAutoDocUpdate& aProofOfUpdate);
   void MaybeSerializeAttrBeforeRemoval(nsAtom* aName, bool aNotify);
 
-  static nsAtom* GetEventNameForAttr(nsAtom* aAttr);
+  nsAtom* GetEventNameForAttr(nsAtom* aAttr);
 
   struct LengthInfo {
     nsStaticAtom* const mName;
@@ -628,6 +641,8 @@ class SVGElement : public SVGElementBase  // nsIContent
   RefPtr<mozilla::DeclarationBlock> mContentDeclarationBlock;
 };
 
+NS_DEFINE_STATIC_IID_ACCESSOR(SVGElement, MOZILLA_SVGELEMENT_IID)
+
 /**
  * A macro to implement the NS_NewSVGXXXElement() functions.
  */
@@ -697,4 +712,4 @@ class SVGElement : public SVGElementBase  // nsIContent
 }  // namespace dom
 }  // namespace mozilla
 
-#endif  // __NS_SVGELEMENT_H__
+#endif  // DOM_SVG_SVGELEMENT_H_

@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 use serde::ser::SerializeMap;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -27,6 +31,8 @@ pub struct Cookie {
     pub http_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiry: Option<Date>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "sameSite")]
+    pub same_site: Option<String>,
 }
 
 pub fn to_cookie<T, S>(data: T, serializer: S) -> Result<S::Ok, S::Error>
@@ -177,6 +183,7 @@ mod tests {
             secure: false,
             http_only: false,
             expiry: None,
+            same_site: None,
         };
         assert_de(&data, json!({"name":"hello", "value":"world"}));
     }

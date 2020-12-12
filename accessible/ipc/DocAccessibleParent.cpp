@@ -11,7 +11,7 @@
 #include "xpcAccessibleDocument.h"
 #include "xpcAccEvents.h"
 #include "nsAccUtils.h"
-#include "nsCoreUtils.h"
+#include "TextRange.h"
 
 #if defined(XP_WIN)
 #  include "AccessibleWrap.h"
@@ -289,7 +289,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
 #if defined(XP_WIN)
     const LayoutDeviceIntRect& aCaretRect,
 #endif  // defined (XP_WIN)
-    const int32_t& aOffset) {
+    const int32_t& aOffset, const bool& aIsSelectionCollapsed) {
   if (mShutdown) {
     return IPC_OK();
   }
@@ -303,7 +303,7 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
 #if defined(XP_WIN)
   ProxyCaretMoveEvent(proxy, aCaretRect);
 #else
-  ProxyCaretMoveEvent(proxy, aOffset);
+  ProxyCaretMoveEvent(proxy, aOffset, aIsSelectionCollapsed);
 #endif
 
   if (!nsCoreUtils::AccEventObserversExist()) {
@@ -315,8 +315,8 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvCaretMoveEvent(
   nsINode* node = nullptr;
   bool fromUser = true;  // XXX fix me
   uint32_t type = nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED;
-  RefPtr<xpcAccCaretMoveEvent> event =
-      new xpcAccCaretMoveEvent(type, xpcAcc, doc, node, fromUser, aOffset);
+  RefPtr<xpcAccCaretMoveEvent> event = new xpcAccCaretMoveEvent(
+      type, xpcAcc, doc, node, fromUser, aOffset, aIsSelectionCollapsed);
   nsCoreUtils::DispatchAccEvent(std::move(event));
 
   return IPC_OK();
@@ -395,6 +395,10 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvVirtualCursorChangeEvent(
     const uint64_t& aNewPositionID, const int32_t& aNewStartOffset,
     const int32_t& aNewEndOffset, const int16_t& aReason,
     const int16_t& aBoundaryType, const bool& aFromUser) {
+  if (mShutdown) {
+    return IPC_OK();
+  }
+
   ProxyAccessible* target = GetAccessible(aID);
   ProxyAccessible* oldPosition = GetAccessible(aOldPositionID);
   ProxyAccessible* newPosition = GetAccessible(aNewPositionID);
@@ -431,8 +435,11 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvScrollingEvent(
     const uint64_t& aID, const uint64_t& aType, const uint32_t& aScrollX,
     const uint32_t& aScrollY, const uint32_t& aMaxScrollX,
     const uint32_t& aMaxScrollY) {
-  ProxyAccessible* target = GetAccessible(aID);
+  if (mShutdown) {
+    return IPC_OK();
+  }
 
+  ProxyAccessible* target = GetAccessible(aID);
   if (!target) {
     NS_ERROR("no proxy for event!");
     return IPC_OK();
@@ -465,8 +472,11 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvScrollingEvent(
 mozilla::ipc::IPCResult DocAccessibleParent::RecvAnnouncementEvent(
     const uint64_t& aID, const nsString& aAnnouncement,
     const uint16_t& aPriority) {
-  ProxyAccessible* target = GetAccessible(aID);
+  if (mShutdown) {
+    return IPC_OK();
+  }
 
+  ProxyAccessible* target = GetAccessible(aID);
   if (!target) {
     NS_ERROR("no proxy for event!");
     return IPC_OK();
@@ -489,6 +499,28 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvAnnouncementEvent(
 
   return IPC_OK();
 }
+
+mozilla::ipc::IPCResult DocAccessibleParent::RecvTextSelectionChangeEvent(
+    const uint64_t& aID, nsTArray<TextRangeData>&& aSelection) {
+#  ifdef MOZ_WIDGET_COCOA
+  if (mShutdown) {
+    return IPC_OK();
+  }
+
+  ProxyAccessible* target = GetAccessible(aID);
+  if (!target) {
+    NS_ERROR("no proxy for event!");
+    return IPC_OK();
+  }
+
+  ProxyTextSelectionChangeEvent(target, aSelection);
+
+  return IPC_OK();
+#  else
+  return RecvEvent(aID, nsIAccessibleEvent::EVENT_TEXT_SELECTION_CHANGED);
+#  endif
+}
+
 #endif
 
 mozilla::ipc::IPCResult DocAccessibleParent::RecvRoleChangedEvent(
@@ -498,6 +530,11 @@ mozilla::ipc::IPCResult DocAccessibleParent::RecvRoleChangedEvent(
   }
 
   mRole = aRole;
+
+#ifdef MOZ_WIDGET_COCOA
+  ProxyRoleChangedEvent(this, aRole);
+#endif
+
   return IPC_OK();
 }
 
@@ -604,7 +641,7 @@ ipc::IPCResult DocAccessibleParent::AddChildDoc(DocAccessibleParent* aChildDoc,
       IDispatchHolder docHolder(std::move(docPtr));
       if (bridge->SendSetEmbeddedDocAccessibleCOMProxy(docHolder)) {
 #  if defined(MOZ_SANDBOX)
-        mDocProxyStream = docHolder.GetPreservedStream();
+        aChildDoc->mDocProxyStream = docHolder.GetPreservedStream();
 #  endif  // defined(MOZ_SANDBOX)
       }
       // Send a COM proxy for the embedder OuterDocAccessible to the embedded

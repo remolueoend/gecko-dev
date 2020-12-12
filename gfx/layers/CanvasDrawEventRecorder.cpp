@@ -66,10 +66,16 @@ bool CanvasEventRingBuffer::InitWriter(
       CrossProcessSemaphore::Create("SharedMemoryStreamParent", 0));
   *aReaderSem = mReaderSemaphore->ShareToProcess(aOtherPid);
   mReaderSemaphore->CloseHandle();
+  if (!IsHandleValid(*aReaderSem)) {
+    return false;
+  }
   mWriterSemaphore.reset(
       CrossProcessSemaphore::Create("SharedMemoryStreamChild", 0));
   *aWriterSem = mWriterSemaphore->ShareToProcess(aOtherPid);
   mWriterSemaphore->CloseHandle();
+  if (!IsHandleValid(*aWriterSem)) {
+    return false;
+  }
 
   mWriterServices = std::move(aWriterServices);
 
@@ -114,7 +120,6 @@ bool CanvasEventRingBuffer::WaitForAndRecalculateAvailableSpace() {
   uint32_t maxToWrite = kStreamSize - bufPos;
   mAvailable = std::min(maxToWrite, WaitForBytesToWrite());
   if (!mAvailable) {
-    mGood = false;
     mBufPos = nullptr;
     return false;
   }
@@ -175,7 +180,7 @@ bool CanvasEventRingBuffer::WaitForAndRecalculateAvailableData() {
   uint32_t maxToRead = kStreamSize - bufPos;
   mAvailable = std::min(maxToRead, WaitForBytesToRead());
   if (!mAvailable) {
-    mGood = false;
+    SetIsBad();
     mBufPos = nullptr;
     return false;
   }
@@ -231,6 +236,7 @@ void CanvasEventRingBuffer::CheckAndSignalReader() {
   do {
     switch (mRead->state) {
       case State::Processing:
+      case State::Failed:
         return;
       case State::AboutToWait:
         // The reader is making a decision about whether to wait. So, we must
@@ -330,7 +336,7 @@ bool CanvasEventRingBuffer::WaitForDataToRead(TimeDuration aTimeout,
 int32_t CanvasEventRingBuffer::ReadNextEvent() {
   int32_t nextEvent;
   ReadElement(*this, nextEvent);
-  while (nextEvent == kCheckpointEventType) {
+  while (nextEvent == kCheckpointEventType && good()) {
     ReadElement(*this, nextEvent);
   }
 
@@ -394,20 +400,23 @@ bool CanvasEventRingBuffer::WaitForReadCount(uint32_t aReadCount,
   mWrite->state = State::Waiting;
 
   // Wait unless we detect the reading side has closed.
-  while (!mWriterServices->ReaderClosed()) {
+  while (!mWriterServices->ReaderClosed() && mRead->state != State::Failed) {
     if (mWriterSemaphore->Wait(Some(aTimeout))) {
       MOZ_ASSERT(mOurCount - mRead->count <= requiredDifference);
       return true;
     }
   }
 
+  // Either the reader has failed or we're stopping writing for some other
+  // reason (e.g. shutdown), so mark us as failed so the reader is aware.
+  mWrite->state = State::Failed;
+  mGood = false;
   return false;
 }
 
 uint32_t CanvasEventRingBuffer::WaitForBytesToWrite() {
   uint32_t streamFullReadCount = mOurCount - kStreamSize;
   if (!WaitForReadCount(streamFullReadCount + 1, kTimeout)) {
-    mGood = false;
     return 0;
   }
 
@@ -491,8 +500,7 @@ void CanvasEventRingBuffer::ReturnRead(char* aOut, size_t aSize) {
   mWrite->returnCount = readCount;
 }
 
-void CanvasDrawEventRecorder::RecordSourceSurfaceDestruction(
-    gfx::SourceSurface* aSurface) {
+void CanvasDrawEventRecorder::RecordSourceSurfaceDestruction(void* aSurface) {
   // We must only record things on the main thread and surfaces that have been
   // recorded can sometimes be destroyed off the main thread.
   if (NS_IsMainThread()) {
@@ -500,7 +508,7 @@ void CanvasDrawEventRecorder::RecordSourceSurfaceDestruction(
     return;
   }
 
-  NS_DispatchToMainThread(NewRunnableMethod<gfx::SourceSurface*>(
+  NS_DispatchToMainThread(NewRunnableMethod<void*>(
       "DrawEventRecorderPrivate::RecordSourceSurfaceDestruction", this,
       &DrawEventRecorderPrivate::RecordSourceSurfaceDestruction, aSurface));
 }

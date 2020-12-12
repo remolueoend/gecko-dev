@@ -12,6 +12,7 @@
 #include "mozilla/EditorBase.h"            // for EditorBase, etc.
 #include "mozilla/EventListenerManager.h"  // for EventListenerManager
 #include "mozilla/EventStateManager.h"     // for EventStateManager
+#include "mozilla/HTMLEditor.h"            // for HTMLEditor
 #include "mozilla/IMEStateManager.h"       // for IMEStateManager
 #include "mozilla/Preferences.h"           // for Preferences
 #include "mozilla/PresShell.h"             // for PresShell
@@ -150,47 +151,45 @@ nsresult EditorEventListener::InstallToEditor() {
 
 #ifdef HANDLE_NATIVE_TEXT_DIRECTION_SWITCH
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("keydown"), TrustedEventsAtSystemGroupBubble());
+      this, u"keydown"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("keyup"), TrustedEventsAtSystemGroupBubble());
+      this, u"keyup"_ns, TrustedEventsAtSystemGroupBubble());
 #endif
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("keypress"), TrustedEventsAtSystemGroupBubble());
+      this, u"keypress"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("dragenter"), TrustedEventsAtSystemGroupBubble());
+      this, u"dragenter"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("dragover"), TrustedEventsAtSystemGroupBubble());
+      this, u"dragover"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("dragexit"), TrustedEventsAtSystemGroupBubble());
+      this, u"dragexit"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("drop"), TrustedEventsAtSystemGroupBubble());
+      this, u"drop"_ns, TrustedEventsAtSystemGroupBubble());
   // XXX We should add the mouse event listeners as system event group.
   //     E.g., web applications cannot prevent middle mouse paste by
   //     preventDefault() of click event at bubble phase.
   //     However, if we do so, all click handlers in any frames and frontend
   //     code need to check if it's editable.  It makes easier create new bugs.
-  eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("mousedown"), TrustedEventsAtCapture());
-  eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("mouseup"), TrustedEventsAtCapture());
-  eventListenerManager->AddEventListenerByType(this, NS_LITERAL_STRING("click"),
+  eventListenerManager->AddEventListenerByType(this, u"mousedown"_ns,
+                                               TrustedEventsAtCapture());
+  eventListenerManager->AddEventListenerByType(this, u"mouseup"_ns,
+                                               TrustedEventsAtCapture());
+  eventListenerManager->AddEventListenerByType(this, u"click"_ns,
                                                TrustedEventsAtCapture());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("auxclick"), TrustedEventsAtSystemGroupCapture());
+      this, u"auxclick"_ns, TrustedEventsAtSystemGroupCapture());
   // Focus event doesn't bubble so adding the listener to capturing phase as
   // system event group.
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("blur"), TrustedEventsAtSystemGroupCapture());
+      this, u"blur"_ns, TrustedEventsAtSystemGroupCapture());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("focus"), TrustedEventsAtSystemGroupCapture());
+      this, u"focus"_ns, TrustedEventsAtSystemGroupCapture());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("text"), TrustedEventsAtSystemGroupBubble());
+      this, u"text"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("compositionstart"),
-      TrustedEventsAtSystemGroupBubble());
+      this, u"compositionstart"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->AddEventListenerByType(
-      this, NS_LITERAL_STRING("compositionend"),
-      TrustedEventsAtSystemGroupBubble());
+      this, u"compositionend"_ns, TrustedEventsAtSystemGroupBubble());
 
   return NS_OK;
 }
@@ -235,40 +234,38 @@ void EditorEventListener::UninstallFromEditor() {
 
 #ifdef HANDLE_NATIVE_TEXT_DIRECTION_SWITCH
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("keydown"), TrustedEventsAtSystemGroupBubble());
+      this, u"keydown"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("keyup"), TrustedEventsAtSystemGroupBubble());
+      this, u"keyup"_ns, TrustedEventsAtSystemGroupBubble());
 #endif
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("keypress"), TrustedEventsAtSystemGroupBubble());
+      this, u"keypress"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("dragenter"), TrustedEventsAtSystemGroupBubble());
+      this, u"dragenter"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("dragover"), TrustedEventsAtSystemGroupBubble());
+      this, u"dragover"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("dragexit"), TrustedEventsAtSystemGroupBubble());
+      this, u"dragexit"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("drop"), TrustedEventsAtSystemGroupBubble());
+      this, u"drop"_ns, TrustedEventsAtSystemGroupBubble());
+  eventListenerManager->RemoveEventListenerByType(this, u"mousedown"_ns,
+                                                  TrustedEventsAtCapture());
+  eventListenerManager->RemoveEventListenerByType(this, u"mouseup"_ns,
+                                                  TrustedEventsAtCapture());
+  eventListenerManager->RemoveEventListenerByType(this, u"click"_ns,
+                                                  TrustedEventsAtCapture());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("mousedown"), TrustedEventsAtCapture());
+      this, u"auxclick"_ns, TrustedEventsAtSystemGroupCapture());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("mouseup"), TrustedEventsAtCapture());
+      this, u"blur"_ns, TrustedEventsAtSystemGroupCapture());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("click"), TrustedEventsAtCapture());
+      this, u"focus"_ns, TrustedEventsAtSystemGroupCapture());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("auxclick"), TrustedEventsAtSystemGroupCapture());
+      this, u"text"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("blur"), TrustedEventsAtSystemGroupCapture());
+      this, u"compositionstart"_ns, TrustedEventsAtSystemGroupBubble());
   eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("focus"), TrustedEventsAtSystemGroupCapture());
-  eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("text"), TrustedEventsAtSystemGroupBubble());
-  eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("compositionstart"),
-      TrustedEventsAtSystemGroupBubble());
-  eventListenerManager->RemoveEventListenerByType(
-      this, NS_LITERAL_STRING("compositionend"),
-      TrustedEventsAtSystemGroupBubble());
+      this, u"compositionend"_ns, TrustedEventsAtSystemGroupBubble());
 }
 
 PresShell* EditorEventListener::GetPresShell() const {
@@ -444,7 +441,7 @@ NS_IMETHODIMP EditorEventListener::HandleEvent(Event* aEvent) {
     case eMouseClick: {
       WidgetMouseEvent* widgetMouseEvent = internalEvent->AsMouseEvent();
       // Don't handle non-primary click events
-      if (widgetMouseEvent->mButton != MouseButton::eLeft) {
+      if (widgetMouseEvent->mButton != MouseButton::ePrimary) {
         return NS_OK;
       }
       [[fallthrough]];
@@ -747,12 +744,13 @@ bool EditorEventListener::NotifyIMEOfMouseButtonEvent(
     return false;
   }
 
-  nsPresContext* presContext = GetPresContext();
+  RefPtr<nsPresContext> presContext = GetPresContext();
   if (NS_WARN_IF(!presContext)) {
     return false;
   }
+  nsCOMPtr<nsIContent> focusedRootContent = GetFocusedRootContent();
   return IMEStateManager::OnMouseButtonEventInEditor(
-      presContext, GetFocusedRootContent(), aMouseEvent);
+      presContext, focusedRootContent, aMouseEvent);
 }
 
 nsresult EditorEventListener::MouseDown(MouseEvent* aMouseEvent) {
@@ -806,9 +804,10 @@ void EditorEventListener::RefuseToDropAndHideCaret(DragEvent* aDragEvent) {
 
   aDragEvent->PreventDefault();
   aDragEvent->StopImmediatePropagation();
-  MOZ_ASSERT(aDragEvent->GetDataTransfer());
-  aDragEvent->GetDataTransfer()->SetDropEffectInt(
-      nsIDragService::DRAGDROP_ACTION_NONE);
+  DataTransfer* dataTransfer = aDragEvent->GetDataTransfer();
+  if (dataTransfer) {
+    dataTransfer->SetDropEffectInt(nsIDragService::DRAGDROP_ACTION_NONE);
+  }
   if (mCaret) {
     mCaret->SetVisible(false);
   }
@@ -904,9 +903,9 @@ nsresult EditorEventListener::DragOverOrDrop(DragEvent* aDragEvent) {
   // because once DataTransfer is retrieved, DragEvent has initialized it
   // with nsContentUtils::SetDataTransferInEvent() but it does not check
   // whether the content is movable or not.
-  MOZ_ASSERT(aDragEvent->GetDataTransfer());
   DataTransfer* dataTransfer = aDragEvent->GetDataTransfer();
-  if (dataTransfer->DropEffectInt() == nsIDragService::DRAGDROP_ACTION_MOVE) {
+  if (dataTransfer &&
+      dataTransfer->DropEffectInt() == nsIDragService::DRAGDROP_ACTION_MOVE) {
     nsCOMPtr<nsINode> dragSource = dataTransfer->GetMozSourceNode();
     if (dragSource && !dragSource->IsEditable()) {
       // In this case, we shouldn't allow "move" because the drag source
@@ -967,11 +966,16 @@ bool EditorEventListener::DragEventHasSupportingData(
   // Plaintext editors only support dropping text. Otherwise, HTML and files
   // can be dropped as well.
   DataTransfer* dataTransfer = aDragEvent->GetDataTransfer();
-  return dataTransfer->HasType(NS_LITERAL_STRING(kTextMime)) ||
-         dataTransfer->HasType(NS_LITERAL_STRING(kMozTextInternal)) ||
+  if (!dataTransfer) {
+    NS_WARNING("No data transfer returned");
+    return false;
+  }
+  return dataTransfer->HasType(NS_LITERAL_STRING_FROM_CSTRING(kTextMime)) ||
+         dataTransfer->HasType(
+             NS_LITERAL_STRING_FROM_CSTRING(kMozTextInternal)) ||
          (!mEditorBase->IsPlaintextEditor() &&
-          (dataTransfer->HasType(NS_LITERAL_STRING(kHTMLMime)) ||
-           dataTransfer->HasType(NS_LITERAL_STRING(kFileMime))));
+          (dataTransfer->HasType(NS_LITERAL_STRING_FROM_CSTRING(kHTMLMime)) ||
+           dataTransfer->HasType(NS_LITERAL_STRING_FROM_CSTRING(kFileMime))));
 }
 
 bool EditorEventListener::CanInsertAtDropPosition(DragEvent* aDragEvent) {
@@ -980,11 +984,15 @@ bool EditorEventListener::CanInsertAtDropPosition(DragEvent* aDragEvent) {
   MOZ_ASSERT(!mEditorBase->IsReadonly());
   MOZ_ASSERT(DragEventHasSupportingData(aDragEvent));
 
+  DataTransfer* dataTransfer = aDragEvent->GetDataTransfer();
+  if (NS_WARN_IF(!dataTransfer)) {
+    return false;
+  }
+
   // If there is no source node, this is probably an external drag and the
   // drop is allowed. The later checks rely on checking if the drag target
   // is the same as the drag source.
-  nsCOMPtr<nsINode> sourceNode =
-      aDragEvent->GetDataTransfer()->GetMozSourceNode();
+  nsCOMPtr<nsINode> sourceNode = dataTransfer->GetMozSourceNode();
   if (!sourceNode) {
     return true;
   }
@@ -1027,26 +1035,8 @@ bool EditorEventListener::CanInsertAtDropPosition(DragEvent* aDragEvent) {
     return false;
   }
 
-  uint32_t rangeCount = selection->RangeCount();
-  IgnoredErrorResult ignoredError;
-  for (uint32_t i = 0; i < rangeCount; i++) {
-    RefPtr<nsRange> range = selection->GetRangeAt(i);
-    if (!range) {
-      // Don't bail yet, iterate through them all
-      continue;
-    }
-
-    bool inRange =
-        range->IsPointInRange(*dropParentContent, dropOffset, ignoredError);
-    NS_WARNING_ASSERTION(!ignoredError.Failed(),
-                         "nsRange::IsPointInRange() failed");
-    if (!ignoredError.Failed() && inRange) {
-      // Okay, now you can bail, we are over the orginal selection
-      return false;
-    }
-    ignoredError.SuppressException();
-  }
-  return true;
+  return !EditorUtils::IsPointInSelection(*selection, *dropParentContent,
+                                          dropOffset);
 }
 
 nsresult EditorEventListener::HandleStartComposition(
@@ -1121,9 +1111,7 @@ nsresult EditorEventListener::Focus(InternalFocusEvent* aFocusEvent) {
 
   // Spell check a textarea the first time that it is focused.
   SpellCheckIfNeeded();
-  if (!editorBase) {
-    // In e10s, this can cause us to flush notifications, which can destroy
-    // the node we're about to focus.
+  if (DetachedFromEditor()) {
     return NS_OK;
   }
 
@@ -1180,7 +1168,7 @@ nsresult EditorEventListener::Focus(InternalFocusEvent* aFocusEvent) {
     return NS_OK;
   }
 
-  nsPresContext* presContext = GetPresContext();
+  RefPtr<nsPresContext> presContext = GetPresContext();
   if (NS_WARN_IF(!presContext)) {
     return NS_OK;
   }

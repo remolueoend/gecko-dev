@@ -7,7 +7,9 @@
 #ifndef mozilla_DataStorage_h
 #define mozilla_DataStorage_h
 
+#include <functional>
 #include "mozilla/Atomics.h"
+#include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Mutex.h"
@@ -23,12 +25,16 @@ class psm_DataStorageTest;
 
 namespace mozilla {
 class DataStorageMemoryReporter;
+class TaskQueue;
 
 namespace dom {
 class ContentChild;
+}  // namespace dom
+
+namespace psm {
 class DataStorageEntry;
 class DataStorageItem;
-}  // namespace dom
+}  // namespace psm
 
 /**
  * DataStorage is a threadsafe, generic, narrow string-based hash map that
@@ -47,24 +53,24 @@ class DataStorageItem;
  * - Should the profile directory not be available, (e.g. in xpcshell),
  *   DataStorage will not initially read any persistent data. The
  *   "data-storage-ready" event will still be emitted. This follows semantics
- *   similar to the permission manager and allows tests that test
- *   unrelated components to proceed without a profile.
- * - When any persistent data changes, a timer is initialized that will
- *   eventually asynchronously write all persistent data to the backing file.
- *   When this happens, observers will be notified with the topic
- *   "data-storage-written" and the backing filename as the data.
+ *   similar to the permission manager and allows tests that test unrelated
+ *   components to proceed without a profile.
+ * - A timer periodically fires on a background thread that checks if any
+ *   persistent data has changed, and if so writes all persistent data to the
+ *   backing file. When this happens, observers will be notified with the
+ *   topic "data-storage-written" and the backing filename as the data.
  *   It is possible to receive a "data-storage-written" event while there exist
- *   pending persistent data changes. However, those changes will cause the
- *   timer to be reinitialized and another "data-storage-written" event will
- *   be sent.
- * - When any DataStorage observes the topic "profile-before-change" in
- *   anticipation of shutdown, all persistent data for all DataStorage instances
- *   is synchronously written to the appropriate backing file. The worker thread
- *   responsible for these writes is then disabled to prevent further writes to
- *   that file (the delayed-write timer is cancelled when this happens). Note
- *   that the "worker thread" is actually a single thread shared between all
- *   DataStorage instances. If "profile-before-change" is not observed, this
- *   happens upon observing "xpcom-shutdown-threads".
+ *   pending persistent data changes. However, those changes will eventually be
+ *   written when the timer fires again, and eventually another
+ *   "data-storage-written" event will be sent.
+ * - When a DataStorage instance observes the topic "profile-before-change" in
+ *   anticipation of shutdown, all persistent data for that DataStorage is
+ *   written to the backing file (this blocks the main thread). In the process
+ *   of doing this, the background serial event target responsible for these
+ *   writes is then shut down to prevent further writes to that file (the
+ *   background timer is also cancelled when this happens).
+ *   If "profile-before-change" is not observed, this happens upon observing
+ *   "xpcom-shutdown-threads".
  * - For testing purposes, the preference "test.datastorage.write_timer_ms" can
  *   be set to cause the asynchronous writing of data to happen more quickly.
  * - To prevent unbounded memory and disk use, the number of entries in each
@@ -101,7 +107,7 @@ enum class DataStorageClass {
 };
 
 class DataStorage : public nsIObserver {
-  typedef dom::DataStorageItem DataStorageItem;
+  typedef psm::DataStorageItem DataStorageItem;
 
  public:
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -112,10 +118,22 @@ class DataStorage : public nsIObserver {
   static already_AddRefed<DataStorage> Get(DataStorageClass aFilename);
 
   // Initializes the DataStorage. Must be called before using.
-  // aItems is used in the content process to initialize a cache of the items
-  // received from the parent process over IPC. nullptr must be passed for the
-  // parent process.
-  nsresult Init(const nsTArray<mozilla::dom::DataStorageItem>* aItems);
+  // aItems is used in the content process and the socket process to initialize
+  // a cache of the items received from the parent process over IPC. nullptr
+  // must be passed for the parent process.
+  // aWriteFd is only used in the socket process for now. The FileDesc is opened
+  // in parent process and send to socket process. The data storage instance in
+  // socket process will use this FD to write data to the backing file.
+  nsresult Init(
+      const nsTArray<mozilla::psm::DataStorageItem>* aItems,
+      mozilla::ipc::FileDescriptor aWriteFd = mozilla::ipc::FileDescriptor());
+
+  // This function is used to create the file descriptor asynchronously. The FD
+  // will be sent via the callback. Note that after this call, mBackingFile will
+  // be nulled to prevent parent process to access the file.
+  nsresult AsyncTakeFileDesc(
+      std::function<void(mozilla::ipc::FileDescriptor&&)>&& aResolver);
+
   // Given a key and a type of data, returns a value. Returns an empty string if
   // the key is not present for that type of data. If Get is called before the
   // "data-storage-ready" event is observed, it will block. NB: It is not
@@ -136,20 +154,25 @@ class DataStorage : public nsIObserver {
 
   // Read all child process data that we know about.
   static void GetAllChildProcessData(
-      nsTArray<mozilla::dom::DataStorageEntry>& aEntries);
+      nsTArray<mozilla::psm::DataStorageEntry>& aEntries);
 
   // Read all of the data items.
   void GetAll(nsTArray<DataStorageItem>* aItems);
 
   // Set the cached copy of our DataStorage entries in the content process.
   static void SetCachedStorageEntries(
-      const nsTArray<mozilla::dom::DataStorageEntry>& aEntries);
+      const nsTArray<mozilla::psm::DataStorageEntry>& aEntries);
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
+  // Return true if this data storage is ready to be used.
+  bool IsReady();
+
+  void ShutdownTimer();
+
  private:
   explicit DataStorage(const nsString& aFilename);
-  virtual ~DataStorage();
+  virtual ~DataStorage() = default;
 
   static already_AddRefed<DataStorage> GetFromRawFileName(
       const nsString& aFilename);
@@ -160,6 +183,7 @@ class DataStorage : public nsIObserver {
 
   class Writer;
   class Reader;
+  class Opener;
 
   class Entry {
    public:
@@ -184,18 +208,11 @@ class DataStorage : public nsIObserver {
   void WaitForReady();
   nsresult AsyncWriteData(const MutexAutoLock& aProofOfLock);
   nsresult AsyncReadData(const MutexAutoLock& aProofOfLock);
-  nsresult AsyncSetTimer(const MutexAutoLock& aProofOfLock);
-  nsresult DispatchShutdownTimer(const MutexAutoLock& aProofOfLock);
 
   static nsresult ValidateKeyAndValue(const nsCString& aKey,
                                       const nsCString& aValue);
   static void TimerCallback(nsITimer* aTimer, void* aClosure);
-  void SetTimer();
-  void ShutdownTimer();
   void NotifyObservers(const char* aTopic);
-
-  static void PrefChanged(const char* aPref, void* aSelf);
-  void PrefChanged(const char* aPref);
 
   bool GetInternal(const nsCString& aKey, Entry* aEntry, DataStorageType aType,
                    const MutexAutoLock& aProofOfLock);
@@ -216,12 +233,12 @@ class DataStorage : public nsIObserver {
   DataStorageTable mTemporaryDataTable;
   DataStorageTable mPrivateDataTable;
   nsCOMPtr<nsIFile> mBackingFile;
-  nsCOMPtr<nsITimer>
-      mTimer;            // All uses after init must be on the worker thread
-  uint32_t mTimerDelay;  // in milliseconds
-  bool mPendingWrite;    // true if a write is needed but hasn't been dispatched
+  bool mPendingWrite;  // true if a write is needed but hasn't been dispatched
   bool mShuttingDown;
+  RefPtr<TaskQueue> mBackgroundTaskQueue;
   // (End list of members protected by mMutex)
+
+  nsCOMPtr<nsITimer> mTimer;  // Must only be accessed on the main thread
 
   mozilla::Atomic<bool> mInitCalled;  // Indicates that Init() has been called.
 
@@ -229,6 +246,8 @@ class DataStorage : public nsIObserver {
   bool mReady;  // Indicates that saved data has been read and Get can proceed.
 
   const nsString mFilename;
+
+  mozilla::ipc::FileDescriptor mWriteFd;
 
   static StaticAutoPtr<DataStorages> sDataStorages;
 };

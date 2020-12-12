@@ -1,25 +1,30 @@
 # cubeb-coreaudio-rs
 
-[![Build Status](https://api.travis-ci.com/ChunMinChang/cubeb-coreaudio-rs.svg?branch=trailblazer)](https://travis-ci.com/github/ChunMinChang/cubeb-coreaudio-rs)
+[![Build Status](https://travis-ci.com/ChunMinChang/cubeb-coreaudio-rs.svg?branch=trailblazer)](https://travis-ci.com/ChunMinChang/cubeb-coreaudio-rs)
 
 *Rust* implementation of [Cubeb][cubeb] on [the MacOS platform][cubeb-au].
 
 ## Current Goals
 
 - Keep refactoring the implementation until it looks rusty! (it's translated from C at first.)
-  - Check the [todo list][todo] first
+  - Check the [todo list][todo]
 
 ## Status
 
-The code is currently shipped within the _Firefox Nightly_ under a _perf_.
+This is now the _Firefox_'s default audio backend on *Mac OS*.
 
-- Try it:
-  - Open `about:config`
-  - Add a perf `media.cubeb.backend` with string `audiounit-rust`
-  - Restart Firefox Nightly
-  - Open `about:support`
-  - Check if the `Audio Backend` in `Media` section is `audiounit-rust` or not
-  - Retart Firefox Nightly again if it's not.
+## Install
+
+### Install cubeb-coreaudio within cubeb
+
+Run the following command:
+```sh
+curl https://raw.githubusercontent.com/ChunMinChang/cubeb-coreaudio-rs/trailblazer/build-audiounit-rust-in-cubeb.sh | sh
+```
+
+### Other
+
+Just clone this repo
 
 ## Test
 
@@ -76,9 +81,6 @@ It's used to verify our callbacks for minitoring the system devices work.
   - `$ cargo test test_switch_output_device -- --ignored --nocapture`
   - Enter `s` to switch output devices
   - Enter `q` to finish test
-- Device change events listener
-  - `$ cargo test test_add_then_remove_listeners -- --ignored --nocapture`
-  - Plug/Unplug devices or switch input/output devices to see events log.
 - Device collection change
   - `cargo test test_device_collection_change -- --ignored --nocapture`
   - Plug/Unplug devices to see events log.

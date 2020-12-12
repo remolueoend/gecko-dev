@@ -47,7 +47,7 @@ from results import RaptorResultsHandler
 LOG = RaptorLogger(component="raptor-perftest")
 
 # - mozproxy.utils LOG displayed INFO messages even when LOG.error() was used in mitm.py
-mpu.LOG = RaptorLogger(component='raptor-mitmproxy')
+mpu.LOG = RaptorLogger(component="raptor-mitmproxy")
 
 try:
     from mozbuild.base import MozbuildObject
@@ -63,7 +63,7 @@ POST_DELAY_DEFAULT = 30000
 
 class Perftest(object):
     """Abstract base class for perftests that execute via a subharness,
-either Raptor or browsertime."""
+    either Raptor or browsertime."""
 
     __metaclass__ = ABCMeta
 
@@ -83,7 +83,9 @@ either Raptor or browsertime."""
         host=None,
         power_test=False,
         cpu_test=False,
+        cold=False,
         memory_test=False,
+        live_sites=False,
         is_release_build=False,
         debug_mode=False,
         post_startup_delay=POST_DELAY_DEFAULT,
@@ -94,12 +96,16 @@ either Raptor or browsertime."""
         no_conditioned_profile=False,
         device_name=None,
         disable_perf_tuning=False,
-        conditioned_profile_scenario='settled',
+        conditioned_profile_scenario="settled",
+        chimera=False,
         extra_prefs={},
+        environment={},
         project="mozilla-central",
+        verbose=False,
         **kwargs
     ):
         self._dirs_to_remove = []
+        self.verbose = verbose
 
         # Override the magic --host HOST_IP with the value of the environment variable.
         if host == "HOST_IP":
@@ -120,6 +126,8 @@ either Raptor or browsertime."""
             "power_test": power_test,
             "memory_test": memory_test,
             "cpu_test": cpu_test,
+            "cold": cold,
+            "live_sites": live_sites,
             "is_release_build": is_release_build,
             "enable_control_server_wait": memory_test or cpu_test,
             "e10s": e10s,
@@ -129,8 +137,11 @@ either Raptor or browsertime."""
             "enable_fission": extra_prefs.get("fission.autostart", False),
             "disable_perf_tuning": disable_perf_tuning,
             "conditioned_profile_scenario": conditioned_profile_scenario,
+            "chimera": chimera,
             "extra_prefs": extra_prefs,
-            "project": project
+            "environment": environment,
+            "project": project,
+            "verbose": verbose,
         }
 
         self.firefox_android_apps = FIREFOX_ANDROID_APPS
@@ -138,14 +149,11 @@ either Raptor or browsertime."""
         # - win10-aarch64 : no support for geckodriver see 1582757
         # - fennec_aurora: no conditioned profiles created see 1606199
         # - reference browser: no conditioned profiles created see 1606767
-        # - crashes for fennec68 and fenix, to be fixed, see 1626729
         self.using_condprof = not (
-             (self.config["platform"] == "win" and self.config["processor"] == "aarch64")
-             or self.config["binary"] == "org.mozilla.fennec_aurora"
-             or self.config["binary"] == "org.mozilla.reference.browser.raptor"
-             or self.config["binary"] == "org.mozilla.firefox"
-             or self.config["binary"].startswith("org.mozilla.fenix")
-             or self.config["no_conditioned_profile"]
+            (self.config["platform"] == "win" and self.config["processor"] == "aarch64")
+            or self.config["binary"] == "org.mozilla.fennec_aurora"
+            or self.config["binary"] == "org.mozilla.reference.browser.raptor"
+            or self.config["no_conditioned_profile"]
         )
         if self.using_condprof:
             LOG.info("Using a conditioned profile.")
@@ -156,6 +164,12 @@ either Raptor or browsertime."""
         # We can never use e10s on fennec
         if self.config["app"] == "fennec":
             self.config["e10s"] = False
+
+        # To differentiate between chrome/firefox failures, we
+        # set an app variable in the logger which prefixes messages
+        # with the app name
+        if self.config["app"] in ("chrome", "chrome-m", "chromium"):
+            LOG.set_app(self.config["app"])
 
         self.browser_name = None
         self.browser_version = None
@@ -178,7 +192,7 @@ either Raptor or browsertime."""
         self.results_handler.add_browser_meta(self.config["app"], browser_version)
 
         # debug mode is currently only supported when running locally
-        self.run_local = self.config['run_local']
+        self.run_local = self.config["run_local"]
         self.debug_mode = debug_mode if self.run_local else False
 
         # For the post startup delay, we want to max it to 1s when using the
@@ -188,8 +202,7 @@ either Raptor or browsertime."""
         else:
             # if running debug-mode reduce the pause after browser startup
             if self.debug_mode:
-                self.post_startup_delay = min(post_startup_delay,
-                                              POST_DELAY_DEBUG)
+                self.post_startup_delay = min(post_startup_delay, POST_DELAY_DEBUG)
             else:
                 self.post_startup_delay = post_startup_delay
 
@@ -209,9 +222,21 @@ either Raptor or browsertime."""
     def is_localhost(self):
         return self.config.get("host") in ("localhost", "127.0.0.1")
 
+    @property
+    def conditioned_profile_copy(self):
+        """Returns a copy of the original conditioned profile that was created."""
+        condprof_copy = os.path.join(self._get_temp_dir(), "profile")
+        shutil.copytree(self.conditioned_profile_dir, condprof_copy)
+        LOG.info("Created a conditioned-profile copy: %s" % condprof_copy)
+        return condprof_copy
+
     def get_conditioned_profile(self):
         """Downloads a platform-specific conditioned profile, using the
         condprofile client API; returns a self.conditioned_profile_dir"""
+        if self.conditioned_profile_dir:
+            # We already have a directory, so provide a copy that
+            # will get deleted after it's done with
+            return self.conditioned_profile_copy
 
         # create a temp file to help ensure uniqueness
         temp_download_dir = self._get_temp_dir()
@@ -248,17 +273,11 @@ either Raptor or browsertime."""
         profile_scenario = self.config.get("conditioned_profile_scenario", "settled")
         try:
             cond_prof_target_dir = get_profile(
-                temp_download_dir,
-                platform,
-                profile_scenario,
-                repo=repo
+                temp_download_dir, platform, profile_scenario, repo=repo
             )
         except ProfileNotFoundError:
             cond_prof_target_dir = get_profile(
-                temp_download_dir,
-                platform,
-                profile_scenario,
-                repo=alternate_repo
+                temp_download_dir, platform, profile_scenario, repo=alternate_repo
             )
         except Exception:
             # any other error is a showstopper
@@ -274,29 +293,29 @@ either Raptor or browsertime."""
             LOG.critical(
                 "Can't find target_dir {}, from get_profile()"
                 "temp_download_dir {}, platform {}, scenario {}".format(
-                    cond_prof_target_dir,
-                    temp_download_dir,
-                    platform,
-                    profile_scenario
+                    cond_prof_target_dir, temp_download_dir, platform, profile_scenario
                 )
             )
             raise OSError
 
         LOG.info(
-            "self.conditioned_profile_dir is now set: {}".format(
+            "Original self.conditioned_profile_dir is now set: {}".format(
                 self.conditioned_profile_dir
             )
         )
-        return self.conditioned_profile_dir
+        return self.conditioned_profile_copy
 
     def build_browser_profile(self):
-        if not self.using_condprof or self.config['app'] in ['chrome', 'chromium', 'chrome-m']:
+        if not self.using_condprof or self.config["app"] in [
+            "chrome",
+            "chromium",
+            "chrome-m",
+        ]:
             self.profile = create_profile(self.profile_class)
         else:
-            self.get_conditioned_profile()
             # use mozprofile to create a profile for us, from our conditioned profile's path
             self.profile = create_profile(
-                self.profile_class, profile=self.conditioned_profile_dir
+                self.profile_class, profile=self.get_conditioned_profile()
             )
         # Merge extra profile data from testing/profiles
         with open(os.path.join(self.profile_data_dir, "profiles.json"), "r") as fh:
@@ -466,28 +485,6 @@ either Raptor or browsertime."""
             else:
                 LOG.info("Playback recording information not available")
 
-    def get_playback_config(self, test):
-        platform = self.config["platform"]
-        playback_dir = os.path.join(here, "playback")
-
-        self.config.update(
-            {
-                "playback_tool": test.get("playback"),
-                "playback_version": test.get("playback_version", "4.0.4"),
-                "playback_binary_zip": test.get("playback_binary_zip_%s" % platform),
-                "playback_pageset_zip": test.get("playback_pageset_zip_%s" % platform),
-                "playback_binary_manifest": test.get("playback_binary_manifest"),
-                "playback_pageset_manifest": test.get("playback_pageset_manifest"),
-            }
-        )
-
-        for key in ("playback_pageset_manifest", "playback_pageset_zip"):
-            if self.config.get(key) is None:
-                continue
-            self.config[key] = os.path.join(playback_dir, self.config[key])
-
-        LOG.info("test uses playback tool: %s " % self.config["playback_tool"])
-
     def delete_proxy_settings_from_profile(self):
         # Must delete the proxy settings from the profile if running
         # the test with a host different from localhost.
@@ -500,10 +497,22 @@ either Raptor or browsertime."""
 
     def start_playback(self, test):
         # creating the playback tool
-        self.get_playback_config(test)
-        self.playback = get_playback(self.config)
 
-        self.playback.config["playback_files"] = self.get_recording_paths(test)
+        playback_dir = os.path.join(here, "tooltool-manifests", "playback")
+
+        self.config.update(
+            {
+                "playback_tool": test.get("playback"),
+                "playback_version": test.get("playback_version", "4.0.4"),
+                "playback_files": [
+                    os.path.join(playback_dir, test.get("playback_pageset_manifest"))
+                ],
+            }
+        )
+
+        LOG.info("test uses playback tool: %s " % self.config["playback_tool"])
+
+        self.playback = get_playback(self.config)
 
         # let's start it!
         self.playback.start()
@@ -556,8 +565,9 @@ class PerftestAndroid(Perftest):
             # We absolutely need to determine the chrome
             # version here so that we can select the correct
             # chromedriver for browsertime
-            from mozdevice import ADBDevice
-            device = ADBDevice(verbose=True)
+            from mozdevice import ADBDeviceFactory
+
+            device = ADBDeviceFactory(verbose=True)
             binary = "com.android.chrome"
 
             pkg_info = device.shell_output("dumpsys package %s" % binary)
@@ -572,7 +582,9 @@ class PerftestAndroid(Perftest):
                     break
 
             if not browser_version:
-                raise Exception("Could not determine version for Google Chrome for Android")
+                raise Exception(
+                    "Could not determine version for Google Chrome for Android"
+                )
 
         if not browser_name:
             LOG.warning("Could not find a browser name")
@@ -636,9 +648,8 @@ class PerftestAndroid(Perftest):
         try:
             LOG.info("copying profile to device: %s" % self.remote_profile)
             self.device.rm(self.remote_profile, force=True, recursive=True)
-            # self.device.mkdir(self.remote_profile)
             self.device.push(self.profile.profile, self.remote_profile)
-            self.device.chmod(self.remote_profile, recursive=True, root=True)
+            self.device.chmod(self.remote_profile, recursive=True)
 
         except Exception:
             LOG.error("Unable to copy profile to device.")

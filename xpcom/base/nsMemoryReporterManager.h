@@ -10,11 +10,13 @@
 #include "mozilla/Mutex.h"
 #include "nsDataHashtable.h"
 #include "nsHashKeys.h"
-#include "nsIEventTarget.h"
 #include "nsIMemoryReporter.h"
-#include "nsITimer.h"
+#include "nsISupports.h"
 #include "nsServiceManagerUtils.h"
-#include "nsDataHashtable.h"
+
+#ifdef XP_WIN
+#  include <windows.h>
+#endif  // XP_WIN
 
 namespace mozilla {
 class MemoryReportingProcess;
@@ -23,6 +25,9 @@ class MemoryReport;
 }  // namespace dom
 }  // namespace mozilla
 
+class mozIDOMWindowProxy;
+class nsIEventTarget;
+class nsIRunnable;
 class nsITimer;
 
 class nsMemoryReporterManager final : public nsIMemoryReporterManager,
@@ -39,10 +44,10 @@ class nsMemoryReporterManager final : public nsIMemoryReporterManager,
   nsMemoryReporterManager();
 
   // Gets the memory reporter manager service.
-  static nsMemoryReporterManager* GetOrCreate() {
+  static already_AddRefed<nsMemoryReporterManager> GetOrCreate() {
     nsCOMPtr<nsIMemoryReporterManager> imgr =
         do_GetService("@mozilla.org/memory-reporter-manager;1");
-    return static_cast<nsMemoryReporterManager*>(imgr.get());
+    return imgr.forget().downcast<nsMemoryReporterManager>();
   }
 
   typedef nsDataHashtable<nsRefPtrHashKey<nsIMemoryReporter>, bool>
@@ -142,24 +147,22 @@ class nsMemoryReporterManager final : public nsIMemoryReporterManager,
   // Functions that (a) implement distinguished amounts, and (b) are outside of
   // this module.
   struct AmountFns {
-    mozilla::InfallibleAmountFn mJSMainRuntimeGCHeap;
-    mozilla::InfallibleAmountFn mJSMainRuntimeTemporaryPeak;
-    mozilla::InfallibleAmountFn mJSMainRuntimeCompartmentsSystem;
-    mozilla::InfallibleAmountFn mJSMainRuntimeCompartmentsUser;
-    mozilla::InfallibleAmountFn mJSMainRuntimeRealmsSystem;
-    mozilla::InfallibleAmountFn mJSMainRuntimeRealmsUser;
+    mozilla::InfallibleAmountFn mJSMainRuntimeGCHeap = nullptr;
+    mozilla::InfallibleAmountFn mJSMainRuntimeTemporaryPeak = nullptr;
+    mozilla::InfallibleAmountFn mJSMainRuntimeCompartmentsSystem = nullptr;
+    mozilla::InfallibleAmountFn mJSMainRuntimeCompartmentsUser = nullptr;
+    mozilla::InfallibleAmountFn mJSMainRuntimeRealmsSystem = nullptr;
+    mozilla::InfallibleAmountFn mJSMainRuntimeRealmsUser = nullptr;
 
-    mozilla::InfallibleAmountFn mImagesContentUsedUncompressed;
+    mozilla::InfallibleAmountFn mImagesContentUsedUncompressed = nullptr;
 
-    mozilla::InfallibleAmountFn mStorageSQLite;
+    mozilla::InfallibleAmountFn mStorageSQLite = nullptr;
 
-    mozilla::InfallibleAmountFn mLowMemoryEventsVirtual;
-    mozilla::InfallibleAmountFn mLowMemoryEventsCommitSpace;
-    mozilla::InfallibleAmountFn mLowMemoryEventsPhysical;
+    mozilla::InfallibleAmountFn mLowMemoryEventsVirtual = nullptr;
+    mozilla::InfallibleAmountFn mLowMemoryEventsCommitSpace = nullptr;
+    mozilla::InfallibleAmountFn mLowMemoryEventsPhysical = nullptr;
 
-    mozilla::InfallibleAmountFn mGhostWindows;
-
-    AmountFns() { mozilla::PodZero(this); }
+    mozilla::InfallibleAmountFn mGhostWindows = nullptr;
   };
   AmountFns mAmountFns;
 
@@ -172,14 +175,22 @@ class nsMemoryReporterManager final : public nsIMemoryReporterManager,
 
   // Convenience function to get USS easily from other code.  This is useful
   // when debugging unshared memory pages for forked processes.
-  static int64_t ResidentUnique();
+  //
+  // Returns 0 if, for some reason, the resident unique memory cannot be
+  // determined - typically if there is a race between us and someone else
+  // closing the process and we lost that race.
+#ifdef XP_WIN
+  static int64_t ResidentUnique(HANDLE aProcess = nullptr);
+#elif XP_MACOSX
+  static int64_t ResidentUnique(mach_port_t aPort = 0);
+#else
+  static int64_t ResidentUnique(pid_t aPid = 0);
+#endif  // XP_{WIN, MACOSX, LINUX, *}
 
   // Functions that measure per-tab memory consumption.
   struct SizeOfTabFns {
-    mozilla::JSSizeOfTabFn mJS;
-    mozilla::NonJSSizeOfTabFn mNonJS;
-
-    SizeOfTabFns() { mozilla::PodZero(this); }
+    mozilla::JSSizeOfTabFn mJS = nullptr;
+    mozilla::NonJSSizeOfTabFn mNonJS = nullptr;
   };
   SizeOfTabFns mSizeOfTabFns;
 

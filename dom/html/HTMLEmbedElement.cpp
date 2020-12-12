@@ -15,6 +15,7 @@
 #include "nsThreadUtils.h"
 #include "nsIWidget.h"
 #include "nsContentUtils.h"
+#include "nsFrameLoader.h"
 #ifdef XP_MACOSX
 #  include "mozilla/EventDispatcher.h"
 #  include "mozilla/dom/Event.h"
@@ -23,8 +24,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Embed)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLEmbedElement::HTMLEmbedElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
@@ -42,7 +42,7 @@ HTMLEmbedElement::~HTMLEmbedElement() {
   HTMLObjectElement::OnFocusBlurPlugin(this, false);
 #endif
   UnregisterActivityObserver();
-  DestroyImageLoadingContent();
+  nsImageLoadingContent::Destroy();
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLEmbedElement)
@@ -119,6 +119,13 @@ nsresult HTMLEmbedElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
+  if (aNamespaceID == kNameSpaceID_None &&
+      aName == nsGkAtoms::allowfullscreen && mFrameLoader) {
+    if (auto* bc = mFrameLoader->GetExtantBrowsingContext()) {
+      MOZ_ALWAYS_SUCCEEDS(bc->SetFullscreenAllowedByOwner(AllowFullscreen()));
+    }
+  }
+
   return nsGenericHTMLElement::AfterSetAttr(
       aNamespaceID, aName, aValue, aOldValue, aSubjectPrincipal, aNotify);
 }
@@ -156,7 +163,18 @@ nsresult HTMLEmbedElement::AfterMaybeChangeAttr(int32_t aNamespaceID,
 
 bool HTMLEmbedElement::IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
                                        int32_t* aTabIndex) {
-  // Has plugin content: let the plugin decide what to do in terms of
+  // If we have decided that this is a blocked plugin then do not allow focus.
+  if ((Type() == eType_Null) &&
+      (PluginFallbackType() == eFallbackBlockAllPlugins)) {
+    if (aTabIndex) {
+      *aTabIndex = -1;
+    }
+
+    *aIsFocusable = false;
+    return false;
+  }
+
+  // Has non-plugin content: let the plugin decide what to do in terms of
   // internal focus from mouse clicks
   if (aTabIndex) {
     *aTabIndex = TabIndex();
@@ -253,7 +271,7 @@ uint32_t HTMLEmbedElement::GetCapabilities() const {
 }
 
 void HTMLEmbedElement::DestroyContent() {
-  nsObjectLoadingContent::DestroyContent();
+  nsObjectLoadingContent::Destroy();
   nsGenericHTMLElement::DestroyContent();
 }
 
@@ -285,5 +303,4 @@ nsContentPolicyType HTMLEmbedElement::GetContentPolicyType() const {
   return nsIContentPolicy::TYPE_INTERNAL_EMBED;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

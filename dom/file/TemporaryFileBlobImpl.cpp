@@ -6,7 +6,8 @@
 
 #include "TemporaryFileBlobImpl.h"
 
-#include "IPCBlobInputStreamThread.h"
+#include "RemoteLazyInputStreamThread.h"
+#include "mozilla/ErrorResult.h"
 #include "nsFileStreams.h"
 #include "nsIFile.h"
 #include "nsIFileStreams.h"
@@ -16,8 +17,7 @@
 
 using namespace mozilla::ipc;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -76,9 +76,9 @@ class TemporaryFileInputStream final : public nsFileInputStream {
   }
 
   ~TemporaryFileInputStream() {
-    // Let's delete the file on the IPCBlob Thread.
-    RefPtr<IPCBlobInputStreamThread> thread =
-        IPCBlobInputStreamThread::GetOrCreate();
+    // Let's delete the file on the RemoteLazyInputStream Thread.
+    RefPtr<RemoteLazyInputStreamThread> thread =
+        RemoteLazyInputStreamThread::GetOrCreate();
     if (NS_WARN_IF(!thread)) {
       return;
     }
@@ -96,7 +96,7 @@ class TemporaryFileInputStream final : public nsFileInputStream {
 
 TemporaryFileBlobImpl::TemporaryFileBlobImpl(nsIFile* aFile,
                                              const nsAString& aContentType)
-    : FileBlobImpl(aFile, EmptyString(), aContentType)
+    : FileBlobImpl(aFile, u""_ns, aContentType)
 #ifdef DEBUG
       ,
       mInputStreamCreated(false)
@@ -133,5 +133,4 @@ void TemporaryFileBlobImpl::CreateInputStream(nsIInputStream** aStream,
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

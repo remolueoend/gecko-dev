@@ -65,6 +65,8 @@
  <div id="taListener" class="taBox" ontouchstart="return false;">
   <div id="taInnerListenerPanX" style="touch-action: pan-x"></div>
  </div>
+ <div id="taPinchZoom" class="taBox" style="touch-action: pinch-zoom">
+ </div>
 
  <br/>
 
@@ -98,6 +100,9 @@
   </div>
   <div id="taScroller3">
    <div></div>
+  </div>
+  <div id="taScroller4" style="touch-action: pan-y">
+   <div style="overflow:hidden"></div>
   </div>
  </div>
 </body>
@@ -283,6 +288,16 @@ function* test(testDriver) {
       "touch-action: pan-x inside div with touch listener");
 
   checkHitResult(
+      hitTest(centerOf("taPinchZoom")),
+      APZHitResultFlags.VISIBLE |
+      APZHitResultFlags.PAN_Y_DISABLED |
+      APZHitResultFlags.PAN_X_DISABLED |
+      APZHitResultFlags.DOUBLE_TAP_ZOOM_DISABLED,
+      scrollId,
+      layersId,
+      "touch-action: pinch-zoom inside div with touch listener");
+
+  checkHitResult(
       hitTest(centerOf("taScrollerPanY")),
       APZHitResultFlags.VISIBLE |
       APZHitResultFlags.PAN_X_DISABLED |
@@ -325,6 +340,15 @@ function* test(testDriver) {
       config.utils.getViewId(document.getElementById("taScroller3")),
       layersId,
       "touch-action: manipulation outside scroller gets inherited in");
+  checkHitResult(
+      hitTest(centerOf("taScroller4")),
+      APZHitResultFlags.VISIBLE |
+      APZHitResultFlags.PAN_X_DISABLED |
+      APZHitResultFlags.PINCH_ZOOM_DISABLED |
+      APZHitResultFlags.DOUBLE_TAP_ZOOM_DISABLED,
+      config.utils.getViewId(document.getElementById("taScroller4")),
+      layersId,
+      "overflow:hidden div doesn't reset pan-x/pan-y from enclosing scroller");
 }
 
 if (!config.isWebRender) {
@@ -333,7 +357,7 @@ if (!config.isWebRender) {
 } else {
   waitUntilApzStable()
     .then(runContinuation(test))
-    .then(subtestDone);
+    .then(subtestDone, subtestFailed);
 }
 
 </script>

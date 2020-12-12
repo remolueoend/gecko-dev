@@ -8,8 +8,7 @@
 
 #include "nsGlobalWindowInner.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(MediaKeySystemAccessPermissionRequest,
                                    ContentPermissionRequestBase)
@@ -40,10 +39,9 @@ MediaKeySystemAccessPermissionRequest::Create(nsPIDOMWindowInner* aWindow) {
 
 MediaKeySystemAccessPermissionRequest::MediaKeySystemAccessPermissionRequest(
     nsGlobalWindowInner* aWindow)
-    : ContentPermissionRequestBase(
-          aWindow->GetPrincipal(), aWindow,
-          NS_LITERAL_CSTRING("media.eme.require-app-approval"),
-          NS_LITERAL_CSTRING("media-key-system-access")) {}
+    : ContentPermissionRequestBase(aWindow->GetPrincipal(), aWindow,
+                                   "media.eme.require-app-approval"_ns,
+                                   "media-key-system-access"_ns) {}
 
 MediaKeySystemAccessPermissionRequest::
     ~MediaKeySystemAccessPermissionRequest() {
@@ -90,5 +88,4 @@ MediaKeySystemAccessPermissionRequest::Cancel() {
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

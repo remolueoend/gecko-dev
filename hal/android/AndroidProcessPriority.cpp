@@ -6,7 +6,9 @@
 
 #include "Hal.h"
 
-#include "GeneratedJNIWrappers.h"
+#include "mozilla/java/GeckoProcessManagerWrappers.h"
+#include "mozilla/java/GeckoProcessTypeWrappers.h"
+#include "mozilla/java/ServiceAllocatorWrappers.h"
 
 /**
  * Bucket the Gecko HAL process priority level into one of the three Android
@@ -30,7 +32,7 @@ namespace hal_impl {
 bool SetProcessPrioritySupported() { return true; }
 
 void SetProcessPriority(int aPid, ProcessPriority aPriority) {
-  if (aPriority == PROCESS_PRIORITY_MASTER) {
+  if (aPriority == PROCESS_PRIORITY_PARENT_PROCESS) {
     // This is the parent process itself, which we do not control.
     return;
   }

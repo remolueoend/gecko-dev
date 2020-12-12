@@ -107,6 +107,10 @@ add_task(async function test_xul_text_link_label() {
 add_task(async function test_setup_html() {
   let url = example_base + "subtst_contextmenu.html";
 
+  await SpecialPowers.pushPrefEnv({
+    set: [["dom.menuitem.enabled", true]],
+  });
+
   await BrowserTestUtils.openNewForegroundTab(gBrowser, url);
 
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {
@@ -1498,6 +1502,8 @@ add_task(async function test_select_text() {
       true,
       "context-searchselect-private",
       true,
+      "context-print-selection",
+      true,
       "context-viewpartialsource-selection",
       true,
     ],
@@ -1509,6 +1515,35 @@ add_task(async function test_select_text() {
       },
     }
   );
+});
+
+add_task(async function test_select_text_search_service_not_initialized() {
+  // Pretend the search service is not initialised.
+  Services.search.wrappedJSObject._initialized = false;
+  await test_contextmenu(
+    "#test-select-text",
+    [
+      "context-copy",
+      true,
+      "context-selectall",
+      true,
+      "---",
+      null,
+      "context-print-selection",
+      true,
+      "context-viewpartialsource-selection",
+      true,
+    ],
+    {
+      offsetX: 6,
+      offsetY: 6,
+      async preCheckContextMenuFn() {
+        await selectText("#test-select-text");
+      },
+    }
+  );
+  // Pretend the search service is not initialised.
+  Services.search.wrappedJSObject._initialized = true;
 });
 
 add_task(async function test_select_text_link() {
@@ -1549,6 +1584,8 @@ add_task(async function test_select_text_link() {
       true,
       [],
       null,
+      "context-print-selection",
+      true,
       "context-viewpartialsource-selection",
       true,
     ],
@@ -1693,65 +1730,6 @@ add_task(async function test_select_input_text_password() {
     }
   );
   */
-});
-
-add_task(async function test_click_to_play_blocked_plugin() {
-  await test_contextmenu(
-    "#test-plugin",
-    [
-      "context-navigation",
-      null,
-      [
-        "context-back",
-        false,
-        "context-forward",
-        false,
-        "context-reload",
-        true,
-        "context-bookmarkpage",
-        true,
-      ],
-      null,
-      "---",
-      null,
-      "context-ctp-play",
-      true,
-      "context-ctp-hide",
-      true,
-      "---",
-      null,
-      "context-savepage",
-      true,
-      ...(hasPocket ? ["context-pocket", true] : []),
-      "---",
-      null,
-      "context-sendpagetodevice",
-      true,
-      [],
-      null,
-      "---",
-      null,
-      "context-viewbgimage",
-      false,
-      "context-selectall",
-      true,
-      "---",
-      null,
-      "context-viewsource",
-      true,
-      "context-viewinfo",
-      true,
-    ],
-    {
-      maybeScreenshotsPresent: true,
-      preCheckContextMenuFn() {
-        setTestPluginEnabledState(Ci.nsIPluginTag.STATE_CLICKTOPLAY);
-      },
-      postCheckContextMenuFn() {
-        getTestPlugin().enabledState = Ci.nsIPluginTag.STATE_ENABLED;
-      },
-    }
-  );
 });
 
 add_task(async function test_longdesc() {

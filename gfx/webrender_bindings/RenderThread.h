@@ -11,6 +11,7 @@
 #include "base/platform_thread.h"  // for PlatformThreadId
 #include "base/thread.h"           // for Thread
 #include "base/message_loop.h"
+#include "GLTypes.h"  // for GLenum
 #include "nsISupportsImpl.h"
 #include "ThreadSafeRefcountingWithMainThreadDestruction.h"
 #include "mozilla/gfx/Point.h"
@@ -20,8 +21,8 @@
 #include "mozilla/webrender/webrender_ffi.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/webrender/WebRenderTypes.h"
+#include "mozilla/layers/CompositionRecorder.h"
 #include "mozilla/layers/SynchronousTask.h"
-#include "mozilla/layers/WebRenderCompositionRecorder.h"
 #include "mozilla/VsyncDispatcher.h"
 
 #include <list>
@@ -33,6 +34,7 @@ namespace gl {
 class GLContext;
 }  // namespace gl
 namespace layers {
+class CompositorBridgeParent;
 class SurfacePool;
 }  // namespace layers
 namespace wr {
@@ -177,6 +179,12 @@ class RenderThread final {
   void WakeUp(wr::WindowId aWindowId);
 
   /// Automatically forwarded to the render thread.
+  void SetClearColor(wr::WindowId aWindowId, wr::ColorF aColor);
+
+  /// Automatically forwarded to the render thread.
+  void SetProfilerUI(wr::WindowId aWindowId, nsCString aUI);
+
+  /// Automatically forwarded to the render thread.
   void PipelineSizeChanged(wr::WindowId aWindowId, uint64_t aPipelineId,
                            float aWidth, float aHeight);
 
@@ -188,7 +196,8 @@ class RenderThread final {
                        const TimeStamp& aStartTime, bool aRender,
                        const Maybe<gfx::IntSize>& aReadbackSize,
                        const Maybe<wr::ImageFormat>& aReadbackFormat,
-                       const Maybe<Range<uint8_t>>& aReadbackBuffer);
+                       const Maybe<Range<uint8_t>>& aReadbackBuffer,
+                       bool* aNeedsYFlip = nullptr);
 
   void Pause(wr::WindowId aWindowId);
   bool Resume(wr::WindowId aWindowId);
@@ -206,6 +215,11 @@ class RenderThread final {
   /// Can be called from any thread.
   void NotifyNotUsed(uint64_t aExternalImageId);
 
+  /// Can be called from any thread.
+  void NotifyForUse(uint64_t aExternalImageId);
+
+  void HandleRenderTextureOps();
+
   /// Can only be called from the render thread.
   void UnregisterExternalImageDuringShutdown(uint64_t aExternalImageId);
 
@@ -220,8 +234,7 @@ class RenderThread final {
   bool TooManyPendingFrames(wr::WindowId aWindowId);
   /// Can be called from any thread.
   void IncPendingFrameCount(wr::WindowId aWindowId, const VsyncId& aStartId,
-                            const TimeStamp& aStartTime,
-                            uint8_t aDocFrameCount);
+                            const TimeStamp& aStartTime);
   /// Can be called from any thread.
   void DecPendingFrameBuildCount(wr::WindowId aWindowId);
 
@@ -247,17 +260,23 @@ class RenderThread final {
   }
 
   /// Can only be called from the render thread.
+  gl::GLContext* SharedGL(nsACString& aError);
   gl::GLContext* SharedGL();
   void ClearSharedGL();
   RefPtr<layers::SurfacePool> SharedSurfacePool();
   void ClearSharedSurfacePool();
 
   /// Can only be called from the render thread.
-  void HandleDeviceReset(const char* aWhere, bool aNotify);
+  void HandleDeviceReset(const char* aWhere,
+                         layers::CompositorBridgeParent* aBridge,
+                         GLenum aReason);
   /// Can only be called from the render thread.
   bool IsHandlingDeviceReset();
   /// Can be called from any thread.
   void SimulateDeviceReset();
+
+  /// Can only be called from the render thread.
+  void NotifyWebRenderError(WebRenderError aError);
 
   /// Can only be called from the render thread.
   void HandleWebRenderError(WebRenderError aError);
@@ -265,29 +284,38 @@ class RenderThread final {
   bool IsHandlingWebRenderError();
 
   /// Can only be called from the render thread.
-  void NotifyAllAndroidSurfaceTexturesDetatched();
+  bool SyncObjectNeeded();
 
   size_t RendererCount();
 
-  void SetCompositionRecorderForWindow(
-      wr::WindowId aWindowId,
-      UniquePtr<layers::WebRenderCompositionRecorder> aCompositionRecorder);
+  void BeginRecordingForWindow(wr::WindowId aWindowId,
+                               const TimeStamp& aRecordingStart,
+                               wr::PipelineId aRootPipelineId);
 
   void WriteCollectedFramesForWindow(wr::WindowId aWindowId);
 
   Maybe<layers::CollectedFrames> GetCollectedFramesForWindow(
       wr::WindowId aWindowId);
 
+  static void MaybeEnableGLDebugMessage(gl::GLContext* aGLContext);
+
  private:
+  enum class RenderTextureOp {
+    PrepareForUse,
+    NotifyForUse,
+    NotifyNotUsed,
+  };
+
   explicit RenderThread(base::Thread* aThread);
 
-  void HandlePrepareForUse();
   void DeferredRenderTextureHostDestroy();
   void ShutDownTask(layers::SynchronousTask* aTask);
   void InitDeviceTask();
 
   void DoAccumulateMemoryReport(MemoryReport,
                                 const RefPtr<MemoryReportPromise::Private>&);
+
+  void AddRenderTextureOp(RenderTextureOp aOp, uint64_t aExternalImageId);
 
   ~RenderThread();
 
@@ -306,14 +334,10 @@ class RenderThread final {
   RefPtr<layers::SurfacePool> mSurfacePool;
 
   std::map<wr::WindowId, UniquePtr<RendererOGL>> mRenderers;
-  std::map<wr::WindowId, UniquePtr<layers::WebRenderCompositionRecorder>>
-      mCompositionRecorders;
 
   struct PendingFrameInfo {
     TimeStamp mStartTime;
     VsyncId mStartId;
-    uint8_t mDocFramesSeen = 0;
-    uint8_t mDocFramesTotal = 0;
     bool mFrameNeedsRender = false;
   };
 
@@ -330,10 +354,11 @@ class RenderThread final {
 
   Mutex mRenderTextureMapLock;
   std::unordered_map<uint64_t, RefPtr<RenderTextureHost>> mRenderTextures;
-  // Hold RenderTextureHosts that are waiting for handling PrepareForUse().
-  // It is for ensuring that PrepareForUse() is called before
-  // RenderTextureHost::Lock().
-  std::list<RefPtr<RenderTextureHost>> mRenderTexturesPrepareForUse;
+  std::unordered_map<uint64_t, RefPtr<RenderTextureHost>>
+      mSyncObjectNeededRenderTextures;
+  std::list<std::pair<RenderTextureOp, RefPtr<RenderTextureHost>>>
+      mRenderTextureOps;
+
   // Used to remove all RenderTextureHost that are going to be removed by
   // a deferred callback and remove them right away without waiting for the
   // callback. On device reset we have to remove all GL related resources right

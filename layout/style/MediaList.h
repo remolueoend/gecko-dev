@@ -10,7 +10,6 @@
 #define mozilla_dom_MediaList_h
 
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/ServoBindingTypes.h"
 #include "mozilla/ServoUtils.h"
 
@@ -19,6 +18,7 @@
 class nsMediaQueryResultCacheKey;
 
 namespace mozilla {
+class ErrorResult;
 class StyleSheet;
 
 namespace dom {
@@ -40,7 +40,7 @@ class MediaList final : public nsISupports, public nsWrapperCache {
   already_AddRefed<MediaList> Clone();
 
   JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aGivenProto) final;
-  nsISupports* GetParentObject() const { return nullptr; }
+  nsISupports* GetParentObject() const;
 
   void GetText(nsAString& aMediaText);
   void SetText(const nsAString& aMediaText);

@@ -1,21 +1,25 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+from collections import defaultdict
+from mozperftest.utils import MachLogger
 
 
-class Metadata:
-    def __init__(self, mach_cmd, env, flavor):
+class Metadata(MachLogger):
+    def __init__(self, mach_cmd, env, flavor, script):
+        MachLogger.__init__(self, mach_cmd)
         self._mach_cmd = mach_cmd
         self.flavor = flavor
-        self.browser = {"prefs": {}}
-        self._result = None
+        self.options = defaultdict(dict)
+        self._results = []
         self._output = None
         self._env = env
+        self.script = script
 
-    def run_hook(self, name, **kw):
+    def run_hook(self, name, *args, **kw):
         # this bypasses layer restrictions on args,
-        # which is fine since it's user script
-        return self._env.run_hook(name, **kw)
+        # which is fine since it's a user script
+        return self._env.hooks.run(name, *args, **kw)
 
     def set_output(self, output):
         self._output = output
@@ -23,14 +27,17 @@ class Metadata:
     def get_output(self):
         return self._output
 
-    def set_result(self, result):
-        self._result = result
+    def add_result(self, result):
+        self._results.append(result)
 
-    def get_result(self):
-        return self._result
+    def get_results(self):
+        return self._results
 
-    def update_browser_prefs(self, prefs):
-        self.browser["prefs"].update(prefs)
+    def clear_results(self):
+        self._results = []
 
-    def get_browser_prefs(self):
-        return self.browser["prefs"]
+    def update_options(self, name, options):
+        self.options[name].update(options)
+
+    def get_options(self, name):
+        return self.options[name]

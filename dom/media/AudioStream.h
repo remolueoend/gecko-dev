@@ -9,8 +9,12 @@
 #  include "AudioSampleFormat.h"
 #  include "CubebUtils.h"
 #  include "MediaInfo.h"
+#  include "MediaSink.h"
+#  include "mozilla/Atomics.h"
 #  include "mozilla/Monitor.h"
+#  include "mozilla/MozPromise.h"
 #  include "mozilla/RefPtr.h"
+#  include "mozilla/Result.h"
 #  include "mozilla/TimeStamp.h"
 #  include "mozilla/UniquePtr.h"
 #  include "nsCOMPtr.h"
@@ -201,10 +205,6 @@ class AudioStream final
     virtual UniquePtr<Chunk> PopFrames(uint32_t aFrames) = 0;
     // Return true if no more data will be added to the source.
     virtual bool Ended() const = 0;
-    // Notify that all data is drained by the AudioStream.
-    virtual void Drained() = 0;
-    // Notify that a fatal error has occured during playback.
-    virtual void Errored() = 0;
 
    protected:
     virtual ~DataSource() = default;
@@ -229,8 +229,9 @@ class AudioStream final
   // 0 (meaning muted) to 1 (meaning full volume).  Thread-safe.
   void SetVolume(double aVolume);
 
-  // Start the stream.
-  nsresult Start();
+  // Start the stream and return a promise that will be resolve when the
+  // playback completes.
+  Result<already_AddRefed<MediaSink::EndedPromise>, nsresult> Start();
 
   // Pause audio playback.
   void Pause();
@@ -265,6 +266,8 @@ class AudioStream final
   nsresult SetPreservesPitch(bool aPreservesPitch);
 
   size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const;
+
+  bool IsPlaybackCompleted() const;
 
  protected:
   friend class AudioClock;
@@ -304,6 +307,7 @@ class AudioStream final
 
   template <typename Function, typename... Args>
   int InvokeCubeb(Function aFunction, Args&&... aArgs);
+  bool CheckThreadIdChanged();
 
   // The monitor is held to protect all access to member variables.
   Monitor mMonitor;
@@ -337,6 +341,12 @@ class AudioStream final
   // the default device is used. It is set
   // during the Init() in decoder thread.
   RefPtr<AudioDeviceInfo> mSinkInfo;
+  /* Contains the id of the audio thread, from profiler_get_thread_id. */
+  std::atomic<int> mAudioThreadId;
+  const bool mSandboxed = false;
+
+  MozPromiseHolder<MediaSink::EndedPromise> mEndedPromise;
+  Atomic<bool> mPlaybackComplete;
 };
 
 }  // namespace mozilla

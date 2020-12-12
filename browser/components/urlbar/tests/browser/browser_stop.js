@@ -43,15 +43,9 @@ add_task(async function() {
 async function typeAndSubmitAndStop(url) {
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: url,
     fireInputEvent: true,
   });
-  is(
-    gURLBar.value,
-    BrowserUtils.trimURL(url),
-    "location bar reflects loading page"
-  );
 
   let docLoadPromise = BrowserTestUtils.waitForDocLoadAndStopIt(
     url,

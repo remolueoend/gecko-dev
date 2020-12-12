@@ -22,6 +22,7 @@
 //! }
 //! ```
 use std::fs::File;
+use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::path::Path;
 use std::str;
@@ -30,7 +31,7 @@ use crate::ffi;
 use crate::types::Null;
 use crate::vtab::{
     dequote, escape_double_quote, parse_boolean, read_only_module, Context, CreateVTab, IndexInfo,
-    Module, VTab, VTabConnection, VTabCursor, Values,
+    VTab, VTabConnection, VTabCursor, Values,
 };
 use crate::{Connection, Error, Result};
 
@@ -47,11 +48,7 @@ use crate::{Connection, Error, Result};
 /// ```
 pub fn load_module(conn: &Connection) -> Result<()> {
     let aux: Option<()> = None;
-    conn.create_module("csv", &CSV_MODULE, aux)
-}
-
-lazy_static::lazy_static! {
-    static ref CSV_MODULE: Module<CSVTab> = read_only_module::<CSVTab>(1);
+    conn.create_module("csv", read_only_module::<CSVTab>(), aux)
 }
 
 /// An instance of the CSV virtual table
@@ -99,9 +96,9 @@ impl CSVTab {
     }
 }
 
-impl VTab for CSVTab {
+unsafe impl<'vtab> VTab<'vtab> for CSVTab {
     type Aux = ();
-    type Cursor = CSVTabCursor;
+    type Cursor = CSVTabCursor<'vtab>;
 
     fn connect(
         _: &mut VTabConnection,
@@ -262,16 +259,16 @@ impl VTab for CSVTab {
         Ok(())
     }
 
-    fn open(&self) -> Result<CSVTabCursor> {
+    fn open(&self) -> Result<CSVTabCursor<'_>> {
         Ok(CSVTabCursor::new(self.reader()?))
     }
 }
 
-impl CreateVTab for CSVTab {}
+impl CreateVTab<'_> for CSVTab {}
 
 /// A cursor for the CSV virtual table
 #[repr(C)]
-struct CSVTabCursor {
+struct CSVTabCursor<'vtab> {
     /// Base class. Must be first
     base: ffi::sqlite3_vtab_cursor,
     /// The CSV reader object
@@ -281,16 +278,18 @@ struct CSVTabCursor {
     /// Values of the current row
     cols: csv::StringRecord,
     eof: bool,
+    phantom: PhantomData<&'vtab CSVTab>,
 }
 
-impl CSVTabCursor {
-    fn new(reader: csv::Reader<File>) -> CSVTabCursor {
+impl CSVTabCursor<'_> {
+    fn new<'vtab>(reader: csv::Reader<File>) -> CSVTabCursor<'vtab> {
         CSVTabCursor {
             base: ffi::sqlite3_vtab_cursor::default(),
             reader,
             row_number: 0,
             cols: csv::StringRecord::new(),
             eof: false,
+            phantom: PhantomData,
         }
     }
 
@@ -300,7 +299,7 @@ impl CSVTabCursor {
     }
 }
 
-impl VTabCursor for CSVTabCursor {
+unsafe impl VTabCursor for CSVTabCursor<'_> {
     // Only a full table scan is supported.  So `filter` simply rewinds to
     // the beginning.
     fn filter(

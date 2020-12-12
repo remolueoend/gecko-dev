@@ -20,6 +20,7 @@
 #include "nsINodeList.h"
 #include "nsGkAtoms.h"
 #include "nsContentUtils.h"
+#include "nsLayoutUtils.h"
 #include "nsTextFrame.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CheckedInt.h"
@@ -741,7 +742,7 @@ bool nsRange::IsPointComparableToRange(const nsINode& aContainer,
   return true;
 }
 
-bool nsRange::IsPointInRange(nsINode& aContainer, uint32_t aOffset,
+bool nsRange::IsPointInRange(const nsINode& aContainer, uint32_t aOffset,
                              ErrorResult& aRv) const {
   uint16_t compareResult = ComparePoint(aContainer, aOffset, aRv);
   // If the node isn't in the range's document, it clearly isn't in the range.
@@ -753,13 +754,13 @@ bool nsRange::IsPointInRange(nsINode& aContainer, uint32_t aOffset,
   return compareResult == 0;
 }
 
-int16_t nsRange::ComparePoint(nsINode& aContainer, uint32_t aOffset,
+int16_t nsRange::ComparePoint(const nsINode& aContainer, uint32_t aOffset,
                               ErrorResult& aRv) const {
   if (!IsPointComparableToRange(aContainer, aOffset, aRv)) {
     return 0;
   }
 
-  const RawRangeBoundary point{&aContainer, aOffset};
+  const RawRangeBoundary point{const_cast<nsINode*>(&aContainer), aOffset};
 
   MOZ_ASSERT(point.IsSetAndValid());
 
@@ -952,6 +953,8 @@ void nsRange::RegisterSelection(Selection& aSelection) {
   MOZ_ASSERT(commonAncestor, "unexpected disconnected nodes");
   RegisterClosestCommonInclusiveAncestor(commonAncestor);
 }
+
+Selection* nsRange::GetSelection() const { return mSelection; }
 
 void nsRange::UnregisterSelection() {
   mSelection = nullptr;
@@ -1901,10 +1904,11 @@ already_AddRefed<DocumentFragment> nsRange::ExtractContents(ErrorResult& rv) {
   return fragment.forget();
 }
 
-int16_t nsRange::CompareBoundaryPoints(uint16_t aHow, nsRange& aOtherRange,
-                                       ErrorResult& rv) {
+int16_t nsRange::CompareBoundaryPoints(uint16_t aHow,
+                                       const nsRange& aOtherRange,
+                                       ErrorResult& aRv) {
   if (!mIsPositioned || !aOtherRange.IsPositioned()) {
-    rv.Throw(NS_ERROR_NOT_INITIALIZED);
+    aRv.Throw(NS_ERROR_NOT_INITIALIZED);
     return 0;
   }
 
@@ -1938,12 +1942,12 @@ int16_t nsRange::CompareBoundaryPoints(uint16_t aHow, nsRange& aOtherRange,
       break;
     default:
       // We were passed an illegal value
-      rv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
+      aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
       return 0;
   }
 
   if (mRoot != aOtherRange.GetRoot()) {
-    rv.Throw(NS_ERROR_DOM_WRONG_DOCUMENT_ERR);
+    aRv.Throw(NS_ERROR_DOM_WRONG_DOCUMENT_ERR);
     return 0;
   }
 
@@ -2488,7 +2492,7 @@ void nsRange::ToString(nsAString& aReturn, ErrorResult& aErr) {
 void nsRange::Detach() {}
 
 already_AddRefed<DocumentFragment> nsRange::CreateContextualFragment(
-    const nsAString& aFragment, ErrorResult& aRv) {
+    const nsAString& aFragment, ErrorResult& aRv) const {
   if (!mIsPositioned) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
@@ -2579,7 +2583,7 @@ static nsTextFrame* GetTextFrameForContent(nsIContent* aContent,
   return static_cast<nsTextFrame*>(frame);
 }
 
-static nsresult GetPartialTextRect(nsLayoutUtils::RectCallback* aCallback,
+static nsresult GetPartialTextRect(RectCallback* aCallback,
                                    Sequence<nsString>* aTextList,
                                    nsIContent* aContent, int32_t aStartOffset,
                                    int32_t aEndOffset, bool aClampToEdge,
@@ -2626,7 +2630,8 @@ static nsresult GetPartialTextRect(nsLayoutUtils::RectCallback* aCallback,
                                nsIFrame::TextOffsetType::OffsetsInContentText,
                                nsIFrame::TrailingWhitespace::DontTrim);
 
-        aTextList->AppendElement(renderedText.mString, fallible);
+        NS_ENSURE_TRUE(aTextList->AppendElement(renderedText.mString, fallible),
+                       NS_ERROR_OUT_OF_MEMORY);
       }
     }
   }
@@ -2635,10 +2640,9 @@ static nsresult GetPartialTextRect(nsLayoutUtils::RectCallback* aCallback,
 
 /* static */
 void nsRange::CollectClientRectsAndText(
-    nsLayoutUtils::RectCallback* aCollector, Sequence<nsString>* aTextList,
-    nsRange* aRange, nsINode* aStartContainer, uint32_t aStartOffset,
-    nsINode* aEndContainer, uint32_t aEndOffset, bool aClampToEdge,
-    bool aFlushLayout) {
+    RectCallback* aCollector, Sequence<nsString>* aTextList, nsRange* aRange,
+    nsINode* aStartContainer, uint32_t aStartOffset, nsINode* aEndContainer,
+    uint32_t aEndOffset, bool aClampToEdge, bool aFlushLayout) {
   // Currently, this method is called with start of end offset of nsRange.
   // So, they must be between 0 - INT32_MAX.
   MOZ_ASSERT(RangeUtils::IsValidOffset(aStartOffset));
@@ -3047,13 +3051,15 @@ struct InnerTextAccumulator {
 };
 
 static bool IsVisibleAndNotInReplacedElement(nsIFrame* aFrame) {
-  if (!aFrame || !aFrame->StyleVisibility()->IsVisible()) {
+  if (!aFrame || !aFrame->StyleVisibility()->IsVisible() ||
+      aFrame->HasAnyStateBits(NS_FRAME_IS_NONDISPLAY)) {
     return false;
   }
   for (nsIFrame* f = aFrame->GetParent(); f; f = f->GetParent()) {
     if (f->IsFrameOfType(nsIFrame::eReplaced) &&
-        !f->GetContent()->IsHTMLElement(nsGkAtoms::button) &&
-        !f->GetContent()->IsHTMLElement(nsGkAtoms::select)) {
+        !f->GetContent()->IsAnyOfHTMLElements(nsGkAtoms::button,
+                                              nsGkAtoms::select) &&
+        !f->GetContent()->IsSVGElement()) {
       return false;
     }
   }

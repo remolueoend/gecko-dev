@@ -6,11 +6,24 @@
 
 var EXPORTED_SYMBOLS = ["Target"];
 
+const { XPCOMUtils } = ChromeUtils.import(
+  "resource://gre/modules/XPCOMUtils.jsm"
+);
+XPCOMUtils.defineLazyServiceGetter(
+  this,
+  "UUIDGen",
+  "@mozilla.org/uuid-generator;1",
+  "nsIUUIDGenerator"
+);
+
 const { ContextualIdentityService } = ChromeUtils.import(
   "resource://gre/modules/ContextualIdentityService.jsm"
 );
 const { Domain } = ChromeUtils.import(
   "chrome://remote/content/domains/Domain.jsm"
+);
+const { MainProcessTarget } = ChromeUtils.import(
+  "chrome://remote/content/targets/MainProcessTarget.jsm"
 );
 const { TabManager } = ChromeUtils.import(
   "chrome://remote/content/TabManager.jsm"
@@ -22,15 +35,14 @@ const { WindowManager } = ChromeUtils.import(
   "chrome://remote/content/WindowManager.jsm"
 );
 
-let sessionIds = 1;
 let browserContextIds = 1;
 
 class Target extends Domain {
   constructor(session) {
     super(session);
 
-    this.onTargetCreated = this.onTargetCreated.bind(this);
-    this.onTargetDestroyed = this.onTargetDestroyed.bind(this);
+    this._onTargetCreated = this._onTargetCreated.bind(this);
+    this._onTargetDestroyed = this._onTargetDestroyed.bind(this);
   }
 
   getBrowserContexts() {
@@ -51,35 +63,33 @@ class Target extends Domain {
     ContextualIdentityService.closeContainerTabs(browserContextId);
   }
 
+  getTargets() {
+    const { targets } = this.session.target;
+
+    const targetInfos = [];
+    for (const target of targets) {
+      if (target instanceof MainProcessTarget) {
+        continue;
+      }
+
+      targetInfos.push(this._getTargetInfo(target));
+    }
+
+    return { targetInfos };
+  }
+
   setDiscoverTargets({ discover }) {
     const { targets } = this.session.target;
     if (discover) {
-      targets.on("target-created", this.onTargetCreated);
-      targets.on("target-destroyed", this.onTargetDestroyed);
+      targets.on("target-created", this._onTargetCreated);
+      targets.on("target-destroyed", this._onTargetDestroyed);
     } else {
-      targets.off("target-created", this.onTargetCreated);
-      targets.off("target-destroyed", this.onTargetDestroyed);
+      targets.off("target-created", this._onTargetCreated);
+      targets.off("target-destroyed", this._onTargetDestroyed);
     }
     for (const target of targets) {
-      this.onTargetCreated("target-created", target);
+      this._onTargetCreated("target-created", target);
     }
-  }
-
-  onTargetCreated(eventName, target) {
-    this.emit("Target.targetCreated", {
-      targetInfo: {
-        browserContextId: target.browserContextId,
-        targetId: target.id,
-        type: target.type,
-        url: target.url,
-      },
-    });
-  }
-
-  onTargetDestroyed(eventName, target) {
-    this.emit("Target.targetDestroyed", {
-      targetId: target.id,
-    });
   }
 
   async createTarget({ browserContextId }) {
@@ -130,15 +140,13 @@ class Target extends Domain {
     const tabSession = new TabSession(
       this.session.connection,
       target,
-      sessionIds++
+      UUIDGen.generateUUID()
+        .toString()
+        .slice(1, -1)
     );
     this.session.connection.registerSession(tabSession);
-    this.emit("Target.attachedToTarget", {
-      targetInfo: {
-        type: "page",
-      },
-      sessionId: tabSession.id,
-    });
+
+    this._emitAttachedToTarget(target, tabSession);
 
     return {
       sessionId: tabSession.id,
@@ -150,5 +158,42 @@ class Target extends Domain {
   sendMessageToTarget({ sessionId, message }) {
     const { connection } = this.session;
     connection.sendMessageToTarget(sessionId, message);
+  }
+
+  /**
+   * Internal methods: the following methods are not part of CDP;
+   * note the _ prefix.
+   */
+
+  _emitAttachedToTarget(target, tabSession) {
+    const targetInfo = this._getTargetInfo(target);
+    this.emit("Target.attachedToTarget", {
+      targetInfo,
+      sessionId: tabSession.id,
+      waitingForDebugger: false,
+    });
+  }
+
+  _getTargetInfo(target) {
+    return {
+      targetId: target.id,
+      type: target.type,
+      title: target.title,
+      url: target.url,
+      // TODO: Correctly determine if target is attached (bug 1680780)
+      attached: target.id == this.session.target.id,
+      browserContextId: target.browserContextId,
+    };
+  }
+
+  _onTargetCreated(eventName, target) {
+    const targetInfo = this._getTargetInfo(target);
+    this.emit("Target.targetCreated", { targetInfo });
+  }
+
+  _onTargetDestroyed(eventName, target) {
+    this.emit("Target.targetDestroyed", {
+      targetId: target.id,
+    });
   }
 }

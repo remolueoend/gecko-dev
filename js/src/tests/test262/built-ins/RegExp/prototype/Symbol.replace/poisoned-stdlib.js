@@ -1,4 +1,3 @@
-// |reftest| skip -- regexp-named-groups is not supported
 // Copyright (C) 2020 Alexey Shvayka. All rights reserved.
 // This code is governed by the BSD license found in the LICENSE file.
 /*---
@@ -17,6 +16,17 @@ assert(delete String.prototype.charCodeAt);
 assert(delete String.prototype.indexOf);
 assert(delete String.prototype.slice);
 assert(delete String.prototype.substring);
+
+for (let i = 0; i < 5; ++i) {
+    Object.defineProperty(Array.prototype, i, {
+        get: function() {
+            throw new Test262Error(i + " getter should be unreachable.");
+        },
+        set: function(_value) {
+            throw new Test262Error(i + " setter should be unreachable.");
+        },
+    });
+}
 
 var str = "1a2";
 

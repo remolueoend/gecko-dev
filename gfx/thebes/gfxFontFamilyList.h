@@ -10,13 +10,12 @@
 #include "nsDebug.h"
 #include "nsISupportsImpl.h"
 #include "nsString.h"
-#include "nsStyleConsts.h"
 #include "nsUnicharUtils.h"
 #include "nsTArray.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/NotNull.h"
+#include "mozilla/ServoStyleConsts.h"
 #include "mozilla/StaticPtr.h"
-#include "mozilla/TimeStamp.h"
 
 namespace mozilla {
 
@@ -70,24 +69,18 @@ struct FontFamilyName final {
       case StyleGenericFontFamily::MozEmoji:
         MOZ_FALLTHROUGH_ASSERT("Should never appear in a font-family name!");
       case StyleGenericFontFamily::Serif:
-        aFamilyList.AppendLiteral("serif");
-        break;
+        return aFamilyList.AppendLiteral("serif");
       case StyleGenericFontFamily::SansSerif:
-        aFamilyList.AppendLiteral("sans-serif");
-        break;
+        return aFamilyList.AppendLiteral("sans-serif");
       case StyleGenericFontFamily::Monospace:
-        aFamilyList.AppendLiteral("monospace");
-        break;
+        return aFamilyList.AppendLiteral("monospace");
       case StyleGenericFontFamily::Cursive:
-        aFamilyList.AppendLiteral("cursive");
-        break;
+        return aFamilyList.AppendLiteral("cursive");
       case StyleGenericFontFamily::Fantasy:
-        aFamilyList.AppendLiteral("fantasy");
-        break;
-      default:
-        MOZ_ASSERT_UNREACHABLE("Unknown generic font-family!");
-        break;
+        return aFamilyList.AppendLiteral("fantasy");
     }
+    MOZ_ASSERT_UNREACHABLE("Unknown generic font-family!");
+    return aFamilyList.AppendLiteral("serif");
   }
 
   // helper method that converts generic names to the right enum value
@@ -115,6 +108,14 @@ struct FontFamilyName final {
     }
 
     return FontFamilyName(genericType);
+  }
+
+  bool IsNamedFamily(const nsAString& aFamilyName) const {
+    if (!IsNamed()) {
+      return false;
+    }
+    nsDependentAtomString name{mName};
+    return name.Equals(aFamilyName, nsCaseInsensitiveStringComparator);
   }
 
   RefPtr<nsAtom> mName;  // null if mGeneric != Default
@@ -300,11 +301,7 @@ class FontFamilyList {
   // searches for a specific non-generic name, case-insensitive comparison
   bool Contains(const nsAString& aFamilyName) const {
     for (const FontFamilyName& name : mFontlist->mNames) {
-      if (!name.IsNamed()) {
-        continue;
-      }
-      nsDependentAtomString listname(name.mName);
-      if (listname.Equals(aFamilyName, nsCaseInsensitiveStringComparator())) {
+      if (name.IsNamedFamily(aFamilyName)) {
         return true;
       }
     }

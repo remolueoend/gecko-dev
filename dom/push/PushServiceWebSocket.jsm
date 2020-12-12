@@ -1,4 +1,3 @@
-/* jshint moz: true, esnext: true */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -497,9 +496,11 @@ var PushServiceWebSocket = {
       null, // aLoadingNode
       Services.scriptSecurityManager.getSystemPrincipal(),
       null, // aTriggeringPrincipal
-      Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+      Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
       Ci.nsIContentPolicy.TYPE_WEBSOCKET
     );
+    // Allow deprecated HTTP request from SystemPrincipal
+    socket.loadInfo.allowDeprecatedSystemRequests = true;
 
     return socket;
   },

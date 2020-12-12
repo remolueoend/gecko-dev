@@ -43,9 +43,6 @@ add_task(async function setup() {
       ["browser.urlbar.matchBuckets", "general:5,suggestion:4"],
       // Turn autofill off.
       ["browser.urlbar.autoFill", false],
-      // Special prefs for remote tabs.
-      ["services.sync.username", "fake"],
-      ["services.sync.syncedTabs.showRemoteTabs", true],
     ],
   });
 
@@ -73,7 +70,6 @@ add_task(async function test_tab_switch_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "about:mozilla",
       fireInputEvent: true,
     });
@@ -96,7 +92,6 @@ add_task(async function test_search_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "foo",
       fireInputEvent: true,
     });
@@ -140,7 +135,6 @@ add_task(async function test_url_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "example",
       fireInputEvent: true,
     });
@@ -168,7 +162,6 @@ add_task(async function test_keyword_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "get ",
       fireInputEvent: true,
     });
@@ -184,7 +177,6 @@ add_task(async function test_keyword_result() {
 
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "get test",
       fireInputEvent: true,
     });
@@ -225,7 +217,6 @@ add_task(async function test_omnibox_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "omniboxtest ",
       fireInputEvent: true,
     });
@@ -243,6 +234,12 @@ add_task(async function test_omnibox_result() {
 });
 
 add_task(async function test_remote_tab_result() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["services.sync.username", "fake"],
+      ["services.sync.syncedTabs.showRemoteTabs", true],
+    ],
+  });
   // Clear history so that history added by previous tests doesn't mess up this
   // test when it selects results in the urlbar.
   await PlacesUtils.history.clear();
@@ -306,7 +303,6 @@ add_task(async function test_remote_tab_result() {
   await BrowserTestUtils.withNewTab({ gBrowser }, async () => {
     await UrlbarTestUtils.promiseAutocompleteResultPopup({
       window,
-      waitForFocus,
       value: "example",
       fireInputEvent: true,
     });
@@ -319,4 +315,5 @@ add_task(async function test_remote_tab_result() {
       type: UrlbarUtils.RESULT_TYPE.REMOTE_TAB,
     });
   });
+  await SpecialPowers.popPrefEnv();
 });

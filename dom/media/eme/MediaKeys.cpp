@@ -5,40 +5,42 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/MediaKeys.h"
+
+#include "ChromiumCDMProxy.h"
 #include "GMPCrashHelper.h"
+#include "mozilla/EMEUtils.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/dom/DOMException.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLMediaElement.h"
-#include "mozilla/dom/MediaKeysBinding.h"
-#include "mozilla/dom/MediaKeyMessageEvent.h"
 #include "mozilla/dom/MediaKeyError.h"
+#include "mozilla/dom/MediaKeyMessageEvent.h"
 #include "mozilla/dom/MediaKeySession.h"
 #include "mozilla/dom/MediaKeyStatusMap.h"
-#include "mozilla/dom/DOMException.h"
+#include "mozilla/dom/MediaKeySystemAccess.h"
+#include "mozilla/dom/MediaKeysBinding.h"
 #include "mozilla/dom/UnionTypes.h"
-#include "mozilla/Telemetry.h"
+#include "mozilla/dom/WindowContext.h"
+#include "mozilla/dom/WindowGlobalChild.h"
+#include "nsContentCID.h"
+#include "nsContentTypeParser.h"
+#include "nsContentUtils.h"
+#include "nsIScriptObjectPrincipal.h"
+#include "nsPrintfCString.h"
+#include "nsServiceManagerUtils.h"
+
 #ifdef MOZ_WIDGET_ANDROID
 #  include "mozilla/MediaDrmCDMProxy.h"
 #endif
-#include "mozilla/EMEUtils.h"
-#include "nsContentUtils.h"
-#include "nsIScriptObjectPrincipal.h"
-#include "nsContentTypeParser.h"
 #ifdef XP_WIN
 #  include "mozilla/WindowsVersion.h"
 #endif
-#include "nsContentCID.h"
-#include "nsServiceManagerUtils.h"
-#include "mozilla/dom/MediaKeySystemAccess.h"
-#include "nsPrintfCString.h"
-#include "ChromiumCDMProxy.h"
 
-namespace mozilla {
-
-namespace dom {
+namespace mozilla::dom {
 
 // We don't use NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE because we need to
-// unregister our MediaKeys from mDocument's activity listeners. If we don't do
-// this then cycle collection can null mDocument before our dtor runs and the
-// observer ptr held by mDocument will dangle.
+// disconnect our MediaKeys instances from the inner window (mparent) before
+// we unlink it.
 NS_IMPL_CYCLE_COLLECTION_CLASS(MediaKeys)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(MediaKeys)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mElement)
@@ -46,18 +48,16 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(MediaKeys)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mKeySessions)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPromises)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPendingSessions)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDocument)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(MediaKeys)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(MediaKeys)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mElement)
+  tmp->DisconnectInnerWindow();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mParent)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mKeySessions)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPromises)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPendingSessions)
-  tmp->UnregisterActivityObserver();
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mDocument)
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
   NS_IMPL_CYCLE_COLLECTION_UNLINK_WEAK_PTR
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
@@ -67,7 +67,6 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(MediaKeys)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(MediaKeys)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRY(nsISupports)
-  NS_INTERFACE_MAP_ENTRY(nsIDocumentActivity)
 NS_INTERFACE_MAP_END
 
 MediaKeys::MediaKeys(nsPIDOMWindowInner* aParent, const nsAString& aKeySystem,
@@ -81,36 +80,48 @@ MediaKeys::MediaKeys(nsPIDOMWindowInner* aParent, const nsAString& aKeySystem,
 }
 
 MediaKeys::~MediaKeys() {
-  UnregisterActivityObserver();
-  mDocument = nullptr;
+  MOZ_ASSERT(NS_IsMainThread());
+
+  DisconnectInnerWindow();
   Shutdown();
   EME_LOG("MediaKeys[%p] destroyed", this);
 }
 
-void MediaKeys::RegisterActivityObserver() {
-  MOZ_ASSERT(mDocument);
-  if (mDocument) {
-    mDocument->RegisterActivityObserver(this);
-  }
+void MediaKeys::ConnectInnerWindow() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  nsCOMPtr<nsPIDOMWindowInner> innerWindowParent = GetParentObject();
+  MOZ_ASSERT(innerWindowParent,
+             "We should only be connecting when we have an inner window!");
+  innerWindowParent->AddMediaKeysInstance(this);
 }
 
-void MediaKeys::UnregisterActivityObserver() {
-  if (mDocument) {
-    mDocument->UnregisterActivityObserver(this);
+void MediaKeys::DisconnectInnerWindow() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  if (!GetParentObject()) {
+    // We don't have a parent. We've been cycle collected, or the window
+    // already notified us of its destruction and we cleared the ref.
+    return;
   }
+
+  GetParentObject()->RemoveMediaKeysInstance(this);
 }
 
-// NS_DECL_NSIDOCUMENTACTIVITY
-void MediaKeys::NotifyOwnerDocumentActivityChanged() {
-  EME_LOG("MediaKeys[%p] NotifyOwnerDocumentActivityChanged()", this);
-  // If our owning document is no longer active we should shutdown.
-  if (!mDocument->IsCurrentActiveDocument()) {
-    EME_LOG(
-        "MediaKeys[%p] NotifyOwnerDocumentActivityChanged() owning document is "
-        "not active, shutting down!",
-        this);
-    Shutdown();
-  }
+void MediaKeys::OnInnerWindowDestroy() {
+  MOZ_ASSERT(NS_IsMainThread());
+
+  EME_LOG("MediaKeys[%p] OnInnerWindowDestroy()", this);
+
+  // The InnerWindow should clear its reference to this object after this call,
+  // so we don't need to explicitly call DisconnectInnerWindow before nulling.
+  mParent = nullptr;
+
+  // Don't call shutdown directly because (at time of writing) mProxy can
+  // spin the event loop when it's shutdown. This can change the world state
+  // in the middle of window destruction, which we do not want.
+  GetMainThreadEventTarget()->Dispatch(
+      NewRunnableMethod("MediaKeys::Shutdown", this, &MediaKeys::Shutdown));
 }
 
 void MediaKeys::Terminated() {
@@ -145,7 +156,10 @@ void MediaKeys::Shutdown() {
     mProxy = nullptr;
   }
 
-  RefPtr<MediaKeys> kungFuDeathGrip = this;
+  // Hold a self reference to keep us alive after we clear the self reference
+  // for each promise. This ensures we stay alive until we're done shutting
+  // down.
+  RefPtr<MediaKeys> selfReference = this;
 
   for (auto iter = mPromises.Iter(); !iter.Done(); iter.Next()) {
     RefPtr<dom::DetailedPromise>& promise = iter.Data();
@@ -170,7 +184,7 @@ void MediaKeys::GetKeySystem(nsString& aOutKeySystem) const {
 already_AddRefed<DetailedPromise> MediaKeys::SetServerCertificate(
     const ArrayBufferViewOrArrayBuffer& aCert, ErrorResult& aRv) {
   RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeys.setServerCertificate")));
+      MakePromise(aRv, "MediaKeys.setServerCertificate"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -369,8 +383,7 @@ class MediaKeysGMPCrashHelper : public GMPCrashHelper {
   WeakPtr<MediaKeys> mMediaKeys;
 };
 
-already_AddRefed<CDMProxy> MediaKeys::CreateCDMProxy(
-    nsISerialEventTarget* aMainThread) {
+already_AddRefed<CDMProxy> MediaKeys::CreateCDMProxy() {
   EME_LOG("MediaKeys[%p]::CreateCDMProxy()", this);
   RefPtr<CDMProxy> proxy;
 #ifdef MOZ_WIDGET_ANDROID
@@ -378,24 +391,21 @@ already_AddRefed<CDMProxy> MediaKeys::CreateCDMProxy(
     proxy = new MediaDrmCDMProxy(
         this, mKeySystem,
         mConfig.mDistinctiveIdentifier == MediaKeysRequirement::Required,
-        mConfig.mPersistentState == MediaKeysRequirement::Required,
-        aMainThread);
+        mConfig.mPersistentState == MediaKeysRequirement::Required);
   } else
 #endif
   {
     proxy = new ChromiumCDMProxy(
         this, mKeySystem, new MediaKeysGMPCrashHelper(this),
         mConfig.mDistinctiveIdentifier == MediaKeysRequirement::Required,
-        mConfig.mPersistentState == MediaKeysRequirement::Required,
-        aMainThread);
+        mConfig.mPersistentState == MediaKeysRequirement::Required);
   }
   return proxy.forget();
 }
 
 already_AddRefed<DetailedPromise> MediaKeys::Init(ErrorResult& aRv) {
   EME_LOG("MediaKeys[%p]::Init()", this);
-  RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeys::Init()")));
+  RefPtr<DetailedPromise> promise(MakePromise(aRv, "MediaKeys::Init()"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -409,26 +419,93 @@ already_AddRefed<DetailedPromise> MediaKeys::Init(ErrorResult& aRv) {
   }
   mPrincipal = sop->GetPrincipal();
 
-  // Determine principal of the "top-level" window; the principal of the
-  // page that will display in the URL bar.
+  // Begin figuring out the top level principal.
   nsCOMPtr<nsPIDOMWindowInner> window = GetParentObject();
-  if (!window) {
-    promise->MaybeRejectWithInvalidStateError(
-        "Couldn't get top-level window in MediaKeys::Init");
-    return promise.forget();
-  }
-  nsCOMPtr<nsPIDOMWindowOuter> top =
-      window->GetOuterWindow()->GetInProcessTop();
-  if (!top || !top->GetExtantDoc()) {
+
+  // If we're in a top level document, getting the top level principal is easy.
+  // However, we're not in a top level doc this becomes more complicated. If
+  // we're not top level we need to get the top level principal, this can be
+  // done by reading the principal of the load info, which we can get of a
+  // document's channel.
+  //
+  // There is an edge case we need to watch out for here where this code can be
+  // run in an about:blank document before it has done its async load. In this
+  // case the document will not yet have a load info. We address this below by
+  // walking up a level in the window context chain. See
+  // https://bugzilla.mozilla.org/show_bug.cgi?id=1675360
+  // for more info.
+  Document* document = window->GetExtantDoc();
+  if (!document) {
+    NS_WARNING("Failed to get document when creating MediaKeys");
     promise->MaybeRejectWithInvalidStateError(
         "Couldn't get document in MediaKeys::Init");
     return promise.forget();
   }
 
-  mDocument = top->GetExtantDoc();
+  WindowGlobalChild* windowGlobalChild = window->GetWindowGlobalChild();
+  if (!windowGlobalChild) {
+    NS_WARNING("Failed to get window global child when creating MediaKeys");
+    promise->MaybeRejectWithInvalidStateError(
+        "Couldn't get window global child in MediaKeys::Init");
+    return promise.forget();
+  }
 
-  mTopLevelPrincipal = mDocument->NodePrincipal();
+  if (windowGlobalChild->SameOriginWithTop()) {
+    // We're in the same origin as the top window context, so our principal
+    // is also the top principal.
+    mTopLevelPrincipal = mPrincipal;
+  } else {
+    // We have a different origin than the top doc, try and find the top level
+    // principal by looking it up via load info, which we read off a channel.
+    nsIChannel* channel = document->GetChannel();
 
+    WindowContext* windowContext = document->GetWindowContext();
+    if (!windowContext) {
+      NS_WARNING("Failed to get window context when creating MediaKeys");
+      promise->MaybeRejectWithInvalidStateError(
+          "Couldn't get window context in MediaKeys::Init");
+      return promise.forget();
+    }
+    while (!channel) {
+      // We don't have a channel, this can happen if we're in an about:blank
+      // page that hasn't yet had its async load performed. Try and get
+      // the channel from our parent doc. We should be able to do this because
+      // an about:blank is considered the same origin as its parent. We do this
+      // recursively to cover pages do silly things like nesting blank iframes
+      // and not waiting for loads.
+
+      // Move our window context up a level.
+      windowContext = windowContext->GetParentWindowContext();
+      if (!windowContext || !windowContext->GetExtantDoc()) {
+        NS_WARNING(
+            "Failed to get parent window context's document when creating "
+            "MediaKeys");
+        promise->MaybeRejectWithInvalidStateError(
+            "Couldn't get parent window context's document in "
+            "MediaKeys::Init (likely due to an nested about about:blank frame "
+            "that hasn't loaded yet)");
+        return promise.forget();
+      }
+
+      Document* parentDoc = windowContext->GetExtantDoc();
+      channel = parentDoc->GetChannel();
+    }
+
+    MOZ_RELEASE_ASSERT(
+        channel, "Should either have a channel or should have returned by now");
+
+    nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+    MOZ_RELEASE_ASSERT(loadInfo, "Channels should always have LoadInfo");
+    mTopLevelPrincipal = loadInfo->GetTopLevelPrincipal();
+    if (!mTopLevelPrincipal) {
+      NS_WARNING("Failed to get top level principal when creating MediaKeys");
+      promise->MaybeRejectWithInvalidStateError(
+          "Couldn't get top level principal in MediaKeys::Init");
+      return promise.forget();
+    }
+  }
+
+  // We should have figured out our top level principal.
   if (!mPrincipal || !mTopLevelPrincipal) {
     NS_WARNING("Failed to get principals when creating MediaKeys");
     promise->MaybeRejectWithInvalidStateError(
@@ -454,8 +531,7 @@ already_AddRefed<DetailedPromise> MediaKeys::Init(ErrorResult& aRv) {
   EME_LOG("MediaKeys[%p]::Create() (%s, %s)", this, origin.get(),
           topLevelOrigin.get());
 
-  mProxy =
-      CreateCDMProxy(top->GetExtantDoc()->EventTargetFor(TaskCategory::Other));
+  mProxy = CreateCDMProxy();
 
   // The CDMProxy's initialization is asynchronous. The MediaKeys is
   // refcounted, and its instance is returned to JS by promise once
@@ -473,7 +549,7 @@ already_AddRefed<DetailedPromise> MediaKeys::Init(ErrorResult& aRv) {
                NS_ConvertUTF8toUTF16(topLevelOrigin),
                KeySystemToGMPName(mKeySystem));
 
-  RegisterActivityObserver();
+  ConnectInnerWindow();
 
   return promise.forget();
 }
@@ -513,9 +589,9 @@ static bool IsSessionTypeSupported(const MediaKeySessionType aSessionType,
 }
 
 already_AddRefed<MediaKeySession> MediaKeys::CreateSession(
-    JSContext* aCx, MediaKeySessionType aSessionType, ErrorResult& aRv) {
-  EME_LOG("MediaKeys[%p]::CreateSession(aCx=%p, aSessionType=%" PRIu8 ")", this,
-          aCx, static_cast<uint8_t>(aSessionType));
+    MediaKeySessionType aSessionType, ErrorResult& aRv) {
+  EME_LOG("MediaKeys[%p]::CreateSession(aSessionType=%" PRIu8 ")", this,
+          static_cast<uint8_t>(aSessionType));
   if (!IsSessionTypeSupported(aSessionType, mConfig)) {
     EME_LOG("MediaKeys[%p]::CreateSession() failed, unsupported session type",
             this);
@@ -532,7 +608,7 @@ already_AddRefed<MediaKeySession> MediaKeys::CreateSession(
   EME_LOG("MediaKeys[%p] Creating session", this);
 
   RefPtr<MediaKeySession> session = new MediaKeySession(
-      aCx, GetParentObject(), this, mKeySystem, aSessionType, aRv);
+      GetParentObject(), this, mKeySystem, aSessionType, aRv);
 
   if (aRv.Failed()) {
     return nullptr;
@@ -540,9 +616,9 @@ already_AddRefed<MediaKeySession> MediaKeys::CreateSession(
   DDLINKCHILD("session", session.get());
 
   // Add session to the set of sessions awaiting their sessionId being ready.
-  EME_LOG("MediaKeys[%p]::CreateSession(aCx=%p, aSessionType=%" PRIu8
+  EME_LOG("MediaKeys[%p]::CreateSession(aSessionType=%" PRIu8
           ") putting session with token=%" PRIu32 " into mPendingSessions",
-          this, aCx, static_cast<uint8_t>(aSessionType), session->Token());
+          this, static_cast<uint8_t>(aSessionType), session->Token());
   mPendingSessions.Put(session->Token(), RefPtr{session});
 
   return session.forget();
@@ -623,7 +699,7 @@ void MediaKeys::GetSessionsInfo(nsString& sessionsInfo) {
 already_AddRefed<Promise> MediaKeys::GetStatusForPolicy(
     const MediaKeysPolicy& aPolicy, ErrorResult& aRv) {
   RefPtr<DetailedPromise> promise(
-      MakePromise(aRv, NS_LITERAL_CSTRING("MediaKeys::GetStatusForPolicy()")));
+      MakePromise(aRv, "MediaKeys::GetStatusForPolicy()"_ns));
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -667,5 +743,4 @@ void MediaKeys::ResolvePromiseWithKeyStatus(PromiseId aId,
   promise->MaybeResolve(aMediaKeyStatus);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

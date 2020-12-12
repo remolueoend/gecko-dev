@@ -438,7 +438,7 @@ TEST(Hashtables, ClassHashtable)
     ASSERT_TRUE(EntToUniClass.Get(nsDependentCString(entity.mStr), &myChar));
   }
 
-  ASSERT_FALSE(EntToUniClass.Get(NS_LITERAL_CSTRING("xxxx"), &myChar));
+  ASSERT_FALSE(EntToUniClass.Get("xxxx"_ns, &myChar));
 
   uint32_t count = 0;
   for (auto iter = EntToUniClass.Iter(); !iter.Done(); iter.Next()) {
@@ -719,6 +719,52 @@ TEST(Hashtables, ClassHashtable_LookupForAdd)
   ASSERT_TRUE(0 == EntToUniClass.Count());
 }
 
+TEST(Hashtables, ClassHashtable_LookupOrAdd_Present)
+{
+  nsClassHashtable<nsCStringHashKey, TestUniChar> EntToUniClass(ENTITY_COUNT);
+
+  for (const auto& entity : gEntities) {
+    EntToUniClass.Put(nsDependentCString(entity.mStr),
+                      mozilla::MakeUnique<TestUniCharDerived>(entity.mUnicode));
+  }
+
+  auto* entry = EntToUniClass.LookupOrAdd("uml"_ns, 42);
+  EXPECT_EQ(168u, entry->GetChar());
+}
+
+TEST(Hashtables, ClassHashtable_LookupOrAdd_NotPresent)
+{
+  nsClassHashtable<nsCStringHashKey, TestUniChar> EntToUniClass(ENTITY_COUNT);
+
+  // This is going to insert a TestUniChar.
+  auto* entry = EntToUniClass.LookupOrAdd("uml"_ns, 42);
+  EXPECT_EQ(42u, entry->GetChar());
+}
+
+TEST(Hashtables, ClassHashtable_LookupOrAddFromFactory_Present)
+{
+  nsClassHashtable<nsCStringHashKey, TestUniChar> EntToUniClass(ENTITY_COUNT);
+
+  for (const auto& entity : gEntities) {
+    EntToUniClass.Put(nsDependentCString(entity.mStr),
+                      mozilla::MakeUnique<TestUniCharDerived>(entity.mUnicode));
+  }
+
+  auto* entry = EntToUniClass.LookupOrAddFromFactory(
+      "uml"_ns, [] { return mozilla::MakeUnique<TestUniCharDerived>(42); });
+  EXPECT_EQ(168u, entry->GetChar());
+}
+
+TEST(Hashtables, ClassHashtable_LookupOrAddFromFactory_NotPresent)
+{
+  nsClassHashtable<nsCStringHashKey, TestUniChar> EntToUniClass(ENTITY_COUNT);
+
+  // This is going to insert a TestUniCharDerived.
+  auto* entry = EntToUniClass.LookupOrAddFromFactory(
+      "uml"_ns, [] { return mozilla::MakeUnique<TestUniCharDerived>(42); });
+  EXPECT_EQ(42u, entry->GetChar());
+}
+
 TEST(Hashtables, RefPtrHashtable)
 {
   // check a RefPtr-hashtable
@@ -737,7 +783,7 @@ TEST(Hashtables, RefPtrHashtable)
     ASSERT_TRUE(EntToUniClass.Get(nsDependentCString(entity.mStr), &myChar));
   }
 
-  ASSERT_FALSE(EntToUniClass.Get(NS_LITERAL_CSTRING("xxxx"), &myChar));
+  ASSERT_FALSE(EntToUniClass.Get("xxxx"_ns, &myChar));
 
   uint32_t count = 0;
   for (auto iter = EntToUniClass.Iter(); !iter.Done(); iter.Next()) {

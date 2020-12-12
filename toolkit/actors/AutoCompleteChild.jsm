@@ -8,9 +8,6 @@ var EXPORTED_SYMBOLS = ["AutoCompleteChild"];
 /* eslint no-unused-vars: ["error", {args: "none"}] */
 
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { XPCOMUtils } = ChromeUtils.import(
-  "resource://gre/modules/XPCOMUtils.jsm"
-);
 
 ChromeUtils.defineModuleGetter(
   this,
@@ -18,52 +15,19 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/BrowserUtils.jsm"
 );
 
-XPCOMUtils.defineLazyServiceGetter(
+ChromeUtils.defineModuleGetter(
   this,
-  "formFill",
-  "@mozilla.org/satchel/form-fill-controller;1",
-  "nsIFormFillController"
+  "ContentDOMReference",
+  "resource://gre/modules/ContentDOMReference.jsm"
+);
+
+ChromeUtils.defineModuleGetter(
+  this,
+  "LoginHelper",
+  "resource://gre/modules/LoginHelper.jsm"
 );
 
 let autoCompleteListeners = new Set();
-
-class AutoCompletePopup {
-  constructor(actor) {
-    this.actor = actor;
-  }
-
-  get input() {
-    return this.actor.input;
-  }
-  get overrideValue() {
-    return null;
-  }
-  set selectedIndex(index) {
-    return (this.actor.selectedIndex = index);
-  }
-  get selectedIndex() {
-    return this.actor.selectedIndex;
-  }
-  get popupOpen() {
-    return this.actor.popupOpen;
-  }
-  openAutocompletePopup(input, element) {
-    return this.actor.openAutocompletePopup(input, element);
-  }
-  closePopup() {
-    this.actor.closePopup();
-  }
-  invalidate() {
-    this.actor.invalidate();
-  }
-  selectBy(reverse, page) {
-    this.actor.selectBy(reverse, page);
-  }
-}
-
-AutoCompletePopup.prototype.QueryInterface = ChromeUtils.generateQI([
-  Ci.nsIAutoCompletePopup,
-]);
 
 class AutoCompleteChild extends JSWindowActorChild {
   constructor() {
@@ -71,7 +35,6 @@ class AutoCompleteChild extends JSWindowActorChild {
 
     this._input = null;
     this._popupOpen = false;
-    this._attached = false;
   }
 
   static addPopupStateListener(listener) {
@@ -80,40 +43,6 @@ class AutoCompleteChild extends JSWindowActorChild {
 
   static removePopupStateListener(listener) {
     autoCompleteListeners.delete(listener);
-  }
-
-  willDestroy() {
-    if (this._attached) {
-      formFill.detachFromDocument(this.document);
-    }
-  }
-
-  handleEvent(event) {
-    switch (event.type) {
-      case "DOMContentLoaded":
-      case "pageshow":
-      case "focus":
-        if (!this._attached && this.document.location != "about:blank") {
-          this._attached = true;
-          formFill.attachToDocument(this.document, new AutoCompletePopup(this));
-        }
-
-        if (event.type == "focus") {
-          formFill.handleFormEvent(event);
-        }
-
-        break;
-      case "pagehide":
-      case "unload":
-        if (this._attached) {
-          formFill.detachFromDocument(this.document);
-          this._attached = false;
-        }
-      // fall through
-      default:
-        formFill.handleFormEvent(event);
-        break;
-    }
   }
 
   receiveMessage(message) {
@@ -211,11 +140,17 @@ class AutoCompleteChild extends JSWindowActorChild {
     let window = element.ownerGlobal;
     let dir = window.getComputedStyle(element).direction;
     let results = this.getResultsFromController(input);
+    let formOrigin = LoginHelper.getLoginOrigin(
+      element.ownerDocument.documentURI
+    );
+    let inputElementIdentifier = ContentDOMReference.get(element);
 
     this.sendAsyncMessage("FormAutoComplete:MaybeOpenPopup", {
       results,
       rect,
       dir,
+      inputElementIdentifier,
+      formOrigin,
     });
 
     this._input = input;
@@ -270,3 +205,7 @@ class AutoCompleteChild extends JSWindowActorChild {
     return results;
   }
 }
+
+AutoCompleteChild.prototype.QueryInterface = ChromeUtils.generateQI([
+  "nsIAutoCompletePopup",
+]);

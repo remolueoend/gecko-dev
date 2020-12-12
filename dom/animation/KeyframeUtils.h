@@ -14,11 +14,12 @@
 
 struct JSContext;
 class JSObject;
-class ComputedStyle;
 struct RawServoDeclarationBlock;
 
 namespace mozilla {
 struct AnimationProperty;
+class ComputedStyle;
+
 enum class PseudoStyleType : uint8_t;
 class ErrorResult;
 struct Keyframe;
@@ -90,7 +91,8 @@ class KeyframeUtils {
    */
   static nsTArray<AnimationProperty> GetAnimationPropertiesFromKeyframes(
       const nsTArray<Keyframe>& aKeyframes, dom::Element* aElement,
-      const ComputedStyle* aStyle, dom::CompositeOperation aEffectComposite);
+      PseudoStyleType aPseudoType, const ComputedStyle* aStyle,
+      dom::CompositeOperation aEffectComposite);
 
   /**
    * Check if the property or, for shorthands, one or more of

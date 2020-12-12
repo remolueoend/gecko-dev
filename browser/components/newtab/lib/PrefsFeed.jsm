@@ -23,10 +23,23 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/AppConstants.jsm"
 );
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "ExperimentAPI",
+  "resource://messaging-system/experiments/ExperimentAPI.jsm"
+);
+
+ChromeUtils.defineModuleGetter(
+  this,
+  "Region",
+  "resource://gre/modules/Region.jsm"
+);
+
 this.PrefsFeed = class PrefsFeed {
   constructor(prefMap) {
     this._prefMap = prefMap;
     this._prefs = new Prefs();
+    this.onExperimentUpdated = this.onExperimentUpdated.bind(this);
   }
 
   onPrefChanged(name, value) {
@@ -62,8 +75,67 @@ this.PrefsFeed = class PrefsFeed {
     this._prefMap.set(key, { value });
   }
 
+  /**
+   * Combine default values with experiment values for
+   * the feature config.
+   * */
+  getFeatureConfigFromExperimentData(experimentData) {
+    return {
+      // Icon that shows up in the corner to link to preferences
+      prefsButtonIcon: "icon-settings",
+
+      // Override defaults with any experiment values, if any exist.
+      ...(experimentData?.branch?.feature?.value || {}),
+    };
+  }
+
+  /**
+   * Helper for initializing experiment and feature config data in .init()
+   * */
+  addExperimentDataToValues(values) {
+    let experimentData;
+    try {
+      experimentData = ExperimentAPI.getExperiment({
+        featureId: "newtab",
+      });
+    } catch (e) {
+      Cu.reportError(e);
+    }
+    values.experimentData = experimentData;
+    values.featureConfig = this.getFeatureConfigFromExperimentData(
+      experimentData
+    );
+  }
+
+  /**
+   * Handler for when experiment data updates.
+   */
+  onExperimentUpdated(event, experimentData) {
+    this.store.dispatch(
+      ac.BroadcastToContent({
+        type: at.PREF_CHANGED,
+        data: { name: "experimentData", value: experimentData },
+      })
+    );
+    this.store.dispatch(
+      ac.BroadcastToContent({
+        type: at.PREF_CHANGED,
+        data: {
+          name: "featureConfig",
+          value: this.getFeatureConfigFromExperimentData(experimentData),
+        },
+      })
+    );
+  }
+
   init() {
     this._prefs.observeBranch(this);
+    ExperimentAPI.on(
+      "update",
+      { featureId: "newtab" },
+      this.onExperimentUpdated
+    );
+
     this._storage = this.store.dbStorage.getDbTable("sectionPrefs");
 
     // Get the initial value of each activity stream pref
@@ -76,6 +148,16 @@ this.PrefsFeed = class PrefsFeed {
     // computed in main process
     values.isPrivateBrowsingEnabled = PrivateBrowsingUtils.enabled;
     values.platform = AppConstants.platform;
+
+    // Save the geo pref if we have it
+    if (Region.home) {
+      values.region = Region.home;
+      this.geo = values.region;
+    } else if (this.geo !== "") {
+      // Watch for geo changes and use a dummy value for now
+      Services.obs.addObserver(this, Region.REGION_TOPIC);
+      this.geo = "";
+    }
 
     // Get the firefox accounts url for links and to send firstrun metrics to.
     values.fxa_endpoint = Services.prefs.getStringPref(
@@ -101,6 +183,10 @@ this.PrefsFeed = class PrefsFeed {
       value: searchTopSiteExperimentPrefValue,
     });
 
+    values.mayHaveSponsoredTopSites = Services.prefs.getBoolPref(
+      "browser.topsites.useRemoteSetting"
+    );
+
     // Read the pref for search hand-off from firefox.js and store it
     // in our interal list of prefs to watch
     let handoffToAwesomebarPrefValue = Services.prefs.getBoolPref(
@@ -111,25 +197,48 @@ this.PrefsFeed = class PrefsFeed {
       value: handoffToAwesomebarPrefValue,
     });
 
+    this.addExperimentDataToValues(values);
+
+    this._setBoolPref(values, "newNewtabExperience.enabled", false);
+    this._setBoolPref(values, "customizationMenu.enabled", false);
+    this._setBoolPref(values, "logowordmark.alwaysVisible", false);
+    this._setBoolPref(values, "feeds.section.topstories", false);
     this._setBoolPref(values, "discoverystream.enabled", false);
     this._setBoolPref(values, "discoverystream.isCollectionDismissible", false);
     this._setBoolPref(values, "discoverystream.hardcoded-basic-layout", false);
+    this._setBoolPref(values, "discoverystream.recs.personalized", false);
+    this._setBoolPref(values, "discoverystream.spocs.personalized", false);
     this._setStringPref(
       values,
       "discoverystream.personalization.modelKeys",
       ""
     );
     this._setIntPref(values, "discoverystream.personalization.version", 1);
+    this._setIntPref(values, "discoverystream.personalization.overrideVersion");
     this._setStringPref(values, "discoverystream.spocs-endpoint", "");
 
     // Set the initial state of all prefs in redux
     this.store.dispatch(
-      ac.BroadcastToContent({ type: at.PREFS_INITIAL_VALUES, data: values })
+      ac.BroadcastToContent({
+        type: at.PREFS_INITIAL_VALUES,
+        data: values,
+        meta: {
+          isStartup: true,
+        },
+      })
     );
+  }
+
+  uninit() {
+    this.removeListeners();
   }
 
   removeListeners() {
     this._prefs.ignoreBranch(this);
+    ExperimentAPI.off(this.onExperimentUpdated);
+    if (this.geo === "") {
+      Services.obs.removeObserver(this, Region.REGION_TOPIC);
+    }
   }
 
   async _setIndexedDBPref(id, value) {
@@ -141,13 +250,28 @@ this.PrefsFeed = class PrefsFeed {
     }
   }
 
+  observe(subject, topic, data) {
+    switch (topic) {
+      case Region.REGION_TOPIC:
+        if (data === Region.REGION_UPDATED) {
+          this.store.dispatch(
+            ac.BroadcastToContent({
+              type: at.PREF_CHANGED,
+              data: { name: "region", value: Region.home },
+            })
+          );
+        }
+        break;
+    }
+  }
+
   onAction(action) {
     switch (action.type) {
       case at.INIT:
         this.init();
         break;
       case at.UNINIT:
-        this.removeListeners();
+        this.uninit();
         break;
       case at.CLEAR_PREF:
         Services.prefs.clearUserPref(this._prefs._branchStr + action.data.name);

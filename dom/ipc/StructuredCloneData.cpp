@@ -6,14 +6,15 @@
 
 #include "StructuredCloneData.h"
 
-#include "ipc/IPCMessageUtils.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/BlobBinding.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/DOMTypes.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/IPCBlobUtils.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/IPCStreamUtils.h"
+#include "mozilla/ipc/SerializedStructuredCloneBuffer.h"
 #include "nsContentUtils.h"
 #include "nsJSEnvironment.h"
 #include "MainThreadUtils.h"
@@ -22,9 +23,7 @@
 
 using namespace mozilla::ipc;
 
-namespace mozilla {
-namespace dom {
-namespace ipc {
+namespace mozilla::dom::ipc {
 
 using mozilla::ipc::AutoIPCStream;
 using mozilla::ipc::IPCStream;
@@ -425,6 +424,4 @@ already_AddRefed<SharedJSAllocatedData> StructuredCloneData::TakeSharedData() {
   return mSharedData.forget();
 }
 
-}  // namespace ipc
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::ipc

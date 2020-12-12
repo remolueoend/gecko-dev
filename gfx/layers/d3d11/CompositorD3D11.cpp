@@ -168,9 +168,8 @@ bool CompositorD3D11::Initialize(nsCString* const out_failureReason) {
   }
   if (!mAttachments || !mAttachments->IsValid()) {
     gfxCriticalNote << "[D3D11] failed to get compositor device attachments";
-    *out_failureReason =
-        mAttachments ? mAttachments->GetFailureId()
-                     : NS_LITERAL_CSTRING("FEATURE_FAILURE_NO_ATTACHMENTS");
+    *out_failureReason = mAttachments ? mAttachments->GetFailureId()
+                                      : "FEATURE_FAILURE_NO_ATTACHMENTS"_ns;
     return false;
   }
 
@@ -240,6 +239,10 @@ bool CompositorD3D11::Initialize(nsCString* const out_failureReason) {
         swapChain->SetBackgroundColor(&color);
 
         mSwapChain = swapChain;
+      } else if (mWidget->AsWindows()->GetCompositorHwnd()) {
+        // Destroy compositor window.
+        mWidget->AsWindows()->DestroyCompositorWindow();
+        mHwnd = mWidget->AsWindows()->GetHwnd();
       }
     }
 
@@ -248,6 +251,12 @@ bool CompositorD3D11::Initialize(nsCString* const out_failureReason) {
     if (!mSwapChain)
 #endif
     {
+      if (mWidget->AsWindows()->GetCompositorHwnd()) {
+        // Destroy compositor window.
+        mWidget->AsWindows()->DestroyCompositorWindow();
+        mHwnd = mWidget->AsWindows()->GetHwnd();
+      }
+
       DXGI_SWAP_CHAIN_DESC swapDesc;
       ::ZeroMemory(&swapDesc, sizeof(swapDesc));
       swapDesc.BufferDesc.Width = 0;
@@ -1243,9 +1252,11 @@ Maybe<IntRect> CompositorD3D11::BeginFrame(const nsIntRegion& aInvalidRegion,
 void CompositorD3D11::NormalDrawingDone() { mDiagnostics->End(); }
 
 void CompositorD3D11::EndFrame() {
+#ifdef MOZ_GECKO_PROFILER
   if (!profiler_feature_active(ProfilerFeature::Screenshots) && mWindowRTCopy) {
     mWindowRTCopy = nullptr;
   }
+#endif  // MOZ_GECKO_PROFILER
 
   if (!mDefaultRT) {
     Compositor::EndFrame();
@@ -1420,7 +1431,7 @@ void CompositorD3D11::ForcePresent() {
   mSwapChain->GetDesc(&desc);
 
   if (desc.BufferDesc.Width == size.width &&
-      desc.BufferDesc.Height == size.height) {
+      desc.BufferDesc.Height == size.height && size == mBufferSize) {
     mSwapChain->Present(0, 0);
     if (mIsDoubleBuffered) {
       // Make sure we present what was the front buffer before that we know is
@@ -1523,6 +1534,9 @@ bool CompositorD3D11::VerifyBufferSize() {
     gfxCriticalNote << "D3D11 swap resize buffers failed " << hexa(hr) << " on "
                     << mSize;
     HandleError(hr);
+    mBufferSize = LayoutDeviceIntSize();
+  } else {
+    mBufferSize = mSize;
   }
 
   mBackBufferInvalid = mFrontBufferInvalid =
@@ -1711,6 +1725,13 @@ bool CompositorD3D11::Failed(HRESULT hr, const char* aContext) {
   gfxCriticalNote << "[D3D11] " << aContext << " failed: " << hexa(hr) << ", "
                   << (int)mVerifyBuffersFailed;
   return true;
+}
+
+SyncObjectHost* CompositorD3D11::GetSyncObject() {
+  if (mAttachments) {
+    return mAttachments->mSyncObject;
+  }
+  return nullptr;
 }
 
 void CompositorD3D11::HandleError(HRESULT hr, Severity aSeverity) {

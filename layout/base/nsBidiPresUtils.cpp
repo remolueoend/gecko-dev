@@ -76,8 +76,8 @@ static bool IsIsolateControl(char16_t aChar) {
 // Returns 0 if no override control character is implied by this style.
 static char16_t GetBidiOverride(ComputedStyle* aComputedStyle) {
   const nsStyleVisibility* vis = aComputedStyle->StyleVisibility();
-  if ((vis->mWritingMode == NS_STYLE_WRITING_MODE_VERTICAL_RL ||
-       vis->mWritingMode == NS_STYLE_WRITING_MODE_VERTICAL_LR) &&
+  if ((vis->mWritingMode == StyleWritingModeProperty::VerticalRl ||
+       vis->mWritingMode == StyleWritingModeProperty::VerticalLr) &&
       vis->mTextOrientation == StyleTextOrientation::Upright) {
     return kLRO;
   }
@@ -453,7 +453,7 @@ struct MOZ_STACK_CLASS BidiParagraphData {
     MOZ_ASSERT(mEmbeddingStack.Length(), "embedding/override underflow");
     MOZ_ASSERT(aCh == mEmbeddingStack.LastElement());
     AppendPopChar(aCh);
-    mEmbeddingStack.TruncateLength(mEmbeddingStack.Length() - 1);
+    mEmbeddingStack.RemoveLastElement();
   }
 
   void ClearBidiControls() {
@@ -1197,7 +1197,7 @@ void nsBidiPresUtils::TraverseFrames(nsIFrame* aCurrentFrame,
     LayoutFrameType frameType = frame->Type();
     if (frame->IsFrameOfType(nsIFrame::eBidiInlineContainer) ||
         frameType == LayoutFrameType::Ruby) {
-      if (!(frame->GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
+      if (!frame->HasAnyStateBits(NS_FRAME_FIRST_REFLOW)) {
         nsContainerFrame* c = static_cast<nsContainerFrame*>(frame);
         MOZ_ASSERT(c == do_QueryFrame(frame),
                    "eBidiInlineContainer and ruby frame must be"
@@ -1444,7 +1444,7 @@ bool nsBidiPresUtils::ChildListMayRequireBidi(nsIFrame* aFirstChild,
           *aCurrContent = content;
           const nsTextFragment* txt = &content->TextFragment();
           if (txt->Is2b() &&
-              HasRTLChars(MakeSpan(txt->Get2b(), txt->GetLength()))) {
+              HasRTLChars(Span(txt->Get2b(), txt->GetLength()))) {
             return true;
           }
         }
@@ -1486,6 +1486,9 @@ nscoord nsBidiPresUtils::ReorderFrames(nsIFrame* aFirstFrameOnLine,
     // aNumFramesOnLine to -1 makes InitLogicalArrayFromLine look at all of
     // them.
     aNumFramesOnLine = -1;
+    // As the line frame itself has been adjusted at its inline-start position
+    // by the caller, we do not want to apply this to its children.
+    aStart = 0;
   }
 
   BidiLineData bld(aFirstFrameOnLine, aNumFramesOnLine);
@@ -1595,7 +1598,7 @@ void nsBidiPresUtils::IsFirstOrLast(nsIFrame* aFrame,
   }
 
   if ((aIsFirst || aIsLast) &&
-      (aFrame->GetStateBits() & NS_FRAME_PART_OF_IBSPLIT)) {
+      aFrame->HasAnyStateBits(NS_FRAME_PART_OF_IBSPLIT)) {
     // For ib splits, don't treat anything except the last part as
     // endmost or anything except the first part as startmost.
     // As an optimization, only get the first continuation once.

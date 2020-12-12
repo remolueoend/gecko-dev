@@ -37,6 +37,7 @@
 #include "nsIScriptError.h"
 #include "nsMimeTypes.h"
 #include "nsProxyRelease.h"
+#include "nsServiceManagerUtils.h"
 #include "nsTArray.h"
 
 mozilla::LazyLogModule gMediaRecorderLog("MediaRecorder");
@@ -50,9 +51,7 @@ mozilla::LazyLogModule gMediaRecorderLog("MediaRecorder");
 #define DEFAULT_AUDIO_BITRATE_BPS 128e3  // 128kbps
 #define MAX_AUDIO_BITRATE_BPS 512e3      // 512kbps
 
-namespace mozilla {
-
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::media;
 
@@ -99,10 +98,9 @@ class MediaRecorderReporter final : public nsIMemoryReporter {
 
     nsCOMPtr<nsIHandleReportCallback> handleReport = aHandleReport;
     nsCOMPtr<nsISupports> data = aData;
-    MediaRecorder::SizeOfPromise::All(GetCurrentThreadSerialEventTarget(),
-                                      promises)
+    MediaRecorder::SizeOfPromise::All(GetCurrentSerialEventTarget(), promises)
         ->Then(
-            GetCurrentThreadSerialEventTarget(), __func__,
+            GetCurrentSerialEventTarget(), __func__,
             [handleReport, data](const nsTArray<size_t>& sizes) {
               nsCOMPtr<nsIMemoryReporterManager> manager =
                   do_GetService("@mozilla.org/memory-reporter-manager;1");
@@ -115,10 +113,9 @@ class MediaRecorderReporter final : public nsIMemoryReporter {
                 sum += size;
               }
 
-              handleReport->Callback(
-                  EmptyCString(), NS_LITERAL_CSTRING("explicit/media/recorder"),
-                  KIND_HEAP, UNITS_BYTES, sum,
-                  NS_LITERAL_CSTRING("Memory used by media recorder."), data);
+              handleReport->Callback(""_ns, "explicit/media/recorder"_ns,
+                                     KIND_HEAP, UNITS_BYTES, sum,
+                                     "Memory used by media recorder."_ns, data);
 
               manager->EndReport();
             },
@@ -146,6 +143,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(MediaRecorder,
                                                   DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mStream)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAudioNode)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInvalidModificationDomException)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSecurityDomException)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mUnknownDomException)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDocument)
@@ -155,6 +153,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(MediaRecorder,
                                                 DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mStream)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mAudioNode)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mInvalidModificationDomException)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSecurityDomException)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mUnknownDomException)
   tmp->UnRegisterActivityObserver();
@@ -231,9 +230,9 @@ nsCString TypeSupportToCString(TypeSupport aSupport,
           "Video cannot be recorded with %s as it is an audio type",
           mime.get());
     case TypeSupport::ContainersDisabled:
-      return NS_LITERAL_CSTRING("All containers are disabled");
+      return "All containers are disabled"_ns;
     case TypeSupport::CodecsDisabled:
-      return NS_LITERAL_CSTRING("All codecs are disabled");
+      return "All codecs are disabled"_ns;
     case TypeSupport::ContainerUnsupported:
       return nsPrintfCString("%s indicates an unsupported container",
                              mime.get());
@@ -244,7 +243,7 @@ nsCString TypeSupportToCString(TypeSupport aSupport,
                              mime.get());
     default:
       MOZ_ASSERT_UNREACHABLE("Unknown TypeSupport");
-      return NS_LITERAL_CSTRING("Unknown error");
+      return "Unknown error"_ns;
   }
 }
 
@@ -459,7 +458,7 @@ nsString SelectMimeType(bool aHasVideo, bool aHasAudio,
   if (constrainedType && constrainedType->ExtendedType().HaveCodecs()) {
     // The constrained mime type is fully defined (it has codecs!). No need to
     // select anything.
-    result = NS_ConvertUTF8toUTF16(constrainedType->OriginalString());
+    CopyUTF8toUTF16(constrainedType->OriginalString(), result);
   } else {
     // There is no constrained mime type, or there is and it is not fully
     // defined but still valid. Select what's missing, so that we have major
@@ -477,20 +476,20 @@ nsString SelectMimeType(bool aHasVideo, bool aHasAudio,
         // order to be valid. Use them as is.
         majorType = constrainedType->Type().AsString();
       } else if (aHasVideo) {
-        majorType = NS_LITERAL_CSTRING(VIDEO_WEBM);
+        majorType = nsLiteralCString(VIDEO_WEBM);
       } else {
-        majorType = NS_LITERAL_CSTRING(AUDIO_OGG);
+        majorType = nsLiteralCString(AUDIO_OGG);
       }
     }
 
     nsCString codecs;
     {
       if (aHasVideo && aHasAudio) {
-        codecs = NS_LITERAL_CSTRING("\"vp8, opus\"");
+        codecs = "\"vp8, opus\""_ns;
       } else if (aHasVideo) {
-        codecs = NS_LITERAL_CSTRING("vp8");
+        codecs = "vp8"_ns;
       } else {
-        codecs = NS_LITERAL_CSTRING("opus");
+        codecs = "opus"_ns;
       }
     }
     result = NS_ConvertUTF8toUTF16(
@@ -709,7 +708,14 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
     LOG(LogLevel::Warning,
         ("Session.NotifyTrackAdded %p Raising error due to track set change",
          this));
-    DoSessionEndTask(NS_ERROR_ABORT);
+    // There's a chance we have a sensible JS stack here.
+    if (!mRecorder->mInvalidModificationDomException) {
+      mRecorder->mInvalidModificationDomException = DOMException::Create(
+          NS_ERROR_DOM_INVALID_MODIFICATION_ERR,
+          "An attempt was made to add a track to the recorded MediaStream "
+          "during the recording"_ns);
+    }
+    DoSessionEndTask(NS_ERROR_DOM_INVALID_MODIFICATION_ERR);
   }
 
   void NotifyTrackRemoved(const RefPtr<MediaStreamTrack>& aTrack) override {
@@ -720,7 +726,14 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
     LOG(LogLevel::Warning,
         ("Session.NotifyTrackRemoved %p Raising error due to track set change",
          this));
-    DoSessionEndTask(NS_ERROR_ABORT);
+    // There's a chance we have a sensible JS stack here.
+    if (!mRecorder->mInvalidModificationDomException) {
+      mRecorder->mInvalidModificationDomException = DOMException::Create(
+          NS_ERROR_DOM_INVALID_MODIFICATION_ERR,
+          "An attempt was made to remove a track from the recorded MediaStream "
+          "during the recording"_ns);
+    }
+    DoSessionEndTask(NS_ERROR_DOM_INVALID_MODIFICATION_ERR);
   }
 
   void Start() {
@@ -754,8 +767,8 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
         // check track principals async later.
         nsPIDOMWindowInner* window = mRecorder->GetOwner();
         Document* document = window ? window->GetExtantDoc() : nullptr;
-        nsContentUtils::ReportToConsole(nsIScriptError::errorFlag,
-                                        NS_LITERAL_CSTRING("Media"), document,
+        nsContentUtils::ReportToConsole(nsIScriptError::errorFlag, "Media"_ns,
+                                        document,
                                         nsContentUtils::eDOM_PROPERTIES,
                                         "MediaRecorderMultiTracksNotSupported");
         DoSessionEndTask(NS_ERROR_ABORT);
@@ -1065,8 +1078,8 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
     name.AppendPrintf("MediaRecorder::Session %p shutdown", this);
     mShutdownBlocker = MakeAndAddRef<Blocker>(this, name);
     nsresult rv = GetShutdownBarrier()->AddBlocker(
-        mShutdownBlocker, NS_LITERAL_STRING(__FILE__), __LINE__,
-        NS_LITERAL_STRING("MediaRecorder::Session: shutdown"));
+        mShutdownBlocker, NS_LITERAL_STRING_FROM_CSTRING(__FILE__), __LINE__,
+        u"MediaRecorder::Session: shutdown"_ns);
     MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
     mEncoder = MediaEncoder::CreateEncoder(
@@ -1152,7 +1165,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
               }
 
               if (needsStartEvent) {
-                mRecorder->DispatchSimpleEvent(NS_LITERAL_STRING("start"));
+                mRecorder->DispatchSimpleEvent(u"start"_ns);
               }
 
               // If there was an error, Fire the appropriate one
@@ -1182,7 +1195,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
               }
 
               // Fire an event named stop
-              mRecorder->DispatchSimpleEvent(NS_LITERAL_STRING("stop"));
+              mRecorder->DispatchSimpleEvent(u"stop"_ns);
 
               // And finally, Shutdown and destroy the Session
               return Shutdown();
@@ -1218,7 +1231,7 @@ class MediaRecorder::Session : public PrincipalChangeObserver<MediaStreamTrack>,
 
           mRecorder->mMimeType = mMimeType;
         }
-        mRecorder->DispatchSimpleEvent(NS_LITERAL_STRING("start"));
+        mRecorder->DispatchSimpleEvent(u"start"_ns);
       }
       return NS_OK;
     }));
@@ -1442,11 +1455,9 @@ void MediaRecorder::Start(const Optional<uint32_t>& aTimeslice,
   if (mStream) {
     mStream->GetTracks(tracks);
   }
-  for (const auto& t : nsTArray<RefPtr<MediaStreamTrack>>(tracks)) {
-    if (t->Ended()) {
-      tracks.RemoveElement(t);
-    }
-  }
+  tracks.RemoveLastElements(
+      tracks.end() - std::remove_if(tracks.begin(), tracks.end(),
+                                    [](const auto& t) { return t->Ended(); }));
 
   // 5. If the value of recorder’s state attribute is not inactive, throw an
   //    InvalidStateError DOMException and abort these steps.
@@ -1634,7 +1645,7 @@ void MediaRecorder::Pause(ErrorResult& aResult) {
       "MediaRecorder::Pause", [recorder = RefPtr<MediaRecorder>(this)] {
         // 2. Let target be the MediaRecorder context object. Fire an event
         //    named pause at target.
-        recorder->DispatchSimpleEvent(NS_LITERAL_STRING("pause"));
+        recorder->DispatchSimpleEvent(u"pause"_ns);
       }));
 
   // 4. return undefined.
@@ -1672,7 +1683,7 @@ void MediaRecorder::Resume(ErrorResult& aResult) {
       "MediaRecorder::Resume", [recorder = RefPtr<MediaRecorder>(this)] {
         // 2. Let target be the MediaRecorder context object. Fire an event
         //    named resume at target.
-        recorder->DispatchSimpleEvent(NS_LITERAL_STRING("resume"));
+        recorder->DispatchSimpleEvent(u"resume"_ns);
       }));
 
   // 4. return undefined.
@@ -1926,7 +1937,7 @@ nsresult MediaRecorder::CreateAndDispatchBlobEvent(BlobImpl* aBlobImpl) {
   init.mData = blob;
 
   RefPtr<BlobEvent> event =
-      BlobEvent::Constructor(this, NS_LITERAL_STRING("dataavailable"), init);
+      BlobEvent::Constructor(this, u"dataavailable"_ns, init);
   event->SetTrusted(true);
   ErrorResult rv;
   DispatchEvent(*event, rv);
@@ -1970,6 +1981,10 @@ void MediaRecorder::NotifyError(nsresult aRv) {
       }
       init.mError = std::move(mSecurityDomException);
       break;
+    case NS_ERROR_DOM_INVALID_MODIFICATION_ERR:
+      MOZ_DIAGNOSTIC_ASSERT(mInvalidModificationDomException);
+      init.mError = std::move(mInvalidModificationDomException);
+      break;
     default:
       if (!mUnknownDomException) {
         LOG(LogLevel::Debug, ("MediaRecorder.NotifyError: "
@@ -1982,8 +1997,8 @@ void MediaRecorder::NotifyError(nsresult aRv) {
       init.mError = std::move(mUnknownDomException);
   }
 
-  RefPtr<MediaRecorderErrorEvent> event = MediaRecorderErrorEvent::Constructor(
-      this, NS_LITERAL_STRING("error"), init);
+  RefPtr<MediaRecorderErrorEvent> event =
+      MediaRecorderErrorEvent::Constructor(this, u"error"_ns, init);
   event->SetTrusted(true);
 
   IgnoredErrorResult res;
@@ -2057,9 +2072,9 @@ RefPtr<MediaRecorder::SizeOfPromise> MediaRecorder::SizeOfExcludingThis(
     promises.AppendElement(session->SizeOfExcludingThis(aMallocSizeOf));
   }
 
-  SizeOfPromise::All(GetCurrentThreadSerialEventTarget(), promises)
+  SizeOfPromise::All(GetCurrentSerialEventTarget(), promises)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [holder](const nsTArray<size_t>& sizes) {
             size_t total = 0;
             for (const size_t& size : sizes) {
@@ -2074,7 +2089,6 @@ RefPtr<MediaRecorder::SizeOfPromise> MediaRecorder::SizeOfExcludingThis(
 
 StaticRefPtr<MediaRecorderReporter> MediaRecorderReporter::sUniqueInstance;
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 #undef LOG

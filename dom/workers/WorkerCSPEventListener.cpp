@@ -7,8 +7,10 @@
 #include "WorkerCSPEventListener.h"
 #include "WorkerPrivate.h"
 #include "WorkerRef.h"
+#include "WorkerRunnable.h"
 #include "mozilla/dom/SecurityPolicyViolationEvent.h"
 #include "mozilla/dom/SecurityPolicyViolationEventBinding.h"
+#include "mozilla/dom/WorkerRunnable.h"
 
 using namespace mozilla::dom;
 
@@ -28,8 +30,8 @@ class WorkerCSPEventRunnable final : public MainThreadWorkerRunnable {
 
     RefPtr<mozilla::dom::Event> event =
         mozilla::dom::SecurityPolicyViolationEvent::Constructor(
-            aWorkerPrivate->GlobalScope(),
-            NS_LITERAL_STRING("securitypolicyviolation"), violationEventInit);
+            aWorkerPrivate->GlobalScope(), u"securitypolicyviolation"_ns,
+            violationEventInit);
     event->SetTrusted(true);
 
     aWorkerPrivate->GlobalScope()->DispatchEvent(*event);

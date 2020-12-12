@@ -5,6 +5,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/MIDIAccessManager.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/MIDIAccess.h"
 #include "mozilla/dom/MIDIManagerChild.h"
 #include "mozilla/dom/MIDIPermissionRequest.h"
@@ -18,8 +19,7 @@
 
 using namespace mozilla::ipc;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 // Singleton object for MIDIAccessManager
@@ -58,7 +58,7 @@ already_AddRefed<Promise> MIDIAccessManager::RequestMIDIAccess(
     return nullptr;
   }
 
-  if (!FeaturePolicyUtils::IsFeatureAllowed(doc, NS_LITERAL_STRING("midi"))) {
+  if (!FeaturePolicyUtils::IsFeatureAllowed(doc, u"midi"_ns)) {
     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
     return nullptr;
   }
@@ -146,5 +146,4 @@ void MIDIAccessManager::Update(const MIDIPortList& aPortList) {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

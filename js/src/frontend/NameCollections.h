@@ -7,6 +7,8 @@
 #ifndef frontend_NameCollections_h
 #define frontend_NameCollections_h
 
+#include <type_traits>
+
 #include "ds/InlineTable.h"
 #include "frontend/NameAnalysisTypes.h"
 #include "js/Vector.h"
@@ -105,6 +107,8 @@ class CollectionPool {
 
 template <typename Wrapped>
 struct RecyclableAtomMapValueWrapper {
+  using WrappedType = Wrapped;
+
   union {
     Wrapped wrapped;
     uint64_t dummy;
@@ -130,7 +134,7 @@ struct RecyclableAtomMapValueWrapper {
   const Wrapped* operator->() const { return &wrapped; }
 };
 
-struct NameMapHasher : public DefaultHasher<JSAtom*> {
+struct NameMapHasher : public DefaultHasher<const ParserAtom*> {
   static inline HashNumber hash(const Lookup& l) {
     // Name maps use the atom's precomputed hash code, which is based on
     // the atom's contents rather than its pointer value. This is necessary
@@ -143,17 +147,25 @@ struct NameMapHasher : public DefaultHasher<JSAtom*> {
 
 template <typename MapValue>
 using RecyclableNameMap =
-    InlineMap<JSAtom*, RecyclableAtomMapValueWrapper<MapValue>, 24,
+    InlineMap<const ParserAtom*, RecyclableAtomMapValueWrapper<MapValue>, 24,
               NameMapHasher, SystemAllocPolicy>;
 
 using DeclaredNameMap = RecyclableNameMap<DeclaredNameInfo>;
 using NameLocationMap = RecyclableNameMap<NameLocation>;
+// Cannot use GCThingIndex here because it's not trivial type.
 using AtomIndexMap = RecyclableNameMap<uint32_t>;
 
 template <typename RepresentativeTable>
 class InlineTablePool
     : public CollectionPool<RepresentativeTable,
                             InlineTablePool<RepresentativeTable>> {
+  template <typename>
+  struct IsRecyclableAtomMapValueWrapper : std::false_type {};
+
+  template <typename T>
+  struct IsRecyclableAtomMapValueWrapper<RecyclableAtomMapValueWrapper<T>>
+      : std::true_type {};
+
  public:
   template <typename Table>
   static void assertInvariants() {
@@ -161,8 +173,34 @@ class InlineTablePool
         Table::SizeOfInlineEntries == RepresentativeTable::SizeOfInlineEntries,
         "Only tables with the same size for inline entries are usable in the "
         "pool.");
-    static_assert(mozilla::IsPod<typename Table::Table::Entry>::value,
-                  "Only tables with POD values are usable in the pool.");
+
+    using EntryType = typename Table::Table::Entry;
+    using KeyType = typename EntryType::KeyType;
+    using ValueType = typename EntryType::ValueType;
+
+    static_assert(IsRecyclableAtomMapValueWrapper<ValueType>::value,
+                  "Please adjust the static assertions below if you need to "
+                  "support other types than RecyclableAtomMapValueWrapper");
+
+    using WrappedType = typename ValueType::WrappedType;
+
+    // We can't directly check |std::is_trivial<EntryType>|, because neither
+    // mozilla::HashMapEntry nor IsRecyclableAtomMapValueWrapper are trivially
+    // default constructible. Instead we check that the key and the unwrapped
+    // value are trivial and additionally ensure that the entry itself is
+    // trivially copyable and destructible.
+
+    static_assert(std::is_trivial_v<KeyType>,
+                  "Only tables with trivial keys are usable in the pool.");
+    static_assert(std::is_trivial_v<WrappedType>,
+                  "Only tables with trivial values are usable in the pool.");
+
+    static_assert(
+        std::is_trivially_copyable_v<EntryType>,
+        "Only tables with trivially copyable entries are usable in the pool.");
+    static_assert(std::is_trivially_destructible_v<EntryType>,
+                  "Only tables with trivially destructible entries are usable "
+                  "in the pool.");
   }
 };
 
@@ -176,10 +214,17 @@ class VectorPool : public CollectionPool<RepresentativeVector,
         Vector::sMaxInlineStorage == RepresentativeVector::sMaxInlineStorage,
         "Only vectors with the same size for inline entries are usable in the "
         "pool.");
-    static_assert(mozilla::IsPod<typename Vector::ElementType>::value,
-                  "Only vectors of POD values are usable in the pool.");
+
+    using ElementType = typename Vector::ElementType;
+
+    static_assert(std::is_trivial_v<ElementType>,
+                  "Only vectors of trivial values are usable in the pool.");
+    static_assert(std::is_trivially_destructible_v<ElementType>,
+                  "Only vectors of trivially destructible values are usable in "
+                  "the pool.");
+
     static_assert(
-        sizeof(typename Vector::ElementType) ==
+        sizeof(ElementType) ==
             sizeof(typename RepresentativeVector::ElementType),
         "Only vectors with same-sized elements are usable in the pool.");
   }
@@ -329,12 +374,5 @@ class PooledVectorPtr : public PooledCollectionPtr<Vector, PooledVectorPtr> {
 
 }  // namespace frontend
 }  // namespace js
-
-namespace mozilla {
-
-template <typename T>
-struct IsPod<js::frontend::RecyclableAtomMapValueWrapper<T>> : IsPod<T> {};
-
-}  // namespace mozilla
 
 #endif  // frontend_NameCollections_h

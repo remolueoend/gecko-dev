@@ -20,7 +20,7 @@
     function waitForErrorPage(frame) {
       return new Promise(resolve => {
         let progressListener = {
-          onLocationChange: function(aWebProgress, aRequest, aLocation, aFlags) {
+          onLocationChange(aWebProgress, aRequest, aLocation, aFlags) {
             if (aFlags & Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE) {
               frame.docShell.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIWebProgress)
@@ -31,8 +31,8 @@
             }
           },
 
-          QueryInterface: ChromeUtils.generateQI([Ci.nsIWebProgressListener,
-                                                  Ci.nsISupportsWeakReference])
+          QueryInterface: ChromeUtils.generateQI(["nsIWebProgressListener",
+                                                  "nsISupportsWeakReference"])
         };
 
         frame.docShell.QueryInterface(Ci.nsIInterfaceRequestor)
@@ -57,7 +57,7 @@
       frame1.docShell.chromeEventHandler.removeAttribute("crashedPageTitle");
 
       SimpleTest.is(frame1.contentDocument.documentURI,
-                    "about:tabcrashed?e=tabcrashed&u=http%3A//www.example.com/1&c=UTF-8&f=regular&d=pageTitle",
+                    "about:tabcrashed?e=tabcrashed&u=http%3A//www.example.com/1&c=UTF-8&d=pageTitle",
                     "Correct about:tabcrashed displayed for page with title.");
 
       errorPageReady = waitForErrorPage(frame2);
@@ -66,7 +66,7 @@
       await errorPageReady;
 
       SimpleTest.is(frame2.contentDocument.documentURI,
-                    "about:tabcrashed?e=tabcrashed&u=http%3A//www.example.com/2&c=UTF-8&f=regular&d=%20",
+                    "about:tabcrashed?e=tabcrashed&u=http%3A//www.example.com/2&c=UTF-8&d=%20",
                     "Correct about:tabcrashed displayed for page with no title.");
 
       SimpleTest.finish();

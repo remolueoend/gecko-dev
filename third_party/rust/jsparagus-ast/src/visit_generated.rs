@@ -164,6 +164,15 @@ pub trait Pass<'alloc> {
     fn visit_compound_assignment_operator(&mut self, ast: &'alloc CompoundAssignmentOperator) {
         self.enter_compound_assignment_operator(ast);
         match ast {
+            CompoundAssignmentOperator::LogicalOr { .. } => {
+                self.visit_enum_compound_assignment_operator_variant_logical_or()
+            }
+            CompoundAssignmentOperator::LogicalAnd { .. } => {
+                self.visit_enum_compound_assignment_operator_variant_logical_and()
+            }
+            CompoundAssignmentOperator::Coalesce { .. } => {
+                self.visit_enum_compound_assignment_operator_variant_coalesce()
+            }
             CompoundAssignmentOperator::Add { .. } => {
                 self.visit_enum_compound_assignment_operator_variant_add()
             }
@@ -208,6 +217,15 @@ pub trait Pass<'alloc> {
     }
 
     fn leave_compound_assignment_operator(&mut self, ast: &'alloc CompoundAssignmentOperator) {
+    }
+
+    fn visit_enum_compound_assignment_operator_variant_logical_or(&mut self) {
+    }
+
+    fn visit_enum_compound_assignment_operator_variant_logical_and(&mut self) {
+    }
+
+    fn visit_enum_compound_assignment_operator_variant_coalesce(&mut self) {
     }
 
     fn visit_enum_compound_assignment_operator_variant_add(&mut self) {
@@ -646,8 +664,8 @@ pub trait Pass<'alloc> {
             Statement::IfStatement(ast) => {
                 self.visit_enum_statement_variant_if_statement(ast)
             }
-            Statement::LabeledStatement { label, body, .. } => {
-                self.visit_enum_statement_variant_labeled_statement(
+            Statement::LabelledStatement { label, body, .. } => {
+                self.visit_enum_statement_variant_labelled_statement(
                     label,
                     body,
                 )
@@ -1001,31 +1019,31 @@ pub trait Pass<'alloc> {
     ) {
     }
 
-    fn visit_enum_statement_variant_labeled_statement(
+    fn visit_enum_statement_variant_labelled_statement(
         &mut self,
         label: &'alloc Label,
         body: &'alloc arena::Box<'alloc, Statement<'alloc>>,
     ) {
-        self.enter_enum_statement_variant_labeled_statement(
+        self.enter_enum_statement_variant_labelled_statement(
             label,
             body,
         );
         self.visit_label(label);
         self.visit_statement(body);
-        self.leave_enum_statement_variant_labeled_statement(
+        self.leave_enum_statement_variant_labelled_statement(
             label,
             body,
         );
     }
 
-    fn enter_enum_statement_variant_labeled_statement(
+    fn enter_enum_statement_variant_labelled_statement(
         &mut self,
         label: &'alloc Label,
         body: &'alloc arena::Box<'alloc, Statement<'alloc>>,
     ) {
     }
 
-    fn leave_enum_statement_variant_labeled_statement(
+    fn leave_enum_statement_variant_labelled_statement(
         &mut self,
         label: &'alloc Label,
         body: &'alloc arena::Box<'alloc, Statement<'alloc>>,
@@ -2345,6 +2363,11 @@ pub trait Pass<'alloc> {
                     property,
                 )
             }
+            OptionalChain::PrivateFieldExpressionTail { field, .. } => {
+                self.visit_enum_optional_chain_variant_private_field_expression_tail(
+                    field,
+                )
+            }
             OptionalChain::CallExpressionTail { arguments, .. } => {
                 self.visit_enum_optional_chain_variant_call_expression_tail(
                     arguments,
@@ -2355,6 +2378,9 @@ pub trait Pass<'alloc> {
             }
             OptionalChain::StaticMemberExpression(ast) => {
                 self.visit_enum_optional_chain_variant_static_member_expression(ast)
+            }
+            OptionalChain::PrivateFieldExpression(ast) => {
+                self.visit_enum_optional_chain_variant_private_field_expression(ast)
             }
             OptionalChain::CallExpression(ast) => {
                 self.visit_enum_optional_chain_variant_call_expression(ast)
@@ -2416,6 +2442,31 @@ pub trait Pass<'alloc> {
     fn leave_enum_optional_chain_variant_static_member_expression_tail(
         &mut self,
         property: &'alloc IdentifierName,
+    ) {
+    }
+
+    fn visit_enum_optional_chain_variant_private_field_expression_tail(
+        &mut self,
+        field: &'alloc PrivateIdentifier,
+    ) {
+        self.enter_enum_optional_chain_variant_private_field_expression_tail(
+            field,
+        );
+        self.visit_private_identifier(field);
+        self.leave_enum_optional_chain_variant_private_field_expression_tail(
+            field,
+        );
+    }
+
+    fn enter_enum_optional_chain_variant_private_field_expression_tail(
+        &mut self,
+        field: &'alloc PrivateIdentifier,
+    ) {
+    }
+
+    fn leave_enum_optional_chain_variant_private_field_expression_tail(
+        &mut self,
+        field: &'alloc PrivateIdentifier,
     ) {
     }
 
@@ -2483,6 +2534,27 @@ pub trait Pass<'alloc> {
     fn leave_enum_optional_chain_variant_static_member_expression(
         &mut self,
         ast: &'alloc StaticMemberExpression<'alloc>,
+    ) {
+    }
+
+    fn visit_enum_optional_chain_variant_private_field_expression(
+        &mut self,
+        ast: &'alloc PrivateFieldExpression<'alloc>,
+    ) {
+        self.enter_enum_optional_chain_variant_private_field_expression(ast);
+        self.visit_private_field_expression(ast);
+        self.leave_enum_optional_chain_variant_private_field_expression(ast);
+    }
+
+    fn enter_enum_optional_chain_variant_private_field_expression(
+        &mut self,
+        ast: &'alloc PrivateFieldExpression<'alloc>,
+    ) {
+    }
+
+    fn leave_enum_optional_chain_variant_private_field_expression(
+        &mut self,
+        ast: &'alloc PrivateFieldExpression<'alloc>,
     ) {
     }
 
@@ -3652,6 +3724,9 @@ pub trait Pass<'alloc> {
             MemberAssignmentTarget::ComputedMemberAssignmentTarget(ast) => {
                 self.visit_enum_member_assignment_target_variant_computed_member_assignment_target(ast)
             }
+            MemberAssignmentTarget::PrivateFieldAssignmentTarget(ast) => {
+                self.visit_enum_member_assignment_target_variant_private_field_assignment_target(ast)
+            }
             MemberAssignmentTarget::StaticMemberAssignmentTarget(ast) => {
                 self.visit_enum_member_assignment_target_variant_static_member_assignment_target(ast)
             }
@@ -3683,6 +3758,27 @@ pub trait Pass<'alloc> {
     fn leave_enum_member_assignment_target_variant_computed_member_assignment_target(
         &mut self,
         ast: &'alloc ComputedMemberAssignmentTarget<'alloc>,
+    ) {
+    }
+
+    fn visit_enum_member_assignment_target_variant_private_field_assignment_target(
+        &mut self,
+        ast: &'alloc PrivateFieldAssignmentTarget<'alloc>,
+    ) {
+        self.enter_enum_member_assignment_target_variant_private_field_assignment_target(ast);
+        self.visit_private_field_assignment_target(ast);
+        self.leave_enum_member_assignment_target_variant_private_field_assignment_target(ast);
+    }
+
+    fn enter_enum_member_assignment_target_variant_private_field_assignment_target(
+        &mut self,
+        ast: &'alloc PrivateFieldAssignmentTarget<'alloc>,
+    ) {
+    }
+
+    fn leave_enum_member_assignment_target_variant_private_field_assignment_target(
+        &mut self,
+        ast: &'alloc PrivateFieldAssignmentTarget<'alloc>,
     ) {
     }
 
@@ -3718,6 +3814,19 @@ pub trait Pass<'alloc> {
     }
 
     fn leave_computed_member_assignment_target(&mut self, ast: &'alloc ComputedMemberAssignmentTarget<'alloc>) {
+    }
+
+    fn visit_private_field_assignment_target(&mut self, ast: &'alloc PrivateFieldAssignmentTarget<'alloc>) {
+        self.enter_private_field_assignment_target(ast);
+        self.visit_expression_or_super(&ast.object);
+        self.visit_private_identifier(&ast.field);
+        self.leave_private_field_assignment_target(ast);
+    }
+
+    fn enter_private_field_assignment_target(&mut self, ast: &'alloc PrivateFieldAssignmentTarget<'alloc>) {
+    }
+
+    fn leave_private_field_assignment_target(&mut self, ast: &'alloc PrivateFieldAssignmentTarget<'alloc>) {
     }
 
     fn visit_static_member_assignment_target(&mut self, ast: &'alloc StaticMemberAssignmentTarget<'alloc>) {
@@ -4573,7 +4682,7 @@ pub trait Pass<'alloc> {
 
     fn visit_method(&mut self, ast: &'alloc Method<'alloc>) {
         self.enter_method(ast);
-        self.visit_property_name(&ast.name);
+        self.visit_class_element_name(&ast.name);
         self.visit_formal_parameters(&ast.params);
         self.visit_function_body(&ast.body);
         self.leave_method(ast);
@@ -4587,7 +4696,7 @@ pub trait Pass<'alloc> {
 
     fn visit_getter(&mut self, ast: &'alloc Getter<'alloc>) {
         self.enter_getter(ast);
-        self.visit_property_name(&ast.property_name);
+        self.visit_class_element_name(&ast.property_name);
         self.visit_function_body(&ast.body);
         self.leave_getter(ast);
     }
@@ -4600,7 +4709,7 @@ pub trait Pass<'alloc> {
 
     fn visit_setter(&mut self, ast: &'alloc Setter<'alloc>) {
         self.enter_setter(ast);
-        self.visit_property_name(&ast.property_name);
+        self.visit_class_element_name(&ast.property_name);
         self.visit_parameter(&ast.param);
         self.visit_function_body(&ast.body);
         self.leave_setter(ast);
@@ -4867,7 +4976,7 @@ pub trait Pass<'alloc> {
 
     fn visit_private_field_expression(&mut self, ast: &'alloc PrivateFieldExpression<'alloc>) {
         self.enter_private_field_expression(ast);
-        self.visit_expression(&ast.object);
+        self.visit_expression_or_super(&ast.object);
         self.visit_private_identifier(&ast.field);
         self.leave_private_field_expression(ast);
     }

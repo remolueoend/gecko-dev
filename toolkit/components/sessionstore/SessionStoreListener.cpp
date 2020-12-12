@@ -9,7 +9,7 @@
 #include "mozilla/dom/SessionStoreUtilsBinding.h"
 #include "mozilla/dom/StorageEvent.h"
 #include "mozilla/dom/BrowserChild.h"
-#include "mozilla/StaticPrefs_fission.h"
+#include "mozilla/StaticPrefs_browser.h"
 #include "nsGenericHTMLElement.h"
 #include "nsDocShell.h"
 #include "nsIAppWindow.h"
@@ -17,9 +17,11 @@
 #include "nsIDocShellTreeOwner.h"
 #include "nsImportModule.h"
 #include "nsIPrefBranch.h"
+#include "nsIPrefService.h"
 #include "nsITimer.h"
 #include "nsIWebProgress.h"
 #include "nsIXPConnect.h"
+#include "nsIXULRuntime.h"
 #include "nsPresContext.h"
 #include "nsPrintfCString.h"
 #include "SessionStoreFunctions.h"
@@ -46,7 +48,6 @@ ContentSessionStore::ContentSessionStore(nsIDocShell* aDocShell)
       mFormDataChanged(NO_CHANGE),
       mStorageStatus(NO_STORAGE),
       mDocCapChanged(false),
-      mSHistoryInParent(StaticPrefs::fission_sessionHistoryInParent()),
       mSHistoryChanged(false),
       mSHistoryChangedFromParent(false) {
   MOZ_ASSERT(mDocShell);
@@ -117,6 +118,15 @@ void ContentSessionStore::ResetStorageChanges() {
   mValues.Clear();
 }
 
+void ContentSessionStore::SetSHistoryChanged() {
+  mSHistoryChanged = mozilla::SessionHistoryInParent();
+}
+
+// Request "collect sessionHistory" from the parent process
+void ContentSessionStore::SetSHistoryFromParentChanged() {
+  mSHistoryChangedFromParent = mozilla::SessionHistoryInParent();
+}
+
 void ContentSessionStore::OnDocumentStart() {
   mScrollChanged = PAGELOADEDSTART;
   mFormDataChanged = PAGELOADEDSTART;
@@ -128,7 +138,7 @@ void ContentSessionStore::OnDocumentStart() {
 
   SetFullStorageNeeded();
 
-  if (mSHistoryInParent) {
+  if (mozilla::SessionHistoryInParent()) {
     mSHistoryChanged = true;
   }
 }
@@ -137,7 +147,7 @@ void ContentSessionStore::OnDocumentEnd() {
   mScrollChanged = WITH_CHANGE;
   SetFullStorageNeeded();
 
-  if (mSHistoryInParent) {
+  if (mozilla::SessionHistoryInParent()) {
     mSHistoryChanged = true;
   }
 }
@@ -168,8 +178,7 @@ TabListener::TabListener(nsIDocShell* aDocShell, Element* aElement)
       mUpdatedTimer(nullptr),
       mTimeoutDisabled(false),
       mUpdateInterval(15000),
-      mEpoch(0),
-      mSHistoryInParent(StaticPrefs::fission_sessionHistoryInParent()) {
+      mEpoch(0) {
   MOZ_ASSERT(mDocShell);
 }
 
@@ -216,18 +225,16 @@ nsresult TabListener::Init() {
   if (!eventTarget) {
     return NS_OK;
   }
-  eventTarget->AddSystemEventListener(NS_LITERAL_STRING("mozvisualscroll"),
-                                      this, false);
-  eventTarget->AddSystemEventListener(NS_LITERAL_STRING("input"), this, false);
+  eventTarget->AddSystemEventListener(u"mozvisualscroll"_ns, this, false);
+  eventTarget->AddSystemEventListener(u"input"_ns, this, false);
 
-  if (mSHistoryInParent) {
-    eventTarget->AddSystemEventListener(NS_LITERAL_STRING("DOMTitleChanged"),
-                                        this, false);
+  if (mozilla::SessionHistoryInParent()) {
+    eventTarget->AddSystemEventListener(u"DOMTitleChanged"_ns, this, false);
   }
 
   mEventListenerRegistered = true;
-  eventTarget->AddSystemEventListener(
-      NS_LITERAL_STRING("MozSessionStorageChanged"), this, false);
+  eventTarget->AddSystemEventListener(u"MozSessionStorageChanged"_ns, this,
+                                      false);
   mStorageChangeListenerRegistered = true;
   return NS_OK;
 }
@@ -284,14 +291,8 @@ NS_IMETHODIMP TabListener::OnStateChange(nsIWebProgress* aWebProgress,
     return NS_OK;
   }
 
-  // The DOM Window ID getter here may throw if the inner or outer windows
-  // aren't created yet or are destroyed at the time we're making this call
-  // but that isn't fatal so ignore the exceptions here.
-  uint64_t DOMWindowID = 0;
-  Unused << aWebProgress->GetDOMWindowID(&DOMWindowID);
-  nsCOMPtr<nsPIDOMWindowOuter> window = do_GetInterface(mDocShell);
-  NS_ENSURE_TRUE(window, NS_ERROR_FAILURE);
-  if (DOMWindowID != window->WindowID()) {
+  nsCOMPtr<nsIWebProgress> webProgress = do_QueryInterface(mDocShell);
+  if (webProgress != aWebProgress) {
     return NS_OK;
   }
 
@@ -322,22 +323,12 @@ TabListener::HandleEvent(Event* aEvent) {
   }
 
   nsPIDOMWindowOuter* outer = target->GetOwnerGlobalForBindingsInternal();
-  if (!outer) {
+  if (!outer || !outer->GetDocShell()) {
     return NS_OK;
   }
 
-  nsIDocShell* docShell = outer->GetDocShell();
-  if (!docShell) {
-    return NS_OK;
-  }
-
-  bool isDynamic = false;
-  nsresult rv = docShell->GetCreatedDynamically(&isDynamic);
-  if (NS_FAILED(rv)) {
-    return NS_OK;
-  }
-
-  if (isDynamic) {
+  RefPtr<BrowsingContext> context = outer->GetBrowsingContext();
+  if (!context || context->CreatedDynamically()) {
     return NS_OK;
   }
 
@@ -450,7 +441,7 @@ nsresult TabListener::Observe(nsISupports* aSubject, const char* aTopic,
 nsCString CollectPosition(Document& aDocument) {
   PresShell* presShell = aDocument.GetPresShell();
   if (!presShell) {
-    return EmptyCString();
+    return ""_ns;
   }
   nsPoint scrollPos = presShell->GetVisualViewportOffset();
   int scrollX = nsPresContext::AppUnitsToIntCSSPixels(scrollPos.x);
@@ -459,19 +450,18 @@ nsCString CollectPosition(Document& aDocument) {
     return nsPrintfCString("%d,%d", scrollX, scrollY);
   }
 
-  return EmptyCString();
+  return ""_ns;
 }
 
 int CollectPositions(BrowsingContext* aBrowsingContext,
                      nsTArray<nsCString>& aPositions,
                      nsTArray<int32_t>& aPositionDescendants) {
-  nsPIDOMWindowOuter* window = aBrowsingContext->GetDOMWindow();
-  if (!window) {
+  if (aBrowsingContext->CreatedDynamically()) {
     return 0;
   }
 
-  nsIDocShell* docShell = window->GetDocShell();
-  if (!docShell || docShell->GetCreatedDynamically()) {
+  nsPIDOMWindowOuter* window = aBrowsingContext->GetDOMWindow();
+  if (!window) {
     return 0;
   }
 
@@ -487,7 +477,7 @@ int CollectPositions(BrowsingContext* aBrowsingContext,
 
   /* Collect data from all child frame */
   // This is not going to work for fission. Bug 1572084 for tracking it.
-  for (auto& child : aBrowsingContext->GetChildren()) {
+  for (auto& child : aBrowsingContext->Children()) {
     aPositionDescendants[currentIdx] +=
         CollectPositions(child, aPositions, aPositionDescendants);
   }
@@ -499,7 +489,7 @@ void ContentSessionStore::GetScrollPositions(
     nsTArray<nsCString>& aPositions, nsTArray<int32_t>& aPositionDescendants) {
   if (mScrollChanged == PAGELOADEDSTART) {
     aPositionDescendants.AppendElement(0);
-    aPositions.AppendElement(EmptyCString());
+    aPositions.AppendElement(""_ns);
   } else {
     CollectPositions(mDocShell->GetBrowsingContext(), aPositions,
                      aPositionDescendants);
@@ -550,13 +540,12 @@ int CollectInputs(BrowsingContext* aBrowsingContext,
                   nsTArray<InputFormData>& aInputs,
                   nsTArray<CollectedInputDataValue>& aIdVals,
                   nsTArray<CollectedInputDataValue>& aXPathVals) {
-  nsPIDOMWindowOuter* window = aBrowsingContext->GetDOMWindow();
-  if (!window) {
+  if (aBrowsingContext->CreatedDynamically()) {
     return 0;
   }
 
-  nsIDocShell* docShell = window->GetDocShell();
-  if (!docShell || docShell->GetCreatedDynamically()) {
+  nsPIDOMWindowOuter* window = aBrowsingContext->GetDOMWindow();
+  if (!window || !window->GetDocShell()) {
     return 0;
   }
 
@@ -576,7 +565,7 @@ int CollectInputs(BrowsingContext* aBrowsingContext,
 
   /* Collect data from all child frame */
   // This is not going to work for fission. Bug 1572084 for tracking it.
-  for (auto& child : aBrowsingContext->GetChildren()) {
+  for (auto& child : aBrowsingContext->Children()) {
     aInputs[currentIdx].descendants +=
         CollectInputs(child, aInputs, aIdVals, aXPathVals);
   }
@@ -592,8 +581,8 @@ nsTArray<InputFormData> ContentSessionStore::GetInputs(
     mFormDataChanged = NO_CHANGE;
     InputFormData input;
     input.descendants = 0;
-    input.innerHTML = EmptyString();
-    input.url = EmptyCString();
+    input.innerHTML.Truncate();
+    input.url.Truncate();
     input.numId = 0;
     input.numXPath = 0;
     inputs.AppendElement(input);
@@ -612,16 +601,23 @@ bool ContentSessionStore::AppendSessionStorageChange(StorageEvent* aEvent) {
     return false;
   }
 
-  nsAutoString origin;
-  aEvent->GetUrl(origin);
-  nsCOMPtr<nsIURI> newUri;
-  nsresult rv =
-      NS_NewURI(getter_AddRefs(newUri), NS_ConvertUTF16toUTF8(origin));
+  RefPtr<Storage> changingStorage = aEvent->GetStorageArea();
+  if (!changingStorage) {
+    return false;
+  }
+
+  nsCOMPtr<nsIPrincipal> storagePrincipal = changingStorage->StoragePrincipal();
+  if (!storagePrincipal) {
+    return false;
+  }
+
+  nsAutoCString origin;
+  nsresult rv = storagePrincipal->GetOrigin(origin);
   if (NS_FAILED(rv)) {
     return false;
   }
 
-  newUri->GetPrePath(*mOrigins.AppendElement());
+  mOrigins.AppendElement(origin);
   aEvent->GetKey(*mKeys.AppendElement());
   aEvent->GetNewValue(*mValues.AppendElement());
   mStorageStatus = STORAGECHANGE;
@@ -772,8 +768,8 @@ bool TabListener::UpdateSessionStore(uint32_t aFlushId, bool aIsFinal) {
   NS_ENSURE_TRUE(ok, false);
 
   nsresult rv = funcs->UpdateSessionStore(
-      mOwnerContent, aFlushId, aIsFinal, mEpoch, dataVal,
-      mSessionStore->GetAndClearSHistoryChanged());
+      mOwnerContent, mDocShell->GetBrowsingContext(), aFlushId, aIsFinal,
+      mEpoch, dataVal, mSessionStore->GetAndClearSHistoryChanged());
   NS_ENSURE_SUCCESS(rv, false);
   StopTimerForUpdate();
   return true;
@@ -788,8 +784,8 @@ void TabListener::ResetStorageChangeListener() {
   if (!eventTarget) {
     return;
   }
-  eventTarget->AddSystemEventListener(
-      NS_LITERAL_STRING("MozSessionStorageChanged"), this, false);
+  eventTarget->AddSystemEventListener(u"MozSessionStorageChanged"_ns, this,
+                                      false);
   mStorageChangeListenerRegistered = true;
 }
 
@@ -800,8 +796,8 @@ void TabListener::RemoveStorageChangeListener() {
 
   nsCOMPtr<EventTarget> eventTarget = GetEventTarget();
   if (eventTarget) {
-    eventTarget->RemoveSystemEventListener(
-        NS_LITERAL_STRING("MozSessionStorageChanged"), this, false);
+    eventTarget->RemoveSystemEventListener(u"MozSessionStorageChanged"_ns, this,
+                                           false);
     mStorageChangeListenerRegistered = false;
   }
 }
@@ -819,19 +815,18 @@ void TabListener::RemoveListeners() {
     nsCOMPtr<EventTarget> eventTarget = GetEventTarget();
     if (eventTarget) {
       if (mEventListenerRegistered) {
-        eventTarget->RemoveSystemEventListener(
-            NS_LITERAL_STRING("mozvisualscroll"), this, false);
-        eventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("input"), this,
+        eventTarget->RemoveSystemEventListener(u"mozvisualscroll"_ns, this,
                                                false);
-        if (mSHistoryInParent) {
-          eventTarget->RemoveSystemEventListener(
-              NS_LITERAL_STRING("DOMTitleChanged"), this, false);
+        eventTarget->RemoveSystemEventListener(u"input"_ns, this, false);
+        if (mozilla::SessionHistoryInParent()) {
+          eventTarget->RemoveSystemEventListener(u"DOMTitleChanged"_ns, this,
+                                                 false);
         }
         mEventListenerRegistered = false;
       }
       if (mStorageChangeListenerRegistered) {
-        eventTarget->RemoveSystemEventListener(
-            NS_LITERAL_STRING("MozSessionStorageChanged"), this, false);
+        eventTarget->RemoveSystemEventListener(u"MozSessionStorageChanged"_ns,
+                                               this, false);
         mStorageChangeListenerRegistered = false;
       }
     }

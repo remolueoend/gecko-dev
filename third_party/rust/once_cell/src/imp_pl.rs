@@ -1,15 +1,16 @@
 use std::{
     cell::UnsafeCell,
+    hint,
     panic::{RefUnwindSafe, UnwindSafe},
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use parking_lot::{lock_api::RawMutex as _RawMutex, RawMutex};
+use parking_lot::Mutex;
 
 pub(crate) struct OnceCell<T> {
-    mutex: Mutex,
+    mutex: Mutex<()>,
     is_initialized: AtomicBool,
-    pub(crate) value: UnsafeCell<Option<T>>,
+    value: UnsafeCell<Option<T>>,
 }
 
 // Why do we need `T: Send`?
@@ -26,7 +27,7 @@ impl<T: UnwindSafe> UnwindSafe for OnceCell<T> {}
 impl<T> OnceCell<T> {
     pub(crate) const fn new() -> OnceCell<T> {
         OnceCell {
-            mutex: Mutex::new(),
+            mutex: parking_lot::const_mutex(()),
             is_initialized: AtomicBool::new(false),
             value: UnsafeCell::new(None),
         }
@@ -56,6 +57,8 @@ impl<T> OnceCell<T> {
             // - finally, if it returns Ok, we store the value and store the flag with
             //   `Release`, which synchronizes with `Acquire`s.
             let value = f()?;
+            // Safe b/c we have a unique access and no panic may happen
+            // until the cell is marked as initialized.
             let slot: &mut Option<T> = unsafe { &mut *self.value.get() };
             debug_assert!(slot.is_none());
             *slot = Some(value);
@@ -63,38 +66,45 @@ impl<T> OnceCell<T> {
         }
         Ok(())
     }
-}
 
-/// Wrapper around parking_lot's `RawMutex` which has `const fn` new.
-struct Mutex {
-    inner: RawMutex,
-}
-
-impl Mutex {
-    const fn new() -> Mutex {
-        Mutex { inner: RawMutex::INIT }
+    /// Get the reference to the underlying value, without checking if the cell
+    /// is initialized.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure that the cell is in initialized state, and that
+    /// the contents are acquired by (synchronized to) this thread.
+    pub(crate) unsafe fn get_unchecked(&self) -> &T {
+        debug_assert!(self.is_initialized());
+        let slot: &Option<T> = &*self.value.get();
+        match slot {
+            Some(value) => value,
+            // This unsafe does improve performance, see `examples/bench`.
+            None => {
+                debug_assert!(false);
+                hint::unreachable_unchecked()
+            }
+        }
     }
 
-    fn lock(&self) -> MutexGuard<'_> {
-        self.inner.lock();
-        MutexGuard { inner: &self.inner }
+    /// Gets the mutable reference to the underlying value.
+    /// Returns `None` if the cell is empty.
+    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
+        // Safe b/c we have an exclusive access
+        let slot: &mut Option<T> = unsafe { &mut *self.value.get() };
+        slot.as_mut()
     }
-}
 
-struct MutexGuard<'a> {
-    inner: &'a RawMutex,
-}
-
-impl Drop for MutexGuard<'_> {
-    fn drop(&mut self) {
-        self.inner.unlock();
+    /// Consumes this `OnceCell`, returning the wrapped value.
+    /// Returns `None` if the cell was empty.
+    pub(crate) fn into_inner(self) -> Option<T> {
+        self.value.into_inner()
     }
 }
 
 #[test]
-#[cfg(pointer_width = "64")]
 fn test_size() {
     use std::mem::size_of;
 
-    assert_eq!(size_of::<OnceCell<u32>>, 2 * size_of::<u32>);
+    assert_eq!(size_of::<OnceCell<bool>>(), 2 * size_of::<bool>() + size_of::<u8>());
 }

@@ -236,6 +236,14 @@ KEA_Verify(SECItem *Y, SECItem *prime, SECItem *subPrime)
     return (vector->p_KEA_Verify)(Y, prime, subPrime);
 }
 
+PRBool
+KEA_PrimeCheck(SECItem *prime)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return PR_FALSE;
+    return (vector->p_KEA_PrimeCheck)(prime);
+}
+
 RC4Context *
 RC4_CreateContext(const unsigned char *key, int len)
 {
@@ -280,7 +288,11 @@ RC2_CreateContext(const unsigned char *key, unsigned int len,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return NULL;
+#ifndef NSS_DISABLE_DEPRECATED_RC2
     return (vector->p_RC2_CreateContext)(key, len, iv, mode, effectiveKeyLen);
+#else
+    return NULL;
+#endif
 }
 
 void
@@ -288,7 +300,11 @@ RC2_DestroyContext(RC2Context *cx, PRBool freeit)
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return;
+#ifndef NSS_DISABLE_DEPRECATED_RC2
     (vector->p_RC2_DestroyContext)(cx, freeit);
+#else
+    return;
+#endif
 }
 
 SECStatus
@@ -298,8 +314,12 @@ RC2_Encrypt(RC2Context *cx, unsigned char *output, unsigned int *outputLen,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
+#ifndef NSS_DISABLE_DEPRECATED_RC2
     return (vector->p_RC2_Encrypt)(cx, output, outputLen, maxOutputLen, input,
                                    inputLen);
+#else
+    return SECFailure;
+#endif
 }
 
 SECStatus
@@ -309,8 +329,12 @@ RC2_Decrypt(RC2Context *cx, unsigned char *output, unsigned int *outputLen,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
+#ifndef NSS_DISABLE_DEPRECATED_RC2
     return (vector->p_RC2_Decrypt)(cx, output, outputLen, maxOutputLen, input,
                                    inputLen);
+#else
+    return SECFailure;
+#endif
 }
 
 RC5Context *
@@ -396,7 +420,11 @@ SEED_CreateContext(const unsigned char *key, const unsigned char *iv,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return NULL;
+#ifndef NSS_DISABLE_DEPRECATED_SEED
     return (vector->p_SEED_CreateContext)(key, iv, mode, encrypt);
+#else
+    return NULL;
+#endif
 }
 
 void
@@ -404,7 +432,11 @@ SEED_DestroyContext(SEEDContext *cx, PRBool freeit)
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return;
+#ifndef NSS_DISABLE_DEPRECATED_SEED
     (vector->p_SEED_DestroyContext)(cx, freeit);
+#else
+    return;
+#endif
 }
 
 SECStatus
@@ -414,8 +446,12 @@ SEED_Encrypt(SEEDContext *cx, unsigned char *output, unsigned int *outputLen,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
+#ifndef NSS_DISABLE_DEPRECATED_SEED
     return (vector->p_SEED_Encrypt)(cx, output, outputLen, maxOutputLen, input,
                                     inputLen);
+#else
+    return SECFailure;
+#endif
 }
 
 SECStatus
@@ -425,8 +461,12 @@ SEED_Decrypt(SEEDContext *cx, unsigned char *output, unsigned int *outputLen,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
+#ifndef NSS_DISABLE_DEPRECATED_SEED
     return (vector->p_SEED_Decrypt)(cx, output, outputLen, maxOutputLen, input,
                                     inputLen);
+#else
+    return SECFailure;
+#endif
 }
 
 AESContext *
@@ -1138,6 +1178,7 @@ AESKeyWrap_Encrypt(AESKeyWrapContext *cx, unsigned char *output,
     return vector->p_AESKeyWrap_Encrypt(cx, output, outputLen, maxOutputLen,
                                         input, inputLen);
 }
+
 SECStatus
 AESKeyWrap_Decrypt(AESKeyWrapContext *cx, unsigned char *output,
                    unsigned int *outputLen, unsigned int maxOutputLen,
@@ -1147,6 +1188,28 @@ AESKeyWrap_Decrypt(AESKeyWrapContext *cx, unsigned char *output,
         return SECFailure;
     return vector->p_AESKeyWrap_Decrypt(cx, output, outputLen, maxOutputLen,
                                         input, inputLen);
+}
+
+SECStatus
+AESKeyWrap_EncryptKWP(AESKeyWrapContext *cx, unsigned char *output,
+                      unsigned int *outputLen, unsigned int maxOutputLen,
+                      const unsigned char *input, unsigned int inputLen)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return vector->p_AESKeyWrap_EncryptKWP(cx, output, outputLen, maxOutputLen,
+                                           input, inputLen);
+}
+
+SECStatus
+AESKeyWrap_DecryptKWP(AESKeyWrapContext *cx, unsigned char *output,
+                      unsigned int *outputLen, unsigned int maxOutputLen,
+                      const unsigned char *input, unsigned int inputLen)
+{
+    if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
+        return SECFailure;
+    return vector->p_AESKeyWrap_DecryptKWP(cx, output, outputLen, maxOutputLen,
+                                           input, inputLen);
 }
 
 PRBool
@@ -1268,7 +1331,11 @@ RC2_AllocateContext(void)
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return NULL;
+#ifndef NSS_DISABLE_DEPRECATED_RC2
     return (vector->p_RC2_AllocateContext)();
+#else
+    return NULL;
+#endif
 }
 
 RC4Context *
@@ -1318,7 +1385,11 @@ SEED_InitContext(SEEDContext *cx, const unsigned char *key,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
+#ifndef NSS_DISABLE_DEPRECATED_SEED
     return (vector->p_SEED_InitContext)(cx, key, keylen, iv, mode, encrypt, xtra);
+#else
+    return SECFailure;
+#endif
 }
 
 SECStatus
@@ -1328,8 +1399,12 @@ RC2_InitContext(RC2Context *cx, const unsigned char *key,
 {
     if (!vector && PR_SUCCESS != freebl_RunLoaderOnce())
         return SECFailure;
+#ifndef NSS_DISABLE_DEPRECATED_RC2
     return (vector->p_RC2_InitContext)(cx, key, keylen, iv, mode,
                                        effectiveKeyLen, xtra);
+#else
+    return SECFailure;
+#endif
 }
 
 SECStatus

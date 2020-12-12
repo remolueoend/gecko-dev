@@ -136,7 +136,8 @@ nsAppShellService::CreateHiddenWindow() {
   nsCOMPtr<nsIDocShell> docShell;
   newWindow->GetDocShell(getter_AddRefs(docShell));
   if (docShell) {
-    docShell->SetIsActive(false);
+    Unused << docShell->GetBrowsingContext()->SetExplicitActive(
+        dom::ExplicitActiveStatus::Inactive);
   }
 
   mHiddenWindow.swap(newWindow);
@@ -321,18 +322,8 @@ class BrowserDestroyer final : public Runnable {
         mContainer(aContainer) {}
 
   static nsresult Destroy(nsIWebBrowser* aBrowser) {
-    RefPtr<BrowsingContext> bc;
-    if (nsCOMPtr<nsIDocShell> docShell = do_GetInterface(aBrowser)) {
-      bc = docShell->GetBrowsingContext();
-    }
-
     nsCOMPtr<nsIBaseWindow> window(do_QueryInterface(aBrowser));
-    nsresult rv = window->Destroy();
-    MOZ_ASSERT(bc);
-    if (bc) {
-      bc->Detach();
-    }
-    return rv;
+    return window->Destroy();
   }
 
   NS_IMETHOD
@@ -409,6 +400,15 @@ WindowlessBrowser::Close() {
 }
 
 NS_IMETHODIMP
+WindowlessBrowser::GetBrowsingContext(BrowsingContext** aBrowsingContext) {
+  nsCOMPtr<nsIDocShellTreeItem> docShellTreeItem = do_QueryInterface(mBrowser);
+  if (!docShellTreeItem) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+  return docShellTreeItem->GetBrowsingContextXPCOM(aBrowsingContext);
+}
+
+NS_IMETHODIMP
 WindowlessBrowser::GetDocShell(nsIDocShell** aDocShell) {
   nsCOMPtr<nsIDocShell> docShell = do_GetInterface(mInterfaceRequestor);
   if (!docShell) {
@@ -419,8 +419,18 @@ WindowlessBrowser::GetDocShell(nsIDocShell** aDocShell) {
 }
 
 NS_IMETHODIMP
-nsAppShellService::CreateWindowlessBrowser(bool aIsChrome,
+nsAppShellService::CreateWindowlessBrowser(bool aIsChrome, uint32_t aChromeMask,
                                            nsIWindowlessBrowser** aResult) {
+  if (aChromeMask) {
+    MOZ_DIAGNOSTIC_ASSERT(aIsChrome, "Got chrome flags for non-chrome browser");
+    if (aChromeMask & ~(nsIWebBrowserChrome::CHROME_REMOTE_WINDOW |
+                        nsIWebBrowserChrome::CHROME_FISSION_WINDOW |
+                        nsIWebBrowserChrome::CHROME_PRIVATE_WINDOW)) {
+      NS_ERROR("Received unexpected chrome flags");
+      return NS_ERROR_FAILURE;
+    }
+  }
+
   /* First, we set the container window for our instance of nsWebBrowser. Since
    * we don't actually have a window, we instead set the container window to be
    * an instance of WebBrowserChrome2Stub, which provides a stub implementation
@@ -449,17 +459,25 @@ nsAppShellService::CreateWindowlessBrowser(bool aIsChrome,
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Create a BrowsingContext for our windowless browser.
-  RefPtr<BrowsingContext> browsingContext = BrowsingContext::CreateWindowless(
-      nullptr, nullptr, EmptyString(),
+  RefPtr<BrowsingContext> browsingContext = BrowsingContext::CreateIndependent(
       aIsChrome ? BrowsingContext::Type::Chrome
                 : BrowsingContext::Type::Content);
+
+  if (aChromeMask & nsIWebBrowserChrome::CHROME_REMOTE_WINDOW) {
+    browsingContext->SetRemoteTabs(true);
+  }
+  if (aChromeMask & nsIWebBrowserChrome::CHROME_FISSION_WINDOW) {
+    browsingContext->SetRemoteSubframes(true);
+  }
+  if (aChromeMask & nsIWebBrowserChrome::CHROME_PRIVATE_WINDOW) {
+    browsingContext->SetPrivateBrowsing(true);
+  }
 
   /* Next, we create an instance of nsWebBrowser. Instances of this class have
    * an associated doc shell, which is what we're interested in.
    */
   nsCOMPtr<nsIWebBrowser> browser = nsWebBrowser::Create(
-      stub, widget, OriginAttributes(), browsingContext,
-      nullptr /* initialWindowChild */, true /* disable history */);
+      stub, widget, browsingContext, nullptr /* initialWindowChild */);
 
   if (NS_WARN_IF(!browser)) {
     NS_ERROR("Couldn't create instance of nsWebBrowser!");
@@ -601,6 +619,19 @@ nsresult nsAppShellService::JustCreateTopWindow(
       ((aChromeMask & pipMask) == pipMask) && !(aChromeMask & barMask)) {
     widgetInitData.mPIPWindow = true;
   }
+#elif defined(XP_WIN)
+  // Windows PIP window support. It's Chrome dialog window, always on top
+  // and without any bar.
+  uint32_t pipMask = nsIWebBrowserChrome::CHROME_ALWAYS_ON_TOP |
+                     nsIWebBrowserChrome::CHROME_OPENAS_CHROME;
+  uint32_t barMask = nsIWebBrowserChrome::CHROME_MENUBAR |
+                     nsIWebBrowserChrome::CHROME_TOOLBAR |
+                     nsIWebBrowserChrome::CHROME_LOCATIONBAR |
+                     nsIWebBrowserChrome::CHROME_STATUSBAR;
+  if (widgetInitData.mWindowType == eWindowType_dialog &&
+      ((aChromeMask & pipMask) == pipMask) && !(aChromeMask & barMask)) {
+    widgetInitData.mPIPWindow = true;
+  }
 #endif
 
 #ifdef XP_MACOSX
@@ -644,6 +675,7 @@ nsresult nsAppShellService::JustCreateTopWindow(
       widgetInitData.mBorderStyle = static_cast<enum nsBorderStyle>(
           widgetInitData.mBorderStyle | eBorderStyle_close);
     if (aChromeMask & nsIWebBrowserChrome::CHROME_WINDOW_RESIZE) {
+      widgetInitData.mResizable = true;
       widgetInitData.mBorderStyle = static_cast<enum nsBorderStyle>(
           widgetInitData.mBorderStyle | eBorderStyle_resizeh);
       // only resizable windows get the maximize button (but not dialogs)
@@ -699,7 +731,7 @@ nsresult nsAppShellService::JustCreateTopWindow(
     isPrivateBrowsingWindow = parentContext->UsePrivateBrowsing();
   }
 
-  if (nsDocShell* docShell = nsDocShell::Cast(window->GetDocShell())) {
+  if (nsDocShell* docShell = window->GetDocShell()) {
     MOZ_ASSERT(docShell->GetBrowsingContext()->IsChrome());
 
     docShell->SetPrivateBrowsing(isPrivateBrowsingWindow);
@@ -808,7 +840,7 @@ nsAppShellService::RegisterTopLevelWindow(nsIAppWindow* aWindow) {
 
   nsCOMPtr<nsPIDOMWindowOuter> domWindow(docShell->GetWindow());
   NS_ENSURE_TRUE(domWindow, NS_ERROR_FAILURE);
-  domWindow->SetInitialPrincipalToSubject(nullptr);
+  domWindow->SetInitialPrincipalToSubject(nullptr, Nothing());
 
   // tell the window mediator about the new window
   nsCOMPtr<nsIWindowMediator> mediator(

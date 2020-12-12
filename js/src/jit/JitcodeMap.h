@@ -7,13 +7,34 @@
 #ifndef jit_JitcodeMap_h
 #define jit_JitcodeMap_h
 
-#include "jit/CompactBuffer.h"
-#include "jit/CompileInfo.h"
-#include "jit/ExecutableAllocator.h"
-#include "jit/shared/Assembler-shared.h"
+#include "mozilla/Assertions.h"  // MOZ_ASSERT, MOZ_ASSERT_IF, MOZ_CRASH
+
+#include <stddef.h>  // size_t
+#include <stdint.h>  // uint8_t, uint32_t, uint64_t
+
+#include "jit/CompactBuffer.h"  // CompactBufferReader, CompactBufferWriter
+#include "jit/shared/Assembler-shared.h"  // CodeOffset
+#include "js/AllocPolicy.h"               // SystemAllocPolicy
+#include "js/TypeDecls.h"                 // jsbytecode
+#include "js/Vector.h"                    // Vector
+#include "vm/BytecodeLocation.h"          // BytecodeLocation
+
+class JSScript;
+class JSTracer;
+struct JSRuntime;
+class JSScript;
+
+namespace JS {
+class Zone;
+}  // namespace JS
 
 namespace js {
+
+class GCMarker;
+
 namespace jit {
+
+class InlineScriptTree;
 
 /*
  * The Ion jitcode map implements tables to allow mapping from addresses in ion
@@ -134,12 +155,6 @@ class JitcodeGlobalEntry {
   };
   static_assert(LIMIT <= 8);
 
-  struct BytecodeLocation {
-    JSScript* script;
-    jsbytecode* pc;
-    BytecodeLocation(JSScript* script, jsbytecode* pc)
-        : script(script), pc(pc) {}
-  };
   typedef Vector<BytecodeLocation, 0, SystemAllocPolicy> BytecodeLocationVector;
 
   struct BaseEntry {
@@ -313,12 +328,7 @@ class JitcodeGlobalEntry {
 
     const char* str() const { return str_; }
 
-    void trackIonAbort(jsbytecode* pc, const char* message) {
-      MOZ_ASSERT(script_->containsPC(pc));
-      MOZ_ASSERT(message);
-      ionAbortPc_ = pc;
-      ionAbortMessage_ = message;
-    }
+    void trackIonAbort(jsbytecode* pc, const char* message);
 
     bool hadIonAbort() const {
       MOZ_ASSERT(!ionAbortPc_ || ionAbortMessage_);

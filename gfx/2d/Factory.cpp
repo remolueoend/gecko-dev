@@ -51,6 +51,7 @@
 #  include "HelpersD2D.h"
 #  include "DXVA2Manager.h"
 #  include "mozilla/layers/TextureD3D11.h"
+#  include "nsWindowsHelpers.h"
 #endif
 
 #include "DrawTargetCapture.h"
@@ -236,6 +237,12 @@ mozilla::gfx::Config* Factory::sConfig = nullptr;
 void Factory::Init(const Config& aConfig) {
   MOZ_ASSERT(!sConfig);
   sConfig = new Config(aConfig);
+
+#ifdef XP_DARWIN
+  NativeFontResourceMac::RegisterMemoryReporter();
+#else
+  NativeFontResource::RegisterMemoryReporter();
+#endif
 }
 
 void Factory::ShutDown() {
@@ -419,11 +426,6 @@ already_AddRefed<PathBuilder> Factory::CreateSimplePathBuilder() {
     NS_WARNING("Failed to create a path builder because we don't use Skia");
   }
   return pathBuilder.forget();
-}
-
-already_AddRefed<DrawTarget> Factory::CreateWrapAndRecordDrawTarget(
-    DrawEventRecorder* aRecorder, DrawTarget* aDT) {
-  return MakeAndAddRef<DrawTargetWrapAndRecord>(aRecorder, aDT);
 }
 
 already_AddRefed<DrawTarget> Factory::CreateRecordingDrawTarget(
@@ -898,7 +900,7 @@ RefPtr<IDWriteFactory> Factory::EnsureDWriteFactory() {
 
   mDWriteFactoryInitialized = true;
 
-  HMODULE dwriteModule = LoadLibraryW(L"dwrite.dll");
+  HMODULE dwriteModule = LoadLibrarySystem32(L"dwrite.dll");
   decltype(DWriteCreateFactory)* createDWriteFactory =
       (decltype(DWriteCreateFactory)*)GetProcAddress(dwriteModule,
                                                      "DWriteCreateFactory");
@@ -927,13 +929,20 @@ RefPtr<IDWriteFontCollection> Factory::GetDWriteSystemFonts(bool aUpdate) {
   }
 
   if (!mDWriteFactory) {
+    if ((rand() & 0x3f) == 0) {
+      gfxCriticalError(int(gfx::LogOptions::AssertOnCall))
+          << "Failed to create DWrite factory";
+    } else {
+      gfxWarning() << "Failed to create DWrite factory";
+    }
+
     return nullptr;
   }
 
   RefPtr<IDWriteFontCollection> systemFonts;
   HRESULT hr =
       mDWriteFactory->GetSystemFontCollection(getter_AddRefs(systemFonts));
-  if (FAILED(hr)) {
+  if (FAILED(hr) || !systemFonts) {
     // only crash some of the time so those experiencing this problem
     // don't stop using Firefox
     if ((rand() & 0x3f) == 0) {

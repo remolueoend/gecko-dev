@@ -112,56 +112,6 @@ const AVAILABLE_INJECTIONS = [
     },
   },
   {
-    id: "bug1623375",
-    platform: "android",
-    domain: "Salesforce communities",
-    bug: "1623375",
-    contentScripts: {
-      matches: [].concat(
-        [
-          "https://faq.usps.com/*",
-          "https://help.duo.com/*",
-          "https://my211.force.com/*",
-          "https://support.paypay.ne.jp/*",
-          "https://usps.force.com/*",
-          "https://help.twitch.tv/*",
-          "https://support.sonos.com/*",
-          "https://us.community.sony.com/*",
-          "https://help.shopee.ph/*",
-          "https://exclusions.ustr.gov/*",
-          "https://help.doordash.com/*",
-          "https://community.snowflake.com/*",
-          "https://tivoidp.tivo.com/*",
-        ],
-        InterventionHelpers.matchPatternsForTLDs(
-          "*://support.ancestry.",
-          "/*",
-          ["ca", "co.uk", "com", "com.au", "de", "fr", "it", "mx", "se"]
-        )
-      ),
-      js: [
-        {
-          file:
-            "injections/js/bug1623375-salesforce-communities-hide-unsupported.js",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1526977",
-    platform: "desktop",
-    domain: "sreedharscce.in",
-    bug: "1526977",
-    contentScripts: {
-      matches: ["*://*.sreedharscce.in/authenticate"],
-      css: [
-        {
-          file: "injections/css/bug1526977-sreedharscce.in-login-fix.css",
-        },
-      ],
-    },
-  },
-  {
     id: "bug1551672",
     platform: "android",
     domain: "Sites using PDK 5 video",
@@ -173,15 +123,12 @@ const AVAILABLE_INJECTIONS = [
     customFunc: "pdk5fix",
   },
   {
-    id: "bug1577870",
+    id: "bug1583366",
     platform: "desktop",
     domain: "Download prompt for files with no content-type",
-    bug: "1577870",
+    bug: "1583366",
     data: {
-      urls: [
-        "https://ads-us.rd.linksynergy.com/as.php*",
-        "https://www.office.com/logout?sid*",
-      ],
+      urls: ["https://ads-us.rd.linksynergy.com/as.php*"],
       contentType: {
         name: "content-type",
         value: "text/html; charset=utf-8",
@@ -200,49 +147,6 @@ const AVAILABLE_INJECTIONS = [
         {
           file:
             "injections/css/bug1561371-mail.google.com-allow-horizontal-scrolling.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1567610",
-    platform: "all",
-    domain: "dns.google.com",
-    bug: "1567610",
-    contentScripts: {
-      matches: ["*://dns.google.com/*", "*://dns.google/*"],
-      css: [
-        {
-          file: "injections/css/bug1567610-dns.google.com-moz-fit-content.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1568256",
-    platform: "android",
-    domain: "zertifikate.commerzbank.de",
-    bug: "1568256",
-    contentScripts: {
-      matches: ["*://*.zertifikate.commerzbank.de/webforms/mobile/*"],
-      css: [
-        {
-          file: "injections/css/bug1568256-zertifikate.commerzbank.de-flex.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1568908",
-    platform: "desktop",
-    domain: "console.cloud.google.com",
-    bug: "1568908",
-    contentScripts: {
-      matches: ["*://*.console.cloud.google.com/*"],
-      css: [
-        {
-          file:
-            "injections/css/bug1568908-console.cloud.google.com-scrollbar-fix.css",
         },
       ],
     },
@@ -277,20 +181,6 @@ const AVAILABLE_INJECTIONS = [
     },
   },
   {
-    id: "bug1574973",
-    platform: "android",
-    domain: "patch.com",
-    bug: "1574973",
-    contentScripts: {
-      matches: ["*://patch.com/*"],
-      css: [
-        {
-          file: "injections/css/bug1574973-patch.com-dropdown-menu-fix.css",
-        },
-      ],
-    },
-  },
-  {
     id: "bug1575000",
     platform: "all",
     domain: "apply.lloydsbank.co.uk",
@@ -301,49 +191,6 @@ const AVAILABLE_INJECTIONS = [
         {
           file:
             "injections/css/bug1575000-apply.lloydsbank.co.uk-radio-buttons-fix.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1575011",
-    platform: "android",
-    domain: "holiday-weather.com",
-    bug: "1575011",
-    contentScripts: {
-      matches: ["*://*.holiday-weather.com/*"],
-      css: [
-        {
-          file:
-            "injections/css/bug1575011-holiday-weather.com-scrolling-fix.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1577270",
-    platform: "android",
-    domain: "binance.com",
-    bug: "1577270",
-    contentScripts: {
-      matches: ["*://*.binance.com/*"],
-      css: [
-        {
-          file: "injections/css/bug1577270-binance.com-calc-height-fix.css",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1577297",
-    platform: "android",
-    domain: "kitkat.com.au",
-    bug: "1577297",
-    contentScripts: {
-      matches: ["*://*.kitkat.com.au/*"],
-      css: [
-        {
-          file: "injections/css/bug1577297-kitkat.com.au-slider-width-fix.css",
         },
       ],
     },
@@ -366,20 +213,6 @@ const AVAILABLE_INJECTIONS = [
       js: [
         {
           file: "injections/js/bug1605611-maps.google.com-directions-time.js",
-        },
-      ],
-    },
-  },
-  {
-    id: "bug1609991",
-    platform: "android",
-    domain: "www.cracked.com",
-    bug: "1609991",
-    contentScripts: {
-      matches: ["https://www.cracked.com/*"],
-      css: [
-        {
-          file: "injections/css/bug1609991-cracked.com-flex-basis-fix.css",
         },
       ],
     },
@@ -414,7 +247,7 @@ const AVAILABLE_INJECTIONS = [
   },
   {
     id: "bug1610344",
-    platform: "android",
+    platform: "all",
     domain: "directv.com.co",
     bug: "1610344",
     contentScripts: {
@@ -437,6 +270,183 @@ const AVAILABLE_INJECTIONS = [
       types: ["script"],
     },
     customFunc: "detectSwipeFix",
+  },
+  {
+    id: "bug1644830",
+    platform: "desktop",
+    domain: "usps.com",
+    bug: "1644830",
+    contentScripts: {
+      matches: ["https://*.usps.com/*"],
+      css: [
+        {
+          file:
+            "injections/css/bug1644830-missingmail.usps.com-checkboxes-not-visible.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1645064",
+    platform: "desktop",
+    domain: "s-kanava.fi",
+    bug: "1645064",
+    contentScripts: {
+      matches: ["https://www.s-kanava.fi/*"],
+      css: [
+        {
+          file: "injections/css/bug1645064-s-kanava.fi-invisible-charts.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1651917",
+    platform: "android",
+    domain: "teletrader.com",
+    bug: "1651917",
+    contentScripts: {
+      matches: ["*://*.teletrader.com/*"],
+      css: [
+        {
+          file:
+            "injections/css/bug1651917-teletrader.com.body-transform-origin.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1653075",
+    platform: "desktop",
+    domain: "livescience.com",
+    bug: "1653075",
+    contentScripts: {
+      matches: ["*://*.livescience.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1653075-livescience.com-scrollbar-width.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1654865",
+    platform: "android",
+    domain: "sports.ndtv.com",
+    bug: "1654865",
+    contentScripts: {
+      matches: ["*://sports.ndtv.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1654865-sports.ndtv.com-float-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1654877",
+    platform: "android",
+    domain: "preev.com",
+    bug: "1654877",
+    contentScripts: {
+      matches: ["*://preev.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1654877-preev.com-moz-appearance-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1655049",
+    platform: "android",
+    domain: "dev.to",
+    bug: "1655049",
+    contentScripts: {
+      matches: ["*://dev.to/*"],
+      css: [
+        {
+          file: "injections/css/bug1655049-dev.to-unclickable-button-fix.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1654907",
+    platform: "android",
+    domain: "reactine.ca",
+    bug: "1654907",
+    contentScripts: {
+      matches: ["*://*.reactine.ca/*"],
+      css: [
+        {
+          file: "injections/css/bug1654907-reactine.ca-hide-unsupported.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1666771",
+    platform: "desktop",
+    domain: "zillow.com",
+    bug: "1666771",
+    contentScripts: {
+      allFrames: true,
+      matches: ["*://*.zillow.com/*"],
+      css: [
+        {
+          file: "injections/css/bug1666771-zilow-map-overdraw.css",
+        },
+      ],
+    },
+  },
+  {
+    id: "bug1631811",
+    platform: "all",
+    domain: "datastudio.google.com",
+    bug: "1631811",
+    contentScripts: {
+      matches: ["https://datastudio.google.com/embed/reporting/*"],
+      js: [
+        {
+          file: "injections/js/bug1631811-datastudio.google.com-indexedDB.js",
+        },
+      ],
+      allFrames: true,
+    },
+  },
+  {
+    id: "bug1665035",
+    platform: "desktop",
+    domain: "dckids.com",
+    bug: "1665035",
+    contentScripts: {
+      matches: [
+        "https://d3qlaywcwingl6.cloudfront.net/content/*/Html5Game/*",
+        "https://d3qlaywcwingl6.cloudfront.net/*/game/content/*",
+      ],
+      js: [
+        {
+          file: "injections/js/bug1665035-dckids.com-cookieEnabled.js",
+        },
+      ],
+      allFrames: true,
+    },
+  },
+  {
+    id: "bug1677442",
+    platform: "desktop",
+    domain: "store.hp.com",
+    bug: "1677442",
+    contentScripts: {
+      matches: ["*://d3nkfb7815bs43.cloudfront.net/*forstore.hp.com*"],
+      js: [
+        {
+          file: "injections/js/bug1677442-store.hp.com-disable-indexeddb.js",
+        },
+      ],
+      allFrames: true,
+    },
   },
 ];
 

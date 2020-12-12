@@ -14,19 +14,29 @@ declTest("destroy actor by iframe remove", {
       await ContentTaskUtils.waitForEvent(frame, "load");
       is(content.window.frames.length, 1, "There should be an iframe.");
       let child = frame.contentWindow.windowGlobalChild;
-      let actorChild = child.getActor("Test");
+      let actorChild = child.getActor("TestWindow");
       ok(actorChild, "JSWindowActorChild should have value.");
 
-      let willDestroyPromise = new Promise(resolve => {
-        const TOPIC = "test-js-window-actor-willdestroy";
-        Services.obs.addObserver(function obs(subject, topic, data) {
-          ok(data, "willDestroyCallback data should be true.");
-          is(subject, actorChild, "Should have this value");
-
-          Services.obs.removeObserver(obs, TOPIC);
-          resolve();
-        }, TOPIC);
-      });
+      {
+        let error = actorChild.uninitializedGetterError;
+        const prop = "contentWindow";
+        Assert.ok(
+          error,
+          `Should get error accessing '${prop}' before actor initialization`
+        );
+        if (error) {
+          Assert.equal(
+            error.name,
+            "InvalidStateError",
+            "Error should be an InvalidStateError"
+          );
+          Assert.equal(
+            error.message,
+            `JSWindowActorChild.${prop} getter: Cannot access property '${prop}' before actor is initialized`,
+            "Error should have informative message"
+          );
+        }
+      }
 
       let didDestroyPromise = new Promise(resolve => {
         const TOPIC = "test-js-window-actor-diddestroy";
@@ -35,19 +45,52 @@ declTest("destroy actor by iframe remove", {
           is(subject, actorChild, "Should have this value");
 
           Services.obs.removeObserver(obs, TOPIC);
-          resolve();
+          // Make a trip through the event loop to ensure that the
+          // actor's manager has been cleared before running remaining
+          // checks.
+          Services.tm.dispatchToMainThread(resolve);
         }, TOPIC);
       });
 
       info("Remove frame");
       content.document.getElementById("frame").remove();
-      await Promise.all([willDestroyPromise, didDestroyPromise]);
+      await didDestroyPromise;
 
       Assert.throws(
-        () => child.getActor("Test"),
+        () => child.getActor("TestWindow"),
         /InvalidStateError/,
         "Should throw if frame destroy."
       );
+
+      for (let prop of [
+        "document",
+        "browsingContext",
+        "docShell",
+        "contentWindow",
+      ]) {
+        let error;
+        try {
+          void actorChild[prop];
+        } catch (e) {
+          error = e;
+        }
+        Assert.ok(
+          error,
+          `Should get error accessing '${prop}' after actor destruction`
+        );
+        if (error) {
+          Assert.equal(
+            error.name,
+            "InvalidStateError",
+            "Error should be an InvalidStateError"
+          );
+          Assert.equal(
+            error.message,
+            `JSWindowActorChild.${prop} getter: Cannot access property '${prop}' after actor 'TestWindow' has been destroyed`,
+            "Error should have informative message"
+          );
+        }
+      }
     });
   },
 });
@@ -68,19 +111,8 @@ declTest("destroy actor by page navigates", {
       let frame = content.document.querySelector("iframe");
       frame.contentWindow.location = url;
       let child = frame.contentWindow.windowGlobalChild;
-      let actorChild = child.getActor("Test");
+      let actorChild = child.getActor("TestWindow");
       ok(actorChild, "JSWindowActorChild should have value.");
-
-      let willDestroyPromise = new Promise(resolve => {
-        const TOPIC = "test-js-window-actor-willdestroy";
-        Services.obs.addObserver(function obs(subject, topic, data) {
-          ok(data, "willDestroyCallback data should be true.");
-          is(subject, actorChild, "Should have this value");
-
-          Services.obs.removeObserver(obs, TOPIC);
-          resolve();
-        }, TOPIC);
-      });
 
       let didDestroyPromise = new Promise(resolve => {
         const TOPIC = "test-js-window-actor-diddestroy";
@@ -94,13 +126,12 @@ declTest("destroy actor by page navigates", {
       });
 
       await Promise.all([
-        willDestroyPromise,
         didDestroyPromise,
         ContentTaskUtils.waitForEvent(frame, "load"),
       ]);
 
       Assert.throws(
-        () => child.getActor("Test"),
+        () => child.getActor("TestWindow"),
         /InvalidStateError/,
         "Should throw if frame destroy."
       );
@@ -117,7 +148,7 @@ declTest("destroy actor by tab being closed", {
     let newTabBrowser = newTab.linkedBrowser;
 
     let parent = newTabBrowser.browsingContext.currentWindowGlobal.getActor(
-      "Test"
+      "TestWindow"
     );
     ok(parent, "JSWindowActorParent should have value.");
 
@@ -125,18 +156,6 @@ declTest("destroy actor by tab being closed", {
     // frame message manager will be being shut down at the same time. Instead
     // send messages over the per-process message manager which should still be
     // active.
-    let willDestroyPromise = new Promise(resolve => {
-      Services.ppmm.addMessageListener(
-        "test-jswindowactor-willdestroy",
-        function onmessage(msg) {
-          Services.ppmm.removeMessageListener(
-            "test-jswindowactor-willdestroy",
-            onmessage
-          );
-          resolve();
-        }
-      );
-    });
     let didDestroyPromise = new Promise(resolve => {
       Services.ppmm.addMessageListener(
         "test-jswindowactor-diddestroy",
@@ -153,17 +172,8 @@ declTest("destroy actor by tab being closed", {
     info("setting up destroy listeners");
     await SpecialPowers.spawn(newTabBrowser, [], () => {
       let child = content.windowGlobalChild;
-      let actorChild = child.getActor("Test");
+      let actorChild = child.getActor("TestWindow");
       ok(actorChild, "JSWindowActorChild should have value.");
-
-      Services.obs.addObserver(function obs(subject, topic, data) {
-        if (subject != actorChild) {
-          return;
-        }
-        dump("WillDestroy called\n");
-        Services.obs.removeObserver(obs, "test-js-window-actor-willdestroy");
-        Services.cpmm.sendAsyncMessage("test-jswindowactor-willdestroy", data);
-      }, "test-js-window-actor-willdestroy");
 
       Services.obs.addObserver(function obs(subject, topic, data) {
         if (subject != actorChild) {
@@ -178,8 +188,6 @@ declTest("destroy actor by tab being closed", {
     info("removing new tab");
     await BrowserTestUtils.removeTab(newTab);
     info("waiting for destroy callbacks to fire");
-    await willDestroyPromise;
-    info("got willDestroy callback");
     await didDestroyPromise;
     info("got didDestroy callback");
   },

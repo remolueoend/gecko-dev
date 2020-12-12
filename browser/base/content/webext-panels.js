@@ -19,8 +19,6 @@ const { ExtensionUtils } = ChromeUtils.import(
 
 var { promiseEvent } = ExtensionUtils;
 
-const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-
 function getBrowser(panel) {
   let browser = document.getElementById("webext-panels-browser");
   if (browser) {
@@ -46,9 +44,12 @@ function getBrowser(panel) {
   browser.setAttribute("autocompletepopup", "PopupAutoComplete");
   browser.setAttribute("selectmenulist", "ContentSelectDropdown");
 
-  // Ensure that the browser is going to run in the same process of the other
+  // Ensure that the browser is going to run in the same bc group as the other
   // extension pages from the same addon.
-  browser.sameProcessAsFrameLoader = panel.extension.groupFrameLoader;
+  browser.setAttribute(
+    "initialBrowsingContextGroupId",
+    panel.extension.policy.browsingContextGroupId
+  );
 
   let readyPromise;
   if (panel.extension.remote) {
@@ -68,6 +69,33 @@ function getBrowser(panel) {
   }
 
   stack.appendChild(browser);
+
+  browser.addEventListener(
+    "DoZoomEnlargeBy10",
+    () => {
+      let { ZoomManager } = browser.ownerGlobal;
+      let zoom = browser.fullZoom;
+      zoom += 0.1;
+      if (zoom > ZoomManager.MAX) {
+        zoom = ZoomManager.MAX;
+      }
+      browser.fullZoom = zoom;
+    },
+    true
+  );
+  browser.addEventListener(
+    "DoZoomReduceBy10",
+    () => {
+      let { ZoomManager } = browser.ownerGlobal;
+      let zoom = browser.fullZoom;
+      zoom -= 0.1;
+      if (zoom < ZoomManager.MIN) {
+        zoom = ZoomManager.MIN;
+      }
+      browser.fullZoom = zoom;
+    },
+    true
+  );
 
   return readyPromise.then(() => {
     ExtensionParent.apiManager.emit(

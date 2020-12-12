@@ -6,15 +6,18 @@
 
 #include "WindowDestroyedEvent.h"
 
+#include "GeckoProfiler.h"
 #include "nsJSUtils.h"
 #include "jsapi.h"
 #include "js/Wrapper.h"
 #include "nsIPrincipal.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIAppStartup.h"
+#include "nsJSPrincipals.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "xpcpublic.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/Components.h"
 
 namespace mozilla {
@@ -105,7 +108,9 @@ WindowDestroyedEvent::Run() {
         }
         NS_ENSURE_TRUE(currentInner, NS_OK);
 
-        AutoSafeJSContext cx;
+        dom::AutoJSAPI jsapi;
+        jsapi.Init();
+        JSContext* cx = jsapi.cx();
         JS::Rooted<JSObject*> obj(cx, currentInner->GetGlobalJSObject());
         if (obj && !js::IsSystemRealm(js::GetNonCCWObjectRealm(obj))) {
           JS::Realm* realm = js::GetNonCCWObjectRealm(obj);

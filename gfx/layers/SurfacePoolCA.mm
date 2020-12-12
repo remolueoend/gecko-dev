@@ -14,6 +14,7 @@
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_gfx.h"
 
+#include "GeckoProfiler.h"
 #include "GLContextCGL.h"
 #include "MozFramebuffer.h"
 
@@ -80,15 +81,14 @@ void SurfacePoolCA::LockedPool::MutateEntryStorage(const char* aMutationType,
 
 #ifdef MOZ_GECKO_PROFILER
   if (profiler_thread_is_being_profiled()) {
-    profiler_add_text_marker(
-        "SurfacePool",
-        nsPrintfCString("%d -> %d in use | %d -> %d waiting for | %d -> %d available | %s %dx%d | "
-                        "%dMB total memory",
+    PROFILER_MARKER_TEXT(
+        "SurfacePool", GRAPHICS, MarkerTiming::IntervalUntilNowFrom(before),
+        nsPrintfCString("%d -> %d in use | %d -> %d waiting for | %d -> %d "
+                        "available | %s %dx%d | %dMB total memory",
                         int(inUseCountBefore), int(mInUseEntries.size()), int(pendingCountBefore),
                         int(mPendingEntries.Length()), int(availableCountBefore),
                         int(mAvailableEntries.Length()), aMutationType, aSize.width, aSize.height,
-                        int(EstimateTotalMemory() / 1000 / 1000)),
-        JS::ProfilingCategoryPair::GRAPHICS, before, TimeStamp::NowUnfuzzed());
+                        int(EstimateTotalMemory() / 1000 / 1000)));
   }
 #endif
 }
@@ -141,7 +141,7 @@ bool SurfacePoolCA::LockedPool::CanRecycleSurfaceForRequest(const SurfacePoolEnt
 
 CFTypeRefPtr<IOSurfaceRef> SurfacePoolCA::LockedPool::ObtainSurfaceFromPool(const IntSize& aSize,
                                                                             GLContext* aGL) {
-  // Do a linear scan through mAvailableEntries to find an eligible suface, going from oldest to
+  // Do a linear scan through mAvailableEntries to find an eligible surface, going from oldest to
   // newest. The size of this array is limited, so the linear scan is fast.
   auto iterToRecycle = std::find_if(mAvailableEntries.begin(), mAvailableEntries.end(),
                                     [&](const SurfacePoolEntry& aEntry) {

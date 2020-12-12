@@ -7,6 +7,7 @@
 #include "SharedWorkerManager.h"
 #include "SharedWorkerParent.h"
 #include "SharedWorkerService.h"
+#include "mozilla/dom/MessagePort.h"
 #include "mozilla/dom/PSharedWorker.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/URIUtils.h"
@@ -22,12 +23,12 @@ namespace dom {
 already_AddRefed<SharedWorkerManagerHolder> SharedWorkerManager::Create(
     SharedWorkerService* aService, nsIEventTarget* aPBackgroundEventTarget,
     const RemoteWorkerData& aData, nsIPrincipal* aLoadingPrincipal,
-    const OriginAttributes& aStoragePrincipalAttrs) {
+    const OriginAttributes& aEffectiveStoragePrincipalAttrs) {
   MOZ_ASSERT(NS_IsMainThread());
 
   RefPtr<SharedWorkerManager> manager =
       new SharedWorkerManager(aPBackgroundEventTarget, aData, aLoadingPrincipal,
-                              aStoragePrincipalAttrs);
+                              aEffectiveStoragePrincipalAttrs);
 
   RefPtr<SharedWorkerManagerHolder> holder =
       new SharedWorkerManagerHolder(manager, aService);
@@ -37,11 +38,11 @@ already_AddRefed<SharedWorkerManagerHolder> SharedWorkerManager::Create(
 SharedWorkerManager::SharedWorkerManager(
     nsIEventTarget* aPBackgroundEventTarget, const RemoteWorkerData& aData,
     nsIPrincipal* aLoadingPrincipal,
-    const OriginAttributes& aStoragePrincipalAttrs)
+    const OriginAttributes& aEffectiveStoragePrincipalAttrs)
     : mPBackgroundEventTarget(aPBackgroundEventTarget),
       mLoadingPrincipal(aLoadingPrincipal),
       mDomain(aData.domain()),
-      mStoragePrincipalAttrs(aStoragePrincipalAttrs),
+      mEffectiveStoragePrincipalAttrs(aEffectiveStoragePrincipalAttrs),
       mResolvedScriptURL(DeserializeURI(aData.resolvedScriptURL())),
       mName(aData.name()),
       mIsSecureContext(aData.isSecureContext()),
@@ -61,7 +62,7 @@ SharedWorkerManager::~SharedWorkerManager() {
 bool SharedWorkerManager::MaybeCreateRemoteWorker(
     const RemoteWorkerData& aData, uint64_t aWindowID,
     UniqueMessagePortId& aPortIdentifier, base::ProcessId aProcessId) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   if (!mRemoteWorkerController) {
     mRemoteWorkerController =
@@ -83,7 +84,7 @@ already_AddRefed<SharedWorkerManagerHolder>
 SharedWorkerManager::MatchOnMainThread(
     SharedWorkerService* aService, const nsACString& aDomain,
     nsIURI* aScriptURL, const nsAString& aName, nsIPrincipal* aLoadingPrincipal,
-    const OriginAttributes& aStoragePrincipalAttrs) {
+    const OriginAttributes& aEffectiveStoragePrincipalAttrs) {
   MOZ_ASSERT(NS_IsMainThread());
 
   bool urlEquals;
@@ -91,12 +92,13 @@ SharedWorkerManager::MatchOnMainThread(
     return nullptr;
   }
 
-  bool match = aDomain == mDomain && urlEquals && aName == mName &&
-               // We want to be sure that the window's principal subsumes the
-               // SharedWorker's loading principal and vice versa.
-               mLoadingPrincipal->Subsumes(aLoadingPrincipal) &&
-               aLoadingPrincipal->Subsumes(mLoadingPrincipal) &&
-               mStoragePrincipalAttrs == aStoragePrincipalAttrs;
+  bool match =
+      aDomain == mDomain && urlEquals && aName == mName &&
+      // We want to be sure that the window's principal subsumes the
+      // SharedWorker's loading principal and vice versa.
+      mLoadingPrincipal->Subsumes(aLoadingPrincipal) &&
+      aLoadingPrincipal->Subsumes(mLoadingPrincipal) &&
+      mEffectiveStoragePrincipalAttrs == aEffectiveStoragePrincipalAttrs;
   if (!match) {
     return nullptr;
   }
@@ -107,7 +109,7 @@ SharedWorkerManager::MatchOnMainThread(
 }
 
 void SharedWorkerManager::AddActor(SharedWorkerParent* aParent) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aParent);
   MOZ_ASSERT(!mActors.Contains(aParent));
 
@@ -120,7 +122,7 @@ void SharedWorkerManager::AddActor(SharedWorkerParent* aParent) {
 }
 
 void SharedWorkerManager::RemoveActor(SharedWorkerParent* aParent) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aParent);
   MOZ_ASSERT(mActors.Contains(aParent));
 
@@ -140,7 +142,7 @@ void SharedWorkerManager::RemoveActor(SharedWorkerParent* aParent) {
 }
 
 void SharedWorkerManager::Terminate() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(mActors.IsEmpty());
   MOZ_ASSERT(mHolders.IsEmpty());
 
@@ -149,7 +151,7 @@ void SharedWorkerManager::Terminate() {
 }
 
 void SharedWorkerManager::UpdateSuspend() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(mRemoteWorkerController);
 
   uint32_t suspended = 0;
@@ -177,7 +179,7 @@ void SharedWorkerManager::UpdateSuspend() {
 }
 
 void SharedWorkerManager::UpdateFrozen() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(mRemoteWorkerController);
 
   uint32_t frozen = 0;
@@ -207,7 +209,7 @@ void SharedWorkerManager::UpdateFrozen() {
 bool SharedWorkerManager::IsSecureContext() const { return mIsSecureContext; }
 
 void SharedWorkerManager::CreationFailed() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   for (SharedWorkerParent* actor : mActors) {
     Unused << actor->SendError(NS_ERROR_FAILURE);
@@ -215,12 +217,12 @@ void SharedWorkerManager::CreationFailed() {
 }
 
 void SharedWorkerManager::CreationSucceeded() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   // Nothing to do here.
 }
 
 void SharedWorkerManager::ErrorReceived(const ErrorValue& aValue) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   for (SharedWorkerParent* actor : mActors) {
     Unused << actor->SendError(aValue);
@@ -228,7 +230,7 @@ void SharedWorkerManager::ErrorReceived(const ErrorValue& aValue) {
 }
 
 void SharedWorkerManager::Terminated() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   for (SharedWorkerParent* actor : mActors) {
     Unused << actor->SendTerminate();

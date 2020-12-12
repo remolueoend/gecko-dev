@@ -2,6 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+const { ComponentUtils } = ChromeUtils.import(
+  "resource://gre/modules/ComponentUtils.jsm"
+);
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
@@ -180,20 +183,20 @@ var gBuiltInInputs = {
                 UrlbarTokenizer.RESTRICT.BOOKMARK
               ),
           },
-          History: {
-            title: "search-history",
-            type: kInputTypes.BUTTON,
-            callback: () =>
-              gTouchBarHelper.insertRestrictionInUrlbar(
-                UrlbarTokenizer.RESTRICT.HISTORY
-              ),
-          },
           OpenTabs: {
             title: "search-opentabs",
             type: kInputTypes.BUTTON,
             callback: () =>
               gTouchBarHelper.insertRestrictionInUrlbar(
                 UrlbarTokenizer.RESTRICT.OPENPAGE
+              ),
+          },
+          History: {
+            title: "search-history",
+            type: kInputTypes.BUTTON,
+            callback: () =>
+              gTouchBarHelper.insertRestrictionInUrlbar(
+                UrlbarTokenizer.RESTRICT.HISTORY
               ),
           },
           Tags: {
@@ -412,7 +415,10 @@ class TouchBarHelper {
       }
     }
 
-    TouchBarHelper.window.gURLBar.search(`${restrictionToken} ${searchString}`);
+    TouchBarHelper.window.gURLBar.search(
+      `${restrictionToken} ${searchString}`,
+      { searchModeEntry: "touchbar" }
+    );
   }
 
   observe(subject, topic, data) {
@@ -499,7 +505,7 @@ const helperProto = TouchBarHelper.prototype;
 helperProto.classDescription = "Services the Mac Touch Bar";
 helperProto.classID = Components.ID("{ea109912-3acc-48de-b679-c23b6a122da5}");
 helperProto.contractID = "@mozilla.org/widget/touchbarhelper;1";
-helperProto.QueryInterface = ChromeUtils.generateQI([Ci.nsITouchBarHelper]);
+helperProto.QueryInterface = ChromeUtils.generateQI(["nsITouchBarHelper"]);
 helperProto._l10n = new Localization(["browser/touchbar/touchbar.ftl"]);
 
 /**
@@ -639,9 +645,9 @@ const inputProto = TouchBarInput.prototype;
 inputProto.classDescription = "Represents an input on the Mac Touch Bar";
 inputProto.classID = Components.ID("{77441d17-f29c-49d7-982f-f20a5ab5a900}");
 inputProto.contractID = "@mozilla.org/widget/touchbarinput;1";
-inputProto.QueryInterface = ChromeUtils.generateQI([Ci.nsITouchBarInput]);
+inputProto.QueryInterface = ChromeUtils.generateQI(["nsITouchBarInput"]);
 
-this.NSGetFactory = XPCOMUtils.generateNSGetFactory([
+this.NSGetFactory = ComponentUtils.generateNSGetFactory([
   TouchBarHelper,
   TouchBarInput,
 ]);

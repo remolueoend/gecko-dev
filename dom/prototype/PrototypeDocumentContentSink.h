@@ -36,6 +36,7 @@ namespace dom {
 class Element;
 class ScriptLoader;
 class Document;
+class XMLStylesheetProcessingInstruction;
 }  // namespace dom
 }  // namespace mozilla
 
@@ -72,7 +73,7 @@ class PrototypeDocumentContentSink final : public nsIStreamLoaderObserver,
   NS_IMETHOD WillInterrupt(void) override { return NS_OK; };
   NS_IMETHOD WillResume(void) override { return NS_OK; };
   NS_IMETHOD SetParser(nsParserBase* aParser) override;
-  virtual void InitialDocumentTranslationCompleted() override;
+  virtual void InitialTranslationCompleted() override;
   virtual void FlushPendingNotifications(FlushType aType) override{};
   virtual void SetDocumentCharset(NotNull<const Encoding*> aEncoding) override;
   virtual nsISupports* GetTarget() override;
@@ -237,7 +238,7 @@ class PrototypeDocumentContentSink final : public nsIStreamLoaderObserver,
    */
   nsresult InsertXMLStylesheetPI(const nsXULPrototypePI* aProtoPI,
                                  nsINode* aParent, nsINode* aBeforeThis,
-                                 nsIContent* aPINode);
+                                 XMLStylesheetProcessingInstruction* aPINode);
   void CloseElement(Element* aElement);
 };
 

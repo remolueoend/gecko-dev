@@ -13,12 +13,10 @@
 #include "nsIFormControl.h"
 #include "nsGkAtoms.h"
 #include "nsContentCreatorFunctions.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/DOMRect.h"
 #include "mozilla/dom/ValidityState.h"
-#include "mozilla/dom/Element.h"
 
 class nsDOMTokenList;
 class nsIFormControlFrame;
@@ -28,6 +26,7 @@ class nsIURI;
 struct nsSize;
 
 namespace mozilla {
+class ErrorResult;
 class EventChainPostVisitor;
 class EventChainPreVisitor;
 class EventChainVisitor;
@@ -86,6 +85,10 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   void SetHidden(bool aHidden, mozilla::ErrorResult& aError) {
     SetHTMLBoolAttr(nsGkAtoms::hidden, aHidden, aError);
   }
+  bool Inert() const { return GetBoolAttr(nsGkAtoms::inert); }
+  void SetInert(bool aInert, mozilla::ErrorResult& aError) {
+    SetHTMLBoolAttr(nsGkAtoms::inert, aInert, aError);
+  }
   void Click(mozilla::dom::CallerType aCallerType);
   void GetAccessKey(nsString& aAccessKey) {
     GetHTMLAttr(nsGkAtoms::accesskey, aAccessKey);
@@ -99,10 +102,8 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
                        nsGkAtoms::_true, eIgnoreCase);
   }
   void SetDraggable(bool aDraggable, mozilla::ErrorResult& aError) {
-    SetHTMLAttr(
-        nsGkAtoms::draggable,
-        aDraggable ? NS_LITERAL_STRING("true") : NS_LITERAL_STRING("false"),
-        aError);
+    SetHTMLAttr(nsGkAtoms::draggable, aDraggable ? u"true"_ns : u"false"_ns,
+                aError);
   }
   void GetContentEditable(nsString& aContentEditable) {
     ContentEditableTristate value = GetContentEditableValue();
@@ -119,11 +120,9 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
     if (aContentEditable.LowerCaseEqualsLiteral("inherit")) {
       UnsetHTMLAttr(nsGkAtoms::contenteditable, aError);
     } else if (aContentEditable.LowerCaseEqualsLiteral("true")) {
-      SetHTMLAttr(nsGkAtoms::contenteditable, NS_LITERAL_STRING("true"),
-                  aError);
+      SetHTMLAttr(nsGkAtoms::contenteditable, u"true"_ns, aError);
     } else if (aContentEditable.LowerCaseEqualsLiteral("false")) {
-      SetHTMLAttr(nsGkAtoms::contenteditable, NS_LITERAL_STRING("false"),
-                  aError);
+      SetHTMLAttr(nsGkAtoms::contenteditable, u"false"_ns, aError);
     } else {
       aError.Throw(NS_ERROR_DOM_SYNTAX_ERR);
     }
@@ -162,10 +161,8 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   mozilla::dom::HTMLMenuElement* GetContextMenu() const;
   bool Spellcheck();
   void SetSpellcheck(bool aSpellcheck, mozilla::ErrorResult& aError) {
-    SetHTMLAttr(
-        nsGkAtoms::spellcheck,
-        aSpellcheck ? NS_LITERAL_STRING("true") : NS_LITERAL_STRING("false"),
-        aError);
+    SetHTMLAttr(nsGkAtoms::spellcheck, aSpellcheck ? u"true"_ns : u"false"_ns,
+                aError);
   }
 
   MOZ_CAN_RUN_SCRIPT
@@ -178,6 +175,17 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   }
   void SetInputMode(const nsAString& aValue, ErrorResult& aRv) {
     SetHTMLAttr(nsGkAtoms::inputmode, aValue, aRv);
+  }
+  virtual void GetAutocapitalize(nsAString& aValue);
+  void SetAutocapitalize(const nsAString& aValue, ErrorResult& aRv) {
+    SetHTMLAttr(nsGkAtoms::autocapitalize, aValue, aRv);
+  }
+
+  void GetEnterKeyHint(nsAString& aValue) {
+    GetEnumAttr(nsGkAtoms::enterkeyhint, nullptr, aValue);
+  }
+  void SetEnterKeyHint(const nsAString& aValue, ErrorResult& aRv) {
+    SetHTMLAttr(nsGkAtoms::enterkeyhint, aValue, aRv);
   }
 
   /**
@@ -255,15 +263,6 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   virtual ~nsGenericHTMLElement() = default;
 
  public:
-  /**
-   * Get width and height, using given image request if attributes are unset.
-   * Pass a reference to the image request, since the method may change the
-   * value and we want to use the updated value.
-   */
-  MOZ_CAN_RUN_SCRIPT
-  nsSize GetWidthHeightForImage(RefPtr<imgRequestProxy>& aImageRequest);
-
- public:
   // Implementation for nsIContent
   virtual nsresult BindToTree(BindContext&, nsINode& aParent) override;
   virtual void UnbindFromTree(bool aNullParent = true) override;
@@ -280,8 +279,8 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
    */
   virtual bool IsHTMLFocusable(bool aWithMouse, bool* aIsFocusable,
                                int32_t* aTabIndex);
-  virtual bool PerformAccesskey(bool aKeyCausesActivation,
-                                bool aIsTrustedEvent) override;
+  MOZ_CAN_RUN_SCRIPT virtual bool PerformAccesskey(
+      bool aKeyCausesActivation, bool aIsTrustedEvent) override;
 
   /**
    * Check if an event for an anchor can be handled
@@ -624,13 +623,6 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
    */
   bool GetURIAttr(nsAtom* aAttr, nsAtom* aBaseAttr, nsIURI** aURI) const;
 
-  /**
-   * Returns the current disabled state of the element.
-   *
-   * TODO(emilio): Consider moving to Element?
-   */
-  bool IsDisabled() const { return State().HasState(NS_EVENT_STATE_DISABLED); }
-
   bool IsHidden() const {
     return HasAttr(kNameSpaceID_None, nsGkAtoms::hidden);
   }
@@ -641,8 +633,6 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
                                  nsAtom* aAtom, void* aData);
 
   already_AddRefed<nsINodeList> Labels();
-
-  virtual bool IsInteractiveHTMLContent(bool aIgnoreTabindex) const override;
 
   static bool LegacyTouchAPIEnabled(JSContext* aCx, JSObject* aObj);
 
@@ -663,6 +653,10 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
     // name (which doesn't have to match the id or anything).
     // HasName() is true precisely when name is nonempty.
     return aElement->IsHTMLElement(nsGkAtoms::img) && aElement->HasName();
+  }
+
+  virtual inline void ResultForDialogSubmit(nsAString& aResult) {
+    GetAttr(kNameSpaceID_None, nsGkAtoms::value, aResult);
   }
 
  protected:
@@ -748,7 +742,7 @@ class nsGenericHTMLElement : public nsGenericHTMLElementBase {
   void SetHTMLBoolAttr(nsAtom* aName, bool aValue,
                        mozilla::ErrorResult& aError) {
     if (aValue) {
-      SetHTMLAttr(aName, EmptyString(), aError);
+      SetHTMLAttr(aName, u""_ns, aError);
     } else {
       UnsetHTMLAttr(aName, aError);
     }
@@ -1027,6 +1021,10 @@ class nsGenericHTMLFormElement : public nsGenericHTMLElement,
   virtual bool IsLabelable() const override;
 
   void GetFormAction(nsString& aValue);
+
+  // autocapitalize attribute support
+  virtual void GetAutocapitalize(nsAString& aValue) override;
+  bool IsAutocapitalizeInheriting() const;
 
  protected:
   virtual ~nsGenericHTMLFormElement();

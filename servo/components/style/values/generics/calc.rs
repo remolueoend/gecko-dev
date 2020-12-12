@@ -60,6 +60,13 @@ pub enum SortKey {
 ///
 /// FIXME: This would be much more elegant if we used `Self` in the types below,
 /// but we can't because of https://github.com/serde-rs/serde/issues/1565.
+///
+/// FIXME: The following annotations are to workaround an LLVM inlining bug, see
+/// bug 1631929.
+///
+/// cbindgen:destructor-attributes=MOZ_NEVER_INLINE
+/// cbindgen:copy-constructor-attributes=MOZ_NEVER_INLINE
+/// cbindgen:eq-attributes=MOZ_NEVER_INLINE
 #[repr(u8)]
 #[derive(
     Clone,
@@ -337,7 +344,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
             ($slot:expr) => {{
                 let dummy = Self::MinMax(Default::default(), MinMaxOp::Max);
                 let result = mem::replace($slot, dummy);
-                mem::replace(self, result);
+                *self = result;
             }};
         }
         match *self {
@@ -464,7 +471,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     replace_self_with!(&mut children[0]);
                 } else {
                     // Else put our simplified children back.
-                    mem::replace(children_slot, children.into_boxed_slice().into());
+                    *children_slot = children.into_boxed_slice().into();
                 }
             },
             Self::Leaf(ref mut l) => {

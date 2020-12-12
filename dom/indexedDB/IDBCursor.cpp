@@ -13,6 +13,7 @@
 #include "IDBTransaction.h"
 #include "IndexedDatabaseInlines.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/indexedDB/PBackgroundIDBSharedTypes.h"
 #include "nsString.h"
@@ -22,15 +23,14 @@
 // Include this last to avoid path problems on Windows.
 #include "ActorsChild.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace indexedDB;
 
 IDBCursor::IDBCursor(BackgroundCursorChildBase* const aBackgroundActor)
-    : mBackgroundActor(aBackgroundActor),
+    : mBackgroundActor(WrapNotNull(aBackgroundActor)),
       mRequest(aBackgroundActor->GetRequest()),
-      mTransaction(mRequest->GetTransaction()),
+      mTransaction(&mRequest->MutableTransactionRef()),
       mCachedKey(JS::UndefinedValue()),
       mCachedPrimaryKey(JS::UndefinedValue()),
       mCachedValue(JS::UndefinedValue()),
@@ -44,7 +44,6 @@ IDBCursor::IDBCursor(BackgroundCursorChildBase* const aBackgroundActor)
   MOZ_ASSERT(aBackgroundActor);
   aBackgroundActor->AssertIsOnOwningThread();
   MOZ_ASSERT(mRequest);
-  MOZ_ASSERT(mTransaction);
 
   mTransaction->RegisterCursor(this);
 }
@@ -214,6 +213,11 @@ IDBCursorDirection IDBCursor::GetDirection() const {
   }
 }
 
+RefPtr<IDBRequest> IDBCursor::Request() const {
+  AssertIsOnOwningThread();
+  return mRequest;
+}
+
 template <IDBCursor::Type CursorType>
 void IDBTypedCursor<CursorType>::GetSource(
     OwningIDBObjectStoreOrIDBIndex& aSource) const {
@@ -342,26 +346,21 @@ void IDBTypedCursor<CursorType>::Continue(JSContext* const aCx,
   }
 
   Key key;
-  auto result = key.SetFromJSVal(aCx, aKey, aRv);
-  if (!result.Is(Ok, aRv)) {
-    if (result.Is(Invalid, aRv)) {
-      aRv.Throw(NS_ERROR_DOM_INDEXEDDB_DATA_ERR);
-    }
+  auto result = key.SetFromJSVal(aCx, aKey);
+  if (result.isErr()) {
+    aRv = result.unwrapErr().ExtractErrorResult(
+        InvalidMapsTo<NS_ERROR_DOM_INDEXEDDB_DATA_ERR>);
     return;
   }
 
   if constexpr (!IsObjectStoreCursor) {
     if (IsLocaleAware() && !key.IsUnset()) {
-      Key tmp;
-
-      result = key.ToLocaleAwareKey(tmp, GetSourceRef().Locale(), aRv);
-      if (!result.Is(Ok, aRv)) {
-        if (result.Is(Invalid, aRv)) {
-          aRv.Throw(NS_ERROR_DOM_INDEXEDDB_DATA_ERR);
-        }
+      auto result = key.ToLocaleAwareKey(GetSourceRef().Locale());
+      if (result.isErr()) {
+        aRv.Throw(result.inspectErr());
         return;
       }
-      key = tmp;
+      key = result.unwrap();
     }
   }
 
@@ -397,17 +396,19 @@ void IDBTypedCursor<CursorType>::Continue(JSContext* const aCx,
     IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
         "database(%s).transaction(%s).objectStore(%s)."
         "cursor(%s).continue(%s)",
-        "IDBCursor.continue()", mTransaction->LoggingSerialNumber(),
-        requestSerialNumber, IDB_LOG_STRINGIFY(mTransaction->Database()),
-        IDB_LOG_STRINGIFY(mTransaction), IDB_LOG_STRINGIFY(mSource),
+        "IDBCursor.continue(%.0s%.0s%.0s%.0s%.0s)",
+        mTransaction->LoggingSerialNumber(), requestSerialNumber,
+        IDB_LOG_STRINGIFY(mTransaction->Database()),
+        IDB_LOG_STRINGIFY(*mTransaction), IDB_LOG_STRINGIFY(mSource),
         IDB_LOG_STRINGIFY(mDirection), IDB_LOG_STRINGIFY(key));
   } else {
     IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
         "database(%s).transaction(%s).objectStore(%s)."
         "index(%s).cursor(%s).continue(%s)",
-        "IDBCursor.continue()", mTransaction->LoggingSerialNumber(),
-        requestSerialNumber, IDB_LOG_STRINGIFY(mTransaction->Database()),
-        IDB_LOG_STRINGIFY(mTransaction),
+        "IDBCursor.continue(%.0s%.0s%.0s%.0s%.0s%.0s)",
+        mTransaction->LoggingSerialNumber(), requestSerialNumber,
+        IDB_LOG_STRINGIFY(mTransaction->Database()),
+        IDB_LOG_STRINGIFY(*mTransaction),
         IDB_LOG_STRINGIFY(GetSourceRef().ObjectStore()),
         IDB_LOG_STRINGIFY(mSource), IDB_LOG_STRINGIFY(mDirection),
         IDB_LOG_STRINGIFY(key));
@@ -447,24 +448,20 @@ void IDBTypedCursor<CursorType>::ContinuePrimaryKey(
     }
 
     Key key;
-    auto result = key.SetFromJSVal(aCx, aKey, aRv);
-    if (!result.Is(Ok, aRv)) {
-      if (result.Is(Invalid, aRv)) {
-        aRv.Throw(NS_ERROR_DOM_INDEXEDDB_DATA_ERR);
-      }
+    auto result = key.SetFromJSVal(aCx, aKey);
+    if (result.isErr()) {
+      aRv = result.unwrapErr().ExtractErrorResult(
+          InvalidMapsTo<NS_ERROR_DOM_INDEXEDDB_DATA_ERR>);
       return;
     }
 
     if (IsLocaleAware() && !key.IsUnset()) {
-      Key tmp;
-      result = key.ToLocaleAwareKey(tmp, GetSourceRef().Locale(), aRv);
-      if (!result.Is(Ok, aRv)) {
-        if (result.Is(Invalid, aRv)) {
-          aRv.Throw(NS_ERROR_DOM_INDEXEDDB_DATA_ERR);
-        }
+      auto result = key.ToLocaleAwareKey(GetSourceRef().Locale());
+      if (result.isErr()) {
+        aRv.Throw(result.inspectErr());
         return;
       }
-      key = tmp;
+      key = result.unwrap();
     }
 
     if (key.IsUnset()) {
@@ -473,11 +470,10 @@ void IDBTypedCursor<CursorType>::ContinuePrimaryKey(
     }
 
     Key primaryKey;
-    result = primaryKey.SetFromJSVal(aCx, aPrimaryKey, aRv);
-    if (!result.Is(Ok, aRv)) {
-      if (result.Is(Invalid, aRv)) {
-        aRv.Throw(NS_ERROR_DOM_INDEXEDDB_DATA_ERR);
-      }
+    result = primaryKey.SetFromJSVal(aCx, aPrimaryKey);
+    if (result.isErr()) {
+      aRv = result.unwrapErr().ExtractErrorResult(
+          InvalidMapsTo<NS_ERROR_DOM_INDEXEDDB_DATA_ERR>);
       return;
     }
 
@@ -515,9 +511,10 @@ void IDBTypedCursor<CursorType>::ContinuePrimaryKey(
     IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
         "database(%s).transaction(%s).objectStore(%s)."
         "index(%s).cursor(%s).continuePrimaryKey(%s, %s)",
-        "IDBCursor.continuePrimaryKey()", mTransaction->LoggingSerialNumber(),
-        requestSerialNumber, IDB_LOG_STRINGIFY(mTransaction->Database()),
-        IDB_LOG_STRINGIFY(mTransaction),
+        "IDBCursor.continuePrimaryKey(%.0s%.0s%.0s%.0s%.0s%.0s%.0s)",
+        mTransaction->LoggingSerialNumber(), requestSerialNumber,
+        IDB_LOG_STRINGIFY(mTransaction->Database()),
+        IDB_LOG_STRINGIFY(*mTransaction),
         IDB_LOG_STRINGIFY(&GetSourceObjectStoreRef()),
         IDB_LOG_STRINGIFY(mSource), IDB_LOG_STRINGIFY(mDirection),
         IDB_LOG_STRINGIFY(key), IDB_LOG_STRINGIFY(primaryKey));
@@ -555,18 +552,20 @@ void IDBTypedCursor<CursorType>::Advance(const uint32_t aCount,
   if constexpr (IsObjectStoreCursor) {
     IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
         "database(%s).transaction(%s).objectStore(%s)."
-        "cursor(%s).advance(%ld)",
-        "IDBCursor.advance()", mTransaction->LoggingSerialNumber(),
-        requestSerialNumber, IDB_LOG_STRINGIFY(mTransaction->Database()),
-        IDB_LOG_STRINGIFY(mTransaction), IDB_LOG_STRINGIFY(mSource),
+        "cursor(%s).advance(%" PRIi32 ")",
+        "IDBCursor.advance(%.0s%.0s%.0s%.0s%" PRIi32 ")",
+        mTransaction->LoggingSerialNumber(), requestSerialNumber,
+        IDB_LOG_STRINGIFY(mTransaction->Database()),
+        IDB_LOG_STRINGIFY(*mTransaction), IDB_LOG_STRINGIFY(mSource),
         IDB_LOG_STRINGIFY(mDirection), aCount);
   } else {
     IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
         "database(%s).transaction(%s).objectStore(%s)."
-        "index(%s).cursor(%s).advance(%ld)",
-        "IDBCursor.advance()", mTransaction->LoggingSerialNumber(),
-        requestSerialNumber, IDB_LOG_STRINGIFY(mTransaction->Database()),
-        IDB_LOG_STRINGIFY(mTransaction),
+        "index(%s).cursor(%s).advance(%" PRIi32 ")",
+        "IDBCursor.advance(%.0s%.0s%.0s%.0s%.0s%" PRIi32 ")",
+        mTransaction->LoggingSerialNumber(), requestSerialNumber,
+        IDB_LOG_STRINGIFY(mTransaction->Database()),
+        IDB_LOG_STRINGIFY(*mTransaction),
         IDB_LOG_STRINGIFY(GetSourceRef().ObjectStore()),
         IDB_LOG_STRINGIFY(mSource), IDB_LOG_STRINGIFY(mDirection), aCount);
   }
@@ -661,20 +660,20 @@ RefPtr<IDBRequest> IDBTypedCursor<CursorType>::Update(
       IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
           "database(%s).transaction(%s).objectStore(%s)."
           "cursor(%s).update(%s)",
-          "IDBCursor.update()", mTransaction->LoggingSerialNumber(),
-          request->LoggingSerialNumber(),
+          "IDBCursor.update(%.0s%.0s%.0s%.0s%.0s)",
+          mTransaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
           IDB_LOG_STRINGIFY(mTransaction->Database()),
-          IDB_LOG_STRINGIFY(mTransaction), IDB_LOG_STRINGIFY(&objectStore),
+          IDB_LOG_STRINGIFY(*mTransaction), IDB_LOG_STRINGIFY(&objectStore),
           IDB_LOG_STRINGIFY(mDirection),
           IDB_LOG_STRINGIFY(&objectStore, primaryKey));
     } else {
       IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
           "database(%s).transaction(%s).objectStore(%s)."
           "index(%s).cursor(%s).update(%s)",
-          "IDBCursor.update()", mTransaction->LoggingSerialNumber(),
-          request->LoggingSerialNumber(),
+          "IDBCursor.update(%.0s%.0s%.0s%.0s%.0s%.0s)",
+          mTransaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
           IDB_LOG_STRINGIFY(mTransaction->Database()),
-          IDB_LOG_STRINGIFY(mTransaction), IDB_LOG_STRINGIFY(&objectStore),
+          IDB_LOG_STRINGIFY(*mTransaction), IDB_LOG_STRINGIFY(&objectStore),
           IDB_LOG_STRINGIFY(mSource), IDB_LOG_STRINGIFY(mDirection),
           IDB_LOG_STRINGIFY(&objectStore, primaryKey));
     }
@@ -733,20 +732,20 @@ RefPtr<IDBRequest> IDBTypedCursor<CursorType>::Delete(JSContext* const aCx,
       IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
           "database(%s).transaction(%s).objectStore(%s)."
           "cursor(%s).delete(%s)",
-          "IDBCursor.delete()", mTransaction->LoggingSerialNumber(),
-          request->LoggingSerialNumber(),
+          "IDBCursor.delete(%.0s%.0s%.0s%.0s%.0s)",
+          mTransaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
           IDB_LOG_STRINGIFY(mTransaction->Database()),
-          IDB_LOG_STRINGIFY(mTransaction), IDB_LOG_STRINGIFY(&objectStore),
+          IDB_LOG_STRINGIFY(*mTransaction), IDB_LOG_STRINGIFY(&objectStore),
           IDB_LOG_STRINGIFY(mDirection),
           IDB_LOG_STRINGIFY(&objectStore, primaryKey));
     } else {
       IDB_LOG_MARK_CHILD_TRANSACTION_REQUEST(
           "database(%s).transaction(%s).objectStore(%s)."
           "index(%s).cursor(%s).delete(%s)",
-          "IDBCursor.delete()", mTransaction->LoggingSerialNumber(),
-          request->LoggingSerialNumber(),
+          "IDBCursor.delete(%.0s%.0s%.0s%.0s%.0s%.0s)",
+          mTransaction->LoggingSerialNumber(), request->LoggingSerialNumber(),
           IDB_LOG_STRINGIFY(mTransaction->Database()),
-          IDB_LOG_STRINGIFY(mTransaction), IDB_LOG_STRINGIFY(&objectStore),
+          IDB_LOG_STRINGIFY(*mTransaction), IDB_LOG_STRINGIFY(&objectStore),
           IDB_LOG_STRINGIFY(mSource), IDB_LOG_STRINGIFY(mDirection),
           IDB_LOG_STRINGIFY(&objectStore, primaryKey));
     }
@@ -870,5 +869,4 @@ template class IDBTypedCursor<IDBCursorType::ObjectStoreKey>;
 template class IDBTypedCursor<IDBCursorType::Index>;
 template class IDBTypedCursor<IDBCursorType::IndexKey>;
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -7,17 +7,15 @@
 #ifndef mozilla_SchedulerGroup_h
 #define mozilla_SchedulerGroup_h
 
-#include "mozilla/AbstractEventQueue.h"
-#include "mozilla/AlreadyAddRefed.h"
-#include "mozilla/LinkedList.h"
-#include "mozilla/Queue.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/TaskCategory.h"
-#include "mozilla/ThreadLocal.h"
-#include "mozilla/ThrottledEventQueue.h"
-#include "mozilla/TimeStamp.h"
 #include "nsCOMPtr.h"
-#include "nsISupportsImpl.h"
+#include "nsID.h"
+#include "nsIRunnable.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
 #include "nsThreadUtils.h"
+#include "nscore.h"
 
 class nsIEventTarget;
 class nsIRunnable;
@@ -82,7 +80,6 @@ class SchedulerGroup {
   static nsresult Dispatch(TaskCategory aCategory,
                            already_AddRefed<nsIRunnable>&& aRunnable);
 
-
   static nsresult UnlabeledDispatch(TaskCategory aCategory,
                                     already_AddRefed<nsIRunnable>&& aRunnable);
 
@@ -97,7 +94,6 @@ class SchedulerGroup {
  protected:
   static nsresult InternalUnlabeledDispatch(
       TaskCategory aCategory, already_AddRefed<Runnable>&& aRunnable);
-
 
   static nsresult LabeledDispatch(TaskCategory aCategory,
                                   already_AddRefed<nsIRunnable>&& aRunnable,

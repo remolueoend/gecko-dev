@@ -31,11 +31,14 @@ Services.prefs.setCharPref(
   "example.net,example.org"
 );
 
+Services.prefs.setBoolPref("dom.securecontext.whitelist_onions", false);
+
 add_task(async function test_isOriginPotentiallyTrustworthy() {
   for (let [uriSpec, expectedResult] of [
     ["http://example.com/", false],
     ["https://example.com/", true],
     ["http://localhost/", true],
+    ["http://localhost.localhost/", true],
     ["http://127.0.0.1/", true],
     ["file:///", true],
     ["resource:///", true],
@@ -52,7 +55,7 @@ add_task(async function test_isOriginPotentiallyTrustworthy() {
     Assert.equal(principal.isOriginPotentiallyTrustworthy, expectedResult);
   }
   // And now let's test whether .onion sites are properly treated when
-  // whitelisted, see bug 1382359.
+  // allowlisted, see bug 1382359.
   Services.prefs.setBoolPref("dom.securecontext.whitelist_onions", true);
   let uri = NetUtil.newURI("http://1234567890abcdef.onion/");
   let principal = gScriptSecurityManager.createContentPrincipal(uri, {});

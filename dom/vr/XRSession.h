@@ -9,9 +9,11 @@
 
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/WebXRBinding.h"
-#include "nsRefreshDriver.h"
+#include "nsRefreshObservers.h"
 
 #include "gfxVR.h"
+
+class nsRefreshDriver;
 
 namespace mozilla {
 namespace gfx {
@@ -21,6 +23,7 @@ class VRDisplayPresentation;
 namespace dom {
 
 class XRSystem;
+enum class XREye : uint8_t;
 enum class XRReferenceSpaceType : uint8_t;
 enum class XRSessionMode : uint8_t;
 enum class XRVisibilityState : uint8_t;
@@ -33,6 +36,7 @@ struct XRReferenceSpaceOptions;
 class XRRenderState;
 struct XRRenderStateInit;
 class XRSpace;
+class XRViewerPose;
 
 class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
  public:
@@ -85,13 +89,15 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   IMPL_EVENT_HANDLER(visibilitychange);
 
   // Non WebIDL Members
-  gfx::VRDisplayClient* GetDisplayClient();
-  XRRenderState* GetActiveRenderState();
+  gfx::VRDisplayClient* GetDisplayClient() const;
+  XRRenderState* GetActiveRenderState() const;
   bool IsEnded() const;
   bool IsImmersive() const;
   MOZ_CAN_RUN_SCRIPT
   void StartFrame();
   void ExitPresent();
+  RefPtr<XRViewerPose> PooledViewerPose(const gfx::Matrix4x4Double& aTransform,
+                                        bool aEmulatedPosition);
 
   // nsARefreshObserver
   MOZ_CAN_RUN_SCRIPT
@@ -104,6 +110,7 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   void Shutdown();
   void ExitPresentInternal();
   void ApplyPendingRenderState();
+  RefPtr<XRFrame> PooledFrame();
   RefPtr<XRSystem> mXRSystem;
   bool mShutdown;
   bool mEnded;
@@ -134,6 +141,10 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   nsTArray<XRFrameRequest> mFrameRequestCallbacks;
   mozilla::TimeStamp mStartTimeStamp;
   nsTArray<XRReferenceSpaceType> mEnabledReferenceSpaceTypes;
+  nsTArray<RefPtr<XRViewerPose>> mViewerPosePool;
+  uint32_t mViewerPosePoolIndex;
+  nsTArray<RefPtr<XRFrame>> mFramePool;
+  uint32_t mFramePoolIndex;
 };
 
 }  // namespace dom

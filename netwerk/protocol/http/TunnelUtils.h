@@ -221,9 +221,12 @@ class SpdyConnectTransaction final : public NullHttpTransaction {
   // CONNECT tunnel but the setup fails. The plaintext only carries the CONNECT
   // error.
   void ForcePlainText();
-  void MapStreamToHttpConnection(nsISocketTransport* aTransport,
+  // True if we successfully map stream to a nsHttpConnection. Currently we skip
+  // 1xx response only.
+  bool MapStreamToHttpConnection(nsISocketTransport* aTransport,
                                  nsHttpConnectionInfo* aConnInfo,
-                                 int32_t httpResponseCode);
+                                 const nsACString& aFlat407Headers,
+                                 int32_t aHttpResponseCode);
 
   [[nodiscard]] nsresult ReadSegments(nsAHttpSegmentReader* reader,
                                       uint32_t count,
@@ -268,7 +271,6 @@ class SpdyConnectTransaction final : public NullHttpTransaction {
 
   bool mForcePlainText;
   TimeStamp mTimestampSyn;
-  RefPtr<nsHttpConnectionInfo> mConnInfo;
 
   // mTunneledConn, mTunnelTransport, mTunnelStreamIn, mTunnelStreamOut
   // are the connectors to the "real" http connection. They are created

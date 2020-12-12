@@ -26,8 +26,8 @@ const BROWSER_READY_NOTIFICATION = "sessionstore-windows-restored";
 
 const AboutNewTab = {
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIObserver,
-    Ci.nsISupportsWeakReference,
+    "nsIObserver",
+    "nsISupportsWeakReference",
   ]),
 
   // AboutNewTab
@@ -242,6 +242,7 @@ const AboutNewTab = {
     let processStartTs = startupInfo.process.getTime();
     let delta = Math.round(timestamp - processStartTs);
     Services.telemetry.scalarSet(SCALAR_KEY, delta);
+    ChromeUtils.addProfilerMarker("aboutHomeTopsitesFirstPaint");
     this._alreadyRecordedTopsitesPainted = true;
   },
 
@@ -250,7 +251,10 @@ const AboutNewTab = {
   observe(subject, topic, data) {
     switch (topic) {
       case TOPIC_APP_QUIT: {
-        this.uninit();
+        // We defer to this to the next tick of the event loop since the
+        // AboutHomeStartupCache might want to read from the ActivityStream
+        // store during TOPIC_APP_QUIT.
+        Services.tm.dispatchToMainThread(() => this.uninit());
         break;
       }
       case BROWSER_READY_NOTIFICATION: {

@@ -34,7 +34,15 @@ RefPtr<CompositorWidget> CompositorWidget::CreateLocal(
 
 InProcessCompositorWidget::InProcessCompositorWidget(
     const layers::CompositorOptions& aOptions, nsBaseWidget* aWidget)
-    : CompositorWidget(aOptions), mWidget(aWidget) {}
+    : CompositorWidget(aOptions), mWidget(aWidget) {
+  // The only method of construction that is used outside of unit tests is
+  // ::CreateLocal, above. That method of construction asserts that mWidget
+  // is not assigned a NULL value. And yet mWidget is NULL in some crash
+  // reports that involve other class methods. Adding a release assert here
+  // will give us the earliest possible notification that we're headed for
+  // a crash.
+  MOZ_RELEASE_ASSERT(mWidget);
+}
 
 bool InProcessCompositorWidget::PreRender(WidgetRenderingContext* aContext) {
   return mWidget->PreRender(aContext);
@@ -95,12 +103,6 @@ uintptr_t InProcessCompositorWidget::GetWidgetKey() {
 }
 
 nsIWidget* InProcessCompositorWidget::RealWidget() { return mWidget; }
-
-#ifdef XP_MACOSX
-LayoutDeviceIntRegion InProcessCompositorWidget::GetOpaqueWidgetRegion() {
-  return mWidget->GetOpaqueWidgetRegion();
-}
-#endif
 
 void InProcessCompositorWidget::ObserveVsync(VsyncObserver* aObserver) {
   if (RefPtr<CompositorVsyncDispatcher> cvd =

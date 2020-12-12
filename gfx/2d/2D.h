@@ -503,8 +503,8 @@ class DataSourceSurface : public SourceSurface {
 #endif
 
   struct MappedSurface {
-    uint8_t* mData;
-    int32_t mStride;
+    uint8_t* mData = nullptr;
+    int32_t mStride = 0;
   };
 
   enum MapType { READ, WRITE, READ_WRITE };
@@ -1040,7 +1040,13 @@ class NativeFontResource
       uint32_t aIndex, const uint8_t* aInstanceData,
       uint32_t aInstanceDataLength) = 0;
 
-  virtual ~NativeFontResource() = default;
+  NativeFontResource(size_t aDataLength);
+  virtual ~NativeFontResource();
+
+  static void RegisterMemoryReporter();
+
+ private:
+  size_t mDataLength;
 };
 
 class DrawTargetCapture;
@@ -1135,6 +1141,13 @@ class DrawTarget : public external::AtomicRefCounted<DrawTarget> {
       const DrawSurfaceOptions& aSurfOptions = DrawSurfaceOptions(),
       const DrawOptions& aOptions = DrawOptions()) = 0;
 
+  /**
+   * Draw a surface to the draw target, when the surface will be available
+   * at a later time. This is only valid for recording DrawTargets.
+   *
+   * This is considered fallible, and replaying this without making the surface
+   * available to the replay will just skip the draw.
+   */
   virtual void DrawDependentSurface(
       uint64_t aId, const Rect& aDest,
       const DrawSurfaceOptions& aSurfOptions = DrawSurfaceOptions(),
@@ -1781,9 +1794,6 @@ class GFX2D_API Factory {
   static already_AddRefed<DrawTargetCapture> CreateCaptureDrawTargetForData(
       BackendType aBackend, const IntSize& aSize, SurfaceFormat aFormat,
       int32_t aStride, size_t aSurfaceAllocationSize);
-
-  static already_AddRefed<DrawTarget> CreateWrapAndRecordDrawTarget(
-      DrawEventRecorder* aRecorder, DrawTarget* aDT);
 
   static already_AddRefed<DrawTarget> CreateRecordingDrawTarget(
       DrawEventRecorder* aRecorder, DrawTarget* aDT, IntRect aRect);

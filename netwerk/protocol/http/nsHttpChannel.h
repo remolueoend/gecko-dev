@@ -10,12 +10,12 @@
 #include "DelayHttpChannelQueue.h"
 #include "HttpBaseChannel.h"
 #include "nsTArray.h"
+#include "nsIApplicationCache.h"
 #include "nsICachingChannel.h"
 #include "nsICacheEntry.h"
 #include "nsICacheEntryOpenCallback.h"
 #include "nsIDNSListener.h"
 #include "nsIApplicationCacheChannel.h"
-#include "nsIChannelWithDivertableParentListener.h"
 #include "nsIProtocolProxyCallback.h"
 #include "nsIHttpAuthenticableChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
@@ -23,7 +23,6 @@
 #include "nsIThreadRetargetableStreamListener.h"
 #include "nsWeakReference.h"
 #include "TimingStruct.h"
-#include "ADivertableParentChannel.h"
 #include "AutoClose.h"
 #include "nsIStreamListener.h"
 #include "nsICorsPreflightCallback.h"
@@ -31,12 +30,13 @@
 #include "nsIRaceCacheWithNetwork.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/extensions/PStreamFilterParent.h"
+#include "mozilla/net/DocumentLoadListener.h"
 #include "mozilla/Mutex.h"
-#include "nsIProcessSwitchRequestor.h"
 
 class nsDNSPrefetch;
 class nsICancelable;
 class nsIDNSRecord;
+class nsIDNSHTTPSSVCRecord;
 class nsIHttpChannelAuthProvider;
 class nsInputStreamPump;
 class nsITransportSecurityInfo;
@@ -76,11 +76,9 @@ class nsHttpChannel final : public HttpBaseChannel,
                             public nsIDNSListener,
                             public nsSupportsWeakReference,
                             public nsICorsPreflightCallback,
-                            public nsIChannelWithDivertableParentListener,
                             public nsIRaceCacheWithNetwork,
                             public nsIRequestTailUnblockCallback,
-                            public nsITimerCallback,
-                            public nsIProcessSwitchRequestor {
+                            public nsITimerCallback {
  public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIREQUESTOBSERVER
@@ -97,12 +95,10 @@ class nsHttpChannel final : public HttpBaseChannel,
   NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
   NS_DECL_NSITHREADRETARGETABLEREQUEST
   NS_DECL_NSIDNSLISTENER
-  NS_DECL_NSICHANNELWITHDIVERTABLEPARENTLISTENER
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_HTTPCHANNEL_IID)
   NS_DECL_NSIRACECACHEWITHNETWORK
   NS_DECL_NSITIMERCALLBACK
   NS_DECL_NSIREQUESTTAILUNBLOCKCALLBACK
-  NS_DECL_NSIPROCESSSWITCHREQUESTOR
 
   // nsIHttpAuthenticableChannel. We can't use
   // NS_DECL_NSIHTTPAUTHENTICABLECHANNEL because it duplicates cancel() and
@@ -157,6 +153,7 @@ class nsHttpChannel final : public HttpBaseChannel,
   NS_IMETHOD GetEncodedBodySize(uint64_t* aEncodedBodySize) override;
   // nsIHttpChannelInternal
   NS_IMETHOD SetupFallbackChannel(const char* aFallbackKey) override;
+  NS_IMETHOD GetIsAuthChannel(bool* aIsAuthChannel) override;
   NS_IMETHOD SetChannelIsForDownload(bool aChannelIsForDownload) override;
   NS_IMETHOD GetNavigationStartTimeStamp(TimeStamp* aTimeStamp) override;
   NS_IMETHOD SetNavigationStartTimeStamp(TimeStamp aTimeStamp) override;
@@ -200,6 +197,8 @@ class nsHttpChannel final : public HttpBaseChannel,
 
   void SetWarningReporter(HttpChannelSecurityWarningReporter* aReporter);
   HttpChannelSecurityWarningReporter* GetWarningReporter();
+
+  bool DataSentToChildProcess() { return mDataSentToChildProcess; }
 
  public: /* internal necko use only */
   uint32_t GetRequestTime() const { return mRequestTime; }
@@ -279,16 +278,6 @@ class nsHttpChannel final : public HttpBaseChannel,
     mTransactionObserver = arg;
   }
   TransactionObserver* GetTransactionObserver() { return mTransactionObserver; }
-
-  typedef MozPromise<uint64_t, nsresult, true /* exclusive */>
-      ContentProcessIdPromise;
-  already_AddRefed<ContentProcessIdPromise>
-  TakeRedirectContentProcessIdPromise() {
-    return mRedirectContentProcessIdPromise.forget();
-  }
-  uint64_t CrossProcessRedirectIdentifier() {
-    return mCrossProcessRedirectIdentifier;
-  }
 
   CacheDisposition mCacheDisposition;
 
@@ -452,8 +441,8 @@ class nsHttpChannel final : public HttpBaseChannel,
       HttpTransactionShell* aTransWithStickyConn,
       const std::function<nsresult(nsHttpChannel*, nsresult)>&
           aContinueOnStopRequestFunc);
-  [[nodiscard]] nsresult DoConnect(
-      HttpTransactionShell* aTransWithStickyConn = nullptr);
+  [[nodiscard]] MOZ_NEVER_INLINE nsresult
+  DoConnect(HttpTransactionShell* aTransWithStickyConn = nullptr);
   [[nodiscard]] nsresult DoConnectActual(
       HttpTransactionShell* aTransWithStickyConn);
   [[nodiscard]] nsresult ContinueOnStopRequestAfterAuthRetry(
@@ -493,11 +482,6 @@ class nsHttpChannel final : public HttpBaseChannel,
    * A function that will, if the feature is enabled, send security reports.
    */
   void ProcessSecurityReport(nsresult status);
-
-  nsresult ProcessCrossOriginEmbedderPolicyHeader();
-  nsresult ProcessCrossOriginResourcePolicyHeader();
-
-  nsresult ComputeCrossOriginOpenerPolicyMismatch();
 
   /**
    * A function to process a single security header (STS or PKP), assumes
@@ -585,12 +569,6 @@ class nsHttpChannel final : public HttpBaseChannel,
   nsCOMPtr<nsIChannel> mRedirectChannel;
   nsCOMPtr<nsIChannel> mPreflightChannel;
 
-  // The associated childChannel is getting relocated to another process.
-  // This promise will be resolved when that process is set up.
-  RefPtr<ContentProcessIdPromise> mRedirectContentProcessIdPromise;
-  // This identifier is passed to the childChannel in order to identify it.
-  uint64_t mCrossProcessRedirectIdentifier = 0;
-
   // nsChannelClassifier checks this channel's URI against
   // the URI classifier service.
   // nsChannelClassifier will be invoked twice in InitLocalBlockList() and
@@ -630,6 +608,10 @@ class nsHttpChannel final : public HttpBaseChannel,
   // Needed because calling openAlternativeOutputStream needs a reference
   // to the cache entry.
   nsCOMPtr<nsICacheEntry> mAltDataCacheEntry;
+
+  nsCOMPtr<nsIURI> mCacheEntryURI;
+  nsCString mCacheIdExtension;
+
   // We must close mCacheInputStream explicitly to avoid leaks.
   AutoClose<nsIInputStream> mCacheInputStream;
   RefPtr<nsInputStreamPump> mCachePump;
@@ -640,6 +622,8 @@ class nsHttpChannel final : public HttpBaseChannel,
 
   nsCOMPtr<nsICacheEntry> mOfflineCacheEntry;
   uint32_t mOfflineCacheLastModifiedTime;
+
+  nsTArray<StreamFilterRequest> mStreamFilterRequests;
 
   mozilla::TimeStamp mOnStartRequestTimestamp;
   // Timestamp of the time the channel was suspended.
@@ -670,12 +654,13 @@ class nsHttpChannel final : public HttpBaseChannel,
   uint32_t mCacheQueueSizeWhenOpen;
 
   Atomic<bool, Relaxed> mCachedContentIsValid;
+  Atomic<bool> mIsAuthChannel;
+  Atomic<bool> mAuthRetryPending;
 
   // state flags
   uint32_t mCachedContentIsPartial : 1;
   uint32_t mCacheOnlyMetadata : 1;
   uint32_t mTransactionReplaced : 1;
-  uint32_t mAuthRetryPending : 1;
   uint32_t mProxyAuthPending : 1;
   // Set if before the first authentication attempt a custom authorization
   // header has been set on the channel.  This will make that custom header
@@ -745,9 +730,15 @@ class nsHttpChannel final : public HttpBaseChannel,
   // True only when we have computed the value of the top window origin.
   uint32_t mTopWindowOriginComputed : 1;
 
-  // True if this is a navigation to a page with a different cross origin
-  // opener policy ( see ComputeCrossOriginOpenerPolicyMismatch )
-  uint32_t mHasCrossOriginOpenerPolicyMismatch : 1;
+  // True if the data will be sent from the socket process to the
+  // content process directly.
+  uint32_t mDataSentToChildProcess : 1;
+
+  uint32_t mUseHTTPSSVC : 1;
+  uint32_t mWaitHTTPSSVCRecord : 1;
+  // Only set to true when we receive an HTTPSSVC record before the transaction
+  // is created.
+  uint32_t mHTTPSSVCTelemetryReported : 1;
 
   // The origin of the top window, only valid when mTopWindowOriginComputed is
   // true.
@@ -794,8 +785,6 @@ class nsHttpChannel final : public HttpBaseChannel,
   // If non-null, warnings should be reported to this object.
   RefPtr<HttpChannelSecurityWarningReporter> mWarningReporter;
 
-  RefPtr<ADivertableParentChannel> mParentChannel;
-
   // True if the channel is reading from cache.
   Atomic<bool> mIsReadingFromCache;
 
@@ -817,9 +806,17 @@ class nsHttpChannel final : public HttpBaseChannel,
   // with the cache fetch, and proceeds to do so.
   nsresult MaybeRaceCacheWithNetwork();
 
+  // Creates a new cache entry when network wins the race to ensure we have
+  // the latest version of the resource in the cache. Otherwise we might return
+  // an old content when navigating back in history.
+  void MaybeCreateCacheEntryWhenRCWN();
+
   nsresult TriggerNetworkWithDelay(uint32_t aDelay);
   nsresult TriggerNetwork();
   void CancelNetworkRequest(nsresult aStatus);
+
+  void SetHTTPSSVCRecord(nsIDNSHTTPSSVCRecord* aRecord);
+
   // Timer used to delay the network request, or to trigger the network
   // request if retrieving the cache entry takes too long.
   nsCOMPtr<nsITimer> mNetworkTriggerTimer;
@@ -835,8 +832,8 @@ class nsHttpChannel final : public HttpBaseChannel,
   // SetupTransaction removed conditional headers and decisions made in
   // OnCacheEntryCheck are no longer valid.
   bool mIgnoreCacheEntry;
-  // Lock preventing OnCacheEntryCheck and SetupTransaction being called at
-  // the same time.
+  // Lock preventing SetupTransaction/MaybeCreateCacheEntryWhenRCWN and
+  // OnCacheEntryCheck being called at the same time.
   mozilla::Mutex mRCWNLock;
 
   TimeStamp mNavigationStartTimeStamp;
@@ -852,6 +849,10 @@ class nsHttpChannel final : public HttpBaseChannel,
   // We update the value of mProxyConnectResponseCode when OnStartRequest is
   // called and reset the value when we switch to another failover proxy.
   int32_t mProxyConnectResponseCode;
+
+  // If this is not null, this will be used to update the connection info in
+  // nsHttpChannel::BeginConnect().
+  nsCOMPtr<nsIDNSHTTPSSVCRecord> mHTTPSSVCRecord;
 
  protected:
   virtual void DoNotifyListenerCleanup() override;

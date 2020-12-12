@@ -12,7 +12,6 @@
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Fetch.h"
 #include "mozilla/dom/Nullable.h"
-#include "mozilla/ErrorResult.h"
 #include "nsWrapperCache.h"
 #include "nsHashKeys.h"
 #include "nsInterfaceHashtable.h"
@@ -28,6 +27,8 @@ class nsIPrincipal;
 class nsIURI;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 class AddonManager;
 class BodyExtractorBase;
@@ -123,7 +124,7 @@ class Navigator final : public nsISupports, public nsWrapperCache {
                                    nsIURI* aHandlerURI, nsIURI* aDocumentURI,
                                    ErrorResult& aRv);
   void RegisterProtocolHandler(const nsAString& aScheme, const nsAString& aURL,
-                               const nsAString& aTitle, ErrorResult& aRv);
+                               ErrorResult& aRv);
   nsMimeTypeArray* GetMimeTypes(ErrorResult& aRv);
   nsPluginArray* GetPlugins(ErrorResult& aRv);
   Permissions* GetPermissions(ErrorResult& aRv);
@@ -147,6 +148,10 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   static nsresult GetUserAgent(nsPIDOMWindowInner* aWindow,
                                nsIPrincipal* aCallerPrincipal,
                                bool aIsCallerChrome, nsAString& aUserAgent);
+
+  // Clears the platform cache by calling:
+  // Navigator_Binding::ClearCachedPlatformValue(this);
+  void ClearPlatformCache();
 
   // Clears the user agent cache by calling:
   // Navigator_Binding::ClearCachedUserAgentValue(this);
@@ -289,6 +294,8 @@ class Navigator final : public nsISupports, public nsWrapperCache {
   RefPtr<AddonManager> mAddonManager;
   RefPtr<webgpu::Instance> mWebGpu;
   RefPtr<Promise> mSharePromise;  // Web Share API related
+  // Gamepad moving to secure contexts
+  bool mGamepadSecureContextWarningShown = false;
 };
 
 }  // namespace dom

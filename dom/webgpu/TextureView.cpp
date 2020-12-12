@@ -6,6 +6,9 @@
 #include "TextureView.h"
 
 #include "Device.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/WebGPUBinding.h"
+#include "ipc/WebGPUChild.h"
 
 namespace mozilla {
 namespace webgpu {
@@ -17,6 +20,10 @@ TextureView::TextureView(Texture* const aParent, RawId aId)
     : ChildOf(aParent), mId(aId) {}
 
 TextureView::~TextureView() { Cleanup(); }
+
+dom::HTMLCanvasElement* TextureView::GetTargetCanvasElement() const {
+  return mParent->mTargetCanvasElement;
+}  // namespace webgpu
 
 void TextureView::Cleanup() {
   if (mValid && mParent && mParent->GetParentDevice()) {

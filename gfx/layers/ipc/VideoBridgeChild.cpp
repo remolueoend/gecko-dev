@@ -8,7 +8,8 @@
 #include "VideoBridgeParent.h"
 #include "CompositorThread.h"
 #include "mozilla/dom/ContentChild.h"
-#include "mtransport/runnable_utils.h"
+#include "mozilla/ipc/Endpoint.h"
+#include "transport/runnable_utils.h"
 #include "SynchronousTask.h"
 
 namespace mozilla {
@@ -49,7 +50,7 @@ void VideoBridgeChild::Shutdown() {
 
 VideoBridgeChild::VideoBridgeChild()
     : mIPDLSelfRef(this),
-      mMessageLoop(MessageLoop::current()),
+      mThread(GetCurrentSerialEventTarget()),
       mCanSend(true) {}
 
 VideoBridgeChild::~VideoBridgeChild() = default;
@@ -59,7 +60,7 @@ VideoBridgeChild* VideoBridgeChild::GetSingleton() { return sVideoBridge; }
 bool VideoBridgeChild::AllocUnsafeShmem(
     size_t aSize, ipc::SharedMemory::SharedMemoryType aType,
     ipc::Shmem* aShmem) {
-  if (MessageLoop::current() != mMessageLoop) {
+  if (!mThread->IsOnCurrentThread()) {
     return DispatchAllocShmemInternal(aSize, aType, aShmem,
                                       true);  // true: unsafe
   }
@@ -106,7 +107,7 @@ bool VideoBridgeChild::DispatchAllocShmemInternal(
   RefPtr<Runnable> runnable = WrapRunnable(
       RefPtr<VideoBridgeChild>(this), &VideoBridgeChild::ProxyAllocShmemNow,
       &task, aSize, aType, aShmem, aUnsafe, &success);
-  GetMessageLoop()->PostTask(runnable.forget());
+  GetThread()->Dispatch(runnable.forget());
 
   task.Wait();
 
@@ -124,7 +125,7 @@ void VideoBridgeChild::ProxyDeallocShmemNow(SynchronousTask* aTask,
 }
 
 bool VideoBridgeChild::DeallocShmem(ipc::Shmem& aShmem) {
-  if (MessageLoop::current() == mMessageLoop) {
+  if (GetThread()->IsOnCurrentThread()) {
     if (!CanSend()) {
       return false;
     }
@@ -137,7 +138,7 @@ bool VideoBridgeChild::DeallocShmem(ipc::Shmem& aShmem) {
   RefPtr<Runnable> runnable = WrapRunnable(
       RefPtr<VideoBridgeChild>(this), &VideoBridgeChild::ProxyDeallocShmemNow,
       &task, &aShmem, &result);
-  GetMessageLoop()->PostTask(runnable.forget());
+  GetThread()->Dispatch(runnable.forget());
 
   task.Wait();
   return result;
@@ -165,7 +166,7 @@ void VideoBridgeChild::ActorDealloc() { mIPDLSelfRef = nullptr; }
 PTextureChild* VideoBridgeChild::CreateTexture(
     const SurfaceDescriptor& aSharedData, const ReadLockDescriptor& aReadLock,
     LayersBackend aLayersBackend, TextureFlags aFlags, uint64_t aSerial,
-    wr::MaybeExternalImageId& aExternalImageId, nsIEventTarget* aTarget) {
+    wr::MaybeExternalImageId& aExternalImageId, nsISerialEventTarget* aTarget) {
   MOZ_ASSERT(CanSend());
   return SendPTextureConstructor(aSharedData, aReadLock, aLayersBackend, aFlags,
                                  aSerial);

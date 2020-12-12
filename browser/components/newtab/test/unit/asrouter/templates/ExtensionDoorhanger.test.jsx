@@ -34,7 +34,7 @@ const DEFAULT_CONTENT = {
       },
       action: {
         type: "INSTALL_ADDON_FROM_URL",
-        data: { url: null },
+        data: { url: "https://example.com" },
       },
     },
     secondary: {
@@ -70,7 +70,7 @@ const L10N_CONTENT = {
       label: { string_id: "btn_ok_id" },
       action: {
         type: "INSTALL_ADDON_FROM_URL",
-        data: { url: null },
+        data: { url: "https://example.com" },
       },
     },
     secondary: {
@@ -87,8 +87,8 @@ describe("ExtensionDoorhanger", () => {
   it("should validate L10N_CONTENT", () => {
     assert.jsonSchema(L10N_CONTENT, CFRDoorhangerSchema);
   });
-  it("should validate all messages from CFRMessageProvider", () => {
-    const messages = CFRMessageProvider.getMessages();
+  it("should validate all messages from CFRMessageProvider", async () => {
+    const messages = await CFRMessageProvider.getMessages();
     messages.forEach(msg =>
       assert.jsonSchema(msg.content, SCHEMAS[msg.template])
     );

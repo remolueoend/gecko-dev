@@ -9,10 +9,12 @@
 
 #include "vm/JSObject.h"
 
+#include "js/Object.h"  // JS::GetBuiltinClass
 #include "vm/ArrayObject.h"
 #include "vm/EnvironmentObject.h"
 #include "vm/JSFunction.h"
 #include "vm/Probes.h"
+#include "vm/TypedArrayObject.h"
 
 #include "gc/FreeOp-inl.h"
 #include "gc/Marking-inl.h"
@@ -39,32 +41,44 @@ static inline gc::AllocKind NewObjectGCKind(const JSClass* clasp) {
 }  // namespace js
 
 MOZ_ALWAYS_INLINE uint32_t js::NativeObject::numDynamicSlots() const {
-  return dynamicSlotsCount(numFixedSlots(), slotSpan(), getClass());
+  uint32_t slots = getSlotsHeader()->capacity();
+  MOZ_ASSERT(slots == calculateDynamicSlots());
+  MOZ_ASSERT_IF(hasDynamicSlots(), slots != 0);
+
+  return slots;
 }
 
-/* static */ MOZ_ALWAYS_INLINE uint32_t js::NativeObject::dynamicSlotsCount(
+MOZ_ALWAYS_INLINE uint32_t js::NativeObject::calculateDynamicSlots() const {
+  return calculateDynamicSlots(numFixedSlots(), slotSpan(), getClass());
+}
+
+/* static */ MOZ_ALWAYS_INLINE uint32_t js::NativeObject::calculateDynamicSlots(
     uint32_t nfixed, uint32_t span, const JSClass* clasp) {
   if (span <= nfixed) {
     return 0;
   }
-  span -= nfixed;
+
+  uint32_t ndynamic = span - nfixed;
 
   // Increase the slots to SLOT_CAPACITY_MIN to decrease the likelihood
   // the dynamic slots need to get increased again. ArrayObjects ignore
   // this because slots are uncommon in that case.
-  if (clasp != &ArrayObject::class_ && span <= SLOT_CAPACITY_MIN) {
+  if (clasp != &ArrayObject::class_ && ndynamic <= SLOT_CAPACITY_MIN) {
     return SLOT_CAPACITY_MIN;
   }
 
-  uint32_t slots = mozilla::RoundUpPow2(span);
-  MOZ_ASSERT(slots >= span);
+  uint32_t count =
+      mozilla::RoundUpPow2(ndynamic + ObjectSlots::VALUES_PER_HEADER);
+
+  uint32_t slots = count - ObjectSlots::VALUES_PER_HEADER;
+  MOZ_ASSERT(slots >= ndynamic);
   return slots;
 }
 
 /* static */ MOZ_ALWAYS_INLINE uint32_t
-js::NativeObject::dynamicSlotsCount(Shape* shape) {
-  return dynamicSlotsCount(shape->numFixedSlots(), shape->slotSpan(),
-                           shape->getObjectClass());
+js::NativeObject::calculateDynamicSlots(Shape* shape) {
+  return calculateDynamicSlots(shape->numFixedSlots(), shape->slotSpan(),
+                               shape->getObjectClass());
 }
 
 inline void JSObject::finalize(JSFreeOp* fop) {
@@ -92,25 +106,16 @@ inline void JSObject::finalize(JSFreeOp* fop) {
   }
 
   if (nobj->hasDynamicSlots()) {
-    size_t size = nobj->numDynamicSlots() * sizeof(js::HeapSlot);
-    fop->free_(this, nobj->slots_, size, js::MemoryUse::ObjectSlots);
+    js::ObjectSlots* slotsHeader = nobj->getSlotsHeader();
+    size_t size = js::ObjectSlots::allocSize(slotsHeader->capacity());
+    fop->free_(this, slotsHeader, size, js::MemoryUse::ObjectSlots);
   }
 
   if (nobj->hasDynamicElements()) {
     js::ObjectElements* elements = nobj->getElementsHeader();
     size_t size = elements->numAllocatedElements() * sizeof(js::HeapSlot);
-    if (elements->isCopyOnWrite()) {
-      if (elements->ownerObject() == this) {
-        // Don't free the elements until object finalization finishes,
-        // so that other objects can access these elements while they
-        // are themselves finalized.
-        MOZ_ASSERT(elements->numShiftedElements() == 0);
-        fop->freeLater(this, elements, size, js::MemoryUse::ObjectElements);
-      }
-    } else {
-      fop->free_(this, nobj->getUnshiftedElementsHeader(), size,
-                 js::MemoryUse::ObjectElements);
-    }
+    fop->free_(this, nobj->getUnshiftedElementsHeader(), size,
+               js::MemoryUse::ObjectElements);
   }
 }
 
@@ -133,18 +138,6 @@ js::NativeObject::updateDictionaryListPointerAfterMinorGC(NativeObject* old) {
   if (shape()->dictNext == DictionaryShapeLink(old)) {
     shape()->dictNext = DictionaryShapeLink(this);
   }
-}
-
-/* static */ inline js::ObjectGroup* JSObject::getGroup(JSContext* cx,
-                                                        js::HandleObject obj) {
-  MOZ_ASSERT(cx->compartment() == obj->compartment());
-  if (obj->hasLazyGroup()) {
-    if (cx->compartment() != obj->compartment()) {
-      MOZ_CRASH();
-    }
-    return makeLazyGroup(cx, obj);
-  }
-  return obj->groupRaw();
 }
 
 inline void JSObject::setGroup(js::ObjectGroup* group) {
@@ -188,6 +181,21 @@ inline bool ClassCanHaveFixedData(const JSClass* clasp) {
   return !clasp->isNative() || clasp == &js::ArrayBufferObject::class_ ||
          js::IsTypedArrayClass(clasp);
 }
+
+class MOZ_RAII AutoSuppressAllocationMetadataBuilder {
+  JS::Zone* zone;
+  bool saved;
+
+ public:
+  explicit AutoSuppressAllocationMetadataBuilder(JSContext* cx)
+      : zone(cx->zone()), saved(zone->suppressAllocationMetadataBuilder) {
+    zone->suppressAllocationMetadataBuilder = true;
+  }
+
+  ~AutoSuppressAllocationMetadataBuilder() {
+    zone->suppressAllocationMetadataBuilder = saved;
+  }
+};
 
 // This function is meant to be called from allocation fast paths.
 //
@@ -269,14 +277,6 @@ inline bool JSObject::staticPrototypeIsImmutable() const {
   return hasAllFlags(js::BaseShape::IMMUTABLE_PROTOTYPE);
 }
 
-inline bool JSObject::isIteratedSingleton() const {
-  return hasAllFlags(js::BaseShape::ITERATED_SINGLETON);
-}
-
-inline bool JSObject::isNewGroupUnknown() const {
-  return hasAllFlags(js::BaseShape::NEW_GROUP_UNKNOWN);
-}
-
 namespace js {
 
 static MOZ_ALWAYS_INLINE bool IsFunctionObject(const js::Value& v) {
@@ -331,7 +331,7 @@ static MOZ_ALWAYS_INLINE bool HasNativeMethodPure(JSObject* obj,
 // Return whether 'obj' definitely has no @@toPrimitive method.
 static MOZ_ALWAYS_INLINE bool HasNoToPrimitiveMethodPure(JSObject* obj,
                                                          JSContext* cx) {
-  Symbol* toPrimitive = cx->wellKnownSymbols().toPrimitive;
+  JS::Symbol* toPrimitive = cx->wellKnownSymbols().toPrimitive;
   JSObject* holder;
   if (!MaybeHasInterestingSymbolProperty(cx, obj, toPrimitive, &holder)) {
 #ifdef DEBUG
@@ -361,7 +361,7 @@ extern bool ToPropertyKeySlow(JSContext* cx, HandleValue argument,
 MOZ_ALWAYS_INLINE bool ToPropertyKey(JSContext* cx, HandleValue argument,
                                      MutableHandleId result) {
   if (MOZ_LIKELY(argument.isPrimitive())) {
-    return ValueToId<CanGC>(cx, argument, result);
+    return PrimitiveValueToId<CanGC>(cx, argument, result);
   }
 
   return ToPropertyKeySlow(cx, argument, result);
@@ -390,11 +390,6 @@ inline gc::InitialHeap GetInitialHeap(NewObjectKind newKind,
 
 inline gc::InitialHeap GetInitialHeap(NewObjectKind newKind,
                                       ObjectGroup* group) {
-  AutoSweepObjectGroup sweep(group);
-  if (group->shouldPreTenure(sweep)) {
-    return gc::TenuredHeap;
-  }
-
   return GetInitialHeap(newKind, group->clasp());
 }
 
@@ -409,8 +404,9 @@ JSObject* NewObjectWithGivenTaggedProto(JSContext* cx, const JSClass* clasp,
                                         uint32_t initialShapeFlags = 0);
 
 template <NewObjectKind NewKind>
-inline JSObject* NewObjectWithGivenTaggedProto(
-    JSContext* cx, const JSClass* clasp, Handle<TaggedProto> proto) {
+inline JSObject* NewObjectWithGivenTaggedProto(JSContext* cx,
+                                               const JSClass* clasp,
+                                               Handle<TaggedProto> proto) {
   gc::AllocKind allocKind = gc::GetGCObjectKind(clasp);
   return NewObjectWithGivenTaggedProto(cx, clasp, proto, allocKind, NewKind, 0);
 }
@@ -420,8 +416,7 @@ namespace detail {
 template <typename T, NewObjectKind NewKind>
 inline T* NewObjectWithGivenTaggedProtoForKind(JSContext* cx,
                                                Handle<TaggedProto> proto) {
-  JSObject* obj =
-      NewObjectWithGivenTaggedProto<NewKind>(cx, &T::class_, proto);
+  JSObject* obj = NewObjectWithGivenTaggedProto<NewKind>(cx, &T::class_, proto);
   return obj ? &obj->as<T>() : nullptr;
 }
 
@@ -430,17 +425,8 @@ inline T* NewObjectWithGivenTaggedProtoForKind(JSContext* cx,
 template <typename T>
 inline T* NewObjectWithGivenTaggedProto(JSContext* cx,
                                         Handle<TaggedProto> proto) {
-
   return detail::NewObjectWithGivenTaggedProtoForKind<T, GenericObject>(cx,
                                                                         proto);
-}
-
-template <typename T>
-inline T* NewSingletonObjectWithGivenTaggedProtoAndKind(
-    JSContext* cx, Handle<TaggedProto> proto, gc::AllocKind allocKind) {
-  JSObject* obj = NewObjectWithGivenTaggedProto(cx, &T::class_, proto,
-                                                allocKind, SingletonObject, 0);
-  return obj ? &obj->as<T>() : nullptr;
 }
 
 inline JSObject* NewObjectWithGivenProto(
@@ -473,12 +459,6 @@ inline JSObject* NewSingletonObjectWithGivenProto(JSContext* cx,
 template <typename T>
 inline T* NewObjectWithGivenProto(JSContext* cx, HandleObject proto) {
   return detail::NewObjectWithGivenTaggedProtoForKind<T, GenericObject>(
-      cx, AsTaggedProto(proto));
-}
-
-template <typename T>
-inline T* NewSingletonObjectWithGivenProto(JSContext* cx, HandleObject proto) {
-  return detail::NewObjectWithGivenTaggedProtoForKind<T, SingletonObject>(
       cx, AsTaggedProto(proto));
 }
 
@@ -626,7 +606,7 @@ inline bool GetClassOfValue(JSContext* cx, HandleValue v, ESClass* cls) {
   }
 
   RootedObject obj(cx, &v.toObject());
-  return GetBuiltinClass(cx, obj, cls);
+  return JS::GetBuiltinClass(cx, obj, cls);
 }
 
 extern NativeObject* InitClass(JSContext* cx, HandleObject obj,
@@ -654,6 +634,15 @@ inline bool IsCallable(const Value& v) {
 // ES6 rev 24 (2014 April 27) 7.2.5 IsConstructor
 inline bool IsConstructor(const Value& v) {
   return v.isObject() && v.toObject().isConstructor();
+}
+
+static inline bool MaybePreserveDOMWrapper(JSContext* cx, HandleObject obj) {
+  if (!obj->getClass()->isDOMClass()) {
+    return true;
+  }
+
+  MOZ_ASSERT(cx->runtime()->preserveWrapperCallback);
+  return cx->runtime()->preserveWrapperCallback(cx, obj);
 }
 
 } /* namespace js */

@@ -1,17 +1,28 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 et sw=2 tw=80: */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #import <Cocoa/Cocoa.h>
 
+#import "MOXTextMarkerDelegate.h"
+
 #include "Platform.h"
 #include "ProxyAccessible.h"
+#include "AccessibleOrProxy.h"
 #include "DocAccessibleParent.h"
 #include "mozTableAccessible.h"
+#include "MOXWebAreaAccessible.h"
 
 #include "nsAppShell.h"
+#include "mozilla/Telemetry.h"
+
+// Available from 10.13 onwards; test availability at runtime before using
+@interface NSWorkspace (AvailableSinceHighSierra)
+@property(readonly) BOOL isVoiceOverEnabled;
+@end
 
 namespace mozilla {
 namespace a11y {
@@ -30,72 +41,143 @@ void PlatformInit() {}
 void PlatformShutdown() {}
 
 void ProxyCreated(ProxyAccessible* aProxy, uint32_t) {
+  ProxyAccessible* parent = aProxy->Parent();
+  if ((parent && nsAccUtils::MustPrune(parent)) ||
+      aProxy->Role() == roles::WHITESPACE) {
+    // We don't create a native object if we're child of a "flat" accessible;
+    // for example, on OS X buttons shouldn't have any children, because that
+    // makes the OS confused. We also don't create accessibles for <br>
+    // (whitespace) elements.
+    return;
+  }
+
   // Pass in dummy state for now as retrieving proxy state requires IPC.
   // Note that we can use ProxyAccessible::IsTable* functions here because they
   // do not use IPC calls but that might change after bug 1210477.
   Class type;
-  if (aProxy->IsTable())
+  if (aProxy->IsTable()) {
     type = [mozTableAccessible class];
-  else if (aProxy->IsTableRow())
+  } else if (aProxy->IsTableRow()) {
     type = [mozTableRowAccessible class];
-  else if (aProxy->IsTableCell())
+  } else if (aProxy->IsTableCell()) {
     type = [mozTableCellAccessible class];
-  else
+  } else if (aProxy->IsDoc()) {
+    type = [MOXWebAreaAccessible class];
+  } else {
     type = GetTypeFromRole(aProxy->Role());
+  }
 
-  uintptr_t accWrap = reinterpret_cast<uintptr_t>(aProxy) | IS_PROXY;
-  mozAccessible* mozWrapper = [[type alloc] initWithAccessible:accWrap];
+  mozAccessible* mozWrapper = [[type alloc] initWithAccessible:aProxy];
   aProxy->SetWrapper(reinterpret_cast<uintptr_t>(mozWrapper));
 }
 
 void ProxyDestroyed(ProxyAccessible* aProxy) {
-  mozAccessible* wrapper = GetNativeFromProxy(aProxy);
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(aProxy);
   [wrapper expire];
   [wrapper release];
   aProxy->SetWrapper(0);
+
+  if (aProxy->IsDoc()) {
+    [MOXTextMarkerDelegate destroyForDoc:aProxy];
+  }
 }
 
 void ProxyEvent(ProxyAccessible* aProxy, uint32_t aEventType) {
-  // ignore everything but focus-changed, value-changed, caret and selection
-  // events for now.
+  // Ignore event that we don't escape below, they aren't yet supported.
   if (aEventType != nsIAccessibleEvent::EVENT_FOCUS &&
       aEventType != nsIAccessibleEvent::EVENT_VALUE_CHANGE &&
       aEventType != nsIAccessibleEvent::EVENT_TEXT_VALUE_CHANGE &&
       aEventType != nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED &&
-      aEventType != nsIAccessibleEvent::EVENT_TEXT_SELECTION_CHANGED &&
-      aEventType != nsIAccessibleEvent::EVENT_REORDER)
+      aEventType != nsIAccessibleEvent::EVENT_DOCUMENT_LOAD_COMPLETE &&
+      aEventType != nsIAccessibleEvent::EVENT_REORDER &&
+      aEventType != nsIAccessibleEvent::EVENT_LIVE_REGION_ADDED &&
+      aEventType != nsIAccessibleEvent::EVENT_LIVE_REGION_REMOVED &&
+      aEventType != nsIAccessibleEvent::EVENT_NAME_CHANGE)
     return;
 
-  mozAccessible* wrapper = GetNativeFromProxy(aProxy);
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(aProxy);
   if (wrapper) {
     [wrapper handleAccessibleEvent:aEventType];
   }
 }
 
-void ProxyStateChangeEvent(ProxyAccessible* aProxy, uint64_t aState, bool aEnabled) {
-  mozAccessible* wrapper = GetNativeFromProxy(aProxy);
+void ProxyStateChangeEvent(ProxyAccessible* aProxy, uint64_t aState,
+                           bool aEnabled) {
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(aProxy);
   if (wrapper) {
     [wrapper stateChanged:aState isEnabled:aEnabled];
   }
 }
 
-void ProxyCaretMoveEvent(ProxyAccessible* aTarget, int32_t aOffset) {
-  mozAccessible* wrapper = GetNativeFromProxy(aTarget);
+void ProxyCaretMoveEvent(ProxyAccessible* aTarget, int32_t aOffset,
+                         bool aIsSelectionCollapsed) {
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(aTarget);
+  if (aIsSelectionCollapsed) {
+    // If selection is collapsed, invalidate selection.
+    MOXTextMarkerDelegate* delegate =
+        [MOXTextMarkerDelegate getOrCreateForDoc:aTarget->Document()];
+    [delegate setSelectionFrom:aTarget at:aOffset to:aTarget at:aOffset];
+  }
+
   if (wrapper) {
     [wrapper handleAccessibleEvent:nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED];
   }
 }
 
-void ProxyTextChangeEvent(ProxyAccessible*, const nsString&, int32_t, uint32_t, bool, bool) {}
+void ProxyTextChangeEvent(ProxyAccessible* aTarget, const nsString& aStr,
+                          int32_t aStart, uint32_t aLen, bool aIsInsert,
+                          bool aFromUser) {
+  ProxyAccessible* acc = aTarget;
+  // If there is a text input ancestor, use it as the event source.
+  while (acc && GetTypeFromRole(acc->Role()) != [mozTextAccessible class]) {
+    acc = acc->Parent();
+  }
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(acc ? acc : aTarget);
+  [wrapper handleAccessibleTextChangeEvent:nsCocoaUtils::ToNSString(aStr)
+                                  inserted:aIsInsert
+                               inContainer:aTarget
+                                        at:aStart];
+}
 
 void ProxyShowHideEvent(ProxyAccessible*, ProxyAccessible*, bool, bool) {}
 
-void ProxySelectionEvent(ProxyAccessible* aTarget, ProxyAccessible* aWidget, uint32_t aEventType) {
-  mozAccessible* wrapper = GetNativeFromProxy(aWidget);
+void ProxySelectionEvent(ProxyAccessible* aTarget, ProxyAccessible* aWidget,
+                         uint32_t aEventType) {
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(aWidget);
   if (wrapper) {
     [wrapper handleAccessibleEvent:aEventType];
   }
 }
+
+void ProxyTextSelectionChangeEvent(ProxyAccessible* aTarget,
+                                   const nsTArray<TextRangeData>& aSelection) {
+  if (aSelection.Length()) {
+    MOXTextMarkerDelegate* delegate =
+        [MOXTextMarkerDelegate getOrCreateForDoc:aTarget->Document()];
+    DocAccessibleParent* doc = aTarget->Document();
+    ProxyAccessible* startContainer =
+        doc->GetAccessible(aSelection[0].StartID());
+    ProxyAccessible* endContainer = doc->GetAccessible(aSelection[0].EndID());
+    // Cache the selection.
+    [delegate setSelectionFrom:startContainer
+                            at:aSelection[0].StartOffset()
+                            to:endContainer
+                            at:aSelection[0].EndOffset()];
+  }
+
+  mozAccessible* wrapper = GetNativeFromGeckoAccessible(aTarget);
+  if (wrapper) {
+    [wrapper
+        handleAccessibleEvent:nsIAccessibleEvent::EVENT_TEXT_SELECTION_CHANGED];
+  }
+}
+
+void ProxyRoleChangedEvent(ProxyAccessible* aTarget, const a11y::role& aRole) {
+  if (mozAccessible* wrapper = GetNativeFromGeckoAccessible(aTarget)) {
+    [wrapper handleRoleChanged:aRole];
+  }
+}
+
 }  // namespace a11y
 }  // namespace mozilla
 
@@ -106,8 +188,18 @@ void ProxySelectionEvent(ProxyAccessible* aTarget, ProxyAccessible* aWidget, uin
 @implementation GeckoNSApplication (a11y)
 
 - (void)accessibilitySetValue:(id)value forAttribute:(NSString*)attribute {
-  if ([attribute isEqualToString:@"AXEnhancedUserInterface"])
+  NSLog(@"Checking a11y");
+  if ([attribute isEqualToString:@"AXEnhancedUserInterface"]) {
     mozilla::a11y::sA11yShouldBeEnabled = ([value intValue] == 1);
+#if defined(MOZ_TELEMETRY_REPORTING)
+    if ([[NSWorkspace sharedWorkspace]
+            respondsToSelector:@selector(isVoiceOverEnabled)] &&
+        [[NSWorkspace sharedWorkspace] isVoiceOverEnabled]) {
+      Telemetry::ScalarSet(Telemetry::ScalarID::A11Y_INSTANTIATORS,
+                           u"VoiceOver"_ns);
+    }
+#endif  // defined(MOZ_TELEMETRY_REPORTING)
+  }
 
   return [super accessibilitySetValue:value forAttribute:attribute];
 }

@@ -12,6 +12,7 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/CycleCollectedJSContext.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/OwningNonNull.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ResultExtensions.h"
@@ -20,6 +21,7 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/DOMExceptionBinding.h"
+#include "mozilla/dom/Exceptions.h"
 #include "mozilla/dom/MediaStreamError.h"
 #include "mozilla/dom/PromiseBinding.h"
 #include "mozilla/dom/ScriptSettings.h"
@@ -31,6 +33,8 @@
 #include "mozilla/dom/WorkletGlobalScope.h"
 
 #include "jsfriendapi.h"
+#include "js/Exception.h"  // JS::ExceptionStack
+#include "js/Object.h"     // JS::GetCompartment
 #include "js/StructuredClone.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindow.h"
@@ -67,13 +71,8 @@ NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(Promise)
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mPromiseObj);
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
-NS_IMPL_CYCLE_COLLECTING_ADDREF(Promise)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(Promise)
-
-NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Promise)
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
-  NS_INTERFACE_MAP_ENTRY(Promise)
-NS_INTERFACE_MAP_END
+NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(Promise, AddRef)
+NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(Promise, Release)
 
 Promise::Promise(nsIGlobalObject* aGlobal)
     : mGlobal(aGlobal), mPromiseObj(nullptr) {
@@ -477,9 +476,8 @@ void Promise::HandleException(JSContext* aCx) {
 already_AddRefed<Promise> Promise::CreateFromExisting(
     nsIGlobalObject* aGlobal, JS::Handle<JSObject*> aPromiseObj,
     PropagateUserInteraction aPropagateUserInteraction) {
-  MOZ_ASSERT(
-      js::GetObjectCompartment(aGlobal->GetGlobalJSObjectPreserveColor()) ==
-      js::GetObjectCompartment(aPromiseObj));
+  MOZ_ASSERT(JS::GetCompartment(aGlobal->GetGlobalJSObjectPreserveColor()) ==
+             JS::GetCompartment(aPromiseObj));
   RefPtr<Promise> p = new Promise(aGlobal);
   p->mPromiseObj = aPromiseObj;
   if (aPropagateUserInteraction == ePropagateUserInteraction &&
@@ -512,10 +510,6 @@ void Promise::ReportRejectedPromise(JSContext* aCx, JS::HandleObject aPromise) {
 
   MOZ_ASSERT(JS::GetPromiseState(aPromise) == JS::PromiseState::Rejected);
 
-  JS::Rooted<JS::Value> result(aCx, JS::GetPromiseResult(aPromise));
-
-  RefPtr<xpc::ErrorReport> xpcReport = new xpc::ErrorReport();
-
   bool isChrome = false;
   nsGlobalWindowInner* win = nullptr;
   uint64_t innerWindowID = 0;
@@ -536,34 +530,57 @@ void Promise::ReportRejectedPromise(JSContext* aCx, JS::HandleObject aPromise) {
     }
   }
 
+  JS::Rooted<JS::Value> result(aCx, JS::GetPromiseResult(aPromise));
+  // resolutionSite can be null if async stacks are disabled.
+  JS::Rooted<JSObject*> resolutionSite(aCx,
+                                       JS::GetPromiseResolutionSite(aPromise));
+
   // We're inspecting the rejection value only to report it to the console, and
   // we do so without side-effects, so we can safely unwrap it without regard to
   // the privileges of the Promise object that holds it. If we don't unwrap
   // before trying to create the error report, we wind up reporting any
   // cross-origin objects as "uncaught exception: Object".
-  Maybe<JSAutoRealm> ar;
-  if (result.isObject()) {
-    result.setObject(*js::UncheckedUnwrap(&result.toObject()));
-    ar.emplace(aCx, &result.toObject());
+  RefPtr<xpc::ErrorReport> xpcReport = new xpc::ErrorReport();
+  {
+    Maybe<JSAutoRealm> ar;
+    JS::Rooted<JS::Value> unwrapped(aCx, result);
+    if (unwrapped.isObject()) {
+      unwrapped.setObject(*js::UncheckedUnwrap(&unwrapped.toObject()));
+      ar.emplace(aCx, &unwrapped.toObject());
+    }
+
+    JS::ErrorReportBuilder report(aCx);
+    RefPtr<Exception> exn;
+    if (unwrapped.isObject() &&
+        (NS_SUCCEEDED(UNWRAP_OBJECT(DOMException, &unwrapped, exn)) ||
+         NS_SUCCEEDED(UNWRAP_OBJECT(Exception, &unwrapped, exn)))) {
+      xpcReport->Init(aCx, exn, isChrome, innerWindowID);
+    } else {
+      // Use the resolution site as the exception stack
+      JS::ExceptionStack exnStack(aCx, unwrapped, resolutionSite);
+      if (!report.init(aCx, exnStack, JS::ErrorReportBuilder::NoSideEffects)) {
+        JS_ClearPendingException(aCx);
+        return;
+      }
+
+      xpcReport->Init(report.report(), report.toStringResult().c_str(),
+                      isChrome, innerWindowID);
+    }
   }
 
-  js::ErrorReport report(aCx);
-  RefPtr<Exception> exn;
-  if (result.isObject() &&
-      (NS_SUCCEEDED(UNWRAP_OBJECT(DOMException, &result, exn)) ||
-       NS_SUCCEEDED(UNWRAP_OBJECT(Exception, &result, exn)))) {
-    xpcReport->Init(aCx, exn, isChrome, innerWindowID);
-  } else if (report.init(aCx, result, js::ErrorReport::NoSideEffects)) {
-    xpcReport->Init(report.report(), report.toStringResult().c_str(), isChrome,
-                    innerWindowID);
-  } else {
-    JS_ClearPendingException(aCx);
-    return;
-  }
+  // Used to initialize the similarly named nsISciptError attribute.
+  xpcReport->mIsPromiseRejection = true;
 
   // Now post an event to do the real reporting async
-  RefPtr<nsIRunnable> event = new AsyncErrorReporter(xpcReport);
+  RefPtr<AsyncErrorReporter> event = new AsyncErrorReporter(xpcReport);
   if (win) {
+    if (!win->IsDying()) {
+      // Exceptions from a dying window will cause the window to leak.
+      event->SetException(aCx, result);
+      if (resolutionSite) {
+        event->SerializeStack(aCx, resolutionSite);
+      }
+    }
     win->Dispatch(mozilla::TaskCategory::Other, event.forget());
   } else {
     NS_DispatchToMainThread(event);
@@ -832,6 +849,14 @@ Promise::PromiseState Promise::State() const {
   }
 
   return PromiseState::Pending;
+}
+
+void Promise::SetSettledPromiseIsHandled() {
+  AutoAllowLegacyScriptExecution exemption;
+  AutoEntryScript aes(mGlobal, "Set settled promise handled");
+  JSContext* cx = aes.cx();
+  JS::RootedObject promiseObj(cx, mPromiseObj);
+  JS::SetSettledPromiseIsHandled(cx, promiseObj);
 }
 
 }  // namespace dom

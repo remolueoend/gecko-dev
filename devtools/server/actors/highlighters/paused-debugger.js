@@ -6,7 +6,6 @@
 
 const {
   CanvasFrameAnonymousContentHelper,
-  createNode,
 } = require("devtools/server/actors/highlighters/utils/markup");
 
 loader.lazyGetter(this, "L10N", () => {
@@ -33,23 +32,21 @@ function PausedDebuggerOverlay(highlighterEnv, options = {}) {
     highlighterEnv,
     this._buildMarkup.bind(this)
   );
+  this.isReady = this.markup.initialize();
 }
 
 PausedDebuggerOverlay.prototype = {
-  typeName: "PausedDebuggerOverlay",
-
   ID_CLASS_PREFIX: "paused-dbg-",
 
   _buildMarkup() {
-    const { window } = this.env;
     const prefix = this.ID_CLASS_PREFIX;
 
-    const container = createNode(window, {
+    const container = this.markup.createNode({
       attributes: { class: "highlighter-container" },
     });
 
     // Wrapper element.
-    const wrapper = createNode(window, {
+    const wrapper = this.markup.createNode({
       parent: container,
       attributes: {
         id: "root",
@@ -60,7 +57,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    const toolbar = createNode(window, {
+    const toolbar = this.markup.createNode({
       parent: wrapper,
       attributes: {
         id: "toolbar",
@@ -69,7 +66,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    createNode(window, {
+    this.markup.createNode({
       nodeType: "span",
       parent: toolbar,
       attributes: {
@@ -79,7 +76,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    createNode(window, {
+    this.markup.createNode({
       parent: toolbar,
       attributes: {
         id: "divider",
@@ -88,7 +85,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    const stepWrapper = createNode(window, {
+    const stepWrapper = this.markup.createNode({
       parent: toolbar,
       attributes: {
         id: "step-button-wrapper",
@@ -97,7 +94,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    createNode(window, {
+    this.markup.createNode({
       nodeType: "button",
       parent: stepWrapper,
       attributes: {
@@ -107,7 +104,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    const resumeWrapper = createNode(window, {
+    const resumeWrapper = this.markup.createNode({
       parent: toolbar,
       attributes: {
         id: "resume-button-wrapper",
@@ -116,7 +113,7 @@ PausedDebuggerOverlay.prototype = {
       prefix,
     });
 
-    createNode(window, {
+    this.markup.createNode({
       nodeType: "button",
       parent: resumeWrapper,
       attributes: {
@@ -204,21 +201,19 @@ PausedDebuggerOverlay.prototype = {
     return this.markup.getElement(this.ID_CLASS_PREFIX + id);
   },
 
-  show(node, options = {}) {
-    if (this.env.isXUL || !options.reason) {
+  show(reason) {
+    if (this.env.isXUL || !reason) {
       return false;
     }
 
-    let reason;
     try {
-      reason = L10N.getStr(`whyPaused.${options.reason}`);
+      reason = L10N.getStr(`whyPaused.${reason}`);
     } catch (e) {
-      // This is a temporary workaround to be uplifted to Firefox 71.
+      // This is a temporary workaround (See Bug 1591025).
       // This actors relies on a client side properties file. This file will not
       // be available when debugging Firefox for Android / Gecko View.
       // The highlighter also shows buttons that use client only images and are
       // therefore invisible when remote debugging a mobile Firefox.
-      // Should be fixed in Bug 1591025.
       return false;
     }
 
@@ -237,6 +232,10 @@ PausedDebuggerOverlay.prototype = {
     this.getElement("reason").setTextContent(reason);
     toolbar.removeAttribute("hidden");
 
+    // When the debugger pauses execution in a page, events will not be delivered
+    // to any handlers added to elements on that page. So here we use the
+    // document's setSuppressedEventListener interface to still be able to act on mouse
+    // events (they'll be handled by the `handleEvent` method)
     this.env.window.document.setSuppressedEventListener(this);
     return true;
   },

@@ -7,52 +7,54 @@
 #ifndef mozilla_dom_Animation_h
 #define mozilla_dom_Animation_h
 
-#include "nsWrapperCache.h"
+#include "X11UndefineNone.h"
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/AnimationPerformanceWarning.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EffectCompositor.h"  // For EffectCompositor::CascadeLevel
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/PostRestyleMode.h"
+#include "mozilla/StickyTimeDuration.h"
 #include "mozilla/TimeStamp.h"             // for TimeStamp, TimeDuration
 #include "mozilla/dom/AnimationBinding.h"  // for AnimationPlayState
-#include "mozilla/dom/AnimationEffect.h"
 #include "mozilla/dom/AnimationTimeline.h"
-#include "mozilla/dom/Promise.h"
-#include "nsCSSPropertyID.h"
-#include "nsIGlobalObject.h"
-
-// X11 has a #define for CurrentTime.
-#ifdef CurrentTime
-#  undef CurrentTime
-#endif
 
 struct JSContext;
 class nsCSSPropertyIDSet;
 class nsIFrame;
+class nsIGlobalObject;
 
 namespace mozilla {
 
 struct AnimationRule;
+class MicroTaskRunnable;
 
 namespace dom {
 
+class AnimationEffect;
 class AsyncFinishNotification;
 class CSSAnimation;
 class CSSTransition;
 class Document;
+class Promise;
 
 class Animation : public DOMEventTargetHelper,
                   public LinkedListElement<Animation> {
  protected:
-  virtual ~Animation() = default;
+  virtual ~Animation();
 
  public:
-  explicit Animation(nsIGlobalObject* aGlobal)
-      : DOMEventTargetHelper(aGlobal), mAnimationIndex(sNextAnimationIndex++) {}
+  explicit Animation(nsIGlobalObject* aGlobal);
+
+  // Constructs a copy of |aOther| with a new effect and timeline.
+  // This is only intended to be used while making a static clone of a document
+  // during printing, and does not assume that |aOther| is in the same document
+  // as any of the other arguments.
+  static already_AddRefed<Animation> ClonePausedAnimation(
+      nsIGlobalObject* aGlobal, const Animation& aOther,
+      AnimationEffect& aEffect, AnimationTimeline& aTimeline);
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(Animation, DOMEventTargetHelper)
@@ -146,7 +148,7 @@ class Animation : public DOMEventTargetHelper,
   virtual void Reverse(ErrorResult& aRv);
 
   void Persist();
-  void CommitStyles(ErrorResult& aRv);
+  MOZ_CAN_RUN_SCRIPT void CommitStyles(ErrorResult& aRv);
 
   bool IsRunningOnCompositor() const;
 
@@ -312,10 +314,8 @@ class Animation : public DOMEventTargetHelper,
     return PlayState() == AnimationPlayState::Paused;
   }
 
-  bool HasCurrentEffect() const {
-    return GetEffect() && GetEffect()->IsCurrent();
-  }
-  bool IsInEffect() const { return GetEffect() && GetEffect()->IsInEffect(); }
+  bool HasCurrentEffect() const;
+  bool IsInEffect() const;
 
   bool IsPlaying() const {
     return mPlaybackRate != 0.0 && mTimeline &&
@@ -417,6 +417,30 @@ class Animation : public DOMEventTargetHelper,
 
   int32_t& CachedChildIndexRef() { return mCachedChildIndex; }
 
+  void SetPartialPrerendered(uint64_t aIdOnCompositor) {
+    mIdOnCompositor = aIdOnCompositor;
+    mIsPartialPrerendered = true;
+  }
+  bool IsPartialPrerendered() const { return mIsPartialPrerendered; }
+  uint64_t IdOnCompositor() const { return mIdOnCompositor; }
+  /**
+   * Needs to be called when the pre-rendered animation is going to no longer
+   * run on the compositor.
+   */
+  void ResetPartialPrerendered() {
+    MOZ_ASSERT(mIsPartialPrerendered);
+    mIsPartialPrerendered = false;
+    mIdOnCompositor = 0;
+  }
+  /**
+   * Called via NotifyJankedAnimations IPC call from the compositor to update
+   * pre-rendered area on the main-thread.
+   */
+  void UpdatePartialPrerendered() {
+    ResetPartialPrerendered();
+    PostUpdate();
+  }
+
  protected:
   void SilentlySetCurrentTime(const TimeDuration& aNewCurrentTime);
   void CancelNoUpdate();
@@ -512,15 +536,7 @@ class Animation : public DOMEventTargetHelper,
   // https://drafts.csswg.org/css-animations-2/#interval-start
   // https://drafts.csswg.org/css-transitions-2/#interval-start
   StickyTimeDuration IntervalStartTime(
-      const StickyTimeDuration& aActiveDuration) const {
-    MOZ_ASSERT(AsCSSTransition() || AsCSSAnimation(),
-               "Should be called for CSS animations or transitions");
-    static constexpr StickyTimeDuration zeroDuration = StickyTimeDuration();
-    return std::max(
-        std::min(StickyTimeDuration(-mEffect->SpecifiedTiming().Delay()),
-                 aActiveDuration),
-        zeroDuration);
-  }
+      const StickyTimeDuration& aActiveDuration) const;
 
   // Later side of the elapsed time range reported in CSS Animations and CSS
   // Transitions events.
@@ -528,15 +544,7 @@ class Animation : public DOMEventTargetHelper,
   // https://drafts.csswg.org/css-animations-2/#interval-end
   // https://drafts.csswg.org/css-transitions-2/#interval-end
   StickyTimeDuration IntervalEndTime(
-      const StickyTimeDuration& aActiveDuration) const {
-    MOZ_ASSERT(AsCSSTransition() || AsCSSAnimation(),
-               "Should be called for CSS animations or transitions");
-
-    static constexpr StickyTimeDuration zeroDuration = StickyTimeDuration();
-    return std::max(std::min((EffectEnd() - mEffect->SpecifiedTiming().Delay()),
-                             aActiveDuration),
-                    zeroDuration);
-  }
+      const StickyTimeDuration& aActiveDuration) const;
 
   TimeStamp GetTimelineCurrentTimeAsTimeStamp() const {
     return mTimeline ? mTimeline->GetCurrentTimeAsTimeStamp() : TimeStamp();
@@ -614,6 +622,11 @@ class Animation : public DOMEventTargetHelper,
   RefPtr<MicroTaskRunnable> mFinishNotificationTask;
 
   nsString mId;
+
+ private:
+  // The id for this animaiton on the compositor.
+  uint64_t mIdOnCompositor = 0;
+  bool mIsPartialPrerendered = false;
 };
 
 }  // namespace dom

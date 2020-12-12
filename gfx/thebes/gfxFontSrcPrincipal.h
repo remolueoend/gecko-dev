@@ -7,8 +7,9 @@
 #define MOZILLA_GFX_FONTSRCPRINCIPAL_H
 
 #include "nsCOMPtr.h"
-#include "nsIPrincipal.h"
 #include "PLDHashTable.h"
+
+class nsIPrincipal;
 
 namespace mozilla {
 namespace net {
@@ -22,11 +23,16 @@ class nsSimpleURI;
  */
 class gfxFontSrcPrincipal {
  public:
-  explicit gfxFontSrcPrincipal(nsIPrincipal* aPrincipal);
+  explicit gfxFontSrcPrincipal(nsIPrincipal* aNodePrincipal,
+                               nsIPrincipal* aStoragePrincipal);
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(gfxFontSrcPrincipal)
 
-  nsIPrincipal* get() { return mPrincipal; }
+  nsIPrincipal* get() const { return NodePrincipal(); }
+
+  nsIPrincipal* NodePrincipal() const { return mNodePrincipal; }
+
+  nsIPrincipal* StoragePrincipal() const { return mStoragePrincipal; }
 
   bool Equals(gfxFontSrcPrincipal* aOther);
 
@@ -35,10 +41,13 @@ class gfxFontSrcPrincipal {
  private:
   ~gfxFontSrcPrincipal();
 
-  // The principal.
-  nsCOMPtr<nsIPrincipal> mPrincipal;
+  // The principal of the node.
+  nsCOMPtr<nsIPrincipal> mNodePrincipal;
 
-  // Precomputed hash for mPrincipal.
+  // The principal used for storage.
+  nsCOMPtr<nsIPrincipal> mStoragePrincipal;
+
+  // Precomputed hash for mStoragePrincipal.
   PLDHashNumber mHash;
 };
 

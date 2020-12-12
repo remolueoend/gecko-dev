@@ -124,13 +124,19 @@ class UrlbarResult {
       case UrlbarUtils.RESULT_TYPE.SEARCH:
         switch (this.payload.keywordOffer) {
           case UrlbarUtils.KEYWORD_OFFER.SHOW:
-            return [this.payload.keyword, this.payloadHighlights.keyword];
+            if (!UrlbarPrefs.get("update2")) {
+              return [this.payload.keyword, this.payloadHighlights.keyword];
+            }
+          // Fall through.
           case UrlbarUtils.KEYWORD_OFFER.HIDE:
             return ["", []];
         }
-        return this.payload.suggestion
-          ? [this.payload.suggestion, this.payloadHighlights.suggestion]
-          : [this.payload.query, this.payloadHighlights.query];
+        if (this.payload.tail && this.payload.tailOffsetIndex >= 0) {
+          return [this.payload.tail, this.payloadHighlights.tail];
+        } else if (this.payload.suggestion) {
+          return [this.payload.suggestion, this.payloadHighlights.suggestion];
+        }
+        return [this.payload.query, this.payloadHighlights.query];
       default:
         return ["", []];
     }
@@ -159,6 +165,7 @@ class UrlbarResult {
     let result = JsonSchemaValidator.validate(payload, schema, {
       allowExplicitUndefinedProperties: true,
       allowNullAsUndefinedProperties: true,
+      allowExtraProperties: this.type == UrlbarUtils.RESULT_TYPE.DYNAMIC,
     });
     if (!result.valid) {
       throw result.error;
@@ -263,5 +270,76 @@ class UrlbarResult {
         return highlights;
       }, {}),
     ];
+  }
+
+  static _dynamicResultTypesByName = new Map();
+
+  /**
+   * Registers a dynamic result type.  Dynamic result types are types that are
+   * created at runtime, for example by an extension.  A particular type should
+   * be added only once; if this method is called for a type more than once, the
+   * `type` in the last call overrides those in previous calls.
+   *
+   * @param {string} name
+   *   The name of the type.  This is used in CSS selectors, so it shouldn't
+   *   contain any spaces or punctuation except for -, _, etc.
+   * @param {object} type
+   *   An object that describes the type.  Currently types do not have any
+   *   associated metadata, so this object should be empty.
+   */
+  static addDynamicResultType(name, type = {}) {
+    if (/[^a-z0-9_-]/i.test(name)) {
+      Cu.reportError(`Illegal dynamic type name: ${name}`);
+      return;
+    }
+    this._dynamicResultTypesByName.set(name, type);
+  }
+
+  /**
+   * Unregisters a dynamic result type.
+   *
+   * @param {string} name
+   *   The name of the type.
+   */
+  static removeDynamicResultType(name) {
+    let type = this._dynamicResultTypesByName.get(name);
+    if (type) {
+      this._dynamicResultTypesByName.delete(name);
+    }
+  }
+
+  /**
+   * Returns an object describing a registered dynamic result type.
+   *
+   * @param {string} name
+   *   The name of the type.
+   * @returns {object}
+   *   Currently types do not have any associated metadata, so the return value
+   *   is an empty object if the type exists.  If the type doesn't exist,
+   *   undefined is returned.
+   */
+  static getDynamicResultType(name) {
+    return this._dynamicResultTypesByName.get(name);
+  }
+
+  /**
+   * This is useful for logging results. If you need the full payload, then it's
+   * better to JSON.stringify the result object itself.
+   * @returns {string} string representation of the result.
+   */
+  toString() {
+    if (this.payload.url) {
+      return this.payload.title + " - " + this.payload.url.substr(0, 100);
+    }
+    if (this.payload.keyword) {
+      return this.payload.keyword + " - " + this.payload.query;
+    }
+    if (this.payload.suggestion) {
+      return this.payload.engine + " - " + this.payload.suggestion;
+    }
+    if (this.payload.engine) {
+      return this.payload.engine + " - " + this.payload.query;
+    }
+    return JSON.stringify(this);
   }
 }

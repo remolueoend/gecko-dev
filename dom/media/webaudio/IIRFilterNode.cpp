@@ -14,8 +14,7 @@
 
 #include "nsGkAtoms.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 class IIRFilterNodeEngine final : public AudioNodeEngine {
  public:
@@ -24,8 +23,8 @@ class IIRFilterNodeEngine final : public AudioNodeEngine {
                       const AudioDoubleArray& aFeedback, uint64_t aWindowID)
       : AudioNodeEngine(aNode),
         mDestination(aDestination->Track()),
-        mFeedforward(aFeedforward),
-        mFeedback(aFeedback),
+        mFeedforward(aFeedforward.Clone()),
+        mFeedback(aFeedback.Clone()),
         mWindowID(aWindowID) {}
 
   void ProcessBlock(AudioNodeTrack* aTrack, GraphTime aFrom,
@@ -174,7 +173,7 @@ already_AddRefed<IIRFilterNode> IIRFilterNode::Create(
   if (aOptions.mFeedback.Length() == 0 || aOptions.mFeedback.Length() > 20) {
     aRv.ThrowNotSupportedError(
         nsPrintfCString("\"feedback\" length %zu is not in the range [1,20]",
-                        aOptions.mFeedforward.Length()));
+                        aOptions.mFeedback.Length()));
     return nullptr;
   }
 
@@ -254,5 +253,4 @@ void IIRFilterNode::GetFrequencyResponse(const Float32Array& aFrequencyHz,
                               aMagResponse.Data(), aPhaseResponse.Data());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -366,7 +366,7 @@ impl<T> JS::Rooted<T> {
 
     unsafe fn get_root_stack(
         cx: *mut JSContext,
-    ) -> *mut *mut JS::Rooted<*mut ::std::os::raw::c_void>
+    ) -> *mut *mut JS::Rooted<*mut JS::detail::RootListEntry>
     where
         T: RootKind,
     {
@@ -1100,9 +1100,9 @@ pub static SIMPLE_GLOBAL_CLASS: JSClass = JSClass {
 };
 
 #[inline]
-unsafe fn get_object_group(obj: *mut JSObject) -> *mut js::shadow::ObjectGroup {
+unsafe fn get_object_group(obj: *mut JSObject) -> *mut JS::shadow::ObjectGroup {
     assert!(!obj.is_null());
-    let obj = obj as *mut js::shadow::Object;
+    let obj = obj as *mut JS::shadow::Object;
     (*obj).group
 }
 
@@ -1238,7 +1238,7 @@ impl JSPropertySpec {
         debug_assert_eq!(flags & !(JSPROP_ENUMERATE | JSPROP_PERMANENT), 0);
         JSPropertySpec {
             name: JSPropertySpec_Name { string_: name },
-            flags: flags,
+            flags_: flags,
             u: JSPropertySpec_AccessorsOrValue {
                 accessors: JSPropertySpec_AccessorsOrValue_Accessors {
                     getter: JSPropertySpec_Accessor {
@@ -1267,7 +1267,7 @@ impl JSPropertySpec {
         debug_assert_eq!(flags & !(JSPROP_ENUMERATE | JSPROP_PERMANENT), 0);
         JSPropertySpec {
             name: JSPropertySpec_Name { string_: name },
-            flags: flags,
+            flags_: flags,
             u: JSPropertySpec_AccessorsOrValue {
                 accessors: JSPropertySpec_AccessorsOrValue_Accessors {
                     getter: JSPropertySpec_Accessor {
@@ -1291,7 +1291,7 @@ impl JSPropertySpec {
         name: JSPropertySpec_Name {
             string_: 0 as *const _,
         },
-        flags: 0,
+        flags_: 0,
         u: JSPropertySpec_AccessorsOrValue {
             accessors: JSPropertySpec_AccessorsOrValue_Accessors {
                 getter: JSPropertySpec_Accessor {

@@ -7,7 +7,7 @@
 
 #include "CompositableHost.h"
 #include "mozilla/layers/LayerTransactionChild.h"
-#include "mozilla/layers/TextureClientSharedSurface.h"
+#include "mozilla/layers/LayersSurfaces.h"
 
 #include "MozFramebuffer.h"
 #include "TexUnpackBlob.h"
@@ -67,7 +67,12 @@ UniquePtr<HostWebGLContext> HostWebGLContext::Create(
 HostWebGLContext::HostWebGLContext(OwnerData&& ownerData)
     : mOwnerData(std::move(ownerData)) {
   if (mOwnerData.outOfProcess) {
-    mOwnerData.outOfProcess->mCommandSink->mHostContext = this;
+    if (mOwnerData.outOfProcess->mCommandSinkP) {
+      mOwnerData.outOfProcess->mCommandSinkP->mHostContext = this;
+    }
+    if (mOwnerData.outOfProcess->mCommandSinkI) {
+      mOwnerData.outOfProcess->mCommandSinkI->mHostContext = this;
+    }
   }
 
   {
@@ -101,9 +106,9 @@ void HostWebGLContext::JsWarning(const std::string& text) const {
   (void)mOwnerData.outOfProcess->mParent.SendJsWarning(text);
 }
 
-RefPtr<layers::SharedSurfaceTextureClient> HostWebGLContext::GetVRFrame(
-    ObjectId id) const {
-  return mContext->GetVRFrame(AutoResolve(id));
+Maybe<layers::SurfaceDescriptor> HostWebGLContext::GetFrontBuffer(
+    const ObjectId xrFb, const bool webvr) const {
+  return mContext->GetFrontBuffer(AutoResolve(xrFb), webvr);
 }
 
 //////////////////////////////////////////////

@@ -15,12 +15,12 @@
 #include "nsTArray.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIChannelEventSink.h"
-#include "nsIHttpChannel.h"
 #include "nsIThreadRetargetableStreamListener.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
 
+class nsIHttpChannel;
 class nsIURI;
 class nsIPrincipal;
 class nsINetworkInterceptController;
@@ -35,7 +35,11 @@ class nsHttpChannel;
 
 enum class DataURIHandling { Allow, Disallow };
 
-enum class UpdateType { Default, InternalOrHSTSRedirect };
+enum class UpdateType {
+  Default,
+  StripRequestBodyHeader,
+  InternalOrHSTSRedirect
+};
 
 class nsCORSListenerProxy final : public nsIStreamListener,
                                   public nsIInterfaceRequestor,
@@ -75,8 +79,9 @@ class nsCORSListenerProxy final : public nsIStreamListener,
   // Only nsHttpChannel can invoke CORS preflights
   friend class mozilla::net::nsHttpChannel;
 
-  static void RemoveFromCorsPreflightCache(nsIURI* aURI,
-                                           nsIPrincipal* aRequestingPrincipal);
+  static void RemoveFromCorsPreflightCache(
+      nsIURI* aURI, nsIPrincipal* aRequestingPrincipal,
+      const mozilla::OriginAttributes& aOriginAttributes);
   [[nodiscard]] static nsresult StartCORSPreflight(
       nsIChannel* aRequestChannel, nsICorsPreflightCallback* aCallback,
       nsTArray<nsCString>& aACUnsafeHeaders, nsIChannel** aPreflightChannel);

@@ -21,6 +21,20 @@ describe("RecommendationProviderSwitcher", () => {
 
   describe("#setAffinityProvider", () => {
     it("should setup proper affnity provider with modelKeys", async () => {
+      feed.setAffinityProvider();
+
+      assert.equal(feed.affinityProvider.modelKeys, undefined);
+
+      feed.affinityProvider = null;
+      feed.affinityProviderV2 = {
+        modelKeys: "1234",
+      };
+
+      feed.setAffinityProvider();
+
+      assert.equal(feed.affinityProvider.modelKeys, "1234");
+    });
+    it("should use old provider", async () => {
       feed.setAffinityProvider(
         undefined,
         undefined,
@@ -43,7 +57,7 @@ describe("RecommendationProviderSwitcher", () => {
         undefined
       );
 
-      assert.equal(feed.affinityProvider.modelKeys, "1234");
+      assert.equal(feed.affinityProvider.modelKeys, undefined);
     });
   });
 
@@ -76,6 +90,7 @@ describe("RecommendationProviderSwitcher", () => {
         ac.BroadcastToContent({
           type: at.DISCOVERY_STREAM_PERSONALIZATION_VERSION,
           data: { version: 1 },
+          meta: { isStartup: false },
         })
       );
       assert.equal(feed.affinityProviderV2, null);
@@ -95,6 +110,7 @@ describe("RecommendationProviderSwitcher", () => {
         ac.BroadcastToContent({
           type: at.DISCOVERY_STREAM_PERSONALIZATION_VERSION,
           data: { version: 2 },
+          meta: { isStartup: false },
         })
       );
       assert.deepEqual(feed.affinityProviderV2.modelKeys, ["1", "2", "3", "4"]);
@@ -108,32 +124,6 @@ describe("RecommendationProviderSwitcher", () => {
       };
       feed.getAffinities();
       assert.calledOnce(feed.affinityProvider.getAffinities);
-    });
-  });
-
-  describe("#dispatchRelevanceScoreDuration", () => {
-    it("should call dispatchRelevanceScoreDuration if available", () => {
-      feed.affinityProvider = {
-        dispatchRelevanceScoreDuration: sandbox.stub().returns(),
-      };
-      feed.dispatchRelevanceScoreDuration(0);
-      assert.calledWith(
-        feed.affinityProvider.dispatchRelevanceScoreDuration,
-        0
-      );
-    });
-    it("should fire PERSONALIZATION_V1_ITEM_RELEVANCE_SCORE_DURATION", () => {
-      feed.affinityProvider = {};
-      sandbox.spy(feed.store, "dispatch");
-      feed.dispatchRelevanceScoreDuration(0);
-      assert.calledWithMatch(
-        feed.store.dispatch,
-        ac.PerfEvent({
-          event: "PERSONALIZATION_V1_ITEM_RELEVANCE_SCORE_DURATION",
-        })
-      );
-
-      assert.calledOnce(feed.store.dispatch);
     });
   });
 

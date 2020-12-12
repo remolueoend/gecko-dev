@@ -29,6 +29,8 @@ using mozilla::Maybe;
 using mozilla::MicroTaskRunnable;
 using mozilla::dom::BlobURLProtocolHandler;
 using mozilla::dom::ClientInfo;
+using mozilla::dom::Report;
+using mozilla::dom::ReportingObserver;
 using mozilla::dom::ServiceWorker;
 using mozilla::dom::ServiceWorkerDescriptor;
 using mozilla::dom::ServiceWorkerRegistration;
@@ -86,10 +88,9 @@ namespace {
 
 class UnlinkHostObjectURIsRunnable final : public mozilla::Runnable {
  public:
-  explicit UnlinkHostObjectURIsRunnable(nsTArray<nsCString>& aURIs)
-      : mozilla::Runnable("UnlinkHostObjectURIsRunnable") {
-    mURIs.SwapElements(aURIs);
-  }
+  explicit UnlinkHostObjectURIsRunnable(nsTArray<nsCString>&& aURIs)
+      : mozilla::Runnable("UnlinkHostObjectURIsRunnable"),
+        mURIs(std::move(aURIs)) {}
 
   NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
@@ -104,7 +105,7 @@ class UnlinkHostObjectURIsRunnable final : public mozilla::Runnable {
  private:
   ~UnlinkHostObjectURIsRunnable() = default;
 
-  nsTArray<nsCString> mURIs;
+  const nsTArray<nsCString> mURIs;
 };
 
 }  // namespace
@@ -120,7 +121,7 @@ void nsIGlobalObject::UnlinkObjectsInGlobal() {
       mHostObjectURIs.Clear();
     } else {
       RefPtr<UnlinkHostObjectURIsRunnable> runnable =
-          new UnlinkHostObjectURIsRunnable(mHostObjectURIs);
+          new UnlinkHostObjectURIsRunnable(std::move(mHostObjectURIs));
       MOZ_ASSERT(mHostObjectURIs.IsEmpty());
 
       nsresult rv = NS_DispatchToMainThread(runnable);
@@ -210,7 +211,7 @@ Maybe<nsID> nsIGlobalObject::GetAgentClusterId() const {
   if (ci.isSome()) {
     return ci.value().AgentClusterId();
   }
-  return Nothing();
+  return mozilla::Nothing();
 }
 
 Maybe<ServiceWorkerDescriptor> nsIGlobalObject::GetController() const {
@@ -288,7 +289,8 @@ void nsIGlobalObject::RegisterReportingObserver(ReportingObserver* aObserver,
     return;
   }
 
-  if (NS_WARN_IF(!mReportingObservers.AppendElement(aObserver, fallible))) {
+  if (NS_WARN_IF(
+          !mReportingObservers.AppendElement(aObserver, mozilla::fallible))) {
     return;
   }
 
@@ -314,7 +316,7 @@ void nsIGlobalObject::BroadcastReport(Report* aReport) {
     observer->MaybeReport(aReport);
   }
 
-  if (NS_WARN_IF(!mReportRecords.AppendElement(aReport, fallible))) {
+  if (NS_WARN_IF(!mReportRecords.AppendElement(aReport, mozilla::fallible))) {
     return;
   }
 
@@ -324,10 +326,8 @@ void nsIGlobalObject::BroadcastReport(Report* aReport) {
 }
 
 void nsIGlobalObject::NotifyReportingObservers() {
-  const nsTArray<RefPtr<ReportingObserver>> reportingObservers(
-      mReportingObservers);
-  for (auto& observer : reportingObservers) {
-    // MOZ_KnownLive because 'reportingObservers' is guaranteed to
+  for (auto& observer : mReportingObservers.Clone()) {
+    // MOZ_KnownLive because the clone of 'mReportingObservers' is guaranteed to
     // keep it alive.
     //
     // This can go away once

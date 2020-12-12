@@ -354,6 +354,11 @@ ClassifierDummyChannel::SetupFallbackChannel(const char* aFallbackKey) {
 }
 
 NS_IMETHODIMP
+ClassifierDummyChannel::GetIsAuthChannel(bool* aIsAuthChannel) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
 ClassifierDummyChannel::GetThirdPartyFlags(uint32_t* aThirdPartyFlags) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -437,6 +442,16 @@ ClassifierDummyChannel::GetAllowSpdy(bool* aAllowSpdy) {
 
 NS_IMETHODIMP
 ClassifierDummyChannel::SetAllowSpdy(bool aAllowSpdy) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+ClassifierDummyChannel::GetAllowHttp3(bool* aAllowHttp3) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+ClassifierDummyChannel::SetAllowHttp3(bool aAllowHttp3) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -577,7 +592,8 @@ ClassifierDummyChannel::GetProxyURI(nsIURI** aProxyURI) {
 }
 
 void ClassifierDummyChannel::SetCorsPreflightParameters(
-    const nsTArray<nsCString>& aUnsafeHeaders) {}
+    const nsTArray<nsCString>& aUnsafeHeaders,
+    bool aShouldStripRequestBodyHeader) {}
 
 void ClassifierDummyChannel::SetAltDataForChild(bool aIsForChild) {}
 void ClassifierDummyChannel::DisableAltDataCache() {}
@@ -654,6 +670,11 @@ NS_IMETHODIMP ClassifierDummyChannel::ComputeCrossOriginOpenerPolicy(
 NS_IMETHODIMP
 ClassifierDummyChannel::GetCrossOriginOpenerPolicy(
     nsILoadInfo::CrossOriginOpenerPolicy* aPolicy) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP ClassifierDummyChannel::HasCrossOriginOpenerPolicyMismatch(
+    bool* aIsMismatch) {
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -734,6 +755,21 @@ NS_IMETHODIMP ClassifierDummyChannel::IsThirdPartySocialTrackingResource(
 }
 
 void ClassifierDummyChannel::DoDiagnosticAssertWhenOnStopNotCalledOnDestroy() {}
+
+NS_IMETHODIMP ClassifierDummyChannel::GetResponseEmbedderPolicy(
+    nsILoadInfo::CrossOriginEmbedderPolicy* aOutPolicy) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP ClassifierDummyChannel::SetWaitForHTTPSSVCRecord() {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+ClassifierDummyChannel::GetSupportsHTTP3(bool* aSupportsHTTP3) {
+  *aSupportsHTTP3 = false;
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
 
 }  // namespace net
 }  // namespace mozilla

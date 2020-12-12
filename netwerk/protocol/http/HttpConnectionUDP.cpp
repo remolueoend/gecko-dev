@@ -17,11 +17,6 @@
 #define TLS_EARLY_DATA_AVAILABLE_BUT_NOT_USED 1
 #define TLS_EARLY_DATA_AVAILABLE_AND_USED 2
 
-#define ESNI_SUCCESSFUL 0
-#define ESNI_FAILED 1
-#define NO_ESNI_SUCCESSFUL 2
-#define NO_ESNI_FAILED 3
-
 #include "ASpdySession.h"
 #include "mozilla/ChaosMode.h"
 #include "mozilla/Telemetry.h"
@@ -58,7 +53,6 @@ HttpConnectionUDP::HttpConnectionUDP()
       mLastReadTime(0),
       mLastWriteTime(0),
       mTotalBytesRead(0),
-      mContentBytesWritten(0),
       mConnectedTransport(false),
       mDontReuse(false),
       mIsReused(false),
@@ -116,8 +110,7 @@ nsresult HttpConnectionUDP::Init(
 
   MOZ_ASSERT(mConnInfo->IsHttp3());
   mHttp3Session = new Http3Session();
-  nsresult rv =
-      mHttp3Session->Init(mConnInfo->GetOrigin(), mSocketTransport, this);
+  nsresult rv = mHttp3Session->Init(mConnInfo, mSocketTransport, this);
   if (NS_FAILED(rv)) {
     LOG(
         ("HttpConnectionUDP::Init mHttp3Session->Init failed "
@@ -297,6 +290,12 @@ nsresult HttpConnectionUDP::OnHeadersAvailable(nsAHttpTransaction* trans,
   MOZ_ASSERT(OnSocketThread(), "not on socket thread");
   NS_ENSURE_ARG_POINTER(trans);
   MOZ_ASSERT(responseHead, "No response head?");
+
+  if (mHttp3Session) {
+    DebugOnly<nsresult> rv = responseHead->SetHeader(
+        nsHttp::X_Firefox_Http3, mHttp3Session->GetAlpnToken());
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
+  }
 
   // deal with 408 Server Timeouts
   uint16_t responseStatus = responseHead->Status();
@@ -550,7 +549,6 @@ nsresult HttpConnectionUDP::OnSocketWritable() {
   LOG(("  writing transaction request stream\n"));
   nsresult rv = mHttp3Session->ReadSegmentsAgain(
       this, nsIOService::gDefaultSegmentSize, &transactionBytes, &again);
-  mContentBytesWritten += transactionBytes;
   return rv;
 }
 
@@ -742,15 +740,9 @@ void HttpConnectionUDP::SetEvent(nsresult aStatus) {
     case NS_NET_STATUS_CONNECTING_TO:
       mBootstrappedTimings.connectStart = TimeStamp::Now();
       break;
-    case NS_NET_STATUS_CONNECTED_TO: {
-      TimeStamp tnow = TimeStamp::Now();
-      mBootstrappedTimings.tcpConnectEnd = tnow;
-      mBootstrappedTimings.connectEnd = tnow;
-      if (!mBootstrappedTimings.secureConnectionStart.IsNull()) {
-        mBootstrappedTimings.secureConnectionStart = tnow;
-      }
+    case NS_NET_STATUS_CONNECTED_TO:
+      mBootstrappedTimings.connectEnd = TimeStamp::Now();
       break;
-    }
     case NS_NET_STATUS_TLS_HANDSHAKE_STARTING:
       mBootstrappedTimings.secureConnectionStart = TimeStamp::Now();
       break;

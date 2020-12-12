@@ -10,28 +10,13 @@
 #include "vm/ArrayObject.h"
 
 #include "gc/Allocator.h"
-#include "gc/GCTrace.h"
+#include "gc/GCProbes.h"
 #include "vm/StringType.h"
 
 #include "vm/JSObject-inl.h"
-#include "vm/ObjectGroup-inl.h"
 #include "vm/ObjectOperations-inl.h"  // js::GetElement
-#include "vm/TypeInference-inl.h"
 
 namespace js {
-
-inline void ArrayObject::setLength(JSContext* cx, uint32_t length) {
-  MOZ_ASSERT(lengthIsWritable());
-  MOZ_ASSERT_IF(length != getElementsHeader()->length,
-                !denseElementsAreFrozen());
-
-  if (length > INT32_MAX) {
-    /* Track objects with overflowing lengths in type information. */
-    MarkObjectGroupFlags(cx, this, OBJECT_FLAG_LENGTH_OVERFLOW);
-  }
-
-  getElementsHeader()->length = length;
-}
 
 /* static */ inline ArrayObject* ArrayObject::createArrayInternal(
     JSContext* cx, gc::AllocKind kind, gc::InitialHeap heap, HandleShape shape,
@@ -41,16 +26,12 @@ inline void ArrayObject::setLength(JSContext* cx, uint32_t length) {
   MOZ_ASSERT(clasp == shape->getObjectClass());
   MOZ_ASSERT(clasp == &ArrayObject::class_);
   MOZ_ASSERT_IF(clasp->hasFinalize(), heap == gc::TenuredHeap);
-  MOZ_ASSERT_IF(group->hasUnanalyzedPreliminaryObjects(),
-                heap == js::gc::TenuredHeap);
-  MOZ_ASSERT_IF(group->shouldPreTenureDontCheckGeneration(),
-                heap == gc::TenuredHeap);
 
   // Arrays can use their fixed slots to store elements, so can't have shapes
   // which allow named properties to be stored in the fixed slots.
   MOZ_ASSERT(shape->numFixedSlots() == 0);
 
-  size_t nDynamicSlots = dynamicSlotsCount(0, shape->slotSpan(), clasp);
+  size_t nDynamicSlots = calculateDynamicSlots(0, shape->slotSpan(), clasp);
   JSObject* obj = js::AllocateObject(cx, kind, nDynamicSlots, heap, clasp);
   if (!obj) {
     return nullptr;
@@ -61,7 +42,7 @@ inline void ArrayObject::setLength(JSContext* cx, uint32_t length) {
   aobj->initShape(shape);
   // NOTE: Dynamic slots are created internally by Allocate<JSObject>.
   if (!nDynamicSlots) {
-    aobj->initSlots(nullptr);
+    aobj->initEmptyDynamicSlots();
   }
 
   MOZ_ASSERT(clasp->shouldDelayMetadataBuilder());
@@ -77,7 +58,7 @@ inline void ArrayObject::setLength(JSContext* cx, uint32_t length) {
     obj->initializeSlotRange(0, span);
   }
 
-  gc::gcTracer.traceCreateObject(obj);
+  gc::gcprobes::CreateObject(obj);
 
   return obj;
 }
@@ -97,32 +78,6 @@ inline void ArrayObject::setLength(JSContext* cx, uint32_t length) {
 
   obj->setFixedElements();
   new (obj->getElementsHeader()) ObjectElements(capacity, length);
-
-  return finishCreateArray(obj, shape, metadata);
-}
-
-/* static */ inline ArrayObject* ArrayObject::createCopyOnWriteArray(
-    JSContext* cx, gc::InitialHeap heap,
-    HandleArrayObject sharedElementsOwner) {
-  MOZ_ASSERT(sharedElementsOwner->getElementsHeader()->isCopyOnWrite());
-  MOZ_ASSERT(sharedElementsOwner->getElementsHeader()->ownerObject() ==
-             sharedElementsOwner);
-
-  // Use the smallest allocation kind for the array, as it can't have any
-  // fixed slots (see the assert in createArrayInternal) and will not be using
-  // its fixed elements.
-  gc::AllocKind kind = gc::AllocKind::OBJECT0_BACKGROUND;
-
-  AutoSetNewObjectMetadata metadata(cx);
-  RootedShape shape(cx, sharedElementsOwner->lastProperty());
-  RootedObjectGroup group(cx, sharedElementsOwner->group());
-  ArrayObject* obj =
-      createArrayInternal(cx, kind, heap, shape, group, metadata);
-  if (!obj) {
-    return nullptr;
-  }
-
-  obj->elements_ = sharedElementsOwner->getDenseElementsAllowCopyOnWrite();
 
   return finishCreateArray(obj, shape, metadata);
 }

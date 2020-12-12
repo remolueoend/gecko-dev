@@ -201,15 +201,16 @@ static bool IsObjectEscaped(MInstruction* ins, JSObject* objDefault) {
 
       case MDefinition::Opcode::Slots: {
 #ifdef DEBUG
-        // Assert that MSlots are only used by MStoreSlot and MLoadSlot.
+        // Assert that MSlots are only used by MStoreDynamicSlot and
+        // MLoadDynamicSlot.
         MSlots* ins = def->toSlots();
         MOZ_ASSERT(ins->object() != 0);
         for (MUseIterator i(ins->usesBegin()); i != ins->usesEnd(); i++) {
           // toDefinition should normally never fail, since they don't get
           // captured by resume points.
           MDefinition* def = (*i)->consumer()->toDefinition();
-          MOZ_ASSERT(def->op() == MDefinition::Opcode::StoreSlot ||
-                     def->op() == MDefinition::Opcode::LoadSlot);
+          MOZ_ASSERT(def->op() == MDefinition::Opcode::StoreDynamicSlot ||
+                     def->op() == MDefinition::Opcode::LoadDynamicSlot);
         }
 #endif
         break;
@@ -309,8 +310,8 @@ class ObjectMemoryView : public MDefinitionVisitorDefaultNoop {
   void visitStoreFixedSlot(MStoreFixedSlot* ins);
   void visitLoadFixedSlot(MLoadFixedSlot* ins);
   void visitPostWriteBarrier(MPostWriteBarrier* ins);
-  void visitStoreSlot(MStoreSlot* ins);
-  void visitLoadSlot(MLoadSlot* ins);
+  void visitStoreDynamicSlot(MStoreDynamicSlot* ins);
+  void visitLoadDynamicSlot(MLoadDynamicSlot* ins);
   void visitGuardShape(MGuardShape* ins);
   void visitGuardObjectGroup(MGuardObjectGroup* ins);
   void visitFunctionEnvironment(MFunctionEnvironment* ins);
@@ -516,7 +517,7 @@ void ObjectMemoryView::visitStoreFixedSlot(MStoreFixedSlot* ins) {
   } else {
     // UnsafeSetReserveSlot can access baked-in slots which are guarded by
     // conditions, which are not seen by the escape analysis.
-    MBail* bailout = MBail::New(alloc_, Bailout_Inevitable);
+    MBail* bailout = MBail::New(alloc_, BailoutKind::Inevitable);
     ins->block()->insertBefore(ins, bailout);
   }
 
@@ -536,7 +537,7 @@ void ObjectMemoryView::visitLoadFixedSlot(MLoadFixedSlot* ins) {
   } else {
     // UnsafeGetReserveSlot can access baked-in slots which are guarded by
     // conditions, which are not seen by the escape analysis.
-    MBail* bailout = MBail::New(alloc_, Bailout_Inevitable);
+    MBail* bailout = MBail::New(alloc_, BailoutKind::Inevitable);
     ins->block()->insertBefore(ins, bailout);
     ins->replaceAllUsesWith(undefinedVal_);
   }
@@ -555,7 +556,7 @@ void ObjectMemoryView::visitPostWriteBarrier(MPostWriteBarrier* ins) {
   ins->block()->discard(ins);
 }
 
-void ObjectMemoryView::visitStoreSlot(MStoreSlot* ins) {
+void ObjectMemoryView::visitStoreDynamicSlot(MStoreDynamicSlot* ins) {
   // Skip stores made on other objects.
   MSlots* slots = ins->slots()->toSlots();
   if (slots->object() != obj_) {
@@ -578,7 +579,7 @@ void ObjectMemoryView::visitStoreSlot(MStoreSlot* ins) {
   } else {
     // UnsafeSetReserveSlot can access baked-in slots which are guarded by
     // conditions, which are not seen by the escape analysis.
-    MBail* bailout = MBail::New(alloc_, Bailout_Inevitable);
+    MBail* bailout = MBail::New(alloc_, BailoutKind::Inevitable);
     ins->block()->insertBefore(ins, bailout);
   }
 
@@ -586,7 +587,7 @@ void ObjectMemoryView::visitStoreSlot(MStoreSlot* ins) {
   ins->block()->discard(ins);
 }
 
-void ObjectMemoryView::visitLoadSlot(MLoadSlot* ins) {
+void ObjectMemoryView::visitLoadDynamicSlot(MLoadDynamicSlot* ins) {
   // Skip loads made on other objects.
   MSlots* slots = ins->slots()->toSlots();
   if (slots->object() != obj_) {
@@ -602,7 +603,7 @@ void ObjectMemoryView::visitLoadSlot(MLoadSlot* ins) {
   } else {
     // UnsafeGetReserveSlot can access baked-in slots which are guarded by
     // conditions, which are not seen by the escape analysis.
-    MBail* bailout = MBail::New(alloc_, Bailout_Inevitable);
+    MBail* bailout = MBail::New(alloc_, BailoutKind::Inevitable);
     ins->block()->insertBefore(ins, bailout);
     ins->replaceAllUsesWith(undefinedVal_);
   }
@@ -712,7 +713,7 @@ static bool IndexOf(MDefinition* ins, int32_t* res) {
 // Returns False if the elements is not escaped and if it is optimizable by
 // ScalarReplacementOfArray.
 static bool IsElementEscaped(MDefinition* def, uint32_t arraySize) {
-  MOZ_ASSERT(def->isElements() || def->isConvertElementsToDoubles());
+  MOZ_ASSERT(def->isElements());
 
   JitSpewDef(JitSpew_Escape, "Check elements\n", def);
   JitSpewIndent spewIndent(JitSpew_Escape);
@@ -754,41 +755,39 @@ static bool IsElementEscaped(MDefinition* def, uint32_t arraySize) {
       }
 
       case MDefinition::Opcode::StoreElement: {
-        MOZ_ASSERT(access->toStoreElement()->elements() == def);
+        MStoreElement* storeElem = access->toStoreElement();
+        MOZ_ASSERT(storeElem->elements() == def);
 
         // If we need hole checks, then the array cannot be escaped
         // as the array might refer to the prototype chain to look
         // for properties, thus it might do additional side-effects
         // which are not reflected by the alias set, is we are
         // bailing on holes.
-        if (access->toStoreElement()->needsHoleCheck()) {
+        if (storeElem->needsHoleCheck()) {
           JitSpewDef(JitSpew_Escape, "has a store element with a hole check\n",
-                     access);
+                     storeElem);
           return true;
         }
 
         // If the index is not a constant then this index can alias
         // all others. We do not handle this case.
         int32_t index;
-        if (!IndexOf(access, &index)) {
+        if (!IndexOf(storeElem, &index)) {
           JitSpewDef(JitSpew_Escape,
-                     "has a store element with a non-trivial index\n", access);
+                     "has a store element with a non-trivial index\n",
+                     storeElem);
           return true;
         }
         if (index < 0 || arraySize <= uint32_t(index)) {
           JitSpewDef(JitSpew_Escape,
                      "has a store element with an out-of-bound index\n",
-                     access);
+                     storeElem);
           return true;
         }
 
-        // We are not yet encoding magic hole constants in resume points.
-        if (access->toStoreElement()->value()->type() == MIRType::MagicHole) {
-          JitSpewDef(JitSpew_Escape,
-                     "has a store element with an magic-hole constant\n",
-                     access);
-          return true;
-        }
+        // Dense element holes are written using MStoreHoleValueElement instead
+        // of MStoreElement.
+        MOZ_ASSERT(storeElem->value()->type() != MIRType::MagicHole);
         break;
       }
 
@@ -804,14 +803,6 @@ static bool IsElementEscaped(MDefinition* def, uint32_t arraySize) {
         MOZ_ASSERT(access->toArrayLength()->elements() == def);
         break;
 
-      case MDefinition::Opcode::ConvertElementsToDoubles:
-        MOZ_ASSERT(access->toConvertElementsToDoubles()->elements() == def);
-        if (IsElementEscaped(access, arraySize)) {
-          JitSpewDef(JitSpew_Escape, "is indirectly escaped by\n", access);
-          return true;
-        }
-        break;
-
       default:
         JitSpewDef(JitSpew_Escape, "is escaped by\n", access);
         return true;
@@ -822,7 +813,7 @@ static bool IsElementEscaped(MDefinition* def, uint32_t arraySize) {
 }
 
 static inline bool IsOptimizableArrayInstruction(MInstruction* ins) {
-  return ins->isNewArray() || ins->isNewArrayCopyOnWrite();
+  return ins->isNewArray();
 }
 
 // Returns False if the array is not escaped and if it is optimizable by
@@ -832,24 +823,18 @@ static inline bool IsOptimizableArrayInstruction(MInstruction* ins) {
 // changing length, with only access with known constants.
 static bool IsArrayEscaped(MInstruction* ins, MInstruction* newArray) {
   MOZ_ASSERT(ins->type() == MIRType::Object);
-  MOZ_ASSERT(IsOptimizableArrayInstruction(ins) ||
-             ins->isMaybeCopyElementsForWrite());
+  MOZ_ASSERT(IsOptimizableArrayInstruction(ins));
   MOZ_ASSERT(IsOptimizableArrayInstruction(newArray));
 
   JitSpewDef(JitSpew_Escape, "Check array\n", ins);
   JitSpewIndent spewIndent(JitSpew_Escape);
 
-  uint32_t length;
-  if (newArray->isNewArray()) {
-    if (!newArray->toNewArray()->templateObject()) {
-      JitSpew(JitSpew_Escape, "No template object defined.");
-      return true;
-    }
-
-    length = newArray->toNewArray()->length();
-  } else {
-    length = newArray->toNewArrayCopyOnWrite()->templateObject()->length();
+  if (!newArray->toNewArray()->templateObject()) {
+    JitSpew(JitSpew_Escape, "No template object defined.");
+    return true;
   }
+
+  uint32_t length = newArray->toNewArray()->length();
 
   if (length >= 16) {
     JitSpew(JitSpew_Escape, "Array has too many elements");
@@ -880,16 +865,6 @@ static bool IsArrayEscaped(MInstruction* ins, MInstruction* newArray) {
           return true;
         }
 
-        break;
-      }
-
-      case MDefinition::Opcode::MaybeCopyElementsForWrite: {
-        MMaybeCopyElementsForWrite* copied = def->toMaybeCopyElementsForWrite();
-        MOZ_ASSERT(copied->object() == ins);
-        if (IsArrayEscaped(copied, ins)) {
-          JitSpewDef(JitSpew_Escape, "is indirectly escaped by\n", copied);
-          return true;
-        }
         break;
       }
 
@@ -962,8 +937,6 @@ class ArrayMemoryView : public MDefinitionVisitorDefaultNoop {
   void visitSetInitializedLength(MSetInitializedLength* ins);
   void visitInitializedLength(MInitializedLength* ins);
   void visitArrayLength(MArrayLength* ins);
-  void visitMaybeCopyElementsForWrite(MMaybeCopyElementsForWrite* ins);
-  void visitConvertElementsToDoubles(MConvertElementsToDoubles* ins);
 };
 
 const char* ArrayMemoryView::phaseName = "Scalar Replacement of Array";
@@ -990,10 +963,7 @@ MBasicBlock* ArrayMemoryView::startingBlock() { return startBlock_; }
 bool ArrayMemoryView::initStartingState(BlockState** pState) {
   // Uninitialized elements have an "undefined" value.
   undefinedVal_ = MConstant::New(alloc_, UndefinedValue());
-  MConstant* initLength = MConstant::New(
-      alloc_, Int32Value(arr_->isNewArrayCopyOnWrite()
-                             ? arr_->toNewArrayCopyOnWrite()->length()
-                             : 0));
+  MConstant* initLength = MConstant::New(alloc_, Int32Value(0));
   arr_->block()->insertBefore(arr_, undefinedVal_);
   arr_->block()->insertBefore(arr_, initLength);
 
@@ -1236,47 +1206,6 @@ void ArrayMemoryView::visitArrayLength(MArrayLength* ins) {
 
   // Remove original instruction.
   discardInstruction(ins, elements);
-}
-
-void ArrayMemoryView::visitMaybeCopyElementsForWrite(
-    MMaybeCopyElementsForWrite* ins) {
-  MOZ_ASSERT(ins->numOperands() == 1);
-  MOZ_ASSERT(ins->type() == MIRType::Object);
-
-  // Skip guards on other objects.
-  if (ins->object() != arr_) {
-    return;
-  }
-
-  // Nothing to do here: RArrayState::recover will copy the elements if
-  // needed.
-
-  // Replace the guard with the array.
-  ins->replaceAllUsesWith(arr_);
-
-  // Remove original instruction.
-  ins->block()->discard(ins);
-}
-
-void ArrayMemoryView::visitConvertElementsToDoubles(
-    MConvertElementsToDoubles* ins) {
-  MOZ_ASSERT(ins->numOperands() == 1);
-  MOZ_ASSERT(ins->type() == MIRType::Elements);
-
-  // Skip other array objects.
-  MDefinition* elements = ins->elements();
-  if (!isArrayStateElements(elements)) {
-    return;
-  }
-
-  // We don't have to do anything else here: MConvertElementsToDoubles just
-  // exists to allow MLoadELement to use masm.loadDouble (without checking
-  // for int32 elements), but since we're using scalar replacement for the
-  // elements that doesn't matter.
-  ins->replaceAllUsesWith(elements);
-
-  // Remove original instruction.
-  ins->block()->discard(ins);
 }
 
 bool ScalarReplacement(MIRGenerator* mir, MIRGraph& graph) {

@@ -29,7 +29,6 @@
 #include "mozilla/StyleAnimationValue.h"
 #include "mozilla/dom/AnimationEffect.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/Element.h"
 
 struct JSContext;
 class JSObject;
@@ -47,6 +46,7 @@ class ComputedStyle;
 class PresShell;
 
 namespace dom {
+class Element;
 class GlobalObject;
 class UnrestrictedDoubleOrKeyframeAnimationOptions;
 class UnrestrictedDoubleOrKeyframeEffectOptions;
@@ -77,10 +77,10 @@ struct AnimationProperty {
   // mPerformanceWarning.
   AnimationProperty() = default;
   AnimationProperty(const AnimationProperty& aOther)
-      : mProperty(aOther.mProperty), mSegments(aOther.mSegments) {}
+      : mProperty(aOther.mProperty), mSegments(aOther.mSegments.Clone()) {}
   AnimationProperty& operator=(const AnimationProperty& aOther) {
     mProperty = aOther.mProperty;
-    mSegments = aOther.mSegments;
+    mSegments = aOther.mSegments.Clone();
     return *this;
   }
 
@@ -111,6 +111,9 @@ class KeyframeEffect : public AnimationEffect {
   KeyframeEffect(Document* aDocument, OwningAnimationTarget&& aTarget,
                  TimingParams&& aTiming, const KeyframeEffectParams& aOptions);
 
+  KeyframeEffect(Document* aDocument, OwningAnimationTarget&& aTarget,
+                 const KeyframeEffect& aOther);
+
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(KeyframeEffect,
                                                          AnimationEffect)
@@ -139,10 +142,7 @@ class KeyframeEffect : public AnimationEffect {
       const UnrestrictedDoubleOrKeyframeAnimationOptions& aOptions,
       ErrorResult& aRv);
 
-  already_AddRefed<Element> GetTarget() const {
-    RefPtr<Element> ret = mTarget.mElement;
-    return ret.forget();
-  }
+  Element* GetTarget() const { return mTarget.mElement.get(); }
   NonOwningAnimationTarget GetAnimationTarget() const {
     return NonOwningAnimationTarget(mTarget.mElement, mTarget.mPseudoType);
   }
@@ -270,6 +270,8 @@ class KeyframeEffect : public AnimationEffect {
   void SetIsRunningOnCompositor(const nsCSSPropertyIDSet& aPropertySet,
                                 bool aIsRunning);
   void ResetIsRunningOnCompositor();
+
+  void ResetPartialPrerendered();
 
   // Returns true if this effect, applied to |aFrame|, contains properties
   // that mean we shouldn't run transform compositor animations on this element.
@@ -454,7 +456,7 @@ class KeyframeEffect : public AnimationEffect {
   BaseValuesHashmap mBaseValues;
 
  private:
-  nsChangeHint mCumulativeChangeHint;
+  nsChangeHint mCumulativeChangeHint = nsChangeHint{0};
 
   void ComposeStyleRule(RawServoAnimationValueMap& aAnimationValues,
                         const AnimationProperty& aProperty,

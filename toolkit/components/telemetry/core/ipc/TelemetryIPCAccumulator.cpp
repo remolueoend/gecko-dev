@@ -232,9 +232,9 @@ void TelemetryIPCAccumulator::RecordChildEvent(
   }
 
   // Store the event.
-  gChildEvents->AppendElement(ChildEventData{
-      timestamp, nsCString(category), nsCString(method), nsCString(object),
-      value, nsTArray<mozilla::Telemetry::EventExtraEntry>(extra)});
+  gChildEvents->AppendElement(
+      ChildEventData{timestamp, nsCString(category), nsCString(method),
+                     nsCString(object), value, extra.Clone()});
   ArmIPCTimer(locker);
 }
 
@@ -254,19 +254,19 @@ static void SendAccumulatedData(TActor* ipcActor) {
   {
     StaticMutexAutoLock locker(gTelemetryIPCAccumulatorMutex);
     if (gHistogramAccumulations) {
-      histogramsToSend.SwapElements(*gHistogramAccumulations);
+      histogramsToSend = std::move(*gHistogramAccumulations);
     }
     if (gKeyedHistogramAccumulations) {
-      keyedHistogramsToSend.SwapElements(*gKeyedHistogramAccumulations);
+      keyedHistogramsToSend = std::move(*gKeyedHistogramAccumulations);
     }
     if (gChildScalarsActions) {
-      scalarsToSend.SwapElements(*gChildScalarsActions);
+      scalarsToSend = std::move(*gChildScalarsActions);
     }
     if (gChildKeyedScalarsActions) {
-      keyedScalarsToSend.SwapElements(*gChildKeyedScalarsActions);
+      keyedScalarsToSend = std::move(*gChildKeyedScalarsActions);
     }
     if (gChildEvents) {
-      eventsToSend.SwapElements(*gChildEvents);
+      eventsToSend = std::move(*gChildEvents);
     }
     discardedData = gDiscardedData;
     gDiscardedData = {0};
@@ -341,6 +341,5 @@ void TelemetryIPCAccumulator::DeInitializeGlobalState() {
 
 void TelemetryIPCAccumulator::DispatchToMainThread(
     already_AddRefed<nsIRunnable>&& aEvent) {
-  SchedulerGroup::Dispatch(TaskCategory::Other,
-      std::move(aEvent));
+  SchedulerGroup::Dispatch(TaskCategory::Other, std::move(aEvent));
 }

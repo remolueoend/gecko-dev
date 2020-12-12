@@ -143,13 +143,16 @@
         `url(${this.getAttribute("ac-image")})`
       );
 
-      let { primaryAffix, primary, secondary } = JSON.parse(
+      let { primaryAffix, primary, secondary, ariaLabel } = JSON.parse(
         this.getAttribute("ac-value")
       );
 
       this._labelAffix.textContent = primaryAffix;
       this._label.textContent = primary;
       this._comment.textContent = secondary;
+      if (ariaLabel) {
+        this.setAttribute("aria-label", ariaLabel);
+      }
     }
   };
 
@@ -280,12 +283,20 @@
         "resource://gre/modules/AppConstants.jsm",
         {}
       );
-      // TODO: The "Short" suffix is pointless now as normal version string is no longer needed,
-      // we should consider removing the suffix if possible when the next time locale change.
-      let buttonTextBundleKey =
-        AppConstants.platform == "macosx"
-          ? "autocompleteFooterOptionOSXShort"
-          : "autocompleteFooterOptionShort";
+
+      let buttonTextBundleKey;
+      if (this._itemBox.getAttribute("size") == "small") {
+        buttonTextBundleKey =
+          AppConstants.platform == "macosx"
+            ? "autocompleteFooterOptionOSXShort2"
+            : "autocompleteFooterOptionShort2";
+      } else {
+        buttonTextBundleKey =
+          AppConstants.platform == "macosx"
+            ? "autocompleteFooterOptionOSX2"
+            : "autocompleteFooterOption2";
+      }
+
       let buttonText = this._stringBundle.GetStringFromName(
         buttonTextBundleKey
       );

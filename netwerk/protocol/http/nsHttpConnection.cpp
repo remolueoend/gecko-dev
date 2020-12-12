@@ -17,11 +17,6 @@
 #define TLS_EARLY_DATA_AVAILABLE_BUT_NOT_USED 1
 #define TLS_EARLY_DATA_AVAILABLE_AND_USED 2
 
-#define ESNI_SUCCESSFUL 0
-#define ESNI_FAILED 1
-#define NO_ESNI_SUCCESSFUL 2
-#define NO_ESNI_FAILED 3
-
 #include "ASpdySession.h"
 #include "mozilla/ChaosMode.h"
 #include "mozilla/Telemetry.h"
@@ -443,8 +438,6 @@ bool nsHttpConnection::EnsureNPNComplete(nsresult& aOut0RTTWriteHandshakeValue,
   nsCOMPtr<nsITransportSecurityInfo> info;
   nsCOMPtr<nsISSLSocketControl> ssl;
   nsAutoCString negotiatedNPN;
-  // This is neede for telemetry
-  bool handshakeSucceeded = false;
 
   GetSecurityInfo(getter_AddRefs(securityInfo));
   if (!securityInfo) {
@@ -560,8 +553,6 @@ bool nsHttpConnection::EnsureNPNComplete(nsresult& aOut0RTTWriteHandshakeValue,
     LOG1(("nsHttpConnection::EnsureNPNComplete %p [%s] negotiated to '%s'%s\n",
           this, mConnInfo->HashKey().get(), negotiatedNPN.get(),
           mTLSFilter ? " [Double Tunnel]" : ""));
-
-    handshakeSucceeded = true;
 
     int16_t tlsVersion;
     ssl->GetSSLVersionUsed(&tlsVersion);
@@ -699,19 +690,6 @@ npnComplete:
     // We have to reset this here, just in case we end up starting spdy again,
     // so it can actually do everything it needs to do.
     mDid0RTTSpdy = false;
-  }
-
-  if (ssl) {
-    // Telemetry for tls failure rate with and without esni;
-    bool esni = false;
-    rv = mSocketTransport->GetEsniUsed(&esni);
-    if (NS_SUCCEEDED(rv)) {
-      Telemetry::Accumulate(
-          Telemetry::ESNI_NOESNI_TLS_SUCCESS_RATE,
-          (esni)
-              ? ((handshakeSucceeded) ? ESNI_SUCCESSFUL : ESNI_FAILED)
-              : ((handshakeSucceeded) ? NO_ESNI_SUCCESSFUL : NO_ESNI_FAILED));
-    }
   }
 
   if (rv == psm::GetXPCOMFromNSSError(
@@ -926,7 +904,7 @@ nsresult nsHttpConnection::SetupNPNList(nsISSLSocketControl* ssl,
     // For NPN, In the case of overlap, matching priority is driven by
     // the order of the server's advertisement - with index 0 used when
     // there is no match.
-    protocolArray.AppendElement(NS_LITERAL_CSTRING("http/1.1"));
+    protocolArray.AppendElement("http/1.1"_ns);
 
     if (gHttpHandler->IsSpdyEnabled() && !(caps & NS_HTTP_DISALLOW_SPDY)) {
       LOG(("nsHttpConnection::SetupSSL Allow SPDY NPN selection"));
@@ -980,7 +958,7 @@ nsresult nsHttpConnection::AddTransaction(nsAHttpTransaction* httpTransaction,
     MOZ_ASSERT(!isWebsocket || !needTunnel, "Websocket and tunnel?!");
   }
 
-  LOG(("nsHttpConnection::AddTransaction for %s%s",
+  LOG(("nsHttpConnection::AddTransaction [this=%p] for %s%s", this,
        mSpdySession ? "SPDY" : "QUIC",
        needTunnel ? " over tunnel" : (isWebsocket ? " websocket" : "")));
 
@@ -1247,8 +1225,8 @@ nsresult nsHttpConnection::OnHeadersAvailable(nsAHttpTransaction* trans,
   MOZ_ASSERT(responseHead, "No response head?");
 
   if (mInSpdyTunnel) {
-    DebugOnly<nsresult> rv = responseHead->SetHeader(
-        nsHttp::X_Firefox_Spdy_Proxy, NS_LITERAL_CSTRING("true"));
+    DebugOnly<nsresult> rv =
+        responseHead->SetHeader(nsHttp::X_Firefox_Spdy_Proxy, "true"_ns);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 
@@ -2237,7 +2215,7 @@ nsresult nsHttpConnection::MakeConnectString(nsAHttpTransaction* trans,
   MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   // CONNECT host:port HTTP/1.1
-  request->SetMethod(NS_LITERAL_CSTRING("CONNECT"));
+  request->SetMethod("CONNECT"_ns);
   request->SetVersion(gHttpHandler->HttpVersion());
   if (h2ws) {
     // HTTP/2 websocket CONNECT forms need the full request URI
@@ -2253,10 +2231,9 @@ nsresult nsHttpConnection::MakeConnectString(nsAHttpTransaction* trans,
   MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   // a CONNECT is always persistent
-  rv = request->SetHeader(nsHttp::Proxy_Connection,
-                          NS_LITERAL_CSTRING("keep-alive"));
+  rv = request->SetHeader(nsHttp::Proxy_Connection, "keep-alive"_ns);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
-  rv = request->SetHeader(nsHttp::Connection, NS_LITERAL_CSTRING("keep-alive"));
+  rv = request->SetHeader(nsHttp::Connection, "keep-alive"_ns);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
 
   // all HTTP/1.1 requests must include a Host header (even though it
@@ -2279,7 +2256,7 @@ nsresult nsHttpConnection::MakeConnectString(nsAHttpTransaction* trans,
     // in CONNECT when not used for TLS. The protocol is stored in Upgrade.
     // We have to copy this header here since a new HEAD request is created
     // for the CONNECT.
-    rv = request->SetHeader(NS_LITERAL_CSTRING("ALPN"), val);
+    rv = request->SetHeader("ALPN"_ns, val);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 

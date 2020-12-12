@@ -8,6 +8,14 @@ const TEST_PATH =
   "http://example.com/browser/devtools/client/webconsole/" + "test/browser/";
 const TEST_URI = TEST_PATH + TEST_FILE;
 
+registerCleanupFunction(async function() {
+  await new Promise(resolve => {
+    Services.clearData.deleteData(Ci.nsIClearDataService.CLEAR_ALL, value =>
+      resolve()
+    );
+  });
+});
+
 add_task(async function task() {
   await pushPref("devtools.webconsole.filter.net", false);
   await pushPref("devtools.webconsole.filter.netxhr", true);
@@ -16,9 +24,9 @@ add_task(async function task() {
   const currentTab = gBrowser.selectedTab;
   const target = await TargetFactory.forTab(currentTab);
   const toolbox = gDevTools.getToolbox(target);
+  const panel = toolbox.getCurrentPanel().panelWin;
 
-  const monitor = toolbox.getCurrentPanel();
-  const netReady = monitor.panelWin.api.once("NetMonitor:PayloadReady");
+  const netReady = panel.api.once("NetMonitor:PayloadReady");
 
   // Fire an XHR POST request.
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], function() {
@@ -38,14 +46,15 @@ add_task(async function task() {
   const urlNode = messageNode.querySelector(".url");
   info("Network message found.");
 
-  const consoleReady = hud.ui.once("network-request-payload-ready");
+  const onReady = hud.ui.once("network-request-payload-ready");
 
   // Expand network log
   urlNode.click();
 
-  await consoleReady;
+  await onReady;
 
   info("network-request-payload-ready received");
+
   await testNetworkMessage(messageNode);
   await waitForLazyRequests(toolbox);
 });

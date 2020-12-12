@@ -4,6 +4,7 @@
 
 #include "AudioFocusManager.h"
 
+#include "MediaController.h"
 #include "MediaControlUtils.h"
 #include "MediaControlService.h"
 #include "mozilla/dom/CanonicalBrowsingContext.h"
@@ -15,10 +16,9 @@
   MOZ_LOG(gMediaControlLog, LogLevel::Debug, \
           ("AudioFocusManager=%p, " msg, this, ##__VA_ARGS__))
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
-void AudioFocusManager::RequestAudioFocus(MediaController* aController) {
+void AudioFocusManager::RequestAudioFocus(IMediaController* aController) {
   MOZ_ASSERT(aController);
   if (mOwningFocusControllers.Contains(aController)) {
     return;
@@ -28,7 +28,7 @@ void AudioFocusManager::RequestAudioFocus(MediaController* aController) {
   mOwningFocusControllers.AppendElement(aController);
 }
 
-void AudioFocusManager::RevokeAudioFocus(MediaController* aController) {
+void AudioFocusManager::RevokeAudioFocus(IMediaController* aController) {
   MOZ_ASSERT(aController);
   if (!mOwningFocusControllers.Contains(aController)) {
     return;
@@ -56,5 +56,4 @@ uint32_t AudioFocusManager::GetAudioFocusNums() const {
   return mOwningFocusControllers.Length();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

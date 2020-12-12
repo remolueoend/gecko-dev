@@ -1,9 +1,5 @@
 // # Bug 418986, part 2.
 
-/* jshint esnext:true */
-/* jshint loopfunc:true */
-/* global window, screen, ok, SpecialPowers, matchMedia */
-
 const is_chrome_window = window.location.protocol === "chrome:";
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
@@ -74,10 +70,6 @@ var suppressed_toggles = [
 ];
 
 var toggles_enabled_in_content = [];
-if (SpecialPowers.getBoolPref("layout.css.moz-touch-enabled.enabled")) {
-  suppressed_toggles.push("-moz-touch-enabled");
-  toggles_enabled_in_content.push("-moz-touch-enabled");
-}
 
 // Possible values for '-moz-os-version'
 var windows_versions = ["windows-win7", "windows-win8", "windows-win10"];

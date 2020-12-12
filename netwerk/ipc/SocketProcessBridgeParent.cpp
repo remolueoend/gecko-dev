@@ -7,6 +7,7 @@
 #include "SocketProcessLogging.h"
 
 #include "mozilla/ipc/BackgroundParent.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "SocketProcessChild.h"
 
 namespace mozilla {
@@ -49,7 +50,7 @@ void SocketProcessBridgeParent::ActorDestroy(ActorDestroyReason aWhy) {
   LOG(("SocketProcessBridgeParent::ActorDestroy mId=%d\n", mId));
 
   mClosed = true;
-  MessageLoop::current()->PostTask(
+  GetCurrentSerialEventTarget()->Dispatch(
       NewRunnableMethod("net::SocketProcessBridgeParent::DeferredDestroy", this,
                         &SocketProcessBridgeParent::DeferredDestroy));
 }

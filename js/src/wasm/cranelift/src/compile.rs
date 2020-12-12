@@ -18,11 +18,13 @@
 //! This module defines the `compile()` function which uses Cranelift to compile a single
 //! WebAssembly function.
 
+use log::{debug, info};
 use std::fmt;
 use std::mem;
+use std::rc::Rc;
 
 use cranelift_codegen::binemit::{
-    Addend, CodeInfo, CodeOffset, NullStackmapSink, Reloc, RelocSink, Stackmap, TrapSink,
+    Addend, CodeInfo, CodeOffset, NullStackMapSink, Reloc, RelocSink, TrapSink,
 };
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::{
@@ -30,12 +32,14 @@ use cranelift_codegen::ir::{
     TrapCode,
 };
 use cranelift_codegen::isa::TargetIsa;
+use cranelift_codegen::machinst::MachStackMap;
 use cranelift_codegen::CodegenResult;
 use cranelift_codegen::Context;
-use cranelift_wasm::{FuncIndex, FuncTranslator, ModuleTranslationState, WasmResult};
+use cranelift_wasm::wasmparser::{FuncValidator, WasmFeatures};
+use cranelift_wasm::{FuncIndex, FuncTranslator, WasmResult};
 
 use crate::bindings;
-use crate::isa::{make_isa, POINTER_SIZE};
+use crate::isa::make_isa;
 use crate::utils::DashResult;
 use crate::wasm2clif::{init_sig, TransEnv, TRAP_THROW_REPORTED};
 
@@ -89,13 +93,14 @@ impl CompiledFunc {
 /// compilations.
 pub struct BatchCompiler<'static_env, 'module_env> {
     // Attributes that are constant accross multiple compilations.
-    static_environ: &'static_env bindings::StaticEnvironment,
-    environ: bindings::ModuleEnvironment<'module_env>,
+    static_env: &'static_env bindings::StaticEnvironment,
+
+    module_env: Rc<bindings::ModuleEnvironment<'module_env>>,
+
     isa: Box<dyn TargetIsa>,
 
     // Stateless attributes.
     func_translator: FuncTranslator,
-    dummy_module_state: ModuleTranslationState,
 
     // Mutable attributes.
     /// Cranelift overall context.
@@ -113,18 +118,17 @@ pub struct BatchCompiler<'static_env, 'module_env> {
 
 impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
     pub fn new(
-        static_environ: &'static_env bindings::StaticEnvironment,
-        environ: bindings::ModuleEnvironment<'module_env>,
+        static_env: &'static_env bindings::StaticEnvironment,
+        module_env: bindings::ModuleEnvironment<'module_env>,
     ) -> DashResult<Self> {
-        let isa = make_isa(static_environ)?;
-        let trans_env = TransEnv::new(&*isa, environ, static_environ);
+        let isa = make_isa(static_env)?;
+        let module_env = Rc::new(module_env);
+        let trans_env = TransEnv::new(&*isa, module_env.clone(), static_env);
         Ok(BatchCompiler {
-            static_environ,
-            environ,
+            static_env,
+            module_env,
             isa,
             func_translator: FuncTranslator::new(),
-            // TODO for Cranelift to support multi-value, feed it the real type section here.
-            dummy_module_state: ModuleTranslationState::new(),
             context: Context::new(),
             trap_relocs: Traps::new(),
             trans_env,
@@ -141,9 +145,12 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
     }
 
     pub fn compile(&mut self, stackmaps: bindings::Stackmaps) -> CodegenResult<()> {
+        debug!("=== BatchCompiler::compile: BEGIN ==============================");
         let info = self.context.compile(&*self.isa)?;
-        debug!("Optimized wasm function IR: {}", self);
-        self.binemit(info, stackmaps)
+        let res = self.binemit(info, stackmaps);
+        debug!("=== BatchCompiler::compile: END ================================");
+        debug!("");
+        res
     }
 
     /// Translate the WebAssembly code to Cranelift IR.
@@ -153,11 +160,27 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
         let index = FuncIndex::new(func.index as usize);
 
         self.context.func.signature =
-            init_sig(&self.environ, self.static_environ.call_conv(), index)?;
+            init_sig(&*self.module_env, self.static_env.call_conv(), index)?;
         self.context.func.name = wasm_function_name(index);
 
+        let features = WasmFeatures {
+            reference_types: self.static_env.ref_types_enabled,
+            module_linking: false,
+            simd: self.static_env.v128_enabled,
+            multi_value: true,
+            threads: self.static_env.threads_enabled,
+            tail_call: false,
+            bulk_memory: true,
+            deterministic_only: true,
+            memory64: false,
+            multi_memory: false,
+        };
+        let sig_index = self.module_env.func_sig_index(index);
+        let mut validator =
+            FuncValidator::new(sig_index.index() as u32, 0, &*self.module_env, &features)?;
+
         self.func_translator.translate(
-            &self.dummy_module_state,
+            &mut validator,
             func.bytecode(),
             func.offset_in_module as usize,
             &mut self.context.func,
@@ -176,7 +199,7 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
         let contains_calls = self.contains_calls();
 
         info!(
-            "Emitting {} bytes, frame_pushed={}\n.",
+            "Emitting {} bytes, frame_pushed={}.",
             total_size, frame_pushed
         );
 
@@ -210,7 +233,7 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
                     code_buffer.as_mut_ptr(),
                     &mut relocs,
                     &mut self.trap_relocs,
-                    &mut NullStackmapSink {},
+                    &mut NullStackMapSink {},
                 )
             };
 
@@ -219,7 +242,7 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
                 .append(&mut self.trap_relocs.metadata);
         }
 
-        if self.static_environ.ref_types_enabled {
+        if self.static_env.ref_types_enabled {
             self.emit_stackmaps(stackmaps);
         }
 
@@ -230,28 +253,22 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
         Ok(())
     }
 
-    /// Iterate over each instruction to generate a stack map for each instruction that needs it.
-    ///
-    /// Note a stackmap is associated to the address of the next instruction following the actual
-    /// instruction needing the stack map. This is because this is the only information
-    /// Spidermonkey has access to when it looks up a stack map (during stack frame iteration).
+    /// Iterate over safepoint information contained in the returned `MachBufferFinalized`.
     fn emit_stackmaps(&self, mut stackmaps: bindings::Stackmaps) {
-        let encinfo = self.isa.encoding_info();
-        let func = &self.context.func;
-        let stack_slots = &func.stack_slots;
-        for block in func.layout.blocks() {
-            let mut pending_safepoint = None;
-            for (offset, inst, inst_size) in func.inst_offsets(block, &encinfo) {
-                if let Some(stackmap) = pending_safepoint.take() {
-                    stackmaps.add_stackmap(stack_slots, offset + inst_size, stackmap);
-                }
-                if func.dfg[inst].opcode() == ir::Opcode::Safepoint {
-                    let args = func.dfg.inst_args(inst);
-                    let stackmap = Stackmap::from_values(&args, func, &*self.isa);
-                    pending_safepoint = Some(stackmap);
-                }
-            }
-            debug_assert!(pending_safepoint.is_none());
+        let mach_buf = &self.context.mach_compile_result.as_ref().unwrap().buffer;
+        let mach_stackmaps = mach_buf.stack_maps();
+
+        for &MachStackMap {
+            offset_end,
+            ref stack_map,
+            ..
+        } in mach_stackmaps
+        {
+            debug!(
+                "Stack map at end-of-insn offset {}: {:?}",
+                offset_end, stack_map
+            );
+            stackmaps.add_stackmap(/* inbound_args_size = */ 0, offset_end, stack_map);
         }
     }
 
@@ -263,13 +280,14 @@ impl<'static_env, 'module_env> BatchCompiler<'static_env, 'module_env> {
         // standard SM prologue pushes, and its own stack slots.
         let total = self
             .context
-            .func
-            .stack_slots
-            .layout_info
-            .expect("No frame")
+            .mach_compile_result
+            .as_ref()
+            .expect("always use Mach backend")
             .frame_size;
+
         let sm_pushed = StackSize::from(self.isa.flags().baldrdash_prologue_words())
             * mem::size_of::<usize>() as StackSize;
+
         total
             .checked_sub(sm_pushed)
             .expect("SpiderMonkey prologue pushes not counted")
@@ -323,11 +341,6 @@ impl<'a> Relocations<'a> {
 }
 
 impl<'a> RelocSink for Relocations<'a> {
-    /// Add a relocation referencing a block at the current offset.
-    fn reloc_block(&mut self, _at: CodeOffset, _reloc: Reloc, _block_offset: CodeOffset) {
-        unimplemented!("block relocations NYI");
-    }
-
     /// Add a relocation referencing an external symbol at the current offset.
     fn reloc_external(
         &mut self,
@@ -345,16 +358,33 @@ impl<'a> RelocSink for Relocations<'a> {
                 index,
             } => {
                 // A simple function call to another wasm function.
-                let payload_size = match reloc {
-                    Reloc::X86CallPCRel4 => 4,
-                    _ => panic!("unhandled call relocation"),
-                };
-
                 let func_index = FuncIndex::new(index as usize);
 
-                // The Spidermonkey relocation must point to the next instruction. Cranelift gives
-                // us the exact offset to the immediate, so fix it up by the relocation's size.
-                let offset = at + payload_size;
+                // On x86, the Spidermonkey relocation must point to the next instruction.
+                // Cranelift gives us the exact offset to the immediate, so fix it up by the
+                // relocation's size.
+                #[cfg(feature = "cranelift_x86")]
+                let offset = at
+                    + match reloc {
+                        Reloc::X86CallPCRel4 => 4,
+                        _ => unreachable!(),
+                    };
+
+                // Spidermonkey Aarch64 requires the relocation to point just after the start of
+                // the actual relocation, for historical reasons.
+                #[cfg(feature = "cranelift_arm64")]
+                let offset = match reloc {
+                    Reloc::Arm64Call => at + 4,
+                    _ => unreachable!(),
+                };
+
+                #[cfg(not(any(feature = "cranelift_x86", feature = "cranelift_arm64")))]
+                let offset = {
+                    // Avoid warning about unused relocation.
+                    let _reloc = reloc;
+                    at
+                };
+
                 self.metadata.push(bindings::MetadataEntry::direct_call(
                     offset, srcloc, func_index,
                 ));
@@ -364,33 +394,33 @@ impl<'a> RelocSink for Relocations<'a> {
                 namespace: SYMBOLIC_FUNCTION_NAMESPACE,
                 index,
             } => {
-                let payload_size = match reloc {
-                    Reloc::Abs8 => {
-                        debug_assert_eq!(POINTER_SIZE, 8);
-                        8
-                    }
-                    _ => panic!("unhandled user-space symbolic call relocation"),
-                };
-
                 // This is a symbolic function reference encoded by `symbolic_function_name()`.
                 let sym = index.into();
 
-                // The Spidermonkey relocation must point to the next instruction.
-                let offset = at + payload_size;
+                // See comments about offsets in the User match arm above.
+
+                #[cfg(feature = "cranelift_x86")]
+                let offset = at
+                    + match reloc {
+                        Reloc::Abs8 => 8,
+                        _ => unreachable!(),
+                    };
+
+                #[cfg(feature = "cranelift_arm64")]
+                let offset = match reloc {
+                    Reloc::Abs8 => at + 4,
+                    _ => unreachable!(),
+                };
+
+                #[cfg(not(any(feature = "cranelift_x86", feature = "cranelift_arm64")))]
+                let offset = at;
+
                 self.metadata.push(bindings::MetadataEntry::symbolic_access(
                     offset, srcloc, sym,
                 ));
             }
 
             ExternalName::LibCall(call) => {
-                let payload_size = match reloc {
-                    Reloc::Abs8 => {
-                        debug_assert_eq!(POINTER_SIZE, 8);
-                        8
-                    }
-                    _ => panic!("unhandled libcall symbolic call relocation"),
-                };
-
                 let sym = match call {
                     ir::LibCall::CeilF32 => bindings::SymbolicAddress::CeilF32,
                     ir::LibCall::CeilF64 => bindings::SymbolicAddress::CeilF64,
@@ -405,8 +435,24 @@ impl<'a> RelocSink for Relocations<'a> {
                     }
                 };
 
-                // The Spidermonkey relocation must point to the next instruction.
-                let offset = at + payload_size;
+                // The Spidermonkey relocation must point to the next instruction, on x86.
+                #[cfg(feature = "cranelift_x86")]
+                let offset = at
+                    + match reloc {
+                        Reloc::Abs8 => 8,
+                        _ => unreachable!(),
+                    };
+
+                // Spidermonkey AArch64 doesn't expect a relocation offset, in this case.
+                #[cfg(feature = "cranelift_arm64")]
+                let offset = match reloc {
+                    Reloc::Abs8 => at,
+                    _ => unreachable!(),
+                };
+
+                #[cfg(not(any(feature = "cranelift_x86", feature = "cranelift_arm64")))]
+                let offset = at;
+
                 self.metadata.push(bindings::MetadataEntry::symbolic_access(
                     offset, srcloc, sym,
                 ));
@@ -472,7 +518,8 @@ impl TrapSink for Traps {
                 // entries, so we don't have to.
                 return;
             }
-            HeapOutOfBounds | OutOfBounds | TableOutOfBounds => bindings::Trap::OutOfBounds,
+            HeapOutOfBounds | TableOutOfBounds => bindings::Trap::OutOfBounds,
+            HeapMisaligned => bindings::Trap::UnalignedAccess,
             IndirectCallToNull => bindings::Trap::IndirectCallToNull,
             BadSignature => bindings::Trap::IndirectCallBadSig,
             IntegerOverflow => bindings::Trap::IntegerOverflow,

@@ -8,6 +8,7 @@
 #define mozilla_dom_BaseBlobImpl_h
 
 #include "mozilla/dom/BlobImpl.h"
+#include "mozilla/ErrorResult.h"
 
 namespace mozilla {
 namespace dom {
@@ -117,7 +118,7 @@ class BaseBlobImpl : public BlobImpl {
   virtual bool IsFile() const override { return mIsFile; }
 
   virtual void GetBlobImplType(nsAString& aBlobImplType) const override {
-    aBlobImplType = NS_LITERAL_STRING("BaseBlobImpl");
+    aBlobImplType = u"BaseBlobImpl"_ns;
   }
 
  protected:

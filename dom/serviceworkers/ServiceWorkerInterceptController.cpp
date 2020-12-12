@@ -7,10 +7,13 @@
 #include "ServiceWorkerInterceptController.h"
 
 #include "mozilla/BasePrincipal.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/StorageAccess.h"
+#include "nsCOMPtr.h"
 #include "nsContentUtils.h"
 #include "nsIChannel.h"
 #include "ServiceWorkerManager.h"
+#include "nsIPrincipal.h"
 
 namespace mozilla {
 namespace dom {
@@ -49,9 +52,10 @@ ServiceWorkerInterceptController::ShouldPrepareForIntercept(
       // Get ServiceWorkerRegistrationInfo by the ServiceWorkerInfo's principal
       // and scope
       if (!*aShouldIntercept && swm) {
+        nsCOMPtr<nsIPrincipal> principal =
+            controller.ref().GetPrincipal().unwrap();
         RefPtr<ServiceWorkerRegistrationInfo> registration =
-            swm->GetRegistration(controller.ref().GetPrincipal().get(),
-                                 controller.ref().Scope());
+            swm->GetRegistration(principal, controller.ref().Scope());
         // Could not get ServiceWorkerRegistration here if unregister is
         // executed before getting here.
         if (NS_WARN_IF(!registration)) {
@@ -70,6 +74,13 @@ ServiceWorkerInterceptController::ShouldPrepareForIntercept(
 
   // First check with the ServiceWorkerManager for a matching service worker.
   if (!swm || !swm->IsAvailable(principal, aURI, aChannel)) {
+    return NS_OK;
+  }
+
+  // Check if we're in a secure context, unless service worker testing is
+  // enabled.
+  if (!nsContentUtils::ComputeIsSecureContext(aChannel) &&
+      !StaticPrefs::dom_serviceWorkers_testing_enabled()) {
     return NS_OK;
   }
 

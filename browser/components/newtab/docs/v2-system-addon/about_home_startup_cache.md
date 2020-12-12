@@ -46,9 +46,9 @@ This singleton component lives inside of the "privileged about content process",
 
 When the `AboutRedirector` in the "privileged about content process" notices that a request has been made to `about:home`, it asks `nsIAboutNewTabService` to return a new `nsIChannel` for that document. The `AboutNewTabChildService` then checks to see if the `AboutHomeStartupCacheChild` can return an `nsIChannel` for any cached content.
 
-If, at this point, nothing has been streamed from the parent, we fall back to loading the dynamic `about:home` document. This might occur if the cache doesn't exist yet, or if we were too slow to pull it off of the disk.
+If, at this point, nothing has been streamed from the parent, we fall back to loading the dynamic `about:home` document. This might occur if the cache doesn't exist yet, or if we were too slow to pull it off of the disk. Subsequent attempts to load `about:home` will bypass the cache and load the dynamic document instead. This is true even if the privileged about content process crashes and a new one is created.
 
-The `AboutHomeStartupCacheChild` will also be responsible for updating the cache over time. The `AboutHomeStartupCacheChild` will periodically request the most up-to-date state for `about:home` from the parent process, and then generate document markup using ReactDOMServer within a `ChromeWorker`. After that's generated, the "privileged about content process" will send up `nsIInputStream` instances for both the markup and the script for the initial page state. The `AboutHomeStartupCache` singleton inside of `BrowserGlue` is responsible for receiving those `nsIInputStream`'s and persisting them in the HTTP cache for the next start.
+The `AboutHomeStartupCacheChild` will also be responsible for generating the cache periodically. Periodically, the `AboutNewTabService` will send down the most up-to-date state for `about:home` from the parent process, and then the `AboutHomeStartupCacheChild` will generate document markup using ReactDOMServer within a `ChromeWorker`. After that's generated, the "privileged about content process" will send up `nsIInputStream` instances for both the markup and the script for the initial page state. The `AboutHomeStartupCache` singleton inside of `BrowserGlue` is responsible for receiving those `nsIInputStream`'s and persisting them in the HTTP cache for the next start.
 
 ## What is cached?
 
@@ -61,13 +61,19 @@ The JavaScript being cached cannot be put directly into the HTML mark-up as inli
 
 If the HTML mark-up is cached, then we presume that the script is also cached. We cannot cache one and not the other. If only one cache exists, or only one has been sent down to the "privileged about content process" by the time the `about:home` document is requested, then we fallback to loading the dynamic `about:home` document.
 
+## Refreshing the cache
+
+The cache is refreshed periodically by having `ActivityStreamMessageChannel` tell `AboutHomeStartupCache` when it has sent any messages down to the preloaded `about:newtab`. In general, such messages are a good hint that something visual has updated for the next `about:newtab`, and that the cache should probably be refreshed.
+
+`AboutHomeStartupCache` debounces notifications about such messages, since they tend to be bursty.
+
 ## Invalidating the cache
 
 It's possible that the composition or layout of `about:home` will change over time from release to release. When this occurs, it might be desirable to invalidate any pre-existing cache that might exist for a user, so that they don't see an outdated `about:home` on startup.
 
 To do this, we set a version number on the cache entry, and ensure that the version number is equal to our expectations on startup. If the version number does not match our expectation, then the cache is discarded and the `about:home` document will be rendered dynamically.
 
-The version number is statically defined inside of `AboutHomeStartupCache`. Simply increase that number to invalidate caches with lesser version numbers.
+The version number is currently set to the application build ID. This means that when the application updates, the cache is invalidated on the first restart after a browser update is applied.
 
 ## Handling errors
 

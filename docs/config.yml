@@ -3,6 +3,8 @@
 # The order of the main categories are defined in index.rst
 # Sub categories orders are preserved
 categories:
+    setup_doc:
+        - setup
     contributing_doc:
         - contributing
         - bug-mgmt
@@ -20,7 +22,10 @@ categories:
         - remote
         - services/common/services
         - uriloader
+        - widget/cocoa
         - code-quality
+        - writing-rust-code
+        - tools/profiler
     build_doc:
         - mach
         - tools/try
@@ -28,6 +33,8 @@ categories:
         - taskcluster
         - tools/moztreedocs
     testing_doc:
+        - testing/testing-policy
+        - testing/ci-configs
         - testing/marionette
         - testing/geckodriver
         - web-platform
@@ -35,6 +42,7 @@ categories:
         - tools/sanitizer
         - testing/perfdocs
         - tools/code-coverage
+        - testing-rust-code
     l10n_doc:
         - intl
         - l10n
@@ -43,11 +51,15 @@ categories:
         - python
     fennec_doc:
         - mobile/android
+    metrics_doc:
+        - metrics
 
 redirects:
     browser/browser: browser
+    contributing/how_to_contribute_firefox.html: contributing/contribution_quickref.html
     contributing/artifact_builds.html: contributing/build/artifact_builds.html
-    contributing/linux_build.html: contributing/build/linux_build.html
+    contributing/linux_build.html: setup/linux_build.html
+    contributing/build/linux_build.html: setup/linux_build.html
     contributing/mercurial.html: contributing/vcs/mercurial.html
     contributing/mercurial_bundles.html: contributing/vcs/mercurial_bundles.html
     dom/dom: dom

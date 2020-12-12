@@ -24,6 +24,8 @@
 #  include "nsXULAppAPI.h"
 #endif  // #ifdef DEBUG
 
+class nsIPrincipal;
+
 namespace IPC {
 template <typename T>
 struct ParamTraits;
@@ -480,7 +482,8 @@ class WidgetEvent : public WidgetEventTime {
         break;
       default:
         if (mMessage == eResize || mMessage == eMozVisualResize ||
-            mMessage == eMozVisualScroll || mMessage == eEditorInput) {
+            mMessage == eMozVisualScroll || mMessage == eEditorInput ||
+            mMessage == eFormSelect) {
           mFlags.mCancelable = false;
         } else {
           mFlags.mCancelable = true;
@@ -559,6 +562,9 @@ class WidgetEvent : public WidgetEventTime {
   EventMessage mMessage;
   // Relative to the widget of the event, or if there is no widget then it is
   // in screen coordinates. Not modified by layout code.
+  // This is in visual coordinates, i.e. the correct RelativeTo value that
+  // expresses what this is relative to is `{viewportFrame, Visual}`, where
+  // `viewportFrame` is the viewport frame of the widget's root document.
   LayoutDeviceIntPoint mRefPoint;
   // The previous mRefPoint, if known, used to calculate mouse movement deltas.
   LayoutDeviceIntPoint mLastRefPoint;
@@ -899,7 +905,7 @@ class WidgetEvent : public WidgetEventTime {
             mMessage == eMouseOut || mMessage == eMouseMove ||
             mMessage == eContextMenu || mMessage == eXULPopupShowing ||
             mMessage == eXULPopupHiding || mMessage == eXULPopupShown ||
-            mMessage == eXULPopupHidden || mMessage == eXULPopupPositioned;
+            mMessage == eXULPopupHidden;
         break;
       case ePointerEventClass:
         // All pointer events are composed
@@ -1035,7 +1041,7 @@ class WidgetEvent : public WidgetEventTime {
  ******************************************************************************/
 
 class NativeEventData final {
-  nsTArray<uint8_t> mBuffer;
+  CopyableTArray<uint8_t> mBuffer;
 
   friend struct IPC::ParamTraits<mozilla::NativeEventData>;
 

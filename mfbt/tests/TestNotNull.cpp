@@ -288,9 +288,26 @@ void TestNotNullWithRefPtr() {
 
   // At this point the refcount is 4.
 
+  NotNull<RefPtr<MyRefType>> r6 = std::move(r2);
+  mozilla::Unused << r6;
+
+  CHECK(r2.get());
+  CHECK(r6.get());
+
+  // At this point the refcount is 5 again, since NotNull is not movable.
+
   // At function's end all RefPtrs are destroyed and the refcount drops to 0
   // and the MyRefType is destroyed.
 }
+
+// Create a derived object and store its base pointer.
+struct Base {
+  virtual ~Base() = default;
+  virtual bool IsDerived() const { return false; }
+};
+struct Derived : Base {
+  bool IsDerived() const override { return true; }
+};
 
 void TestMakeNotNull() {
   // Raw pointer.
@@ -307,14 +324,6 @@ void TestMakeNotNull() {
   CHECK(*nnci == 12);
   delete nnci;
 
-  // Create a derived object and store its base pointer.
-  struct Base {
-    virtual ~Base() = default;
-    virtual bool IsDerived() const { return false; }
-  };
-  struct Derived : Base {
-    bool IsDerived() const override { return true; }
-  };
   auto nnd = MakeNotNull<Derived*>();
   static_assert(std::is_same_v<NotNull<Derived*>, decltype(nnd)>,
                 "MakeNotNull<Derived*> should return NotNull<Derived*>");
@@ -348,10 +357,30 @@ void TestMakeNotNull() {
   mozilla::Unused << nnr;
 }
 
+mozilla::MovingNotNull<UniquePtr<int>> CreateNotNullUniquePtr() {
+  return mozilla::WrapMovingNotNull(mozilla::MakeUnique<int>(42));
+}
+
+void TestMovingNotNull() {
+  UniquePtr<int> x1 = CreateNotNullUniquePtr();
+  CHECK(x1);
+  CHECK(42 == *x1);
+
+  NotNull<UniquePtr<int>> x2 = CreateNotNullUniquePtr();
+  CHECK(42 == *x2);
+
+  NotNull<UniquePtr<Base>> x3 =
+      mozilla::WrapMovingNotNull(mozilla::MakeUnique<Derived>());
+
+  // Must not compile:
+  // auto y = CreateNotNullUniquePtr();
+}
+
 int main() {
   TestNotNullWithMyPtr();
   TestNotNullWithRefPtr();
   TestMakeNotNull();
+  TestMovingNotNull();
 
   return 0;
 }

@@ -10,6 +10,7 @@
 #include "mozilla/Logging.h"
 #include "mozilla/net/UrlClassifierFeatureFactory.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/dom/ContentChild.h"
@@ -134,7 +135,7 @@ RefPtr<ReputationPromise> LoginWhitelist::QueryLoginWhitelist(
   features.AppendElement(feature);
 
   rv = uriClassifier->AsyncClassifyLocalWithFeatures(
-      uri, features, nsIUrlClassifierFeature::whitelist, this);
+      uri, features, nsIUrlClassifierFeature::entitylist, this);
   if (NS_FAILED(rv)) {
     return p;
   }
@@ -333,7 +334,7 @@ LoginReputationService::QueryReputation(
   // mQueryRequests is an array used to maintain the ownership of
   // |QueryRequest|. We ensure that |QueryRequest| is always valid until
   // Finish() is called or LoginReputationService is shutdown.
-  auto* request =
+  auto request =
       mQueryRequests.AppendElement(MakeUnique<QueryRequest>(aQuery, aCallback));
 
   return QueryLoginWhitelist(request->get());
@@ -355,7 +356,7 @@ nsresult LoginReputationService::QueryLoginWhitelist(QueryRequest* aRequest) {
 
   mLoginWhitelist->QueryLoginWhitelist(aRequest->mParam)
       ->Then(
-          GetCurrentThreadSerialEventTarget(), __func__,
+          GetCurrentSerialEventTarget(), __func__,
           [self, aRequest, startTimeMs](VerdictType aResolveValue) -> void {
             // Promise is resolved if url is found in google-provided whitelist.
             MOZ_ASSERT(NS_IsMainThread());

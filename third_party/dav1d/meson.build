@@ -1,4 +1,4 @@
-# Copyright © 2018-2019, VideoLAN and dav1d authors
+# Copyright © 2018-2020, VideoLAN and dav1d authors
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -23,14 +23,14 @@
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 project('dav1d', ['c'],
-    version: '0.6.0',
+    version: '0.8.0',
     default_options: ['c_std=c99',
                       'warning_level=2',
                       'buildtype=release',
                       'b_ndebug=if-release'],
-    meson_version: '>= 0.47.0')
+    meson_version: '>= 0.49.0')
 
-dav1d_soname_version       = '4.0.0'
+dav1d_soname_version       = '5.0.0'
 dav1d_api_version_array    = dav1d_soname_version.split('.')
 dav1d_api_version_major    = dav1d_api_version_array[0]
 dav1d_api_version_minor    = dav1d_api_version_array[1]
@@ -62,7 +62,8 @@ endforeach
 
 # ASM option
 is_asm_enabled = (get_option('enable_asm') == true and
-    (host_machine.cpu_family().startswith('x86') or
+    (host_machine.cpu_family() == 'x86' or
+     (host_machine.cpu_family() == 'x86_64' and cc.get_define('__ILP32__') == '') or
      host_machine.cpu_family() == 'aarch64'      or
      host_machine.cpu_family().startswith('arm') or
      host_machine.cpu() == 'ppc64le'))
@@ -117,6 +118,17 @@ if host_machine.system() == 'windows'
     thread_compat_dep = declare_dependency(sources : files('src/win32/thread.c'))
 
     rt_dependency = []
+
+    rc_version_array = meson.project_version().split('.')
+    winmod = import('windows')
+    rc_data = configuration_data()
+    rc_data.set('PROJECT_VERSION_MAJOR', rc_version_array[0])
+    rc_data.set('PROJECT_VERSION_MINOR', rc_version_array[1])
+    rc_data.set('PROJECT_VERSION_REVISION', rc_version_array[2])
+    rc_data.set('API_VERSION_MAJOR', dav1d_api_version_major)
+    rc_data.set('API_VERSION_MINOR', dav1d_api_version_minor)
+    rc_data.set('API_VERSION_REVISION', dav1d_api_version_revision)
+    rc_data.set('COPYRIGHT_YEARS', '2020')
 else
     thread_dependency = dependency('threads')
     thread_compat_dep = []
@@ -130,6 +142,21 @@ else
             error('clock_gettime not found')
         endif
         cdata.set('HAVE_CLOCK_GETTIME', 1)
+    endif
+endif
+
+# check for fseeko on android. It is not always available if _FILE_OFFSET_BITS is defined to 64
+have_fseeko = true
+if host_machine.system() == 'android'
+    if not cc.has_function('fseeko', prefix : '#include <stdio.h>', args : test_args)
+        if cc.has_function('fseeko', prefix : '#include <stdio.h>', args : test_args + ['-U_FILE_OFFSET_BITS'])
+            warning('Files larger than 2 gigabytes might not be supported in the dav1d CLI tool.')
+            add_project_arguments('-U_FILE_OFFSET_BITS', language: 'c')
+        elif get_option('enable_tools')
+            error('dav1d CLI tool needs fseeko()')
+        else
+            have_fseeko = false
+        endif
     endif
 endif
 
@@ -181,10 +208,10 @@ else
     getopt_dependency = []
 endif
 
-if cc.has_function('posix_memalign', prefix : '#include <stdlib.h>', args : test_args)
-    cdata.set('HAVE_POSIX_MEMALIGN', 1)
-elif cc.has_function('_aligned_malloc', prefix : '#include <malloc.h>', args : test_args)
+if cc.has_function('_aligned_malloc', prefix : '#include <malloc.h>', args : test_args)
     cdata.set('HAVE_ALIGNED_MALLOC', 1)
+elif cc.has_function('posix_memalign', prefix : '#include <stdlib.h>', args : test_args)
+    cdata.set('HAVE_POSIX_MEMALIGN', 1)
 elif cc.has_function('memalign', prefix : '#include <malloc.h>', args : test_args)
     cdata.set('HAVE_MEMALIGN', 1)
 endif
@@ -211,7 +238,7 @@ endif
 # Compiler flags that should be set
 # But when the compiler does not supports them
 # it is not an error and silently tolerated
-if cc.get_id() != 'msvc'
+if cc.get_argument_syntax() != 'msvc'
     optional_arguments += [
       '-Wundef',
       '-Werror=vla',
@@ -298,8 +325,8 @@ if host_machine.cpu_family().startswith('x86')
     cdata.set('STACK_ALIGNMENT', stack_alignment)
 endif
 
-cdata.set10('ARCH_AARCH64', host_machine.cpu_family() == 'aarch64')
-cdata.set10('ARCH_ARM',     host_machine.cpu_family().startswith('arm'))
+cdata.set10('ARCH_AARCH64', host_machine.cpu_family() == 'aarch64' or host_machine.cpu() == 'arm64')
+cdata.set10('ARCH_ARM',     host_machine.cpu_family().startswith('arm') and host_machine.cpu() != 'arm64')
 if (is_asm_enabled and
     (host_machine.cpu_family() == 'aarch64' or
      host_machine.cpu_family().startswith('arm')))
@@ -335,6 +362,7 @@ cdata.set10('ARCH_X86_64', host_machine.cpu_family() == 'x86_64')
 cdata.set10('ARCH_X86_32', host_machine.cpu_family() == 'x86')
 
 if host_machine.cpu_family().startswith('x86')
+    cdata_asm.set('private_prefix', 'dav1d')
     cdata_asm.set10('ARCH_X86_64', host_machine.cpu_family() == 'x86_64')
     cdata_asm.set10('ARCH_X86_32', host_machine.cpu_family() == 'x86')
     cdata_asm.set10('PIC', true)
@@ -347,19 +375,10 @@ if cc.symbols_have_underscore_prefix()
     cdata_asm.set10('PREFIX', true)
 endif
 
-# Generate config.h
-config_h_target = configure_file(output: 'config.h', configuration: cdata)
-
-
-
 #
 # ASM specific stuff
 #
 if is_asm_enabled and host_machine.cpu_family().startswith('x86')
-
-    # Generate config.asm
-    config_asm_target = configure_file(output: 'config.asm', output_format: 'nasm', configuration: cdata_asm)
-
 
     # NASM compiler support
 
@@ -375,13 +394,21 @@ if is_asm_enabled and host_machine.cpu_family().startswith('x86')
 
         out = nasm_r.stdout().strip().split()
         if out[1].to_lower() == 'version'
-            if out[2].version_compare('<2.14')
-                error('nasm 2.14 or later is required, found nasm @0@'.format(out[2]))
+            if out[2].version_compare('<2.13.02')
+                error('nasm 2.13.02 or later is required, found nasm @0@'.format(out[2]))
+            elif out[2].version_compare('<2.14') and get_option('enable_avx512')
+                error('nasm 2.14 or later is required for AVX-512 asm.\n' +
+                       'AVX-512 asm can be disabled with \'-Denable_avx512=false\'')
             endif
+            cdata.set10('HAVE_AVX512ICL', get_option('enable_avx512'))
+            cdata_asm.set10('HAVE_AVX512ICL', get_option('enable_avx512'))
         else
             error('unexpected nasm version string: @0@'.format(nasm_r.stdout()))
         endif
     endif
+
+    # Generate config.asm
+    config_asm_target = configure_file(output: 'config.asm', output_format: 'nasm', configuration: cdata_asm)
 
     if host_machine.system() == 'windows'
         nasm_format = 'win'
@@ -401,7 +428,7 @@ if is_asm_enabled and host_machine.cpu_family().startswith('x86')
         depfile: '@BASENAME@.obj.ndep',
         arguments: [
             '-f', nasm_format,
-            '-I', '@0@/src/'.format(meson.current_source_dir()),
+            '-I', '@0@/src/'.format(dav1d_src_root),
             '-I', '@0@/'.format(meson.current_build_dir()),
             '-MQ', '@OUTPUT@', '-MF', '@DEPFILE@',
             '@EXTRA_ARGS@',
@@ -409,6 +436,32 @@ if is_asm_enabled and host_machine.cpu_family().startswith('x86')
             '-o', '@OUTPUT@'
         ])
 endif
+
+use_gaspp = false
+if (is_asm_enabled and
+    (host_machine.cpu_family() == 'aarch64' or
+     host_machine.cpu_family().startswith('arm')) and
+    cc.get_argument_syntax() == 'msvc')
+    gaspp = find_program('gas-preprocessor.pl')
+    use_gaspp = true
+    gaspp_gen = generator(gaspp,
+        output: '@BASENAME@.obj',
+        arguments: [
+            '-as-type', 'armasm',
+            '-arch', host_machine.cpu_family(),
+            '--',
+            host_machine.cpu_family() == 'aarch64' ? 'armasm64' : 'armasm',
+            '-nologo',
+            '-I@0@'.format(dav1d_src_root),
+            '-I@0@/'.format(meson.current_build_dir()),
+            '@INPUT@',
+            '-c',
+            '-o', '@OUTPUT@'
+        ])
+endif
+
+# Generate config.h
+config_h_target = configure_file(output: 'config.h', configuration: cdata)
 
 
 

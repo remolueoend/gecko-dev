@@ -55,36 +55,56 @@ nsHangDetails::GetProcess(nsACString& aName) {
 }
 
 NS_IMETHODIMP
-nsHangDetails::GetRemoteType(nsAString& aName) {
+nsHangDetails::GetRemoteType(nsACString& aName) {
   aName.Assign(mDetails.remoteType());
   return NS_OK;
 }
 
 NS_IMETHODIMP
 nsHangDetails::GetAnnotations(JSContext* aCx, JS::MutableHandleValue aVal) {
-  // We create an object with { "key" : "value" } string pairs for each item in
-  // our annotations object.
-  JS::RootedObject jsAnnotation(aCx, JS_NewPlainObject(aCx));
-  if (!jsAnnotation) {
+  // We create an Array with ["key", "value"] string pair entries for each item
+  // in our annotations object.
+  auto& annotations = mDetails.annotations();
+  size_t length = annotations.Length();
+  JS::RootedObject retObj(aCx, JS::NewArrayObject(aCx, length));
+  if (!retObj) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  for (auto& annot : mDetails.annotations()) {
-    JSString* jsString =
-        JS_NewUCStringCopyN(aCx, annot.value().get(), annot.value().Length());
-    if (!jsString) {
+  for (size_t i = 0; i < length; ++i) {
+    const auto& annotation = annotations[i];
+    JS::RootedObject annotationPair(aCx, JS::NewArrayObject(aCx, 2));
+    if (!annotationPair) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
-    JS::RootedValue jsValue(aCx);
-    jsValue.setString(jsString);
-    if (!JS_DefineUCProperty(aCx, jsAnnotation, annot.name().get(),
-                             annot.name().Length(), jsValue,
-                             JSPROP_ENUMERATE)) {
+
+    JS::RootedString key(aCx, JS_NewUCStringCopyN(aCx, annotation.name().get(),
+                                                  annotation.name().Length()));
+    if (!key) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+
+    JS::RootedString value(aCx,
+                           JS_NewUCStringCopyN(aCx, annotation.value().get(),
+                                               annotation.value().Length()));
+    if (!value) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+
+    if (!JS_DefineElement(aCx, annotationPair, 0, key, JSPROP_ENUMERATE)) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+
+    if (!JS_DefineElement(aCx, annotationPair, 1, value, JSPROP_ENUMERATE)) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+
+    if (!JS_DefineElement(aCx, retObj, i, annotationPair, JSPROP_ENUMERATE)) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
   }
 
-  aVal.setObject(*jsAnnotation);
+  aVal.setObject(*retObj);
   return NS_OK;
 }
 
@@ -574,7 +594,7 @@ Result<HangDetails, nsresult> ReadHangDetailsFromFile(nsIFile* aFile) {
   MOZ_TRY_VAR(result.threadName(), ReadTString<char>(fd));
   MOZ_TRY_VAR(result.runnableName(), ReadTString<char>(fd));
   MOZ_TRY_VAR(result.process(), ReadTString<char>(fd));
-  MOZ_TRY_VAR(result.remoteType(), ReadTString<char16_t>(fd));
+  MOZ_TRY_VAR(result.remoteType(), ReadTString<char>(fd));
 
   uint32_t numAnnotations;
   MOZ_TRY_VAR(numAnnotations, ReadUint(fd));
@@ -585,8 +605,7 @@ Result<HangDetails, nsresult> ReadHangDetailsFromFile(nsIFile* aFile) {
   if (!annotations.SetCapacity(numAnnotations + 1, mozilla::fallible)) {
     return Err(NS_ERROR_FAILURE);
   }
-  annotations.AppendElement(HangAnnotation(NS_LITERAL_STRING("Unrecovered"),
-                                           NS_LITERAL_STRING("true")));
+  annotations.AppendElement(HangAnnotation(u"Unrecovered"_ns, u"true"_ns));
 
   for (size_t i = 0; i < numAnnotations; ++i) {
     HangAnnotation annot;

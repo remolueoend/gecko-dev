@@ -8,6 +8,7 @@
 #include "nsIconChannel.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/EndianUtils.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIIconURI.h"
 #include "nsIInputStream.h"
 #include "nsIInterfaceRequestor.h"
@@ -190,12 +191,12 @@ nsIconChannel::AsyncOpen(nsIStreamListener* aListener) {
     return rv;
   }
 
-  MOZ_ASSERT(
-      mLoadInfo->GetSecurityMode() == 0 || mLoadInfo->GetInitialSecurityCheckDone() ||
-          (mLoadInfo->GetSecurityMode() == nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
-           mLoadInfo->GetLoadingPrincipal() &&
-           mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()),
-      "security flags in loadInfo but doContentSecurityCheck() not called");
+  MOZ_ASSERT(mLoadInfo->GetSecurityMode() == 0 || mLoadInfo->GetInitialSecurityCheckDone() ||
+                 (mLoadInfo->GetSecurityMode() ==
+                      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL &&
+                  mLoadInfo->GetLoadingPrincipal() &&
+                  mLoadInfo->GetLoadingPrincipal()->IsSystemPrincipal()),
+             "security flags in loadInfo but doContentSecurityCheck() not called");
 
   nsCOMPtr<nsIInputStream> inStream;
   rv = MakeInputStream(getter_AddRefs(inStream), true);
@@ -213,7 +214,7 @@ nsIconChannel::AsyncOpen(nsIStreamListener* aListener) {
     return rv;
   }
 
-  rv = mPump->AsyncRead(this, nullptr);
+  rv = mPump->AsyncRead(this);
   if (NS_SUCCEEDED(rv)) {
     // Store our real listener
     mListener = aListener;
@@ -241,8 +242,6 @@ nsresult nsIconChannel::MakeInputStream(nsIInputStream** _retval, bool aNonBlock
 
   bool fileExists = false;
   if (fileloc) {
-    // ensure that we DO NOT resolve aliases, very important for file views
-    fileloc->SetFollowLinks(false);
     fileloc->Exists(&fileExists);
   }
 

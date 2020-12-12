@@ -12,7 +12,7 @@
 #include "frontend/SourceNotes.h"
 #include "vm/Opcodes.h"
 #include "vm/Scope.h"
-#include "vm/TryNoteKind.h"  // TryNoteKind
+#include "vm/StencilEnums.h"  // TryNoteKind
 
 using namespace js;
 using namespace js::frontend;
@@ -120,7 +120,7 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
     //              [stack] NEXT ITER RESULT RESULT
     return false;
   }
-  if (!bce_->emitAtomOp(JSOp::GetProp, bce_->cx->names().done)) {
+  if (!bce_->emitAtomOp(JSOp::GetProp, bce_->cx->parserNames().done)) {
     //              [stack] NEXT ITER RESULT DONE
     return false;
   }
@@ -137,7 +137,7 @@ bool ForOfEmitter::emitInitialize(const Maybe<uint32_t>& forPos) {
   //
   // Note that ES 13.7.5.13, step 5.c says getting result.value does not
   // call IteratorClose, so start TryNoteKind::ForOfIterClose after the GetProp.
-  if (!bce_->emitAtomOp(JSOp::GetProp, bce_->cx->names().value)) {
+  if (!bce_->emitAtomOp(JSOp::GetProp, bce_->cx->parserNames().value)) {
     //              [stack] NEXT ITER VALUE
     return false;
   }

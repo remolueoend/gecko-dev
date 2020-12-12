@@ -17,21 +17,22 @@
 #include "mozilla/dom/BrowserBridgeHost.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/MozFrameLoaderOwnerBinding.h"
+#include "mozilla/PresShell.h"
 #include "nsFocusManager.h"
 #include "nsFrameLoader.h"
 #include "nsFrameLoaderOwner.h"
+#include "nsObjectLoadingContent.h"
 #include "nsQueryObject.h"
 #include "nsSubDocumentFrame.h"
 #include "nsView.h"
 
 using namespace mozilla::ipc;
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 BrowserBridgeChild::BrowserBridgeChild(BrowsingContext* aBrowsingContext,
-                                       TabId aId)
-    : mId{aId}, mLayersId{0}, mBrowsingContext(aBrowsingContext) {}
+                                       TabId aId, const LayersId& aLayersId)
+    : mId{aId}, mLayersId{aLayersId}, mBrowsingContext(aBrowsingContext) {}
 
 BrowserBridgeChild::~BrowserBridgeChild() {
 #if defined(ACCESSIBILITY) && defined(XP_WIN)
@@ -66,15 +67,21 @@ already_AddRefed<BrowserBridgeHost> BrowserBridgeChild::FinishInit(
   return MakeAndAddRef<BrowserBridgeHost>(this);
 }
 
+nsILoadContext* BrowserBridgeChild::GetLoadContext() {
+  return mBrowsingContext;
+}
+
 void BrowserBridgeChild::NavigateByKey(bool aForward,
                                        bool aForDocumentNavigation) {
   Unused << SendNavigateByKey(aForward, aForDocumentNavigation);
 }
 
-void BrowserBridgeChild::Activate() { Unused << SendActivate(); }
+void BrowserBridgeChild::Activate(uint64_t aActionId) {
+  Unused << SendActivate(aActionId);
+}
 
-void BrowserBridgeChild::Deactivate(bool aWindowLowering) {
-  Unused << SendDeactivate(aWindowLowering);
+void BrowserBridgeChild::Deactivate(bool aWindowLowering, uint64_t aActionId) {
+  Unused << SendDeactivate(aWindowLowering, aActionId);
 }
 
 void BrowserBridgeChild::SetIsUnderHiddenEmbedderElement(
@@ -100,22 +107,6 @@ BrowserBridgeChild* BrowserBridgeChild::GetFrom(nsIContent* aContent) {
   return GetFrom(frameLoader);
 }
 
-IPCResult BrowserBridgeChild::RecvSetLayersId(
-    const mozilla::layers::LayersId& aLayersId) {
-  MOZ_ASSERT(!mLayersId.IsValid() && aLayersId.IsValid());
-  mLayersId = aLayersId;
-
-  // Invalidate the nsSubdocumentFrame now that we have a layers ID for the
-  // child browser
-  if (RefPtr<Element> owner = mFrameLoader->GetOwnerContent()) {
-    if (nsIFrame* frame = owner->GetPrimaryFrame()) {
-      frame->InvalidateFrame();
-    }
-  }
-
-  return IPC_OK();
-}
-
 mozilla::ipc::IPCResult BrowserBridgeChild::RecvRequestFocus(
     const bool& aCanRaise, const CallerType aCallerType) {
   // Adapted from BrowserParent
@@ -130,7 +121,7 @@ mozilla::ipc::IPCResult BrowserBridgeChild::RecvRequestFocus(
 mozilla::ipc::IPCResult BrowserBridgeChild::RecvMoveFocus(
     const bool& aForward, const bool& aForDocumentNavigation) {
   // Adapted from BrowserParent
-  nsCOMPtr<nsIFocusManager> fm = nsFocusManager::GetFocusManager();
+  RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager();
   if (!fm) {
     return IPC_OK();
   }
@@ -225,27 +216,11 @@ mozilla::ipc::IPCResult BrowserBridgeChild::RecvScrollRectIntoView(
   return IPC_OK();
 }
 
-mozilla::ipc::IPCResult BrowserBridgeChild::RecvSubFrameCrashed(
-    const MaybeDiscarded<BrowsingContext>& aContext) {
-  if (aContext.IsNullOrDiscarded()) {
-    return IPC_OK();
+mozilla::ipc::IPCResult BrowserBridgeChild::RecvSubFrameCrashed() {
+  if (RefPtr<nsFrameLoaderOwner> frameLoaderOwner =
+          do_QueryObject(mFrameLoader->GetOwnerContent())) {
+    frameLoaderOwner->SubframeCrashed();
   }
-
-  RefPtr<nsFrameLoaderOwner> frameLoaderOwner =
-      do_QueryObject(aContext.get()->GetEmbedderElement());
-  if (!frameLoaderOwner) {
-    return IPC_OK();
-  }
-
-  IgnoredErrorResult rv;
-  RemotenessOptions options;
-  options.mError.Construct(static_cast<uint32_t>(NS_ERROR_FRAME_CRASHED));
-  frameLoaderOwner->ChangeRemoteness(options, rv);
-
-  if (NS_WARN_IF(rv.Failed())) {
-    return IPC_FAIL(this, "Remoteness change failed");
-  }
-
   return IPC_OK();
 }
 
@@ -270,5 +245,17 @@ void BrowserBridgeChild::UnblockOwnerDocsLoadEvent() {
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+mozilla::ipc::IPCResult BrowserBridgeChild::RecvIntrinsicSizeOrRatioChanged(
+    const Maybe<IntrinsicSize>& aIntrinsicSize,
+    const Maybe<AspectRatio>& aIntrinsicRatio) {
+  if (RefPtr<Element> owner = mFrameLoader->GetOwnerContent()) {
+    if (nsCOMPtr<nsIObjectLoadingContent> olc = do_QueryInterface(owner)) {
+      static_cast<nsObjectLoadingContent*>(olc.get())
+          ->SubdocumentIntrinsicSizeOrRatioChanged(aIntrinsicSize,
+                                                   aIntrinsicRatio);
+    }
+  }
+  return IPC_OK();
+}
+
+}  // namespace mozilla::dom

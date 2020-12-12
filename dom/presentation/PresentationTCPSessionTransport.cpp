@@ -4,25 +4,33 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "mozilla/Logging.h"
 #include "nsArrayUtils.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIAsyncStreamCopier.h"
+#include "nsIInputStreamPump.h"
 #include "nsIMultiplexInputStream.h"
+#include "nsIOutputStream.h"
+#include "nsIPresentationControlChannel.h"
+#include "nsIPresentationService.h"
 #include "nsIScriptableInputStream.h"
 #include "nsISocketTransport.h"
 #include "nsISocketTransportService.h"
+#include "nsIStringStream.h"
 #include "nsISupportsPrimitives.h"
 #include "nsNetUtil.h"
 #include "nsQueryObject.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStreamUtils.h"
+#include "nsStringStream.h"
 #include "nsThreadUtils.h"
 #include "PresentationLog.h"
 #include "PresentationTCPSessionTransport.h"
 
 #define BUFFER_SIZE 65536
 
-using namespace mozilla;
-using namespace mozilla::dom;
+namespace mozilla {
+namespace dom {
 
 class CopierCallbacks final : public nsIRequestObserver {
  public:
@@ -244,7 +252,7 @@ nsresult PresentationTCPSessionTransport::CreateInputStreamPump() {
     return rv;
   }
 
-  rv = mInputStreamPump->AsyncRead(this, nullptr);
+  rv = mInputStreamPump->AsyncRead(this);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -548,3 +556,6 @@ PresentationTCPSessionTransport::OnDataAvailable(nsIRequest* aRequest,
   // Pass the incoming data to the listener.
   return mCallback->NotifyData(data, false);
 }
+
+}  // namespace dom
+}  // namespace mozilla

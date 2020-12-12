@@ -58,4 +58,20 @@ MFBT_API bool IsDynamicCodeDisabled() {
   return polInfo.ProhibitDynamicCode;
 }
 
+MFBT_API bool IsEafPlusEnabled() {
+  auto pGetProcessMitigationPolicy = FetchGetProcessMitigationPolicyFunc();
+  if (!pGetProcessMitigationPolicy) {
+    return false;
+  }
+
+  PROCESS_MITIGATION_PAYLOAD_RESTRICTION_POLICY polInfo;
+  if (!pGetProcessMitigationPolicy(::GetCurrentProcess(),
+                                   ProcessPayloadRestrictionPolicy, &polInfo,
+                                   sizeof(polInfo))) {
+    return false;
+  }
+
+  return polInfo.EnableExportAddressFilterPlus;
+}
+
 }  // namespace mozilla

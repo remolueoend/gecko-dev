@@ -24,13 +24,7 @@ const WalkerEventListener = require("devtools/client/inspector/shared/walker-eve
 
 loader.lazyRequireGetter(
   this,
-  "createDOMMutationBreakpoint",
-  "devtools/client/framework/actions/index",
-  true
-);
-loader.lazyRequireGetter(
-  this,
-  "deleteDOMMutationBreakpoint",
+  ["createDOMMutationBreakpoint", "deleteDOMMutationBreakpoint"],
   "devtools/client/framework/actions/index",
   true
 );
@@ -92,7 +86,6 @@ const INSPECTOR_L10N = new LocalizationHelper(
 // Page size for pageup/pagedown
 const PAGE_SIZE = 10;
 const DEFAULT_MAX_CHILDREN = 100;
-const NEW_SELECTION_HIGHLIGHTER_TIMER = 1000;
 const DRAG_DROP_AUTOSCROLL_EDGE_MAX_DISTANCE = 50;
 const DRAG_DROP_AUTOSCROLL_EDGE_RATIO = 0.1;
 const DRAG_DROP_MIN_AUTOSCROLL_SPEED = 2;
@@ -249,6 +242,9 @@ const shortcutHandlers = {
  *         The inspector we're watching.
  * @param  {iframe} frame
  *         An iframe in which the caller has kindly loaded markup.xhtml.
+ * @param  {XULWindow} controllerWindow
+ *         Will enable the undo/redo feature from devtools/client/shared/undo.
+ *         Should be a XUL window, will typically point to the toolbox window.
  */
 function MarkupView(inspector, frame, controllerWindow) {
   EventEmitter.decorate(this);
@@ -300,6 +296,7 @@ function MarkupView(inspector, frame, controllerWindow) {
   );
   this._onWalkerNodeStatesChanged = this._onWalkerNodeStatesChanged.bind(this);
   this._onFocus = this._onFocus.bind(this);
+  this._onResourceAvailable = this._onResourceAvailable.bind(this);
   this._onMouseClick = this._onMouseClick.bind(this);
   this._onMouseMove = this._onMouseMove.bind(this);
   this._onMouseOut = this._onMouseOut.bind(this);
@@ -316,6 +313,7 @@ function MarkupView(inspector, frame, controllerWindow) {
   this._elt.addEventListener("mouseout", this._onMouseOut);
   this._frame.addEventListener("focus", this._onFocus);
   this.inspector.selection.on("new-node-front", this._onNewSelection);
+
   this.win.addEventListener("copy", this._onCopy);
   this.win.addEventListener("mouseup", this._onMouseUp);
   this.inspector.toolbox.nodePicker.on(
@@ -360,7 +358,13 @@ function MarkupView(inspector, frame, controllerWindow) {
   this._walkerEventListener = new WalkerEventListener(this.inspector, {
     "display-change": this._onWalkerNodeStatesChanged,
     "scrollable-change": this._onWalkerNodeStatesChanged,
+    "overflow-change": this._onWalkerNodeStatesChanged,
     mutations: this._onWalkerMutations,
+  });
+
+  this.resourceWatcher = this.inspector.toolbox.resourceWatcher;
+  this.resourceWatcher.watchResources([this.resourceWatcher.TYPES.ROOT_NODE], {
+    onAvailable: this._onResourceAvailable,
   });
 }
 
@@ -667,12 +671,9 @@ MarkupView.prototype = {
 
     container.hovered = true;
     this._hoveredContainer = container;
-    // Emit an event that the container view is actually hovered now, as this function
-    // can be called by an asynchronous caller.
-    this.emit("showcontainerhovered");
   },
 
-  _onMouseOut: function(event) {
+  _onMouseOut: async function(event) {
     // Emulate mouseleave by skipping any relatedTarget inside the markup-view.
     if (this._elt.contains(event.relatedTarget)) {
       return;
@@ -685,7 +686,7 @@ MarkupView.prototype = {
       return;
     }
 
-    this._hideBoxModel(true);
+    await this._hideBoxModel();
     if (this._hoveredContainer) {
       this._hoveredContainer.hovered = false;
     }
@@ -695,67 +696,31 @@ MarkupView.prototype = {
   },
 
   /**
-   * Show the box model highlighter on a given node front
+   * Show the Box Model Highlighter on a given node front
    *
    * @param  {NodeFront} nodeFront
-   *         The node to show the highlighter for
-   * @return {Promise} Resolves when the highlighter for this nodeFront is
-   *         shown, taking into account that there could already be highlighter
-   *         requests queued up
+   *         The node for which to show the highlighter.
+   * @param  {Object} options
+   *         Configuration object with options for the Box Model Highlighter.
+   * @return {Promise} Resolves after the highlighter for this nodeFront is shown.
    */
-  _showBoxModel: function(nodeFront) {
-    // Hold onto a reference to the highlighted NodeFront so that we can get the correct
-    // HighlighterFront when calling _hideBoxModel.
-    this._highlightedNodeFront = nodeFront;
-    return nodeFront.highlighterFront
-      .highlight(nodeFront)
-      .catch(this._handleRejectionIfNotDestroyed);
+  _showBoxModel: function(nodeFront, options) {
+    return this.inspector.highlighters.showHighlighterTypeForNode(
+      this.inspector.highlighters.TYPES.BOXMODEL,
+      nodeFront,
+      options
+    );
   },
 
   /**
-   * Hide the box model highlighter on a given node front
+   * Hide the Box Model Highlighter for any node that may be highlighted.
    *
-   * @param  {Boolean} forceHide
-   *         See highlighterFront method `unhighlight`
-   * @return {Promise} Resolves when the highlighter for this nodeFront is
-   *         hidden, taking into account that there could already be highlighter
-   *         requests queued up
+   * @return {Promise} Resolves when the highlighter is hidden.
    */
-  _hideBoxModel: function(forceHide) {
-    if (!this._highlightedNodeFront) {
-      return Promise.resolve();
-    }
-
-    return this._highlightedNodeFront.highlighterFront
-      .unhighlight(forceHide)
-      .catch(this._handleRejectionIfNotDestroyed);
-  },
-
-  _briefBoxModelTimer: null,
-
-  _clearBriefBoxModelTimer: function() {
-    if (this._briefBoxModelTimer) {
-      clearTimeout(this._briefBoxModelTimer);
-      this._briefBoxModelPromise.resolve();
-      this._briefBoxModelPromise = null;
-      this._briefBoxModelTimer = null;
-    }
-  },
-
-  _brieflyShowBoxModel: function(nodeFront) {
-    this._clearBriefBoxModelTimer();
-    const onShown = this._showBoxModel(nodeFront);
-
-    let _resolve;
-    this._briefBoxModelPromise = new Promise(resolve => {
-      _resolve = resolve;
-      this._briefBoxModelTimer = setTimeout(() => {
-        this._hideBoxModel().then(resolve, resolve);
-      }, NEW_SELECTION_HIGHLIGHTER_TIMER);
-    });
-    this._briefBoxModelPromise.resolve = _resolve;
-
-    return promise.all([onShown, this._briefBoxModelPromise]);
+  _hideBoxModel: function() {
+    return this.inspector.highlighters.hideHighlighterType(
+      this.inspector.highlighters.TYPES.BOXMODEL
+    );
   },
 
   /**
@@ -889,9 +854,8 @@ MarkupView.prototype = {
    * Given the known reason, should the current selection be briefly highlighted
    * In a few cases, we don't want to highlight the node:
    * - If the reason is null (used to reset the selection),
-   * - if it's "inspector-open" (when the inspector opens up, let's not
-   * highlight the default node)
-   * - if it's "navigateaway" (since the page is being navigated away from)
+   * - if it's "inspector-default-selection" (initial node selected, either when
+   *   opening the inspector or after a navigation/reload)
    * - if it's "test" (this is a special case for mochitest. In tests, we often
    * need to select elements but don't necessarily want the highlighter to come
    * and go after a delay as this might break test scenarios)
@@ -902,8 +866,7 @@ MarkupView.prototype = {
   _shouldNewSelectionBeHighlighted: function() {
     const reason = this.inspector.selection.reason;
     const unwantedReasons = [
-      "inspector-open",
-      "navigateaway",
+      "inspector-default-selection",
       "nodeselected",
       "test",
     ];
@@ -930,6 +893,10 @@ MarkupView.prototype = {
         "scrollable-change",
         this._onWalkerNodeStatesChanged
       );
+      nodeFront.walkerFront.on(
+        "overflow-change",
+        this._onWalkerNodeStatesChanged
+      );
       nodeFront.walkerFront.on("mutations", this._onWalkerMutations);
     }
 
@@ -951,7 +918,9 @@ MarkupView.prototype = {
 
     // Highlight the element briefly if needed.
     if (this._shouldNewSelectionBeHighlighted()) {
-      onShowBoxModel = this._brieflyShowBoxModel(selection.nodeFront);
+      onShowBoxModel = this._showBoxModel(nodeFront, {
+        duration: this.inspector.HIGHLIGHTER_AUTOHIDE_TIMER,
+      });
     }
 
     const slotted = selection.isSlotted();
@@ -1101,9 +1070,9 @@ MarkupView.prototype = {
           if (type === "uri") {
             openContentLink(url);
           } else if (type === "cssresource") {
-            return this.toolbox.viewSourceInStyleEditor(url);
+            return this.toolbox.viewGeneratedSourceInStyleEditor(url);
           } else if (type === "jsresource") {
-            return this.toolbox.viewSourceInDebugger(url);
+            return this.toolbox.viewGeneratedSourceInDebugger(url);
           }
           return null;
         })
@@ -1226,6 +1195,7 @@ MarkupView.prototype = {
   isDeletable(nodeFront) {
     return !(
       nodeFront.isDocumentElement ||
+      nodeFront.nodeType == nodeConstants.DOCUMENT_NODE ||
       nodeFront.nodeType == nodeConstants.DOCUMENT_TYPE_NODE ||
       nodeFront.nodeType == nodeConstants.DOCUMENT_FRAGMENT_NODE ||
       nodeFront.isAnonymous
@@ -1399,13 +1369,37 @@ MarkupView.prototype = {
     }
 
     this.setContainer(node, container, slotted);
-    container.childrenDirty = true;
-
-    this._updateChildren(container);
+    this._forceUpdateChildren(container);
 
     this.inspector.emit("container-created", container);
 
     return container;
+  },
+
+  _onResourceAvailable: async function(resources) {
+    for (const resource of resources) {
+      if (resource.resourceType !== this.resourceWatcher.TYPES.ROOT_NODE) {
+        // Only handle root-node resources
+        continue;
+      }
+
+      if (resource.targetFront.isTopLevel && resource.isTopLevelDocument) {
+        // The topmost root node will lead to the destruction and recreation of
+        // the MarkupView. This is handled by the inspector.
+        continue;
+      }
+
+      const parentNodeFront = resource.parentNode();
+      const container = this.getContainer(parentNodeFront);
+      if (container) {
+        // If there is no container for the parentNodeFront, the markup view is
+        // currently not watching this part of the tree.
+        this._forceUpdateChildren(container, {
+          flash: true,
+          updateLevel: true,
+        });
+      }
+    }
   },
 
   /**
@@ -1413,18 +1407,8 @@ MarkupView.prototype = {
    */
   _onWalkerMutations: function(mutations) {
     for (const mutation of mutations) {
-      let type = mutation.type;
-      let target = mutation.target;
-
-      if (mutation.type === "documentUnload") {
-        // Treat this as a childList change of the child (maybe the protocol
-        // should do this).
-        type = "childList";
-        target = mutation.targetParent;
-        if (!target) {
-          continue;
-        }
-      }
+      const type = mutation.type;
+      const target = mutation.target;
 
       const container = this.getContainer(target);
       if (!container) {
@@ -1448,16 +1432,12 @@ MarkupView.prototype = {
         type === "slotchange" ||
         type === "shadowRootAttached"
       ) {
-        container.childrenDirty = true;
-        // Update the children to take care of changes in the markup view DOM
-        // and update container (and its subtree) DOM tree depth level for
-        // accessibility where necessary.
-        this._updateChildren(container, { flash: true }).then(() =>
-          container.updateLevel()
-        );
+        this._forceUpdateChildren(container, {
+          flash: true,
+          updateLevel: true,
+        });
       } else if (type === "inlineTextChild") {
-        container.childrenDirty = true;
-        this._updateChildren(container, { flash: true });
+        this._forceUpdateChildren(container, { flash: true });
         container.update();
       }
     }
@@ -2009,8 +1989,7 @@ MarkupView.prototype = {
       if (!container.elt.parentNode) {
         const parentContainer = this.getContainer(parent);
         if (parentContainer) {
-          parentContainer.childrenDirty = true;
-          this._updateChildren(parentContainer, { expand: true });
+          this._forceUpdateChildren(parentContainer, { expand: true });
         }
       }
 
@@ -2048,6 +2027,22 @@ MarkupView.prototype = {
     }
 
     return centered;
+  },
+
+  _forceUpdateChildren: async function(container, options = {}) {
+    const { flash, updateLevel, expand } = options;
+
+    // Set childrenDirty to true to force fetching new children.
+    container.childrenDirty = true;
+
+    // Update the children to take care of changes in the markup view DOM
+    await this._updateChildren(container, { expand, flash });
+
+    if (updateLevel) {
+      // Update container (and its subtree) DOM tree depth level for
+      // accessibility where necessary.
+      container.updateLevel();
+    }
   },
 
   /**
@@ -2218,8 +2213,7 @@ MarkupView.prototype = {
 
     button.addEventListener("click", () => {
       container.maxChildren = -1;
-      container.childrenDirty = true;
-      this._updateChildren(container);
+      this._forceUpdateChildren(container);
     });
 
     return elt;
@@ -2275,9 +2269,6 @@ MarkupView.prototype = {
 
     this._destroyed = true;
 
-    this._clearBriefBoxModelTimer();
-
-    this._highlightedNodeFront = null;
     this._hoveredContainer = null;
 
     if (this._contextMenu) {
@@ -2320,6 +2311,10 @@ MarkupView.prototype = {
     this._elt.removeEventListener("mouseout", this._onMouseOut);
     this._frame.removeEventListener("focus", this._onFocus);
     this.inspector.selection.off("new-node-front", this._onNewSelection);
+    this.resourceWatcher.unwatchResources(
+      [this.resourceWatcher.TYPES.ROOT_NODE],
+      { onAvailable: this._onResourceAvailable }
+    );
     this.inspector.toolbox.nodePicker.off(
       "picker-node-hovered",
       this._onToolboxPickerHover

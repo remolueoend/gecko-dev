@@ -12,6 +12,7 @@
 
 #include "Accessible-inl.h"
 #include "DocAccessible-inl.h"
+#include "mozilla/a11y/DocAccessibleParent.h"
 #include "nsAccessibilityService.h"
 #include "nsAccUtils.h"
 #include "nsCoreUtils.h"
@@ -144,7 +145,7 @@ const char* const kEventTypes[] = {
     // HTMLInputElement.cpp & radio.js)
     "RadioStateChange", "popupshown", "popuphiding", "DOMMenuInactive",
     "DOMMenuItemActive", "DOMMenuItemInactive", "DOMMenuBarActive",
-    "DOMMenuBarInactive", "scroll", "overflow", "underflow"};
+    "DOMMenuBarInactive", "scroll"};
 
 nsresult RootAccessible::AddEventListeners() {
   // EventTarget interface allows to register event listeners to
@@ -266,6 +267,13 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
       GetAccService()->GetDocAccessible(aTarget->OwnerDoc());
   if (!targetDocument) {
     // Document has ceased to exist.
+    return;
+  }
+
+  if (eventType.EqualsLiteral("popupshown") &&
+      aTarget->IsXULElement(nsGkAtoms::tooltip)) {
+    targetDocument->ContentInserted(aTarget->AsContent(),
+                                    aTarget->GetNextSibling());
     return;
   }
 
@@ -445,19 +453,6 @@ void RootAccessible::ProcessDOMEvent(Event* aDOMEvent, nsINode* aTarget) {
                             accessible);
   }
 #endif
-  else if (eventType.EqualsLiteral("overflow") ||
-           eventType.EqualsLiteral("underflow")) {
-    // An overflow or underflow may mean the element's focusable state has
-    // changed.
-    if (accessible->IsContent() && !accessible->GetContent()->IsFocusable()) {
-      // If the element is not focusable for other DOM reasons (input, tabindex,
-      // etc.), dispatch a focusable state change event.
-      RefPtr<AccEvent> event = new AccStateChangeEvent(
-          accessible, states::FOCUSABLE,
-          (accessible->NativeInteractiveState() & states::FOCUSABLE) != 0);
-      targetDocument->FireDelayedEvent(event);
-    }
-  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -504,15 +499,6 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
     return;
   }
 
-  if (role == roles::TOOLTIP) {
-    // There is a single <xul:tooltip> node which Mozilla moves around.
-    // The accessible for it stays the same no matter where it moves.
-    // AT's expect to get an EVENT_SHOW for the tooltip.
-    // In event callback the tooltip's accessible will be ready.
-    nsEventShell::FireEvent(nsIAccessibleEvent::EVENT_SHOW, aAccessible);
-    return;
-  }
-
   if (role == roles::COMBOBOX_LIST) {
     // Fire expanded state change event for comboboxes and autocompeletes.
     Accessible* combobox = aAccessible->Parent();
@@ -546,12 +532,17 @@ void RootAccessible::HandlePopupShownEvent(Accessible* aAccessible) {
 }
 
 void RootAccessible::HandlePopupHidingEvent(nsINode* aPopupNode) {
-  // Get popup accessible. There are cases when popup element isn't accessible
-  // but an underlying widget is and behaves like popup, an example is
-  // autocomplete popups.
   DocAccessible* document = nsAccUtils::GetDocAccessibleFor(aPopupNode);
   if (!document) return;
 
+  if (aPopupNode->IsXULElement(nsGkAtoms::tooltip)) {
+    document->ContentRemoved(aPopupNode->AsContent());
+    return;
+  }
+
+  // Get popup accessible. There are cases when popup element isn't accessible
+  // but an underlying widget is and behaves like popup, an example is
+  // autocomplete popups.
   Accessible* popup = document->GetAccessible(aPopupNode);
   if (!popup) {
     Accessible* popupContainer = document->GetContainerAccessible(aPopupNode);
@@ -679,10 +670,10 @@ void RootAccessible::HandleTreeRowCountChangedEvent(
 
   nsresult rv;
   int32_t index, count;
-  rv = propBag->GetPropertyAsInt32(NS_LITERAL_STRING("index"), &index);
+  rv = propBag->GetPropertyAsInt32(u"index"_ns, &index);
   if (NS_FAILED(rv)) return;
 
-  rv = propBag->GetPropertyAsInt32(NS_LITERAL_STRING("count"), &count);
+  rv = propBag->GetPropertyAsInt32(u"count"_ns, &count);
   if (NS_FAILED(rv)) return;
 
   aAccessible->InvalidateCache(index, count);
@@ -695,10 +686,10 @@ void RootAccessible::HandleTreeInvalidatedEvent(
   if (!propBag) return;
 
   int32_t startRow = 0, endRow = -1, startCol = 0, endCol = -1;
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("startrow"), &startRow);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("endrow"), &endRow);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("startcolumn"), &startCol);
-  propBag->GetPropertyAsInt32(NS_LITERAL_STRING("endcolumn"), &endCol);
+  propBag->GetPropertyAsInt32(u"startrow"_ns, &startRow);
+  propBag->GetPropertyAsInt32(u"endrow"_ns, &endRow);
+  propBag->GetPropertyAsInt32(u"startcolumn"_ns, &startCol);
+  propBag->GetPropertyAsInt32(u"endcolumn"_ns, &endCol);
 
   aAccessible->TreeViewInvalidated(startRow, endRow, startCol, endCol);
 }

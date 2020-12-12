@@ -22,12 +22,16 @@
 
 #include "fdlibm.h"
 #include "jslibmath.h"
+#include "jsmath.h"
 
 #include "gc/Allocator.h"
 #include "jit/AtomicOperations.h"
 #include "jit/InlinableNatives.h"
 #include "jit/MacroAssembler.h"
 #include "jit/Simulator.h"
+#include "js/experimental/JitInfo.h"  // JSJitInfo
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
+#include "js/friend/StackLimits.h"    // js::CheckRecursionLimit
 #include "threading/Mutex.h"
 #include "util/Memory.h"
 #include "util/Poison.h"
@@ -214,8 +218,8 @@ const SymbolicAddressSignature SASigStructNarrow = {
     SymbolicAddress::StructNarrow,
     _RoN,
     _Infallible,
-    4,
-    {_PTR, _I32, _I32, _RoN, _END}};
+    3,
+    {_PTR, _I32, _RoN, _END}};
 
 }  // namespace wasm
 }  // namespace js
@@ -300,17 +304,17 @@ static bool WasmHandleDebugTrap() {
   JitActivation* activation = CallingActivation();
   JSContext* cx = activation->cx();
   Frame* fp = activation->wasmExitFP();
-  Instance* instance = fp->tls->instance;
+  Instance* instance = GetNearestEffectiveTls(fp)->instance;
   const Code& code = instance->code();
   MOZ_ASSERT(code.metadata().debugEnabled);
 
   // The debug trap stub is the innermost frame. It's return address is the
   // actual trap site.
-  const CallSite* site = code.lookupCallSite(fp->returnAddress);
+  const CallSite* site = code.lookupCallSite(fp->returnAddress());
   MOZ_ASSERT(site);
 
   // Advance to the actual trapping frame.
-  fp = fp->callerFP;
+  fp = fp->wasmCaller();
   DebugFrame* debugFrame = DebugFrame::from(fp);
 
   if (site->kind() == CallSite::EnterFrame) {
@@ -333,7 +337,7 @@ static bool WasmHandleDebugTrap() {
     return true;
   }
   if (site->kind() == CallSite::LeaveFrame) {
-    if (!debugFrame->updateReturnJSValue()) {
+    if (!debugFrame->updateReturnJSValue(cx)) {
       return false;
     }
     bool ok = DebugAPI::onLeaveFrame(cx, debugFrame, nullptr, true);
@@ -505,7 +509,7 @@ static void* WasmHandleTrap() {
       if (!CheckRecursionLimit(cx)) {
         return nullptr;
       }
-      if (activation->wasmExitFP()->tls->isInterrupted()) {
+      if (activation->wasmExitTls()->isInterrupted()) {
         return CheckInterrupt(cx, activation);
       }
       return ReportError(cx, JSMSG_OVER_RECURSED);
@@ -519,10 +523,10 @@ static void* WasmHandleTrap() {
   MOZ_CRASH("unexpected trap");
 }
 
-static void WasmReportInt64JSCall() {
+static void WasmReportV128JSCall() {
   JSContext* cx = TlsContext.get();
   JS_ReportErrorNumberUTF8(cx, GetErrorMessage, nullptr,
-                           JSMSG_WASM_BAD_I64_TYPE);
+                           JSMSG_WASM_BAD_VAL_TYPE);
 }
 
 static int32_t CoerceInPlace_ToInt32(Value* rawVal) {
@@ -539,7 +543,6 @@ static int32_t CoerceInPlace_ToInt32(Value* rawVal) {
   return true;
 }
 
-#ifdef ENABLE_WASM_BIGINT
 static int32_t CoerceInPlace_ToBigInt(Value* rawVal) {
   JSContext* cx = TlsContext.get();
 
@@ -553,7 +556,6 @@ static int32_t CoerceInPlace_ToBigInt(Value* rawVal) {
   *rawVal = BigIntValue(bi);
   return true;
 }
-#endif
 
 static int32_t CoerceInPlace_ToNumber(Value* rawVal) {
   JSContext* cx = TlsContext.get();
@@ -598,6 +600,17 @@ static int32_t CoerceInPlace_JitEntry(int funcExportIndex, TlsData* tlsData,
         argv[i] = Int32Value(i32);
         break;
       }
+      case ValType::I64: {
+        // In this case we store a BigInt value as there is no value type
+        // corresponding directly to an I64. The conversion to I64 happens
+        // in the JIT entry stub.
+        BigInt* bigint = ToBigInt(cx, arg);
+        if (!bigint) {
+          return false;
+        }
+        argv[i] = BigIntValue(bigint);
+        break;
+      }
       case ValType::F32:
       case ValType::F64: {
         double dbl;
@@ -611,7 +624,7 @@ static int32_t CoerceInPlace_JitEntry(int funcExportIndex, TlsData* tlsData,
       }
       case ValType::Ref: {
         switch (fe.funcType().args()[i].refTypeKind()) {
-          case RefType::Any:
+          case RefType::Extern:
             // Leave Object and Null alone, we will unbox inline.  All we need
             // to do is convert other values to an Object representation.
             if (!arg.isObjectOrNull()) {
@@ -623,28 +636,18 @@ static int32_t CoerceInPlace_JitEntry(int funcExportIndex, TlsData* tlsData,
             }
             break;
           case RefType::Func:
-          case RefType::Null:
+          case RefType::Eq:
           case RefType::TypeIndex:
             // Guarded against by temporarilyUnsupportedReftypeForEntry()
             MOZ_CRASH("unexpected input argument in CoerceInPlace_JitEntry");
         }
         break;
       }
-#ifdef ENABLE_WASM_BIGINT
-      case ValType::I64: {
-        // In this case we store a BigInt value as there is no value type
-        // corresponding directly to an I64. The conversion to I64 happens
-        // in the JIT entry stub.
-        BigInt* bigint = ToBigInt(cx, arg);
-        if (!bigint) {
-          return false;
-        }
-        argv[i] = BigIntValue(bigint);
-        break;
+      case ValType::V128: {
+        // Guarded against by hasV128ArgOrRet()
+        MOZ_CRASH("unexpected input argument in CoerceInPlace_JitEntry");
       }
-#endif
       default: {
-        // Guarded against by temporarilyUnsupportedReftypeForEntry()
         MOZ_CRASH("unexpected input argument in CoerceInPlace_JitEntry");
       }
     }
@@ -653,14 +656,12 @@ static int32_t CoerceInPlace_JitEntry(int funcExportIndex, TlsData* tlsData,
   return true;
 }
 
-#ifdef ENABLE_WASM_BIGINT
 // Allocate a BigInt without GC, corresponds to the similar VMFunction.
 static BigInt* AllocateBigIntTenuredNoGC() {
   JSContext* cx = TlsContext.get();
 
   return js::AllocateBigInt<NoGC>(cx, gc::TenuredHeap);
 }
-#endif
 
 static int64_t DivI64(uint32_t x_hi, uint32_t x_lo, uint32_t y_hi,
                       uint32_t y_lo) {
@@ -796,52 +797,20 @@ void* wasm::AddressOf(SymbolicAddress imm, ABIFunctionType* abiType) {
     case SymbolicAddress::HandleTrap:
       *abiType = Args_General0;
       return FuncCast(WasmHandleTrap, *abiType);
-    case SymbolicAddress::ReportInt64JSCall:
+    case SymbolicAddress::ReportV128JSCall:
       *abiType = Args_General0;
-      return FuncCast(WasmReportInt64JSCall, *abiType);
-    case SymbolicAddress::CallImport_Void:
+      return FuncCast(WasmReportV128JSCall, *abiType);
+    case SymbolicAddress::CallImport_General:
       *abiType = MakeABIFunctionType(
           ArgType_Int32,
           {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_void, *abiType);
-    case SymbolicAddress::CallImport_I32:
-      *abiType = MakeABIFunctionType(
-          ArgType_Int32,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_i32, *abiType);
-    case SymbolicAddress::CallImport_I64:
-      *abiType = MakeABIFunctionType(
-          ArgType_Int32,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_i64, *abiType);
-    case SymbolicAddress::CallImport_F64:
-      *abiType = MakeABIFunctionType(
-          ArgType_Int32,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_f64, *abiType);
-    case SymbolicAddress::CallImport_FuncRef:
-      *abiType = MakeABIFunctionType(
-          ArgType_Int32,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_funcref, *abiType);
-    case SymbolicAddress::CallImport_AnyRef:
-      *abiType = MakeABIFunctionType(
-          ArgType_Int32,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_anyref, *abiType);
-    case SymbolicAddress::CallImport_NullRef:
-      *abiType = MakeABIFunctionType(
-          ArgType_Int32,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
-      return FuncCast(Instance::callImport_nullref, *abiType);
+      return FuncCast(Instance::callImport_general, *abiType);
     case SymbolicAddress::CoerceInPlace_ToInt32:
       *abiType = Args_General1;
       return FuncCast(CoerceInPlace_ToInt32, *abiType);
-#ifdef ENABLE_WASM_BIGINT
     case SymbolicAddress::CoerceInPlace_ToBigInt:
       *abiType = Args_General1;
       return FuncCast(CoerceInPlace_ToBigInt, *abiType);
-#endif
     case SymbolicAddress::CoerceInPlace_ToNumber:
       *abiType = Args_General1;
       return FuncCast(CoerceInPlace_ToNumber, *abiType);
@@ -854,11 +823,9 @@ void* wasm::AddressOf(SymbolicAddress imm, ABIFunctionType* abiType) {
     case SymbolicAddress::BoxValue_Anyref:
       *abiType = Args_General1;
       return FuncCast(BoxValue_Anyref, *abiType);
-#ifdef ENABLE_WASM_BIGINT
     case SymbolicAddress::AllocateBigInt:
       *abiType = Args_General0;
       return FuncCast(AllocateBigIntTenuredNoGC, *abiType);
-#endif
     case SymbolicAddress::DivI64:
       *abiType = Args_General4;
       return FuncCast(DivI64, *abiType);
@@ -1094,8 +1061,7 @@ void* wasm::AddressOf(SymbolicAddress imm, ABIFunctionType* abiType) {
       return FuncCast(Instance::structNew, *abiType);
     case SymbolicAddress::StructNarrow:
       *abiType = MakeABIFunctionType(
-          ArgType_General,
-          {ArgType_General, ArgType_Int32, ArgType_Int32, ArgType_General});
+          ArgType_General, {ArgType_General, ArgType_Int32, ArgType_General});
       MOZ_ASSERT(*abiType == ToABIType(SASigStructNarrow));
       return FuncCast(Instance::structNarrow, *abiType);
 
@@ -1131,21 +1097,13 @@ bool wasm::NeedsBuiltinThunk(SymbolicAddress sym) {
   // Some functions don't want to a thunk, because they already have one or
   // they don't have frame info.
   switch (sym) {
-    case SymbolicAddress::HandleDebugTrap:  // GenerateDebugTrapStub
-    case SymbolicAddress::HandleThrow:      // GenerateThrowStub
-    case SymbolicAddress::HandleTrap:       // GenerateTrapExit
-    case SymbolicAddress::CallImport_Void:  // GenerateImportInterpExit
-    case SymbolicAddress::CallImport_I32:
-    case SymbolicAddress::CallImport_I64:
-    case SymbolicAddress::CallImport_F64:
-    case SymbolicAddress::CallImport_FuncRef:
-    case SymbolicAddress::CallImport_AnyRef:
-    case SymbolicAddress::CallImport_NullRef:
+    case SymbolicAddress::HandleDebugTrap:        // GenerateDebugTrapStub
+    case SymbolicAddress::HandleThrow:            // GenerateThrowStub
+    case SymbolicAddress::HandleTrap:             // GenerateTrapExit
+    case SymbolicAddress::CallImport_General:     // GenerateImportInterpExit
     case SymbolicAddress::CoerceInPlace_ToInt32:  // GenerateImportJitExit
     case SymbolicAddress::CoerceInPlace_ToNumber:
-#if defined(ENABLE_WASM_BIGINT)
     case SymbolicAddress::CoerceInPlace_ToBigInt:
-#endif
     case SymbolicAddress::BoxValue_Anyref:
 #if defined(JS_CODEGEN_MIPS32)
     case SymbolicAddress::js_jit_gAtomic64Lock:
@@ -1175,9 +1133,7 @@ bool wasm::NeedsBuiltinThunk(SymbolicAddress sym) {
     case SymbolicAddress::aeabi_idivmod:
     case SymbolicAddress::aeabi_uidivmod:
 #endif
-#if defined(ENABLE_WASM_BIGINT)
     case SymbolicAddress::AllocateBigInt:
-#endif
     case SymbolicAddress::ModD:
     case SymbolicAddress::SinD:
     case SymbolicAddress::CosD:
@@ -1203,7 +1159,7 @@ bool wasm::NeedsBuiltinThunk(SymbolicAddress sym) {
     case SymbolicAddress::WaitI64:
     case SymbolicAddress::Wake:
     case SymbolicAddress::CoerceInPlace_JitEntry:
-    case SymbolicAddress::ReportInt64JSCall:
+    case SymbolicAddress::ReportV128JSCall:
     case SymbolicAddress::MemCopy:
     case SymbolicAddress::MemCopyShared:
     case SymbolicAddress::DataDrop:
@@ -1471,8 +1427,9 @@ bool wasm::EnsureBuiltinThunksInitialized() {
   MOZ_ASSERT(masm.callSiteTargets().empty());
   MOZ_ASSERT(masm.trapSites().empty());
 
-  if (!ExecutableAllocator::makeExecutableAndFlushICache(thunks->codeBase,
-                                                         thunks->codeSize)) {
+  if (!ExecutableAllocator::makeExecutableAndFlushICache(
+          FlushICacheSpec::LocalThreadOnly, thunks->codeBase,
+          thunks->codeSize)) {
     return false;
   }
 

@@ -8,6 +8,7 @@
 
 #include "ClientTiledPaintedLayer.h"
 #include "mozilla/StaticPrefs_layers.h"
+#include "mozilla/layers/APZUtils.h"
 #include "mozilla/layers/LayerMetricsWrapper.h"
 
 namespace mozilla {
@@ -188,8 +189,7 @@ void ClientMultiTiledLayerBuffer::Update(const nsIntRegion& newValidRegion,
   const size_t oldTileCount = mRetainedTiles.Length();
   const size_t newTileCount = newTiles.mSize.width * newTiles.mSize.height;
 
-  nsTArray<TileClient> oldRetainedTiles;
-  mRetainedTiles.SwapElements(oldRetainedTiles);
+  nsTArray<TileClient> oldRetainedTiles = std::move(mRetainedTiles);
   mRetainedTiles.SetLength(newTileCount);
 
   for (size_t oldIndex = 0; oldIndex < oldTileCount; oldIndex++) {

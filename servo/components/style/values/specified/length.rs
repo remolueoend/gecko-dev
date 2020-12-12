@@ -161,6 +161,10 @@ impl FontRelativeLength {
         }
 
         let reference_font_size = base_size.resolve(context);
+        let font_metrics_flag = match base_size {
+            FontBaseSize::CurrentStyle => ComputedValueFlags::DEPENDS_ON_SELF_FONT_METRICS,
+            FontBaseSize::InheritedStyle => ComputedValueFlags::DEPENDS_ON_INHERITED_FONT_METRICS,
+        };
         match *self {
             FontRelativeLength::Em(length) => {
                 if context.for_non_inherited_property.is_some() {
@@ -178,9 +182,7 @@ impl FontRelativeLength {
                 if context.for_non_inherited_property.is_some() {
                     context.rule_cache_conditions.borrow_mut().set_uncacheable();
                 }
-                context
-                    .builder
-                    .add_flags(ComputedValueFlags::DEPENDS_ON_FONT_METRICS);
+                context.builder.add_flags(font_metrics_flag);
                 // The x-height is an intrinsically horizontal metric.
                 let metrics =
                     query_font_metrics(context, base_size, FontMetricsOrientation::Horizontal);
@@ -199,9 +201,7 @@ impl FontRelativeLength {
                 if context.for_non_inherited_property.is_some() {
                     context.rule_cache_conditions.borrow_mut().set_uncacheable();
                 }
-                context
-                    .builder
-                    .add_flags(ComputedValueFlags::DEPENDS_ON_FONT_METRICS);
+                context.builder.add_flags(font_metrics_flag);
                 // https://drafts.csswg.org/css-values/#ch:
                 //
                 //     Equal to the used advance measure of the “0” (ZERO,
@@ -241,7 +241,7 @@ impl FontRelativeLength {
                 let reference_size = if context.builder.is_root_element || context.in_media_query {
                     reference_font_size
                 } else {
-                    computed::Length::new(context.device().root_font_size().to_f32_px())
+                    context.device().root_font_size()
                 };
                 (reference_size, length)
             },
@@ -1226,12 +1226,12 @@ impl Size {
     ) -> Result<Self, ParseError<'i>> {
         #[cfg(feature = "gecko")]
         {
-            if let Ok(l) = input.try(computed::ExtremumLength::parse) {
+            if let Ok(l) = input.try_parse(computed::ExtremumLength::parse) {
                 return Ok(GenericSize::ExtremumLength(l));
             }
         }
 
-        if input.try(|i| i.expect_ident_matching("auto")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
             return Ok(GenericSize::Auto);
         }
 
@@ -1267,12 +1267,12 @@ impl MaxSize {
     ) -> Result<Self, ParseError<'i>> {
         #[cfg(feature = "gecko")]
         {
-            if let Ok(l) = input.try(computed::ExtremumLength::parse) {
+            if let Ok(l) = input.try_parse(computed::ExtremumLength::parse) {
                 return Ok(GenericMaxSize::ExtremumLength(l));
             }
         }
 
-        if input.try(|i| i.expect_ident_matching("none")).is_ok() {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
             return Ok(GenericMaxSize::None);
         }
 

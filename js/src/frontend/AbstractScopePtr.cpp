@@ -16,69 +16,36 @@
 using namespace js;
 using namespace js::frontend;
 
-MutableHandle<ScopeCreationData> AbstractScopePtr::scopeCreationData() const {
+ScopeStencil& AbstractScopePtr::scopeData() const {
   const Deferred& data = scope_.as<Deferred>();
-  return data.compilationInfo.scopeCreationData[data.index.index];
+  return data.compilationInfo.stencil.scopeData[data.index.index];
 }
 
-// This is used during allocation of the scopes to ensure that we only
-// allocate GC scopes with GC-enclosing scopes. This can recurse through
-// the scope chain.
-//
-// Once all ScopeCreation for a compilation tree is centralized, this
-// will go away, to be replaced with a single top down GC scope allocation.
-//
-// This uses an outparam to disambiguate between the case where we have a
-// real nullptr scope and we failed to allocate a new scope because of OOM.
-bool AbstractScopePtr::getOrCreateScope(JSContext* cx,
-                                        MutableHandleScope scope) {
-  if (isScopeCreationData()) {
-    MutableHandle<ScopeCreationData> scd = scopeCreationData();
-    if (scd.get().hasScope()) {
-      scope.set(scd.get().getScope());
-      return true;
-    }
-
-    scope.set(scd.get().createScope(cx));
-    return scope;
-  }
-
-  scope.set(this->scope());
-  return true;
-}
-
-Scope* AbstractScopePtr::getExistingScope() const {
-  if (scope_.is<HeapPtrScope>()) {
-    return scope_.as<HeapPtrScope>();
-  }
-  MOZ_ASSERT(isScopeCreationData());
-  // This should only be called post-reification, as it needs to return a real
-  // Scope* unless it represents nullptr (in which case the variant should be
-  // in HeapPtrScope and handled above)
-  MOZ_ASSERT(scopeCreationData().get().getScope());
-  return scopeCreationData().get().getScope();
+CompilationInfo& AbstractScopePtr::compilationInfo() const {
+  const Deferred& data = scope_.as<Deferred>();
+  return data.compilationInfo;
 }
 
 ScopeKind AbstractScopePtr::kind() const {
   MOZ_ASSERT(!isNullptr());
-  if (isScopeCreationData()) {
-    return scopeCreationData().get().kind();
+  if (isScopeStencil()) {
+    return scopeData().kind();
   }
   return scope()->kind();
 }
 
 AbstractScopePtr AbstractScopePtr::enclosing() const {
   MOZ_ASSERT(!isNullptr());
-  if (isScopeCreationData()) {
-    return scopeCreationData().get().enclosing();
+  if (isScopeStencil()) {
+    return scopeData().enclosing(compilationInfo());
   }
   return AbstractScopePtr(scope()->enclosing());
 }
 
 bool AbstractScopePtr::hasEnvironment() const {
   MOZ_ASSERT(!isNullptr());
-  if (isScopeCreationData()) {
-    return scopeCreationData().get().hasEnvironment();
+  if (isScopeStencil()) {
+    return scopeData().hasEnvironment();
   }
   return scope()->hasEnvironment();
 }
@@ -87,25 +54,16 @@ bool AbstractScopePtr::isArrow() const {
   // nullptr will also fail the below assert, so effectively also checking
   // !isNullptr()
   MOZ_ASSERT(is<FunctionScope>());
-  if (isScopeCreationData()) {
-    return scopeCreationData().get().isArrow();
+  if (isScopeStencil()) {
+    return scopeData().isArrow();
   }
+  MOZ_ASSERT(scope()->as<FunctionScope>().canonicalFunction());
   return scope()->as<FunctionScope>().canonicalFunction()->isArrow();
 }
 
-JSFunction* AbstractScopePtr::canonicalFunction() const {
-  // nullptr will also fail the below assert, so effectively also checking
-  // !isNullptr()
-  MOZ_ASSERT(is<FunctionScope>());
-  if (isScopeCreationData()) {
-    return scopeCreationData().get().canonicalFunction();
-  }
-  return scope()->as<FunctionScope>().canonicalFunction();
-}
-
 uint32_t AbstractScopePtr::nextFrameSlot() const {
-  if (isScopeCreationData()) {
-    return scopeCreationData().get().nextFrameSlot();
+  if (isScopeStencil()) {
+    return scopeData().nextFrameSlot();
   }
 
   switch (kind()) {
@@ -117,6 +75,7 @@ uint32_t AbstractScopePtr::nextFrameSlot() const {
     case ScopeKind::SimpleCatch:
     case ScopeKind::Catch:
     case ScopeKind::FunctionLexical:
+    case ScopeKind::ClassBody:
       return scope()->as<LexicalScope>().nextFrameSlot();
     case ScopeKind::NamedLambda:
     case ScopeKind::StrictNamedLambda:

@@ -7,7 +7,10 @@
 #ifndef ProfilerChild_h
 #define ProfilerChild_h
 
+#include "mozilla/BaseProfilerDetail.h"
+#include "mozilla/DataMutex.h"
 #include "mozilla/PProfilerChild.h"
+#include "mozilla/ProfileBufferControlledChunkManager.h"
 #include "mozilla/RefPtr.h"
 
 class nsIThread;
@@ -32,6 +35,11 @@ class ProfilerChild final : public PProfilerChild,
 
   void Destroy();
 
+  // This should be called regularly from outside of the profiler lock.
+  static void ProcessPendingUpdate();
+
+  static bool IsLockedOnCurrentThread();
+
  private:
   virtual ~ProfilerChild();
 
@@ -41,6 +49,12 @@ class ProfilerChild final : public PProfilerChild,
   mozilla::ipc::IPCResult RecvStop() override;
   mozilla::ipc::IPCResult RecvPause() override;
   mozilla::ipc::IPCResult RecvResume() override;
+  mozilla::ipc::IPCResult RecvPauseSampling() override;
+  mozilla::ipc::IPCResult RecvResumeSampling() override;
+  mozilla::ipc::IPCResult RecvAwaitNextChunkManagerUpdate(
+      AwaitNextChunkManagerUpdateResolver&& aResolve) override;
+  mozilla::ipc::IPCResult RecvDestroyReleasedChunksAtOrBefore(
+      const TimeStamp& aTimeStamp) override;
   mozilla::ipc::IPCResult RecvGatherProfile(
       GatherProfileResolver&& aResolve) override;
   mozilla::ipc::IPCResult RecvClearAllPages() override;
@@ -49,8 +63,27 @@ class ProfilerChild final : public PProfilerChild,
 
   FORWARD_SHMEM_ALLOCATOR_TO(PProfilerChild)
 
+  void SetupChunkManager();
+  void ResetChunkManager();
+  void ResolveChunkUpdate(
+      PProfilerChild::AwaitNextChunkManagerUpdateResolver& aResolve);
+  void ProcessChunkManagerUpdate(
+      ProfileBufferControlledChunkManager::Update&& aUpdate);
+
   nsCOMPtr<nsIThread> mThread;
   bool mDestroyed;
+
+  ProfileBufferControlledChunkManager* mChunkManager = nullptr;
+  AwaitNextChunkManagerUpdateResolver mAwaitNextChunkManagerUpdateResolver;
+  ProfileBufferControlledChunkManager::Update mChunkManagerUpdate;
+
+  struct ProfilerChildAndUpdate {
+    RefPtr<ProfilerChild> mProfilerChild;
+    ProfileBufferControlledChunkManager::Update mUpdate;
+  };
+  static DataMutexBase<ProfilerChildAndUpdate,
+                       baseprofiler::detail::BaseProfilerMutex>
+      sPendingChunkManagerUpdate;
 };
 
 }  // namespace mozilla

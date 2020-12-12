@@ -13,7 +13,7 @@
 #include "mozilla/EventForwards.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIObjectFrame.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 #include "nsRegion.h"
 #include "nsDisplayList.h"
 #include "nsIReflowCallback.h"
@@ -51,7 +51,7 @@ class LayerManager;
 
 class PluginFrameDidCompositeObserver;
 
-class nsPluginFrame final : public nsFrame,
+class nsPluginFrame final : public nsIFrame,
                             public nsIObjectFrame,
                             public nsIReflowCallback {
  public:
@@ -85,12 +85,12 @@ class nsPluginFrame final : public nsFrame,
   virtual void BuildDisplayList(nsDisplayListBuilder* aBuilder,
                                 const nsDisplayListSet& aLists) override;
 
-  virtual nsresult HandleEvent(nsPresContext* aPresContext,
-                               mozilla::WidgetGUIEvent* aEvent,
-                               nsEventStatus* aEventStatus) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual nsresult HandleEvent(
+      nsPresContext* aPresContext, mozilla::WidgetGUIEvent* aEvent,
+      nsEventStatus* aEventStatus) override;
 
   virtual bool IsFrameOfType(uint32_t aFlags) const override {
-    return nsFrame::IsFrameOfType(
+    return nsIFrame::IsFrameOfType(
         aFlags & ~(nsIFrame::eReplaced | nsIFrame::eReplacedSizing));
   }
 

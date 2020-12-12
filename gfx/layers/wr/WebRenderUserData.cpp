@@ -6,6 +6,7 @@
 
 #include "WebRenderUserData.h"
 
+#include "BasicLayers.h"
 #include "mozilla/layers/AnimationHelper.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
 #include "mozilla/layers/ImageClient.h"
@@ -132,8 +133,7 @@ void WebRenderImageData::ClearImageKey() {
     if (mOwnsKey) {
       mManager->AddImageKeyForDiscard(mKey.value());
       if (mTextureOfImage) {
-        WrBridge()->ReleaseTextureOfImage(mKey.value(),
-                                          mManager->GetRenderRoot());
+        WrBridge()->ReleaseTextureOfImage(mKey.value());
         mTextureOfImage = nullptr;
       }
     }
@@ -182,8 +182,7 @@ Maybe<wr::ImageKey> WebRenderImageData::UpdateImageKey(
   ImageClientSingle* imageClient = mImageClient->AsImageClientSingle();
   uint32_t oldCounter = imageClient->GetLastUpdateGenerationCounter();
 
-  bool ret = imageClient->UpdateImage(aContainer, /* unused */ 0,
-                                      Some(mManager->GetRenderRoot()));
+  bool ret = imageClient->UpdateImage(aContainer, /* unused */ 0);
   RefPtr<TextureClient> currentTexture = imageClient->GetForwardedTexture();
   if (!ret || !currentTexture) {
     // Delete old key
@@ -233,16 +232,15 @@ already_AddRefed<ImageClient> WebRenderImageData::GetImageClient() {
 void WebRenderImageData::CreateAsyncImageWebRenderCommands(
     mozilla::wr::DisplayListBuilder& aBuilder, ImageContainer* aContainer,
     const StackingContextHelper& aSc, const LayoutDeviceRect& aBounds,
-    const LayoutDeviceRect& aSCBounds, const gfx::Matrix4x4& aSCTransform,
-    const gfx::MaybeIntSize& aScaleToSize, const wr::ImageRendering& aFilter,
-    const wr::MixBlendMode& aMixBlendMode, bool aIsBackfaceVisible) {
+    const LayoutDeviceRect& aSCBounds, VideoInfo::Rotation aRotation,
+    const wr::ImageRendering& aFilter, const wr::MixBlendMode& aMixBlendMode,
+    bool aIsBackfaceVisible) {
   MOZ_ASSERT(aContainer->IsAsync());
 
   if (mPipelineId.isSome() && mContainer != aContainer) {
     // In this case, we need to remove the existed pipeline and create new one
     // because the ImageContainer is changed.
-    WrBridge()->RemovePipelineIdForCompositable(mPipelineId.ref(),
-                                                mManager->GetRenderRoot());
+    WrBridge()->RemovePipelineIdForCompositable(mPipelineId.ref());
     mPipelineId.reset();
   }
 
@@ -251,8 +249,7 @@ void WebRenderImageData::CreateAsyncImageWebRenderCommands(
     mPipelineId =
         Some(WrBridge()->GetCompositorBridgeChild()->GetNextPipelineId());
     WrBridge()->AddPipelineIdForAsyncCompositable(
-        mPipelineId.ref(), aContainer->GetAsyncContainerHandle(),
-        mManager->GetRenderRoot());
+        mPipelineId.ref(), aContainer->GetAsyncContainerHandle());
     mContainer = aContainer;
   }
   MOZ_ASSERT(!mImageClient);
@@ -269,10 +266,8 @@ void WebRenderImageData::CreateAsyncImageWebRenderCommands(
   aBuilder.PushIFrame(r, aIsBackfaceVisible, mPipelineId.ref(),
                       /*ignoreMissingPipelines*/ false);
 
-  WrBridge()->AddWebRenderParentCommand(
-      OpUpdateAsyncImagePipeline(mPipelineId.value(), aSCBounds, aSCTransform,
-                                 aScaleToSize, aFilter, aMixBlendMode),
-      mManager->GetRenderRoot());
+  WrBridge()->AddWebRenderParentCommand(OpUpdateAsyncImagePipeline(
+      mPipelineId.value(), aSCBounds, aRotation, aFilter, aMixBlendMode));
 }
 
 void WebRenderImageData::CreateImageClientIfNeeded() {
@@ -375,7 +370,7 @@ WebRenderCanvasRendererAsync* WebRenderCanvasData::GetCanvasRenderer() {
 }
 
 WebRenderCanvasRendererAsync* WebRenderCanvasData::CreateCanvasRenderer() {
-  mCanvasRenderer = MakeUnique<WebRenderCanvasRendererAsync>(mManager);
+  mCanvasRenderer = new WebRenderCanvasRendererAsync(mManager);
   return mCanvasRenderer.get();
 }
 
@@ -398,10 +393,22 @@ WebRenderLocalCanvasData::WebRenderLocalCanvasData(
 
 WebRenderLocalCanvasData::~WebRenderLocalCanvasData() = default;
 
-void WebRenderLocalCanvasData::Present() {
+void WebRenderLocalCanvasData::RequestFrameReadback() {
   if (mGpuBridge) {
     mGpuBridge->SwapChainPresent(mExternalImageId, mGpuTextureId);
   }
+}
+
+void WebRenderLocalCanvasData::RefreshExternalImage() {
+  if (!mDirty) {
+    return;
+  }
+
+  const ImageIntRect dirtyRect(0, 0, mDescriptor.width, mDescriptor.height);
+  // Update the WR external image, forcing the composition of a new frame.
+  mManager->AsyncResourceUpdates().UpdatePrivateExternalImage(
+      mExternalImageId, mImageKey, mDescriptor, dirtyRect);
+  mDirty = false;
 }
 
 WebRenderRemoteData::WebRenderRemoteData(RenderRootStateManager* aManager,

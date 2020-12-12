@@ -5,14 +5,9 @@
 /* Places Organizer Sidebars */
 
 #placesList {
-  -moz-appearance: -moz-mac-source-list;
+  appearance: auto;
+  -moz-default-appearance: -moz-mac-source-list;
   width: 160px;
-}
-
-@media (-moz-mac-yosemite-theme: 0) {
-  #placesList {
-    box-shadow: inset -2px 0 0 hsla(0,0%,100%,.2);
-  }
 }
 
 #placesList > treechildren::-moz-tree-cell-text {
@@ -20,12 +15,14 @@
 }
 
 #placesList > treechildren::-moz-tree-row(selected) {
-  -moz-appearance: -moz-mac-source-list-selection;
+  appearance: auto;
+  -moz-default-appearance: -moz-mac-source-list-selection;
   -moz-font-smoothing-background-color: -moz-mac-source-list-selection;
 }
 
 #placesList > treechildren::-moz-tree-row(selected,focus) {
-  -moz-appearance: -moz-mac-active-source-list-selection;
+  appearance: auto;
+  -moz-default-appearance: -moz-mac-active-source-list-selection;
   -moz-font-smoothing-background-color: -moz-mac-active-source-list-selection;
 }
 
@@ -36,19 +33,6 @@
 #placesList > treechildren::-moz-tree-separator {
   border-top: 1px solid #505d6d;
   margin: 0 10px;
-}
-
-/* Match selected item styling for -moz-appearance values on OSX 10.9 */
-@media (-moz-mac-yosemite-theme: 0) {
-  #placesList > treechildren::-moz-tree-image(selected),
-  #placesList > treechildren::-moz-tree-twisty(selected),
-  #placesList > treechildren::-moz-tree-cell-text(selected) {
-    color: #fff;
-  }
-
-  #placesList > treechildren::-moz-tree-cell-text(selected) {
-    font-weight: bold;
-  }
 }
 
 #placesToolbar {
@@ -73,7 +57,8 @@
   margin: 4px 4px 5px;
   padding: 0;
   height: 22px;
-  -moz-appearance: toolbarbutton;
+  appearance: auto;
+  -moz-default-appearance: toolbarbutton;
 }
 
 #placesToolbar > toolbarbutton > .toolbarbutton-icon {
@@ -93,15 +78,15 @@
   margin-inline-end: 2px;
 }
 
-#placesToolbar > toolbarbutton[disabled="true"] > .toolbarbutton-icon,
+#placesToolbar > toolbarbutton[disabled] > .toolbarbutton-icon,
 #placesToolbar > toolbarbutton:not(:hover):-moz-window-inactive > .toolbarbutton-icon,
-#placesToolbar > toolbarbutton[type="menu"][disabled="true"] > .toolbarbutton-menu-dropmarker,
+#placesToolbar > toolbarbutton[type="menu"][disabled] > .toolbarbutton-menu-dropmarker,
 #placesToolbar > toolbarbutton:not(:hover):-moz-window-inactive[type="menu"] > .toolbarbutton-menu-dropmarker {
   opacity: .5;
 }
 
-#placesToolbar > toolbarbutton:-moz-window-inactive[disabled="true"] > .toolbarbutton-icon,
-#placesToolbar > toolbarbutton:-moz-window-inactive[type="menu"][disabled="true"] > .toolbarbutton-menu-dropmarker {
+#placesToolbar > toolbarbutton:-moz-window-inactive[disabled] > .toolbarbutton-icon,
+#placesToolbar > toolbarbutton:-moz-window-inactive[type="menu"][disabled] > .toolbarbutton-menu-dropmarker {
   opacity: .25;
 }
 
@@ -158,14 +143,14 @@
 }
 
 /* Info box */
-#detailsDeck {
+#detailsPane {
   border-top: 1px solid #919191;
   background-color: #f0f0f0;
   padding: 10px;
 }
 
 #placeContent {
-  -moz-appearance: none;
+  appearance: none;
   border: none;
 }
 
@@ -181,14 +166,6 @@
 /**
  * info pane
  */
-
-#infoBoxExpander {
-  margin: 2px;
-}
-
-#infoBoxExpanderLabel {
-  display: none;
-}
 
 #itemsCountText,
 #selectItemDescription {

@@ -59,6 +59,10 @@ button:disabled {
   display: none;
 }
 
+#openInNewWindowContainer {
+  display: none;
+}
+
 #certErrorAndCaptivePortalButtonContainer {
   display: none;
 }
@@ -108,7 +112,8 @@ body:not(.neterror) #advancedButton {
   display: block;
 }
 
-#certificateErrorReporting {
+#certificateErrorReporting,
+#blockingErrorReporting {
   display: none;
   padding-bottom: 10px;
 }

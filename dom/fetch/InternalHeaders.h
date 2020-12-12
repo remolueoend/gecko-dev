@@ -15,6 +15,8 @@
 #include "nsClassHashtable.h"
 #include "nsWrapperCache.h"
 
+class nsIRequest;
+
 namespace mozilla {
 
 class ErrorResult;
@@ -64,7 +66,7 @@ class InternalHeaders final {
     mGuard = aOther.mGuard;
   }
 
-  explicit InternalHeaders(const nsTArray<Entry>&& aHeaders,
+  explicit InternalHeaders(nsTArray<Entry>&& aHeaders,
                            HeadersGuardEnum aGuard = HeadersGuardEnum::None);
 
   InternalHeaders(const nsTArray<HeadersEntry>& aHeadersEntryList,
@@ -136,7 +138,7 @@ class InternalHeaders final {
   bool IsForbiddenResponseHeader(const nsCString& aName) const;
 
   bool IsInvalidMutableHeader(const nsCString& aName, ErrorResult& aRv) const {
-    return IsInvalidMutableHeader(aName, EmptyCString(), aRv);
+    return IsInvalidMutableHeader(aName, ""_ns, aRv);
   }
 
   bool IsInvalidMutableHeader(const nsCString& aName, const nsACString& aValue,

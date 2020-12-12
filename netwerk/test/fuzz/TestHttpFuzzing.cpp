@@ -1,11 +1,14 @@
 #include "mozilla/LoadInfo.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/SpinEventLoopUntil.h"
 
 #include "nsCOMPtr.h"
 #include "nsNetCID.h"
 #include "nsString.h"
 #include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
+#include "nsIChannel.h"
+#include "nsIHttpChannel.h"
 #include "nsILoadInfo.h"
 #include "nsIProxiedProtocolHandler.h"
 #include "nsIOService.h"
@@ -100,7 +103,7 @@ static int FuzzingRunNetworkHttp(const uint8_t* data, size_t size) {
                 nsIRequest::LOAD_FRESH_CONNECTION |
                 nsIChannel::LOAD_INITIAL_DOCUMENT_URI;
     nsSecurityFlags secFlags;
-    secFlags = nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL;
+    secFlags = nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL;
     uint32_t sandboxFlags = SANDBOXED_ORIGIN;
 
     nsCOMPtr<nsIChannel> channel;
@@ -120,11 +123,11 @@ static int FuzzingRunNetworkHttp(const uint8_t* data, size_t size) {
 
       nsCOMPtr<nsIProxyInfo> proxyInfo;
       rv = pps->NewProxyInfo(proxyType, proxyHost, 443,
-                             EmptyCString(),  // aProxyAuthorizationHeader
-                             EmptyCString(),  // aConnectionIsolationKey
-                             0,               // aFlags
-                             UINT32_MAX,      // aFailoverTimeout
-                             nullptr,         // aFailoverProxy
+                             ""_ns,       // aProxyAuthorizationHeader
+                             ""_ns,       // aConnectionIsolationKey
+                             0,           // aFlags
+                             UINT32_MAX,  // aFailoverTimeout
+                             nullptr,     // aFailoverProxy
                              getter_AddRefs(proxyInfo));
 
       if (NS_FAILED(rv)) {
@@ -190,7 +193,7 @@ static int FuzzingRunNetworkHttp(const uint8_t* data, size_t size) {
     nsCOMPtr<nsIHttpChannel> gHttpChannel;
 
     gHttpChannel = do_QueryInterface(channel);
-    rv = gHttpChannel->SetRequestMethod(NS_LITERAL_CSTRING("GET"));
+    rv = gHttpChannel->SetRequestMethod("GET"_ns);
     if (NS_FAILED(rv)) {
       MOZ_CRASH("SetRequestMethod on gHttpChannel failed.");
     }

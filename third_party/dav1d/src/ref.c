@@ -27,8 +27,6 @@
 
 #include "config.h"
 
-#include "common/mem.h"
-
 #include "src/ref.h"
 
 static void default_free_callback(const uint8_t *const data, void *const user_data) {
@@ -36,26 +34,46 @@ static void default_free_callback(const uint8_t *const data, void *const user_da
     dav1d_free_aligned(user_data);
 }
 
-Dav1dRef *dav1d_ref_create(const size_t size) {
-    Dav1dRef *res;
-    void *data = dav1d_alloc_aligned(size, 32);
-    if (!data) {
-        return NULL;
-    }
+Dav1dRef *dav1d_ref_create(size_t size) {
+    size = (size + sizeof(void*) - 1) & ~(sizeof(void*) - 1);
 
-    res = dav1d_ref_wrap(data, default_free_callback, data);
-    if (!res) {
-        dav1d_free_aligned(data);
-    } else {
-        res->data = data;
-    }
+    uint8_t *const data = dav1d_alloc_aligned(size + sizeof(Dav1dRef), 64);
+    if (!data) return NULL;
+
+    Dav1dRef *const res = (Dav1dRef*)(data + size);
+    res->const_data = res->user_data = res->data = data;
+    atomic_init(&res->ref_cnt, 1);
+    res->free_ref = 0;
+    res->free_callback = default_free_callback;
+
+    return res;
+}
+
+static void pool_free_callback(const uint8_t *const data, void *const user_data) {
+    dav1d_mem_pool_push((Dav1dMemPool*)data, user_data);
+}
+
+Dav1dRef *dav1d_ref_create_using_pool(Dav1dMemPool *const pool, size_t size) {
+    size = (size + sizeof(void*) - 1) & ~(sizeof(void*) - 1);
+
+    Dav1dMemPoolBuffer *const buf =
+        dav1d_mem_pool_pop(pool, size + sizeof(Dav1dRef));
+    if (!buf) return NULL;
+
+    Dav1dRef *const res = &((Dav1dRef*)buf)[-1];
+    res->data = buf->data;
+    res->const_data = pool;
+    atomic_init(&res->ref_cnt, 1);
+    res->free_ref = 0;
+    res->free_callback = pool_free_callback;
+    res->user_data = buf;
 
     return res;
 }
 
 Dav1dRef *dav1d_ref_wrap(const uint8_t *const ptr,
                          void (*free_callback)(const uint8_t *data, void *user_data),
-                         void *user_data)
+                         void *const user_data)
 {
     Dav1dRef *res = malloc(sizeof(Dav1dRef));
     if (!res) return NULL;
@@ -63,6 +81,7 @@ Dav1dRef *dav1d_ref_wrap(const uint8_t *const ptr,
     res->data = NULL;
     res->const_data = ptr;
     atomic_init(&res->ref_cnt, 1);
+    res->free_ref = 1;
     res->free_callback = free_callback;
     res->user_data = user_data;
 
@@ -80,8 +99,9 @@ void dav1d_ref_dec(Dav1dRef **const pref) {
     if (!ref) return;
 
     if (atomic_fetch_sub(&ref->ref_cnt, 1) == 1) {
+        const int free_ref = ref->free_ref;
         ref->free_callback(ref->const_data, ref->user_data);
-        free(ref);
+        if (free_ref) free(ref);
     }
     *pref = NULL;
 }

@@ -9,7 +9,9 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/Unused.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/PBackgroundFileHandleParent.h"
 #include "mozilla/dom/PBackgroundFileRequestParent.h"
@@ -21,6 +23,7 @@
 #include "nsDebug.h"
 #include "nsError.h"
 #include "nsIEventTarget.h"
+#include "nsIFile.h"
 #include "nsIFileStreams.h"
 #include "nsIInputStream.h"
 #include "nsIOutputStream.h"
@@ -46,8 +49,7 @@
 #  define ASSERT_UNLESS_FUZZING(...) MOZ_ASSERT(false, __VA_ARGS__)
 #endif
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::dom::quota;
 using namespace mozilla::ipc;
@@ -335,7 +337,7 @@ class FileHandleOp {
 
  protected:
   FileHandleOp(FileHandle* aFileHandle)
-      : mOwningEventTarget(GetCurrentThreadSerialEventTarget()),
+      : mOwningEventTarget(GetCurrentSerialEventTarget()),
         mFileHandle(aFileHandle)
 #ifdef DEBUG
         ,
@@ -608,7 +610,7 @@ nsresult ClampResultCode(nsresult aResultCode) {
  ******************************************************************************/
 
 FileHandleThreadPool::FileHandleThreadPool()
-    : mOwningEventTarget(GetCurrentThreadSerialEventTarget()),
+    : mOwningEventTarget(GetCurrentSerialEventTarget()),
       mShutdownRequested(false),
       mShutdownComplete(false) {
   AssertIsOnBackgroundThread();
@@ -760,7 +762,7 @@ nsresult FileHandleThreadPool::Init() {
 
   mThreadPool = new nsThreadPool();
 
-  nsresult rv = mThreadPool->SetName(NS_LITERAL_CSTRING("FileHandles"));
+  nsresult rv = mThreadPool->SetName("FileHandles"_ns);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
@@ -835,14 +837,10 @@ void FileHandleThreadPool::FinishFileHandle(FileHandle* aFileHandle) {
     mDirectoryInfos.Remove(directoryId);
 
     // See if we need to fire any complete callbacks.
-    uint32_t index = 0;
-    while (index < mCompleteCallbacks.Length()) {
-      if (MaybeFireCallback(mCompleteCallbacks[index].get())) {
-        mCompleteCallbacks.RemoveElementAt(index);
-      } else {
-        index++;
-      }
-    }
+    mCompleteCallbacks.RemoveElementsBy(
+        [this](const UniquePtr<StoragesCompleteCallback>& callback) {
+          return MaybeFireCallback(callback.get());
+        });
 
     if (mShutdownRequested && !mDirectoryInfos.Count()) {
       Cleanup();
@@ -1011,8 +1009,8 @@ void FileHandleThreadPool::DirectoryInfo::RemoveFileHandleQueue(
   MOZ_ASSERT(mFileHandleQueues.Length() == fileHandleCount - 1,
              "Didn't find the file handle we were looking for!");
 
-  nsTArray<DelayedEnqueueInfo> delayedEnqueueInfos;
-  delayedEnqueueInfos.SwapElements(mDelayedEnqueueInfos);
+  nsTArray<DelayedEnqueueInfo> delayedEnqueueInfos =
+      std::move(mDelayedEnqueueInfos);
 
   for (uint32_t index = 0; index < delayedEnqueueInfos.Length(); index++) {
     DelayedEnqueueInfo& delayedEnqueueInfo = delayedEnqueueInfos[index];
@@ -2199,5 +2197,4 @@ void FlushOp::GetResponse(FileRequestResponse& aResponse) {
   aResponse = FileRequestFlushResponse();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

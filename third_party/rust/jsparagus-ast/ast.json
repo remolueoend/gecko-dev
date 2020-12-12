@@ -35,6 +35,9 @@
   },
   "CompoundAssignmentOperator": {
     "_type": "enum",
+    "LogicalOr": null,
+    "LogicalAnd": null,
+    "Coalesce": null,
     "Add": null,
     "Sub": null,
     "Mul": null,
@@ -146,7 +149,7 @@
       "block": "Box<Statement>"
     },
     "IfStatement": "IfStatement",
-    "LabeledStatement": {
+    "LabelledStatement": {
       "label": "Label",
       "body": "Box<Statement>"
     },
@@ -286,11 +289,15 @@
     "StaticMemberExpressionTail": {
       "property": "IdentifierName"
     },
+    "PrivateFieldExpressionTail": {
+      "field": "PrivateIdentifier"
+    },
     "CallExpressionTail": {
       "arguments": "Arguments"
     },
     "ComputedMemberExpression": "ComputedMemberExpression",
     "StaticMemberExpression": "StaticMemberExpression",
+    "PrivateFieldExpression": "PrivateFieldExpression",
     "CallExpression": "CallExpression"
   },
   "PropertyName": {
@@ -397,12 +404,18 @@
   "MemberAssignmentTarget": {
     "_type": "enum",
     "ComputedMemberAssignmentTarget": "ComputedMemberAssignmentTarget",
+    "PrivateFieldAssignmentTarget": "PrivateFieldAssignmentTarget",
     "StaticMemberAssignmentTarget": "StaticMemberAssignmentTarget"
   },
   "ComputedMemberAssignmentTarget": {
     "_type": "struct",
     "object": "ExpressionOrSuper",
     "expression": "Box<Expression>"
+  },
+  "PrivateFieldAssignmentTarget": {
+    "_type": "struct",
+    "object": "ExpressionOrSuper",
+    "field": "PrivateIdentifier"
   },
   "StaticMemberAssignmentTarget": {
     "_type": "struct",
@@ -557,7 +570,7 @@
   },
   "Method": {
     "_type": "struct",
-    "name": "PropertyName",
+    "name": "ClassElementName",
     "is_async": "bool",
     "is_generator": "bool",
     "params": "FormalParameters",
@@ -565,12 +578,12 @@
   },
   "Getter": {
     "_type": "struct",
-    "property_name": "PropertyName",
+    "property_name": "ClassElementName",
     "body": "FunctionBody"
   },
   "Setter": {
     "_type": "struct",
-    "property_name": "PropertyName",
+    "property_name": "ClassElementName",
     "param": "Parameter",
     "body": "FunctionBody"
   },
@@ -630,7 +643,7 @@
   },
   "PrivateFieldExpression": {
     "_type": "struct",
-    "object": "Box<Expression>",
+    "object": "ExpressionOrSuper",
     "field": "PrivateIdentifier"
   },
   "TemplateExpressionElement": {

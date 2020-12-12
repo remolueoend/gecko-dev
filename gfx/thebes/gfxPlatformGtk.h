@@ -42,7 +42,8 @@ class gfxPlatformGtk final : public gfxPlatform {
 
   nsresult UpdateFontList() override;
 
-  void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh, Script aRunScript,
+  void GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
+                              eFontPresentation aPresentation,
                               nsTArray<const char*>& aFontList) override;
 
   gfxPlatformFontList* CreatePlatformFontList() override;
@@ -82,18 +83,13 @@ class gfxPlatformGtk final : public gfxPlatform {
       override;
 #endif
 
-#ifdef MOZ_X11
-  Display* GetCompositorDisplay() { return mCompositorDisplay; }
-#endif  // MOZ_X11
-
 #ifdef MOZ_WAYLAND
-  bool UseWaylandDMABufTextures();
-  bool UseWaylandDMABufWebGL();
-  bool UseWaylandHardwareVideoDecoding();
+  bool UseDMABufWebGL() override { return mUseWebGLDmabufBackend; }
+  void DisableDMABufWebGL() { mUseWebGLDmabufBackend = false; }
 #endif
 
   bool IsX11Display() { return mIsX11Display; }
-  bool IsWaylandDisplay() {
+  bool IsWaylandDisplay() override {
     return !mIsX11Display && !gfxPlatform::IsHeadless();
   }
 
@@ -107,8 +103,8 @@ class gfxPlatformGtk final : public gfxPlatform {
   nsTArray<uint8_t> GetPlatformCMSOutputProfileData() override;
 
   bool mIsX11Display;
-#ifdef MOZ_X11
-  Display* mCompositorDisplay;
+#ifdef MOZ_WAYLAND
+  bool mUseWebGLDmabufBackend;
 #endif
 };
 

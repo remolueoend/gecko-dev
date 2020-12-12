@@ -16,7 +16,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   ProfileAge: "resource://gre/modules/ProfileAge.jsm",
   UrlbarPrefs: "resource:///modules/UrlbarPrefs.jsm",
   UrlbarProviderSearchTips: "resource:///modules/UrlbarProviderSearchTips.jsm",
-  UrlbarTestUtils: "resource://testing-common/UrlbarTestUtils.jsm",
 });
 
 // These should match the same consts in UrlbarProviderSearchTips.jsm.
@@ -38,7 +37,6 @@ add_task(async function init() {
 
   await SpecialPowers.pushPrefEnv({
     set: [
-      ["browser.urlbar.update1.searchTips", true],
       [
         `browser.urlbar.tipShownCount.${UrlbarProviderSearchTips.TIP_TYPE.ONBOARD}`,
         0,
@@ -294,4 +292,22 @@ add_task(async function oncePerSession() {
   await withDNSRedirect("www.google.com", "/", async url => {
     await checkTab(window, url, UrlbarProviderSearchTips.TIP_TYPE.NONE);
   });
+});
+
+// When update 2 is enabled, the one-off search buttons should not be shown when
+// a search tip is shown even though the search string is empty.
+add_task(async function update2() {
+  // Set the update2 prefs.
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.urlbar.update2", true],
+      ["browser.urlbar.update2.oneOffsRefresh", true],
+    ],
+  });
+  await checkTab(
+    window,
+    "about:newtab",
+    UrlbarProviderSearchTips.TIP_TYPE.ONBOARD
+  );
+  await SpecialPowers.popPrefEnv();
 });

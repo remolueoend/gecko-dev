@@ -12,13 +12,13 @@
 #include "jsapi.h"
 #include "js/Array.h"  // JS::GetArrayLength
 #include "mozilla/FloatingPoint.h"
-#include "nsLayoutUtils.h"
 
 class nsIPrincipal;
 
 namespace mozilla {
 
 namespace dom {
+class Document;
 class HTMLCanvasElement;
 }  // namespace dom
 

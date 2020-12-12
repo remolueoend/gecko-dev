@@ -18,7 +18,7 @@ const { AppConstants } = require("resource://gre/modules/AppConstants.jsm");
 const EXPECTED_MESSAGES = [
   {
     text: `This page uses the non standard property “zoom”`,
-    count: isFissionEnabled() ? 2 : 4,
+    count: isFissionEnabled() ? 1 : 2,
     visibleWhenFissionEnabled: true,
   },
   {
@@ -26,21 +26,21 @@ const EXPECTED_MESSAGES = [
     visibleWhenFissionEnabled: true,
   },
   {
-    text: `Some cookies are misusing the “sameSite“ attribute, so it won’t work as expected`,
+    text: `Some cookies are misusing the “SameSite“ attribute, so it won’t work as expected`,
     visibleWhenFissionEnabled: true,
     nightlyOnly: true,
   },
   {
-    text: `InvalidStateError: XMLHttpRequest state must be OPENED.`,
+    text: `Uncaught DOMException: XMLHttpRequest state must be OPENED.`,
     visibleWhenFissionEnabled: true,
   },
   {
-    text: `SyntaxError: missing ) after argument list`,
+    text: `Uncaught SyntaxError: missing ) after argument list`,
     count: 2,
     visibleWhenFissionEnabled: false,
   },
   {
-    text: `ReferenceError: Bootloaddisableder is not defined`,
+    text: `Uncaught ReferenceError: Bootloaddisableder is not defined`,
     count: 4,
     visibleWhenFissionEnabled: false,
   },

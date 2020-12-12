@@ -9,6 +9,7 @@
 #include "HashStore.h"
 #include "LookupCacheV4.h"
 #include "mozilla/Components.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/Unused.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsIThread.h"
@@ -19,7 +20,7 @@
 using namespace mozilla;
 using namespace mozilla::safebrowsing;
 
-#define GTEST_SAFEBROWSING_DIR NS_LITERAL_CSTRING("safebrowsing")
+#define GTEST_SAFEBROWSING_DIR "safebrowsing"_ns
 
 template <typename Function>
 void RunTestInNewThread(Function&& aFunction) {
@@ -214,7 +215,7 @@ static nsresult BuildCache(LookupCacheV4* cache,
 template <typename T>
 RefPtr<T> SetupLookupCache(const _PrefixArray& aPrefixArray,
                            nsCOMPtr<nsIFile>& aFile) {
-  RefPtr<T> cache = new T(GTEST_TABLE_V4, EmptyCString(), aFile);
+  RefPtr<T> cache = new T(GTEST_TABLE_V4, ""_ns, aFile);
 
   nsresult rv = cache->Init();
   EXPECT_EQ(rv, NS_OK);
@@ -232,7 +233,7 @@ RefPtr<T> SetupLookupCache(const _PrefixArray& aPrefixArray) {
 
   file->AppendNative(GTEST_SAFEBROWSING_DIR);
 
-  RefPtr<T> cache = new T(GTEST_TABLE_V4, EmptyCString(), file);
+  RefPtr<T> cache = new T(GTEST_TABLE_V4, ""_ns, file);
   nsresult rv = cache->Init();
   EXPECT_EQ(rv, NS_OK);
 

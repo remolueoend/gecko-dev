@@ -8,6 +8,7 @@
 #include "mozilla/AnimationComparator.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/SVGUtils.h"
 #include "mozilla/dom/AnimatableBinding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLInputElement.h"
@@ -18,11 +19,9 @@
 #include "nsIRadioVisitor.h"
 #include "nsIFormControl.h"
 #include "nsLayoutUtils.h"
-#include "nsSVGUtils.h"
 #include "nsWindowSizes.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 DocumentOrShadowRoot::DocumentOrShadowRoot(ShadowRoot* aShadowRoot)
     : mAsNode(aShadowRoot), mKind(Kind::ShadowRoot) {
@@ -172,7 +171,7 @@ void DocumentOrShadowRoot::SetAdoptedStyleSheets(
   mAdoptedStyleSheets.SetCapacity(aAdoptedStyleSheets.Length());
 
   // Only add sheets that are not already in the common prefix.
-  for (const auto& sheet : MakeSpan(aAdoptedStyleSheets).From(commonPrefix)) {
+  for (const auto& sheet : Span(aAdoptedStyleSheets).From(commonPrefix)) {
     if (MOZ_UNLIKELY(!set.EnsureInserted(sheet))) {
       // The idea is that this case is rare, so we pay the price of removing the
       // old sheet from the styles and append it later rather than the other way
@@ -333,6 +332,7 @@ Element* DocumentOrShadowRoot::GetFullscreenElement() {
 namespace {
 
 using FrameForPointOption = nsLayoutUtils::FrameForPointOption;
+using FrameForPointOptions = nsLayoutUtils::FrameForPointOptions;
 
 // Whether only one node or multiple nodes is requested.
 enum class Multiple {
@@ -361,9 +361,9 @@ nsINode* CastTo<nsINode>(nsIContent* aContent) {
 
 template <typename NodeOrElement>
 static void QueryNodesFromRect(DocumentOrShadowRoot& aRoot, const nsRect& aRect,
-                               EnumSet<FrameForPointOption> aOptions,
+                               FrameForPointOptions aOptions,
                                FlushLayout aShouldFlushLayout,
-                               Multiple aMultiple,
+                               Multiple aMultiple, ViewportType aViewportType,
                                nsTArray<RefPtr<NodeOrElement>>& aNodes) {
   static_assert(std::is_same<nsINode, NodeOrElement>::value ||
                     std::is_same<Element, NodeOrElement>::value,
@@ -391,11 +391,12 @@ static void QueryNodesFromRect(DocumentOrShadowRoot& aRoot, const nsRect& aRect,
     return;  // return null to premature XUL callers as a reminder to wait
   }
 
-  aOptions += FrameForPointOption::IgnorePaintSuppression;
-  aOptions += FrameForPointOption::IgnoreCrossDoc;
+  aOptions.mBits += FrameForPointOption::IgnorePaintSuppression;
+  aOptions.mBits += FrameForPointOption::IgnoreCrossDoc;
 
   AutoTArray<nsIFrame*, 8> frames;
-  nsLayoutUtils::GetFramesForArea(rootFrame, aRect, frames, aOptions);
+  nsLayoutUtils::GetFramesForArea({rootFrame, aViewportType}, aRect, frames,
+                                  aOptions);
 
   for (nsIFrame* frame : frames) {
     nsIContent* content = doc->GetContentInThisDocument(frame);
@@ -410,8 +411,7 @@ static void QueryNodesFromRect(DocumentOrShadowRoot& aRoot, const nsRect& aRect,
       // SVG 'text' element's SVGTextFrame doesn't respond to hit-testing, so
       // if 'content' is a child of such an element then we need to manually
       // defer to the parent here.
-      if (aMultiple == Multiple::Yes &&
-          !nsSVGUtils::IsInSVGTextSubtree(frame)) {
+      if (aMultiple == Multiple::Yes && !SVGUtils::IsInSVGTextSubtree(frame)) {
         continue;
       }
 
@@ -437,12 +437,12 @@ static void QueryNodesFromRect(DocumentOrShadowRoot& aRoot, const nsRect& aRect,
 
 template <typename NodeOrElement>
 static void QueryNodesFromPoint(DocumentOrShadowRoot& aRoot, float aX, float aY,
-                                EnumSet<FrameForPointOption> aOptions,
+                                FrameForPointOptions aOptions,
                                 FlushLayout aShouldFlushLayout,
-                                Multiple aMultiple,
+                                Multiple aMultiple, ViewportType aViewportType,
                                 nsTArray<RefPtr<NodeOrElement>>& aNodes) {
   // As per the spec, we return null if either coord is negative.
-  if (!aOptions.contains(FrameForPointOption::IgnoreRootScrollFrame) &&
+  if (!aOptions.mBits.contains(FrameForPointOption::IgnoreRootScrollFrame) &&
       (aX < 0 || aY < 0)) {
     return;
   }
@@ -451,35 +451,37 @@ static void QueryNodesFromPoint(DocumentOrShadowRoot& aRoot, float aX, float aY,
   nscoord y = nsPresContext::CSSPixelsToAppUnits(aY);
   nsPoint pt(x, y);
   QueryNodesFromRect(aRoot, nsRect(pt, nsSize(1, 1)), aOptions,
-                     aShouldFlushLayout, aMultiple, aNodes);
+                     aShouldFlushLayout, aMultiple, aViewportType, aNodes);
 }
 
 }  // namespace
 
 Element* DocumentOrShadowRoot::ElementFromPoint(float aX, float aY) {
-  return ElementFromPointHelper(aX, aY, false, true);
+  return ElementFromPointHelper(aX, aY, false, true, ViewportType::Layout);
 }
 
 void DocumentOrShadowRoot::ElementsFromPoint(
     float aX, float aY, nsTArray<RefPtr<Element>>& aElements) {
   QueryNodesFromPoint(*this, aX, aY, {}, FlushLayout::Yes, Multiple::Yes,
-                      aElements);
+                      ViewportType::Layout, aElements);
 }
 
 void DocumentOrShadowRoot::NodesFromPoint(float aX, float aY,
                                           nsTArray<RefPtr<nsINode>>& aNodes) {
   QueryNodesFromPoint(*this, aX, aY, {}, FlushLayout::Yes, Multiple::Yes,
-                      aNodes);
+                      ViewportType::Layout, aNodes);
 }
 
 nsINode* DocumentOrShadowRoot::NodeFromPoint(float aX, float aY) {
   AutoTArray<RefPtr<nsINode>, 1> nodes;
-  QueryNodesFromPoint(*this, aX, aY, {}, FlushLayout::Yes, Multiple::No, nodes);
+  QueryNodesFromPoint(*this, aX, aY, {}, FlushLayout::Yes, Multiple::No,
+                      ViewportType::Layout, nodes);
   return nodes.SafeElementAt(0);
 }
 
 Element* DocumentOrShadowRoot::ElementFromPointHelper(
-    float aX, float aY, bool aIgnoreRootScrollFrame, bool aFlushLayout) {
+    float aX, float aY, bool aIgnoreRootScrollFrame, bool aFlushLayout,
+    ViewportType aViewportType) {
   EnumSet<FrameForPointOption> options;
   if (aIgnoreRootScrollFrame) {
     options += FrameForPointOption::IgnoreRootScrollFrame;
@@ -488,7 +490,8 @@ Element* DocumentOrShadowRoot::ElementFromPointHelper(
   auto flush = aFlushLayout ? FlushLayout::Yes : FlushLayout::No;
 
   AutoTArray<RefPtr<Element>, 1> elements;
-  QueryNodesFromPoint(*this, aX, aY, options, flush, Multiple::No, elements);
+  QueryNodesFromPoint(*this, aX, aY, options, flush, Multiple::No,
+                      aViewportType, elements);
   return elements.SafeElementAt(0);
 }
 
@@ -497,6 +500,7 @@ void DocumentOrShadowRoot::NodesFromRect(float aX, float aY, float aTopSize,
                                          float aLeftSize,
                                          bool aIgnoreRootScrollFrame,
                                          bool aFlushLayout, bool aOnlyVisible,
+                                         float aVisibleThreshold,
                                          nsTArray<RefPtr<nsINode>>& aReturn) {
   // Following the same behavior of elementFromPoint,
   // we don't return anything if either coord is negative
@@ -511,16 +515,18 @@ void DocumentOrShadowRoot::NodesFromRect(float aX, float aY, float aTopSize,
 
   nsRect rect(x, y, w, h);
 
-  EnumSet<FrameForPointOption> options;
+  FrameForPointOptions options;
   if (aIgnoreRootScrollFrame) {
-    options += FrameForPointOption::IgnoreRootScrollFrame;
+    options.mBits += FrameForPointOption::IgnoreRootScrollFrame;
   }
   if (aOnlyVisible) {
-    options += FrameForPointOption::OnlyVisible;
+    options.mBits += FrameForPointOption::OnlyVisible;
+    options.mVisibleThreshold = aVisibleThreshold;
   }
 
   auto flush = aFlushLayout ? FlushLayout::Yes : FlushLayout::No;
-  QueryNodesFromRect(*this, rect, options, flush, Multiple::Yes, aReturn);
+  QueryNodesFromRect(*this, rect, options, flush, Multiple::Yes,
+                     ViewportType::Layout, aReturn);
 }
 
 Element* DocumentOrShadowRoot::AddIDTargetObserver(nsAtom* aID,
@@ -763,36 +769,45 @@ int32_t DocumentOrShadowRoot::StyleOrderIndexOfSheet(
 
 void DocumentOrShadowRoot::GetAdoptedStyleSheets(
     nsTArray<RefPtr<StyleSheet>>& aAdoptedStyleSheets) const {
-  aAdoptedStyleSheets = mAdoptedStyleSheets;
+  aAdoptedStyleSheets = mAdoptedStyleSheets.Clone();
+}
+
+void DocumentOrShadowRoot::TraverseSheetRefInStylesIfApplicable(
+    StyleSheet& aSheet, nsCycleCollectionTraversalCallback& cb) {
+  if (!aSheet.IsApplicable()) {
+    return;
+  }
+  if (mKind == Kind::ShadowRoot) {
+    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mServoStyles->sheets[i]");
+    cb.NoteXPCOMChild(&aSheet);
+  } else if (AsNode().AsDocument()->StyleSetFilled()) {
+    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(
+        cb, "mStyleSet->mRawSet.stylist.stylesheets.<origin>[i]");
+    cb.NoteXPCOMChild(&aSheet);
+  }
+}
+
+void DocumentOrShadowRoot::TraverseStyleSheets(
+    nsTArray<RefPtr<StyleSheet>>& aSheets, const char* aEdgeName,
+    nsCycleCollectionTraversalCallback& cb) {
+  MOZ_ASSERT(aEdgeName);
+  MOZ_ASSERT(&aSheets != &mAdoptedStyleSheets);
+  for (StyleSheet* sheet : aSheets) {
+    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, aEdgeName);
+    cb.NoteXPCOMChild(sheet);
+    TraverseSheetRefInStylesIfApplicable(*sheet, cb);
+  }
 }
 
 void DocumentOrShadowRoot::Traverse(DocumentOrShadowRoot* tmp,
                                     nsCycleCollectionTraversalCallback& cb) {
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mStyleSheets)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mDOMStyleSheets)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAdoptedStyleSheets)
+  tmp->TraverseStyleSheets(tmp->mStyleSheets, "mStyleSheets[i]", cb);
 
-  auto NoteSheetIfApplicable = [&](StyleSheet& aSheet) {
-    if (!aSheet.IsApplicable()) {
-      return;
-    }
-    // The style set or mServoStyles keep more references to it if the sheet
-    // is applicable.
-    if (tmp->mKind == Kind::ShadowRoot) {
-      NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mServoStyles->sheets[i]");
-      cb.NoteXPCOMChild(&aSheet);
-    } else if (tmp->AsNode().AsDocument()->StyleSetFilled()) {
-      NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(
-          cb, "mStyleSet->mRawSet.stylist.stylesheets.author[i]");
-      cb.NoteXPCOMChild(&aSheet);
-    }
-  };
-
-  for (auto& sheet : tmp->mStyleSheets) {
-    NoteSheetIfApplicable(*sheet);
-  }
-
-  tmp->EnumerateUniqueAdoptedStyleSheetsBackToFront(NoteSheetIfApplicable);
+  tmp->EnumerateUniqueAdoptedStyleSheetsBackToFront([&](StyleSheet& aSheet) {
+    tmp->TraverseSheetRefInStylesIfApplicable(aSheet, cb);
+  });
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAdoptedStyleSheets);
 
   for (auto iter = tmp->mIdentifierMap.ConstIter(); !iter.Done(); iter.Next()) {
     iter.Get()->Traverse(&cb);
@@ -813,20 +828,26 @@ void DocumentOrShadowRoot::Traverse(DocumentOrShadowRoot* tmp,
   }
 }
 
+void DocumentOrShadowRoot::UnlinkStyleSheets(
+    nsTArray<RefPtr<StyleSheet>>& aSheets) {
+  MOZ_ASSERT(&aSheets != &mAdoptedStyleSheets);
+  for (StyleSheet* sheet : aSheets) {
+    sheet->ClearAssociatedDocumentOrShadowRoot();
+    RemoveSheetFromStylesIfApplicable(*sheet);
+  }
+  aSheets.Clear();
+}
+
 void DocumentOrShadowRoot::Unlink(DocumentOrShadowRoot* tmp) {
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mDOMStyleSheets);
-  for (StyleSheet* sheet : tmp->mStyleSheets) {
-    sheet->ClearAssociatedDocumentOrShadowRoot();
-    tmp->RemoveSheetFromStylesIfApplicable(*sheet);
-  }
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mStyleSheets);
-  for (StyleSheet* sheet : tmp->mAdoptedStyleSheets) {
-    sheet->RemoveAdopter(*tmp);
-  }
+  tmp->UnlinkStyleSheets(tmp->mStyleSheets);
+  tmp->EnumerateUniqueAdoptedStyleSheetsBackToFront([&](StyleSheet& aSheet) {
+    aSheet.RemoveAdopter(*tmp);
+    tmp->RemoveSheetFromStylesIfApplicable(aSheet);
+  });
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mAdoptedStyleSheets);
   tmp->mIdentifierMap.Clear();
   tmp->mRadioGroups.Clear();
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

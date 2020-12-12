@@ -7,6 +7,7 @@
 #include "mozilla/layers/CompositorManagerParent.h"
 #include "mozilla/gfx/GPUParent.h"
 #include "mozilla/webrender/RenderThread.h"
+#include "mozilla/ipc/Endpoint.h"
 #include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/ContentCompositorBridgeParent.h"
 #include "mozilla/layers/CompositorThread.h"
@@ -68,7 +69,7 @@ bool CompositorManagerParent::Create(
       NewRunnableMethod<Endpoint<PCompositorManagerParent>&&, bool>(
           "CompositorManagerParent::Bind", bridge,
           &CompositorManagerParent::Bind, std::move(aEndpoint), aIsRoot);
-  CompositorThreadHolder::Loop()->PostTask(runnable.forget());
+  CompositorThread()->Dispatch(runnable.forget());
   return true;
 }
 
@@ -159,7 +160,7 @@ void CompositorManagerParent::ActorDestroy(ActorDestroyReason aReason) {
 }
 
 void CompositorManagerParent::ActorDealloc() {
-  MessageLoop::current()->PostTask(
+  GetCurrentSerialEventTarget()->Dispatch(
       NewRunnableMethod("layers::CompositorManagerParent::DeferredDestroy",
                         this, &CompositorManagerParent::DeferredDestroy));
 
@@ -201,7 +202,7 @@ void CompositorManagerParent::Shutdown() {
   MOZ_ASSERT(NS_IsMainThread());
 
 #ifdef COMPOSITOR_MANAGER_PARENT_EXPLICIT_SHUTDOWN
-  CompositorThreadHolder::Loop()->PostTask(NS_NewRunnableFunction(
+  CompositorThread()->Dispatch(NS_NewRunnableFunction(
       "layers::CompositorManagerParent::Shutdown",
       []() -> void { CompositorManagerParent::ShutdownInternal(); }));
 #endif
@@ -307,7 +308,7 @@ mozilla::ipc::IPCResult CompositorManagerParent::RecvReportMemory(
   // thread, so we can't just pass it over to the renderer thread. We use
   // an intermediate MozPromise instead.
   wr::RenderThread::AccumulateMemoryReport(aggregate)->Then(
-      CompositorThreadHolder::Loop()->SerialEventTarget(), __func__,
+      CompositorThread(), __func__,
       [resolver = std::move(aResolver)](MemoryReport aReport) {
         resolver(aReport);
       },

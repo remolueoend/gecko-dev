@@ -21,16 +21,22 @@
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/dom/BlobURLProtocolHandler.h"
 #include "mozilla/dom/ChromeUtils.h"
+#include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/nsMixedContentBlocker.h"
 #include "mozilla/Components.h"
 #include "mozilla/dom/StorageUtils.h"
 #include "mozilla/dom/StorageUtils.h"
 #include "nsIURL.h"
+#include "nsEffectiveTLDService.h"
+#include "nsIURIMutator.h"
+#include "mozilla/StaticPrefs_permissions.h"
+#include "nsIURIMutator.h"
 #include "prnetdb.h"
 #include "nsIURIFixup.h"
 #include "mozilla/dom/StorageUtils.h"
-
+#include "mozilla/ContentBlocking.h"
+#include "nsPIDOMWindow.h"
 #include "nsIURIMutator.h"
 
 #include "json/json.h"
@@ -100,7 +106,21 @@ BasePrincipal::GetOriginNoSuffix(nsACString& aOrigin) {
 NS_IMETHODIMP
 BasePrincipal::GetSiteOrigin(nsACString& aSiteOrigin) {
   MOZ_ASSERT(mInitialized);
-  return GetOrigin(aSiteOrigin);
+
+  nsresult rv = GetSiteOriginNoSuffix(aSiteOrigin);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsAutoCString suffix;
+  rv = GetOriginSuffix(suffix);
+  NS_ENSURE_SUCCESS(rv, rv);
+  aSiteOrigin.Append(suffix);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BasePrincipal::GetSiteOriginNoSuffix(nsACString& aSiteOrigin) {
+  MOZ_ASSERT(mInitialized);
+  return GetOriginNoSuffix(aSiteOrigin);
 }
 
 // Returns the inner Json::value of the serialized principal
@@ -317,6 +337,19 @@ nsresult BasePrincipal::ToJSON(nsACString& aResult) {
   return NS_OK;
 }
 
+bool BasePrincipal::FastSubsumesIgnoringFPD(
+    nsIPrincipal* aOther, DocumentDomainConsideration aConsideration) {
+  MOZ_ASSERT(aOther);
+
+  if (Kind() == eContentPrincipal &&
+      !dom::ChromeUtils::IsOriginAttributesEqualIgnoringFPD(
+          mOriginAttributes, Cast(aOther)->mOriginAttributes)) {
+    return false;
+  }
+
+  return SubsumesInternal(aOther, aConsideration);
+}
+
 bool BasePrincipal::Subsumes(nsIPrincipal* aOther,
                              DocumentDomainConsideration aConsideration) {
   MOZ_ASSERT(aOther);
@@ -340,6 +373,103 @@ BasePrincipal::Equals(nsIPrincipal* aOther, bool* aResult) {
 
   *aResult = FastEquals(aOther);
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BasePrincipal::EqualsForPermission(nsIPrincipal* aOther, bool aExactHost,
+                                   bool* aResult) {
+  *aResult = false;
+  NS_ENSURE_ARG_POINTER(aOther);
+  NS_ENSURE_ARG_POINTER(aResult);
+
+  // If the principals are equal, then they match.
+  if (FastEquals(aOther)) {
+    *aResult = true;
+    return NS_OK;
+  }
+
+  // If we are matching with an exact host, we're done now - the permissions
+  // don't match otherwise, we need to start comparing subdomains!
+  if (aExactHost) {
+    return NS_OK;
+  }
+
+  // Compare their OriginAttributes
+  const mozilla::OriginAttributes& theirAttrs = aOther->OriginAttributesRef();
+  const mozilla::OriginAttributes& ourAttrs = OriginAttributesRef();
+
+  if (theirAttrs != ourAttrs) {
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIURI> ourURI;
+  nsresult rv = GetURI(getter_AddRefs(ourURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+  auto* basePrin = BasePrincipal::Cast(aOther);
+
+  nsCOMPtr<nsIURI> otherURI;
+  rv = basePrin->GetURI(getter_AddRefs(otherURI));
+  NS_ENSURE_SUCCESS(rv, rv);
+  // Compare schemes
+  nsAutoCString otherScheme;
+  rv = otherURI->GetScheme(otherScheme);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  nsAutoCString ourScheme;
+  rv = ourURI->GetScheme(ourScheme);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (otherScheme != ourScheme) {
+    return NS_OK;
+  }
+
+  // Compare ports
+  int32_t otherPort;
+  rv = otherURI->GetPort(&otherPort);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  int32_t ourPort;
+  rv = ourURI->GetPort(&ourPort);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (otherPort != ourPort) {
+    return NS_OK;
+  }
+
+  // Check if the host or any subdomain of their host matches.
+  nsAutoCString otherHost;
+  rv = otherURI->GetHost(otherHost);
+  if (NS_FAILED(rv) || otherHost.IsEmpty()) {
+    return NS_OK;
+  }
+
+  nsAutoCString ourHost;
+  rv = ourURI->GetHost(ourHost);
+  if (NS_FAILED(rv) || ourHost.IsEmpty()) {
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIEffectiveTLDService> tldService =
+      do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID);
+  if (!tldService) {
+    NS_ERROR("Should have a tld service!");
+    return NS_ERROR_FAILURE;
+  }
+
+  // This loop will not loop forever, as GetNextSubDomain will eventually fail
+  // with NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS.
+  while (otherHost != ourHost) {
+    rv = tldService->GetNextSubDomain(otherHost, otherHost);
+    if (NS_FAILED(rv)) {
+      if (rv == NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS) {
+        return NS_OK;
+      }
+      return rv;
+    }
+  }
+
+  *aResult = true;
   return NS_OK;
 }
 
@@ -454,6 +584,11 @@ nsresult BasePrincipal::CheckMayLoadHelper(nsIURI* aURI,
 
 NS_IMETHODIMP
 BasePrincipal::IsThirdPartyURI(nsIURI* aURI, bool* aRes) {
+  if (IsSystemPrincipal() || (AddonPolicy() && AddonAllowsLoad(aURI))) {
+    *aRes = false;
+    return NS_OK;
+  }
+
   *aRes = true;
   // If we do not have a URI its always 3rd party.
   nsCOMPtr<nsIURI> prinURI;
@@ -474,6 +609,19 @@ BasePrincipal::IsThirdPartyPrincipal(nsIPrincipal* aPrin, bool* aRes) {
     return NS_OK;
   }
   return aPrin->IsThirdPartyURI(prinURI, aRes);
+}
+NS_IMETHODIMP
+BasePrincipal::IsThirdPartyChannel(nsIChannel* aChan, bool* aRes) {
+  if (IsSystemPrincipal()) {
+    // Nothing is 3rd party to the system principal.
+    *aRes = false;
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIURI> prinURI;
+  GetURI(getter_AddRefs(prinURI));
+  ThirdPartyUtil* thirdPartyUtil = ThirdPartyUtil::GetInstance();
+  return thirdPartyUtil->IsThirdPartyChannel(aChan, prinURI, aRes);
 }
 
 NS_IMETHODIMP
@@ -551,9 +699,10 @@ BasePrincipal::AllowsRelaxStrictFileOriginPolicy(nsIURI* aURI, bool* aRes) {
 
 NS_IMETHODIMP
 BasePrincipal::GetPrefLightCacheKey(nsIURI* aURI, bool aWithCredentials,
+                                    const OriginAttributes& aOriginAttributes,
                                     nsACString& _retval) {
   _retval.Truncate();
-  NS_NAMED_LITERAL_CSTRING(space, " ");
+  constexpr auto space = " "_ns;
 
   nsCOMPtr<nsIURI> uri;
   nsresult rv = GetURI(getter_AddRefs(uri));
@@ -576,8 +725,30 @@ BasePrincipal::GetPrefLightCacheKey(nsIURI* aURI, bool aWithCredentials,
   rv = aURI->GetSpec(spec);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  _retval.Append(space + scheme + space + host + space + port + space + spec);
+  nsAutoCString originAttributesSuffix;
+  aOriginAttributes.CreateSuffix(originAttributesSuffix);
 
+  _retval.Append(space + scheme + space + host + space + port + space + spec +
+                 space + originAttributesSuffix);
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BasePrincipal::HasFirstpartyStorageAccess(mozIDOMWindow* aCheckWindow,
+                                          uint32_t* aRejectedReason,
+                                          bool* aOutAllowed) {
+  *aRejectedReason = 0;
+  *aOutAllowed = false;
+
+  nsPIDOMWindowInner* win = nsPIDOMWindowInner::From(aCheckWindow);
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = GetURI(getter_AddRefs(uri));
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+  *aOutAllowed =
+      ContentBlocking::ShouldAllowAccessFor(win, uri, aRejectedReason);
   return NS_OK;
 }
 
@@ -608,6 +779,17 @@ BasePrincipal::GetAsciiSpec(nsACString& aSpec) {
     return NS_OK;
   }
   return prinURI->GetAsciiSpec(aSpec);
+}
+
+NS_IMETHODIMP
+BasePrincipal::GetSpec(nsACString& aSpec) {
+  aSpec.Truncate();
+  nsCOMPtr<nsIURI> prinURI;
+  nsresult rv = GetURI(getter_AddRefs(prinURI));
+  if (NS_FAILED(rv) || !prinURI) {
+    return NS_OK;
+  }
+  return prinURI->GetSpec(aSpec);
 }
 
 NS_IMETHODIMP
@@ -644,9 +826,9 @@ BasePrincipal::GetExposableSpec(nsACString& aSpec) {
   }
   nsCOMPtr<nsIURI> clone;
   rv = NS_MutateURI(prinURI)
-           .SetQuery(EmptyCString())
-           .SetRef(EmptyCString())
-           .SetUserPass(EmptyCString())
+           .SetQuery(""_ns)
+           .SetRef(""_ns)
+           .SetUserPass(""_ns)
            .Finalize(clone);
   NS_ENSURE_SUCCESS(rv, rv);
   return clone->GetAsciiSpec(aSpec);
@@ -661,6 +843,17 @@ BasePrincipal::GetPrepath(nsACString& aPath) {
     return NS_OK;
   }
   return prinURI->GetPrePath(aPath);
+}
+
+NS_IMETHODIMP
+BasePrincipal::GetFilePath(nsACString& aPath) {
+  aPath.Truncate();
+  nsCOMPtr<nsIURI> prinURI;
+  nsresult rv = GetURI(getter_AddRefs(prinURI));
+  if (NS_FAILED(rv) || !prinURI) {
+    return NS_OK;
+  }
+  return prinURI->GetFilePath(aPath);
 }
 
 NS_IMETHODIMP
@@ -688,7 +881,7 @@ NS_IMETHODIMP BasePrincipal::GetIsOnion(bool* aIsOnion) {
   if (NS_FAILED(rv)) {
     return NS_OK;
   }
-  *aIsOnion = StringEndsWith(host, NS_LITERAL_CSTRING(".onion"));
+  *aIsOnion = StringEndsWith(host, ".onion"_ns);
   return NS_OK;
 }
 
@@ -715,6 +908,39 @@ NS_IMETHODIMP BasePrincipal::GetIsIpAddress(bool* aIsIpAddress) {
   }
 
   return NS_OK;
+}
+
+NS_IMETHODIMP BasePrincipal::GetIsLocalIpAddress(bool* aIsIpAddress) {
+  *aIsIpAddress = false;
+
+  nsCOMPtr<nsIURI> prinURI;
+  nsresult rv = GetURI(getter_AddRefs(prinURI));
+  if (NS_FAILED(rv) || !prinURI) {
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIIOService> ioService = do_GetIOService(&rv);
+  if (NS_FAILED(rv) || !ioService) {
+    return NS_OK;
+  }
+  rv = ioService->HostnameIsLocalIPAddress(prinURI, aIsIpAddress);
+  if (NS_FAILED(rv)) {
+    *aIsIpAddress = false;
+  }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+BasePrincipal::GetScheme(nsACString& aScheme) {
+  aScheme.Truncate();
+
+  nsCOMPtr<nsIURI> prinURI;
+  nsresult rv = GetURI(getter_AddRefs(prinURI));
+  if (NS_FAILED(rv) || !prinURI) {
+    return NS_OK;
+  }
+
+  return prinURI->GetScheme(aScheme);
 }
 
 NS_IMETHODIMP
@@ -904,13 +1130,13 @@ already_AddRefed<BasePrincipal> BasePrincipal::CreateContentPrincipal(
 
 already_AddRefed<BasePrincipal> BasePrincipal::CreateContentPrincipal(
     const nsACString& aOrigin) {
-  MOZ_ASSERT(!StringBeginsWith(aOrigin, NS_LITERAL_CSTRING("[")),
+  MOZ_ASSERT(!StringBeginsWith(aOrigin, "["_ns),
              "CreateContentPrincipal does not support System and Expanded "
              "principals");
 
-  MOZ_ASSERT(!StringBeginsWith(aOrigin,
-                               NS_LITERAL_CSTRING(NS_NULLPRINCIPAL_SCHEME ":")),
-             "CreateContentPrincipal does not support NullPrincipal");
+  MOZ_ASSERT(
+      !StringBeginsWith(aOrigin, nsLiteralCString(NS_NULLPRINCIPAL_SCHEME ":")),
+      "CreateContentPrincipal does not support NullPrincipal");
 
   nsAutoCString originNoSuffix;
   OriginAttributes attrs;
@@ -1000,28 +1226,46 @@ void BasePrincipal::FinishInit(BasePrincipal* aOther,
 NS_IMETHODIMP
 BasePrincipal::GetLocalStorageQuotaKey(nsACString& aKey) {
   aKey.Truncate();
-  nsresult rv;
-  nsCOMPtr<nsIEffectiveTLDService> eTLDService(
-      do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID, &rv));
-  NS_ENSURE_SUCCESS(rv, rv);
 
   nsCOMPtr<nsIURI> uri;
-  rv = GetURI(getter_AddRefs(uri));
+  nsresult rv = GetURI(getter_AddRefs(uri));
   NS_ENSURE_SUCCESS(rv, rv);
   NS_ENSURE_TRUE(uri, NS_ERROR_UNEXPECTED);
 
-  nsAutoCString eTLDplusOne;
-  rv = eTLDService->GetBaseDomain(uri, 0, eTLDplusOne);
-  if (NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS == rv) {
-    // XXX bug 357323 - what to do for localhost/file exactly?
-    rv = uri->GetAsciiHost(eTLDplusOne);
-  }
+  // The special handling of the file scheme should be consistent with
+  // GetStorageOriginKey.
+
+  nsAutoCString baseDomain;
+  rv = uri->GetAsciiHost(baseDomain);
   NS_ENSURE_SUCCESS(rv, rv);
+
+  if (baseDomain.IsEmpty() && uri->SchemeIs("file")) {
+    nsCOMPtr<nsIURL> url = do_QueryInterface(uri, &rv);
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    rv = url->GetDirectory(baseDomain);
+    NS_ENSURE_SUCCESS(rv, rv);
+  } else {
+    nsCOMPtr<nsIEffectiveTLDService> eTLDService(
+        do_GetService(NS_EFFECTIVETLDSERVICE_CONTRACTID, &rv));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    nsAutoCString eTLDplusOne;
+    rv = eTLDService->GetBaseDomain(uri, 0, eTLDplusOne);
+    if (NS_SUCCEEDED(rv)) {
+      baseDomain = eTLDplusOne;
+    } else if (rv == NS_ERROR_HOST_IS_IP_ADDRESS ||
+               rv == NS_ERROR_INSUFFICIENT_DOMAIN_LEVELS) {
+      rv = NS_OK;
+    }
+    NS_ENSURE_SUCCESS(rv, rv);
+  }
 
   OriginAttributesRef().CreateSuffix(aKey);
 
   nsAutoCString subdomainsDBKey;
-  dom::StorageUtils::CreateReversedDomain(eTLDplusOne, subdomainsDBKey);
+  rv = dom::StorageUtils::CreateReversedDomain(baseDomain, subdomainsDBKey);
+  NS_ENSURE_SUCCESS(rv, rv);
 
   aKey.Append(':');
   aKey.Append(subdomainsDBKey);
@@ -1030,14 +1274,60 @@ BasePrincipal::GetLocalStorageQuotaKey(nsACString& aKey) {
 }
 
 NS_IMETHODIMP
+BasePrincipal::GetNextSubDomainPrincipal(
+    nsIPrincipal** aNextSubDomainPrincipal) {
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = GetURI(getter_AddRefs(uri));
+  if (NS_FAILED(rv) || !uri) {
+    return NS_OK;
+  }
+
+  nsAutoCString host;
+  rv = uri->GetHost(host);
+  if (NS_FAILED(rv) || host.IsEmpty()) {
+    return NS_OK;
+  }
+
+  nsCString subDomain;
+  rv = nsEffectiveTLDService::GetInstance()->GetNextSubDomain(host, subDomain);
+
+  if (NS_FAILED(rv) || subDomain.IsEmpty()) {
+    return NS_OK;
+  }
+
+  nsCOMPtr<nsIURI> subDomainURI;
+  rv = NS_MutateURI(uri).SetHost(subDomain).Finalize(subDomainURI);
+  if (NS_FAILED(rv) || !subDomainURI) {
+    return NS_OK;
+  }
+  // Copy the attributes over
+  mozilla::OriginAttributes attrs = OriginAttributesRef();
+
+  if (!StaticPrefs::permissions_isolateBy_userContext()) {
+    // Disable userContext for permissions.
+    attrs.StripAttributes(mozilla::OriginAttributes::STRIP_USER_CONTEXT_ID);
+  }
+  RefPtr<nsIPrincipal> principal =
+      mozilla::BasePrincipal::CreateContentPrincipal(subDomainURI, attrs);
+
+  if (!principal) {
+    return NS_OK;
+  }
+  principal.forget(aNextSubDomainPrincipal);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 BasePrincipal::GetStorageOriginKey(nsACString& aOriginKey) {
   aOriginKey.Truncate();
+
   nsCOMPtr<nsIURI> uri;
   nsresult rv = GetURI(getter_AddRefs(uri));
   NS_ENSURE_SUCCESS(rv, rv);
-  if (!uri) {
-    return NS_ERROR_UNEXPECTED;
-  }
+  NS_ENSURE_TRUE(uri, NS_ERROR_UNEXPECTED);
+
+  // The special handling of the file scheme should be consistent with
+  // GetLocalStorageQuotaKey.
 
   nsAutoCString domainOrigin;
   rv = uri->GetAsciiHost(domainOrigin);
@@ -1056,9 +1346,7 @@ BasePrincipal::GetStorageOriginKey(nsACString& aOriginKey) {
   // Append reversed domain
   nsAutoCString reverseDomain;
   rv = dom::StorageUtils::CreateReversedDomain(domainOrigin, reverseDomain);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
+  NS_ENSURE_SUCCESS(rv, rv);
 
   aOriginKey.Append(reverseDomain);
 
@@ -1075,6 +1363,7 @@ BasePrincipal::GetStorageOriginKey(nsACString& aOriginKey) {
   if (port != -1) {
     aOriginKey.Append(nsPrintfCString(":%d", port));
   }
+
   return NS_OK;
 }
 

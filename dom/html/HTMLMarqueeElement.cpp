@@ -17,8 +17,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Marquee)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLMarqueeElement::~HTMLMarqueeElement() = default;
 
@@ -53,7 +52,6 @@ nsresult HTMLMarqueeElement::BindToTree(BindContext& aContext,
 
   if (IsInComposedDoc()) {
     AttachAndSetUAShadowRoot();
-    NotifyUAWidgetSetupOrChange();
   }
 
   return rv;
@@ -163,15 +161,14 @@ void HTMLMarqueeElement::DispatchEventToShadowRoot(
 
 void HTMLMarqueeElement::Start() {
   if (GetShadowRoot()) {
-    DispatchEventToShadowRoot(NS_LITERAL_STRING("marquee-start"));
+    DispatchEventToShadowRoot(u"marquee-start"_ns);
   }
 }
 
 void HTMLMarqueeElement::Stop() {
   if (GetShadowRoot()) {
-    DispatchEventToShadowRoot(NS_LITERAL_STRING("marquee-stop"));
+    DispatchEventToShadowRoot(u"marquee-stop"_ns);
   }
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

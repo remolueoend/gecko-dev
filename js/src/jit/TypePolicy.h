@@ -8,13 +8,14 @@
 #define jit_TypePolicy_h
 
 #include "jit/IonTypes.h"
-#include "jit/JitAllocPolicy.h"
+#include "js/ScalarType.h"  // js::Scalar::Type
 
 namespace js {
 namespace jit {
 
 class MInstruction;
 class MDefinition;
+class TempAllocator;
 
 extern MDefinition* AlwaysBoxAt(TempAllocator& alloc, MInstruction* at,
                                 MDefinition* operand);
@@ -130,14 +131,6 @@ class TestPolicy final : public TypePolicy {
                                  MInstruction* ins) const override;
 };
 
-class TypeBarrierPolicy final : public TypePolicy {
- public:
-  constexpr TypeBarrierPolicy() = default;
-  EMPTY_DATA_;
-  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
-                                 MInstruction* ins) const override;
-};
-
 class CallPolicy final : public TypePolicy {
  public:
   constexpr CallPolicy() = default;
@@ -146,11 +139,15 @@ class CallPolicy final : public TypePolicy {
                                  MInstruction* def) const override;
 };
 
-// Policy for MPow. First operand Double; second Double or Int32.
+// Policy for MPow:
+//
+// * If return type is MIRType::Double, we need (Double, Double) or
+//   (Double, Int32) operands.
+// * If return type is MIRType::Int32, we need (Int32, Int32) operands.
 class PowPolicy final : public TypePolicy {
  public:
   constexpr PowPolicy() = default;
-  SPECIALIZATION_DATA_;
+  EMPTY_DATA_;
   MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
                                  MInstruction* ins) const override;
 };
@@ -162,6 +159,20 @@ class SignPolicy final : public TypePolicy {
   SPECIALIZATION_DATA_;
   MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
                                  MInstruction* ins) const override;
+};
+
+// Expect a symbol for operand Op. If the input is a Value, it is unboxed.
+template <unsigned Op>
+class SymbolPolicy final : public TypePolicy {
+ public:
+  constexpr SymbolPolicy() = default;
+  EMPTY_DATA_;
+  static MOZ_MUST_USE bool staticAdjustInputs(TempAllocator& alloc,
+                                              MInstruction* def);
+  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
+                                 MInstruction* def) const override {
+    return staticAdjustInputs(alloc, def);
+  }
 };
 
 // Expect a string for operand Op. If the input is a Value, it is unboxed.
@@ -323,6 +334,19 @@ class ToInt32Policy final : public TypePolicy {
   }
 };
 
+// Box any non-BigInts as input to a ToBigInt instruction.
+class ToBigIntPolicy final : public TypePolicy {
+ public:
+  constexpr ToBigIntPolicy() = default;
+  EMPTY_DATA_;
+  static MOZ_MUST_USE bool staticAdjustInputs(TempAllocator& alloc,
+                                              MInstruction* def);
+  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
+                                 MInstruction* def) const override {
+    return staticAdjustInputs(alloc, def);
+  }
+};
+
 // Box objects as input to a ToString instruction.
 class ToStringPolicy final : public TypePolicy {
  public:
@@ -333,6 +357,19 @@ class ToStringPolicy final : public TypePolicy {
   MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
                                  MInstruction* def) const override {
     return staticAdjustInputs(alloc, def);
+  }
+};
+
+// Box non-Boolean, non-String, non-BigInt as input to a ToInt64 instruction.
+class ToInt64Policy final : public TypePolicy {
+ public:
+  constexpr ToInt64Policy() = default;
+  EMPTY_DATA_;
+  static MOZ_MUST_USE bool staticAdjustInputs(TempAllocator& alloc,
+                                              MInstruction* ins);
+  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
+                                 MInstruction* ins) const override {
+    return staticAdjustInputs(alloc, ins);
   }
 };
 
@@ -417,16 +454,7 @@ class CallSetElementPolicy final : public TypePolicy {
                                  MInstruction* def) const override;
 };
 
-// First operand will be boxed to a Value (except for an object)
-// Second operand (if specified) will forcefully be unboxed to an object
-class InstanceOfPolicy final : public TypePolicy {
- public:
-  constexpr InstanceOfPolicy() = default;
-  EMPTY_DATA_;
-  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
-                                 MInstruction* def) const override;
-};
-
+class StoreDataViewElementPolicy;
 class StoreTypedArrayHolePolicy;
 
 class StoreUnboxedScalarPolicy : public TypePolicy {
@@ -438,9 +466,18 @@ class StoreUnboxedScalarPolicy : public TypePolicy {
                                             MDefinition* value,
                                             int valueOperand);
 
+  friend class StoreDataViewElementPolicy;
   friend class StoreTypedArrayHolePolicy;
 
  public:
+  EMPTY_DATA_;
+  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
+                                 MInstruction* ins) const override;
+};
+
+class StoreDataViewElementPolicy final : public StoreUnboxedScalarPolicy {
+ public:
+  constexpr StoreDataViewElementPolicy() = default;
   EMPTY_DATA_;
   MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
                                  MInstruction* ins) const override;
@@ -458,14 +495,6 @@ class StoreTypedArrayHolePolicy final : public StoreUnboxedScalarPolicy {
 class ClampPolicy final : public TypePolicy {
  public:
   constexpr ClampPolicy() = default;
-  EMPTY_DATA_;
-  MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
-                                 MInstruction* ins) const override;
-};
-
-class FilterTypeSetPolicy final : public TypePolicy {
- public:
-  constexpr FilterTypeSetPolicy() = default;
   EMPTY_DATA_;
   MOZ_MUST_USE bool adjustInputs(TempAllocator& alloc,
                                  MInstruction* ins) const override;

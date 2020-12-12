@@ -12,12 +12,10 @@
 
 #include <utility>
 
+#include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
-#include "mozilla/Attributes.h"  // for MOZ_ALWAYS_INLINE
-#include "mozilla/FunctionTypeTraits.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Types.h"
 #include "mozilla/fallible.h"
 #include "nscore.h"
 
@@ -323,6 +321,7 @@ class PLDHashTable {
     }
 
     char* Get() const { return mEntryStore; }
+    bool IsAllocated() const { return !!mEntryStore; }
 
     Slot SlotForIndex(uint32_t aIndex, uint32_t aEntrySize,
                       uint32_t aCapacity) const {
@@ -427,7 +426,7 @@ class PLDHashTable {
   // This can be zero if no elements have been added yet, in which case the
   // entry storage will not have yet been allocated.
   uint32_t Capacity() const {
-    return mEntryStore.Get() ? CapacityFromHashShift() : 0;
+    return mEntryStore.IsAllocated() ? CapacityFromHashShift() : 0;
   }
 
   uint32_t EntrySize() const { return mEntrySize; }

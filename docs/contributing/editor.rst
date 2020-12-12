@@ -14,33 +14,14 @@ them.
 Visual Studio Code
 ------------------
 
-For general information on using VS Code, see their
-`home page <https://code.visualstudio.com/>`__,
-`repo <https://github.com/Microsoft/vscode/>`__ and
-`guide to working with C++ <https://code.visualstudio.com/docs/languages/cpp>`__.
+.. toctree::
+   :hidden:
+   :maxdepth: 1
 
-For IntelliSense to work properly, a
-:ref:`compilation database <CompileDB back-end / compileflags>` as described
-below is required. When it is present when you open the mozilla source code
-folder, it will be automatically detected and Visual Studio Code will ask you
-if it should use it, which you should confirm.
+   vscode
 
-VS Code provides number of extensions for JavaScript, Rust, etc.
 
-Useful preferences
-~~~~~~~~~~~~~~~~~~
-
-When setting the preference
-
-.. code::
-
-  "editor.formatOnSave": true
-
-you might find that this isn't working on large source code files, but triggering formatting manually works. This is due to the default timeout for formatOnSave, which is quite short (750ms). You might want to increase this timeout, e.g.
-
-.. code::
-
-   "editor.formatOnSaveTimeout": 5000
+Go to :doc:`Visual Studio Code <vscode>` dedicated page.
 
 VIM
 ---
@@ -54,6 +35,9 @@ There's C++ and Rust auto-completion support for VIM via
 As long as that is installed and you have run :code:`./mach build` or
 :code:`./mach configure`, it should work out of the box. Configuration for this lives
 in :code:`.ycm_extra_conf` at the root of the repo.
+
+Rust auto-completion should work both with the default completer (RLS, as of
+this writing), or with `rust-analyzer <https://rust-analyzer.github.io/manual.html#youcompleteme>`__.
 
 ESLint
 ~~~~~~
@@ -87,17 +71,6 @@ Emacs
 
 Mozilla-specific packages
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-
-dxr.el
-^^^^^^
-
-dxr.el is an elisp package that enables searching of DXR Code Indexer results
-from within emacs. Using this can sometimes be easier than doing localized code
-indexing with rtags, as rtags processing of code trees can be very processing
-intensive.
-
-dxr.el is available via `github repo <https://github.com/tromey/dxr.el>`__, or
-via the Marmalade package manager.
 
 ESLint
 ~~~~~~

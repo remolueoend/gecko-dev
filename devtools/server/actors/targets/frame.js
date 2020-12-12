@@ -19,8 +19,9 @@ var {
 } = require("devtools/server/actors/targets/browsing-context");
 
 const { extend } = require("devtools/shared/extend");
-const { ActorClassWithSpec } = require("devtools/shared/protocol");
 const { frameTargetSpec } = require("devtools/shared/specs/targets/frame");
+const Targets = require("devtools/server/actors/targets/index");
+const TargetActorMixin = require("devtools/server/actors/targets/target-actor-mixin");
 
 /**
  * Protocol.js expects only the prototype object, and does not maintain the prototype
@@ -34,18 +35,20 @@ const frameTargetPrototype = extend({}, browsingContextTargetPrototype);
  *
  * @param connection DevToolsServerConnection
  *        The conection to the client.
- * @param docShell
+ * @param docShell nsIDocShell
  *        The |docShell| for the debugged frame.
+ * @param options Object
+ *        See BrowsingContextTargetActor.initialize doc.
  */
-frameTargetPrototype.initialize = function(connection, docShell) {
-  BrowsingContextTargetActor.prototype.initialize.call(this, connection);
+frameTargetPrototype.initialize = function(connection, docShell, options) {
+  BrowsingContextTargetActor.prototype.initialize.call(
+    this,
+    connection,
+    docShell,
+    options
+  );
 
   this.traits.reconfigure = false;
-
-  Object.defineProperty(this, "docShell", {
-    value: docShell,
-    configurable: true,
-  });
 };
 
 Object.defineProperty(frameTargetPrototype, "title", {
@@ -56,7 +59,8 @@ Object.defineProperty(frameTargetPrototype, "title", {
   configurable: true,
 });
 
-exports.FrameTargetActor = ActorClassWithSpec(
+exports.FrameTargetActor = TargetActorMixin(
+  Targets.TYPES.FRAME,
   frameTargetSpec,
   frameTargetPrototype
 );

@@ -22,6 +22,11 @@ topic.
 Push Information
 ----------------
 
+``backstop``
+   Whether or not this push is a "backstop" push. That is a push where all
+   builds and tests should run to ensure regressions aren't accidentally
+   missed.
+
 ``base_repository``
    The repository from which to do an initial clone, utilizing any available
    caching.
@@ -102,6 +107,12 @@ Try Configuration
     The contents of the ``try_task_config.json`` file, or ``{}`` if
     ``try_mode`` is not ``try_task_config``.
 
+Test Configuration
+------------------
+
+``test_manifest_loader``
+   The test manifest loader to use as defined in ``taskgraph.util.chunking.manifest_loaders``.
+
 Target Set
 ----------
 
@@ -129,8 +140,12 @@ syntax or reading a project-specific configuration file).
 Optimization
 ------------
 
+``optimize_strategies``
+   A python path of the form ``<module>:<object>`` containing a dictionary of
+   optimization strategies to use, overwriting the defaults.
+
 ``optimize_target_tasks``
-    If true, then target tasks are eligible for optimization.
+   If true, then target tasks are eligible for optimization.
 
 ``do_not_optimize``
    Specify tasks to not optimize out of the graph. This is a list of labels.
@@ -158,25 +173,28 @@ Release Promotion
    Specify the next version for version bump tasks.
 
 ``release_type``
-   The type of release being promoted. One of "nightly", "beta", "esr68", "release-rc", or "release".
+   The type of release being promoted. One of "nightly", "beta", "esr78", "release-rc", or "release".
 
 ``release_eta``
    The time and date when a release is scheduled to live. This value is passed to Balrog.
 
-``release_enable_partners``
+``release_enable_partner_repack``
    Boolean which controls repacking vanilla Firefox builds for partners.
 
-``release_partners``
-   List of partners to repack. A null value defaults to all.
-
-``release_partner_config``
-   Configuration for partner repacks.
-
-``release_partner_build_number``
-   The build number for partner repacks. We sometimes have multiple partner build numbers per release build number; this parameter lets us bump them independently. Defaults to 1.
+``release_enable_partner_attribution``
+   Boolean which controls adding attribution to vanilla Firefox builds for partners.
 
 ``release_enable_emefree``
    Boolean which controls repacking vanilla Firefox builds into EME-free builds.
+
+``release_partners``
+   List of partners to repack or attribute if a subset of the whole config. A null value defaults to all.
+
+``release_partner_config``
+   Configuration for partner repacks & attribution, as well as EME-free repacks.
+
+``release_partner_build_number``
+   The build number for partner repacks. We sometimes have multiple partner build numbers per release build number; this parameter lets us bump them independently. Defaults to 1.
 
 ``release_product``
    The product that is being released.
@@ -229,3 +247,10 @@ Code Review
 ``phabricator_diff``
    The code review process needs to know the Phabricator Differential diff that
    started the analysis. This parameter must start with `PHID-DIFF-`
+
+Local configuration
+-------------------
+
+``target-kind``
+  Generate only the given kind and its kind-dependencies. This is used for local inspection of the graph
+  and is not supported at run-time.

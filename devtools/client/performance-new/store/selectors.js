@@ -16,6 +16,7 @@
  * @typedef {import("../@types/perf").GetEnvironmentVariable} GetEnvironmentVariable
  * @typedef {import("../@types/perf").PageContext} PageContext
  * @typedef {import("../@types/perf").Presets} Presets
+ * @typedef {import("../@types/perf").ProfilerViewMode} ProfilerViewMode
  */
 /**
  * @template S
@@ -55,6 +56,9 @@ const getPresets = state => getInitializedValues(state).presets;
 
 /** @type {Selector<string>} */
 const getPresetName = state => state.presetName;
+
+/** @type {Selector<ProfilerViewMode | undefined>} */
+const getProfilerViewMode = state => state.profilerViewMode;
 
 /**
  * When remote profiling, there will be a back button to the settings.
@@ -137,11 +141,11 @@ const getSetRecordingPreferencesFn = state =>
 /** @type {Selector<PageContext>} */
 const getPageContext = state => getInitializedValues(state).pageContext;
 
-/** @type {Selector<(profile: Object) => GetSymbolTableCallback>} */
+/** @type {Selector<(profile: MinimallyTypedGeckoProfile) => GetSymbolTableCallback>} */
 const getSymbolTableGetter = state =>
   getInitializedValues(state).getSymbolTableGetter;
 
-/** @type {Selector<string[] | null>} */
+/** @type {Selector<string[]>} */
 const getSupportedFeatures = state =>
   getInitializedValues(state).supportedFeatures;
 
@@ -160,6 +164,7 @@ module.exports = {
   getObjdirs,
   getPresets,
   getPresetName,
+  getProfilerViewMode,
   getOpenRemoteDevTools,
   getOpenAboutProfiling,
   getRecordingSettings,

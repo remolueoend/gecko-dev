@@ -7,6 +7,7 @@
 #include "Request.h"
 
 #include "nsIURI.h"
+#include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
 
 #include "mozilla/ErrorResult.h"
@@ -16,10 +17,11 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/URL.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "mozilla/dom/WorkerRunnable.h"
+#include "mozilla/dom/WindowContext.h"
 #include "mozilla/Unused.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ADDREF_INHERITED(Request, FetchBody<Request>)
 NS_IMPL_RELEASE_INHERITED(Request, FetchBody<Request>)
@@ -30,7 +32,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(Request, FetchBody<Request>)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mHeaders)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSignal)
-  tmp->Unfollow();
+  AbortFollower::Unlink(static_cast<AbortFollower*>(tmp));
   NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
@@ -38,7 +40,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(Request, FetchBody<Request>)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mHeaders)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSignal)
-  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFollowingSignal)
+  AbortFollower::Traverse(static_cast<AbortFollower*>(tmp), cb);
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(Request, FetchBody<Request>)
@@ -52,12 +54,12 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(Request)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
 NS_INTERFACE_MAP_END_INHERITING(FetchBody<Request>)
 
-Request::Request(nsIGlobalObject* aOwner, InternalRequest* aRequest,
+Request::Request(nsIGlobalObject* aOwner, SafeRefPtr<InternalRequest> aRequest,
                  AbortSignal* aSignal)
-    : FetchBody<Request>(aOwner), mRequest(aRequest) {
-  MOZ_ASSERT(aRequest->Headers()->Guard() == HeadersGuardEnum::Immutable ||
-             aRequest->Headers()->Guard() == HeadersGuardEnum::Request ||
-             aRequest->Headers()->Guard() == HeadersGuardEnum::Request_no_cors);
+    : FetchBody<Request>(aOwner), mRequest(std::move(aRequest)) {
+  MOZ_ASSERT(mRequest->Headers()->Guard() == HeadersGuardEnum::Immutable ||
+             mRequest->Headers()->Guard() == HeadersGuardEnum::Request ||
+             mRequest->Headers()->Guard() == HeadersGuardEnum::Request_no_cors);
   SetMimeType();
 
   if (aSignal) {
@@ -72,9 +74,8 @@ Request::Request(nsIGlobalObject* aOwner, InternalRequest* aRequest,
 
 Request::~Request() = default;
 
-already_AddRefed<InternalRequest> Request::GetInternalRequest() {
-  RefPtr<InternalRequest> r = mRequest;
-  return r.forget();
+SafeRefPtr<InternalRequest> Request::GetInternalRequest() {
+  return mRequest.clonePtr();
 }
 
 namespace {
@@ -225,7 +226,7 @@ void GetRequestURLFromWorker(nsIGlobalObject* aGlobal, const nsAString& aInput,
     CopyUTF16toUTF8(Substring(fragment, 1), aURLfragment);
   }
 
-  url->SetHash(EmptyString());
+  url->SetHash(u""_ns);
   url->GetHref(aRequestURL);
 }
 
@@ -233,9 +234,8 @@ class ReferrerSameOriginChecker final : public WorkerMainThreadRunnable {
  public:
   ReferrerSameOriginChecker(WorkerPrivate* aWorkerPrivate,
                             const nsAString& aReferrerURL, nsresult& aResult)
-      : WorkerMainThreadRunnable(
-            aWorkerPrivate,
-            NS_LITERAL_CSTRING("Fetch :: Referrer same origin check")),
+      : WorkerMainThreadRunnable(aWorkerPrivate,
+                                 "Fetch :: Referrer same origin check"_ns),
         mReferrerURL(aReferrerURL),
         mResult(aResult) {
     mWorkerPrivate->AssertIsOnWorkerThread();
@@ -261,22 +261,22 @@ class ReferrerSameOriginChecker final : public WorkerMainThreadRunnable {
 }  // namespace
 
 /*static*/
-already_AddRefed<Request> Request::Constructor(const GlobalObject& aGlobal,
-                                               const RequestOrUSVString& aInput,
-                                               const RequestInit& aInit,
-                                               ErrorResult& aRv) {
+SafeRefPtr<Request> Request::Constructor(const GlobalObject& aGlobal,
+                                         const RequestOrUSVString& aInput,
+                                         const RequestInit& aInit,
+                                         ErrorResult& aRv) {
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(aGlobal.GetAsSupports());
   return Constructor(global, aGlobal.Context(), aInput, aInit, aRv);
 }
 
 /*static*/
-already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
-                                               JSContext* aCx,
-                                               const RequestOrUSVString& aInput,
-                                               const RequestInit& aInit,
-                                               ErrorResult& aRv) {
+SafeRefPtr<Request> Request::Constructor(nsIGlobalObject* aGlobal,
+                                         JSContext* aCx,
+                                         const RequestOrUSVString& aInput,
+                                         const RequestInit& aInit,
+                                         ErrorResult& aRv) {
   bool hasCopiedBody = false;
-  RefPtr<InternalRequest> request;
+  SafeRefPtr<InternalRequest> request;
 
   RefPtr<AbortSignal> signal;
 
@@ -322,7 +322,8 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
     if (aRv.Failed()) {
       return nullptr;
     }
-    request = new InternalRequest(NS_ConvertUTF16toUTF8(requestURL), fragment);
+    request = MakeSafeRefPtr<InternalRequest>(NS_ConvertUTF16toUTF8(requestURL),
+                                              fragment);
   }
   request = request->GetRequestConstructorCopy(aGlobal, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
@@ -352,13 +353,14 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
   }
 
   if (aInit.IsAnyMemberPresent()) {
-    request->SetReferrer(NS_LITERAL_STRING(kFETCH_CLIENT_REFERRER_STR));
+    request->SetReferrer(
+        NS_LITERAL_STRING_FROM_CSTRING(kFETCH_CLIENT_REFERRER_STR));
     request->SetReferrerPolicy(ReferrerPolicy::_empty);
   }
   if (aInit.mReferrer.WasPassed()) {
     const nsString& referrer = aInit.mReferrer.Value();
     if (referrer.IsEmpty()) {
-      request->SetReferrer(NS_LITERAL_STRING(""));
+      request->SetReferrer(u""_ns);
     } else {
       nsAutoString referrerURL;
       if (NS_IsMainThread()) {
@@ -429,6 +431,8 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
   }
 
   UniquePtr<mozilla::ipc::PrincipalInfo> principalInfo;
+  nsILoadInfo::CrossOriginEmbedderPolicy coep =
+      nsILoadInfo::EMBEDDER_POLICY_NULL;
 
   if (NS_IsMainThread()) {
     nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aGlobal);
@@ -446,6 +450,9 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
           return nullptr;
         }
       }
+      if (window->GetWindowContext()) {
+        coep = window->GetWindowContext()->GetEmbedderPolicy();
+      }
     }
   } else {
     WorkerPrivate* worker = GetCurrentThreadWorkerPrivate();
@@ -454,10 +461,17 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
       request->SetEnvironmentReferrerPolicy(worker->GetReferrerPolicy());
       principalInfo =
           MakeUnique<mozilla::ipc::PrincipalInfo>(worker->GetPrincipalInfo());
+      coep = worker->GetEmbedderPolicy();
+      // For dedicated worker, the response must respect the owner's COEP.
+      if (coep == nsILoadInfo::EMBEDDER_POLICY_NULL &&
+          worker->IsDedicatedWorker()) {
+        coep = worker->GetOwnerEmbedderPolicy();
+      }
     }
   }
 
   request->SetPrincipalInfo(std::move(principalInfo));
+  request->SetEmbedderPolicy(coep);
 
   if (mode != RequestMode::EndGuard_) {
     request->SetMode(mode);
@@ -576,9 +590,8 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
       nsCOMPtr<nsIInputStream> temporaryBody = stream;
 
       if (!contentTypeWithCharset.IsVoid() &&
-          !requestHeaders->Has(NS_LITERAL_CSTRING("Content-Type"), aRv)) {
-        requestHeaders->Append(NS_LITERAL_CSTRING("Content-Type"),
-                               contentTypeWithCharset, aRv);
+          !requestHeaders->Has("Content-Type"_ns, aRv)) {
+        requestHeaders->Append("Content-Type"_ns, contentTypeWithCharset, aRv);
       }
 
       if (NS_WARN_IF(aRv.Failed())) {
@@ -593,7 +606,8 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
     }
   }
 
-  RefPtr<Request> domRequest = new Request(aGlobal, request, signal);
+  auto domRequest =
+      MakeSafeRefPtr<Request>(aGlobal, std::move(request), signal);
   domRequest->SetMimeType();
 
   if (aInput.IsRequest()) {
@@ -608,10 +622,10 @@ already_AddRefed<Request> Request::Constructor(nsIGlobalObject* aGlobal,
       }
     }
   }
-  return domRequest.forget();
+  return domRequest;
 }
 
-already_AddRefed<Request> Request::Clone(ErrorResult& aRv) {
+SafeRefPtr<Request> Request::Clone(ErrorResult& aRv) {
   bool used = GetBodyUsed(aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
@@ -621,15 +635,13 @@ already_AddRefed<Request> Request::Clone(ErrorResult& aRv) {
     return nullptr;
   }
 
-  RefPtr<InternalRequest> ir = mRequest->Clone();
+  SafeRefPtr<InternalRequest> ir = mRequest->Clone();
   if (!ir) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
   }
 
-  RefPtr<Request> request = new Request(mOwner, ir, GetOrCreateSignal());
-
-  return request.forget();
+  return MakeSafeRefPtr<Request>(mOwner, std::move(ir), GetOrCreateSignal());
 }
 
 Headers* Request::Headers_() {
@@ -650,5 +662,4 @@ AbortSignal* Request::GetOrCreateSignal() {
 
 AbortSignalImpl* Request::GetSignalImpl() const { return mSignal; }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

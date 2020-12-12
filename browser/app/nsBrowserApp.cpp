@@ -6,11 +6,13 @@
 #include "nsXULAppAPI.h"
 #include "mozilla/CmdLineAndEnvUtils.h"
 #include "mozilla/XREAppData.h"
+#include "XREShellData.h"
 #include "application.ini.h"
 #include "mozilla/Bootstrap.h"
 #if defined(XP_WIN)
 #  include <windows.h>
 #  include <stdlib.h>
+#  include "mozilla/PreXULSkeletonUI.h"
 #elif defined(XP_UNIX)
 #  include <sys/resource.h>
 #  include <unistd.h>
@@ -315,6 +317,10 @@ int main(int argc, char* argv[], char* envp[]) {
 
 #ifdef HAS_DLL_BLOCKLIST
   DllBlocklist_Initialize(gBlocklistInitFlags);
+#endif
+
+#if defined(XP_WIN)
+  mozilla::CreateAndStorePreXULSkeletonUI(GetModuleHandle(nullptr), argc, argv);
 #endif
 
   nsresult rv = InitXPCOMGlue(LibLoadingStrategy::ReadAhead);

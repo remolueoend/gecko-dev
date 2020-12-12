@@ -9,10 +9,13 @@
 
 from __future__ import absolute_import, print_function
 from subprocess import Popen, PIPE
+import atexit
 import os
 import platform
 import re
 import sys
+
+import six
 
 # Matches lines produced by MozFormatCodeAddress(), e.g.
 # `#01: ???[tests/example +0x43a0]`.
@@ -21,9 +24,12 @@ line_re = re.compile("#\d+: .+\[.+ \+0x[0-9A-Fa-f]+\]")
 fix_stacks = None
 
 
-def fixSymbols(line, jsonMode=False, slowWarning=False, breakpadSymsDir=None):
+def fixSymbols(
+    line, jsonMode=False, slowWarning=False, breakpadSymsDir=None, hide_errors=False
+):
     global fix_stacks
 
+    line = six.ensure_str(line)
     result = line_re.search(line)
     if result is None:
         return line
@@ -33,42 +39,49 @@ def fixSymbols(line, jsonMode=False, slowWarning=False, breakpadSymsDir=None):
         # (for a local build where the user has that set), then in ~/.mozbuild
         # (for a local build with default settings).
         base = os.environ.get(
-            'MOZ_FETCHES_DIR',
-            os.environ.get(
-                'MOZBUILD_STATE_PATH',
-                os.path.expanduser('~/.mozbuild')
-            )
+            "MOZ_FETCHES_DIR",
+            os.environ.get("MOZBUILD_STATE_PATH", os.path.expanduser("~/.mozbuild")),
         )
-        fix_stacks_exe = base + '/fix-stacks/fix-stacks'
-        if platform.system() == 'Windows':
-            fix_stacks_exe = fix_stacks_exe + '.exe'
+        fix_stacks_exe = base + "/fix-stacks/fix-stacks"
+        if platform.system() == "Windows":
+            fix_stacks_exe = fix_stacks_exe + ".exe"
 
         if not (os.path.isfile(fix_stacks_exe) and os.access(fix_stacks_exe, os.X_OK)):
-            raise Exception('cannot find `fix-stacks`; please run `./mach bootstrap`')
+            raise Exception("cannot find `fix-stacks`; please run `./mach bootstrap`")
 
         args = [fix_stacks_exe]
         if jsonMode:
-            args.append('-j')
+            args.append("-j")
         if breakpadSymsDir:
-            # `fileid` should be packaged next to `fix_stacks.py`.
-            here = os.path.dirname(__file__)
-            fileid_exe = os.path.join(here, 'fileid')
-            if platform.system() == 'Windows':
-                fileid_exe = fileid_exe + '.exe'
+            args.append("-b")
+            args.append(breakpadSymsDir)
 
-            args.append('-b')
-            args.append(breakpadSymsDir + "," + fileid_exe)
+        # Sometimes we need to prevent errors from going to stderr.
+        stderr = open(os.devnull) if hide_errors else None
 
-        fix_stacks = Popen(args, stdin=PIPE, stdout=PIPE, stderr=None)
+        fix_stacks = Popen(
+            args, stdin=PIPE, stdout=PIPE, stderr=stderr, universal_newlines=True
+        )
+
+        # Shut down the fix_stacks process on exit. We use `terminate()`
+        # because it is more forceful than `wait()`, and the Python docs warn
+        # about possible deadlocks with `wait()`.
+        def cleanup(fix_stacks):
+            fix_stacks.stdin.close()
+            fix_stacks.terminate()
+
+        atexit.register(cleanup, fix_stacks)
 
         if slowWarning:
-            print("Initializing stack-fixing for the first stack frame, this may take a while...")
+            print(
+                "Initializing stack-fixing for the first stack frame, this may take a while..."
+            )
 
     # Sometimes `line` is lacking a trailing newline. If we pass such a `line`
     # to `fix-stacks` it will wait until it receives a newline, causing this
     # script to hang. So we add a newline if one is missing and then remove it
     # from the output.
-    is_missing_newline = not line.endswith('\n')
+    is_missing_newline = not line.endswith("\n")
     if is_missing_newline:
         line = line + "\n"
     fix_stacks.stdin.write(line)

@@ -3,6 +3,7 @@ var { XPCOMUtils } = ChromeUtils.import(
 );
 
 function openIdentityPopup() {
+  gIdentityHandler._initializePopup();
   let mainView = document.getElementById("identity-popup-mainView");
   let viewShown = BrowserTestUtils.waitForEvent(mainView, "ViewShown");
   gIdentityHandler._identityBox.click();
@@ -212,7 +213,7 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
     if (activeLoaded) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-mixed-active-loaded.svg")',
+        'url("chrome://global/skin/icons/connection-mixed-active-loaded.svg")',
         "Using active loaded icon"
       );
     }
@@ -226,14 +227,14 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
     if (passiveLoaded && !(activeLoaded || activeBlocked)) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
         "Using passive loaded icon"
       );
     }
     if (passiveLoaded && activeBlocked) {
       is(
         identityIconImage,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
         "Using active blocked and passive loaded icon"
       );
     }
@@ -241,8 +242,10 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
 
   // Make sure the identity popup has the correct mixedcontent states
   let promisePanelOpen = BrowserTestUtils.waitForEvent(
-    gIdentityHandler._identityPopup,
-    "popupshown"
+    tabbrowser.ownerGlobal,
+    "popupshown",
+    true,
+    event => event.target == gIdentityHandler._identityPopup
   );
   gIdentityHandler._identityBox.click();
   await promisePanelOpen;
@@ -306,12 +309,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
   if (stateInsecure) {
     is(
       securityViewBG,
-      'url("chrome://browser/skin/connection-mixed-active-loaded.svg")',
+      'url("chrome://global/skin/icons/connection-mixed-active-loaded.svg")',
       "CC using 'not secure' icon"
     );
     is(
       securityContentBG,
-      'url("chrome://browser/skin/connection-mixed-active-loaded.svg")',
+      'url("chrome://global/skin/icons/connection-mixed-active-loaded.svg")',
       "CC using 'not secure' icon"
     );
   }
@@ -344,12 +347,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
     } else if (activeBlocked || passiveLoaded) {
       is(
         securityViewBG,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
         "CC using degraded icon"
       );
       is(
         securityContentBG,
-        'url("chrome://browser/skin/connection-mixed-passive-loaded.svg")',
+        'url("chrome://global/skin/icons/connection-mixed-passive-loaded.svg")',
         "CC using degraded icon"
       );
     } else {
@@ -399,7 +402,7 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
 
 async function loadBadCertPage(url) {
   let loaded = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
-  await BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
+  BrowserTestUtils.loadURI(gBrowser.selectedBrowser, url);
   await loaded;
 
   await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function() {

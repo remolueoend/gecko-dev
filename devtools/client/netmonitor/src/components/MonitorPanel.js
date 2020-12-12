@@ -68,12 +68,13 @@ class MonitorPanel extends Component {
       isEmpty: PropTypes.bool.isRequired,
       networkDetailsOpen: PropTypes.bool.isRequired,
       openNetworkDetails: PropTypes.func.isRequired,
+      toolboxDoc: PropTypes.object.isRequired,
       // Callback for opening split console.
       openSplitConsole: PropTypes.func,
       onNetworkDetailsResized: PropTypes.func.isRequired,
       request: PropTypes.object,
       selectedRequestVisible: PropTypes.bool.isRequired,
-      sourceMapService: PropTypes.object,
+      sourceMapURLService: PropTypes.object,
       openLink: PropTypes.func,
       updateRequest: PropTypes.func.isRequired,
       networkActionOpen: PropTypes.bool.isRequired,
@@ -204,7 +205,8 @@ class MonitorPanel extends Component {
       networkDetailsOpen,
       openLink,
       openSplitConsole,
-      sourceMapService,
+      sourceMapURLService,
+      toolboxDoc,
     } = this.props;
 
     const initialWidth = Services.prefs.getIntPref(
@@ -222,6 +224,7 @@ class MonitorPanel extends Component {
         connector,
         openSplitConsole,
         singleRow: this.state.isSingleRow,
+        toolboxDoc,
       }),
       SplitBox({
         className: "devtools-responsive-container",
@@ -237,7 +240,7 @@ class MonitorPanel extends Component {
             ref: "endPanel",
             connector,
             openLink,
-            sourceMapService,
+            sourceMapURLService,
           }),
         endPanelCollapsed: !networkDetailsOpen,
         endPanelControl: true,

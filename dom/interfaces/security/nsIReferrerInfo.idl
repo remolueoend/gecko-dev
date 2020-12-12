@@ -6,12 +6,14 @@
 #include "nsISerializable.idl"
 
 %{C++
-#include "mozilla/dom/ReferrerPolicyBinding.h"
+namespace mozilla::dom {
+enum class ReferrerPolicy : uint8_t;
+}
 %}
 
 interface nsIURI;
 webidl Document;
-webidl Node;
+webidl Element;
 
 native ReferrerPolicy(mozilla::dom::ReferrerPolicy);
 native URIRef(already_AddRefed<nsIURI>);
@@ -123,7 +125,6 @@ interface nsIReferrerInfo : nsISerializable
    * @param aSendReferrer sendReferrer of the created object, defaults to false
    * @param aOriginalReferrer the original referrer, defaults to null.
    */
-  [implicit_jscontext]
   void init(in nsIReferrerInfo_ReferrerPolicyIDL aReferrerPolicy,
            [optional] in boolean aSendReferrer,
            [optional] in nsIURI aOriginalReferrer);
@@ -132,7 +133,7 @@ interface nsIReferrerInfo : nsISerializable
    * Initialize with a given document.
    * @param aDocument the document to init referrerInfo object
    */
-  void initWithDocument(in Document aDocument);
+  void initWithDocument([const] in Document aDocument);
 
   /**
    * Initialize with a given node. It you are working with node which supports
@@ -141,6 +142,5 @@ interface nsIReferrerInfo : nsISerializable
    * from rel and attribute has a higher priority.
    * @param aNode the element to init referrerInfo object
    */
-  void initWithNode(in Node aNode);
-
+  void initWithElement([const] in Element aNode);
 };

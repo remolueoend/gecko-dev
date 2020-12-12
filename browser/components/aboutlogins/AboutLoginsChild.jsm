@@ -34,6 +34,23 @@ let lastOpenManagementOuterWindowID = null;
 let lastOpenManagementEventTime = Number.NEGATIVE_INFINITY;
 let masterPasswordPromise;
 
+function recordTelemetryEvent(event) {
+  try {
+    let { method, object, extra = {}, value = null } = event;
+    Services.telemetry.recordEvent(
+      TELEMETRY_EVENT_CATEGORY,
+      method,
+      object,
+      value,
+      extra
+    );
+  } catch (ex) {
+    Cu.reportError(
+      "AboutLoginsChild: error recording telemetry event: " + ex.message
+    );
+  }
+}
+
 class AboutLoginsChild extends JSWindowActorChild {
   handleEvent(event) {
     switch (event.type) {
@@ -75,6 +92,9 @@ class AboutLoginsChild extends JSWindowActorChild {
 
             return masterPasswordPromise;
           },
+          fileImportEnabled: Services.prefs.getBoolPref(
+            "signon.management.page.fileImport.enabled"
+          ),
           // Default to enabled just in case a search is attempted before we get a response.
           masterPasswordEnabled: true,
           passwordRevealVisible: true,
@@ -86,10 +106,6 @@ class AboutLoginsChild extends JSWindowActorChild {
             cloneFunctions: true,
           }
         );
-        let aboutLoginsUtilsReadyEvent = new win.CustomEvent(
-          "AboutLoginsUtilsReady"
-        );
-        win.dispatchEvent(aboutLoginsUtilsReadyEvent);
         break;
       }
       case "AboutLoginsCopyLoginDetail": {
@@ -108,36 +124,40 @@ class AboutLoginsChild extends JSWindowActorChild {
         });
         break;
       }
+      case "AboutLoginsExportPasswords": {
+        this.sendAsyncMessage("AboutLogins:ExportPasswords");
+        break;
+      }
       case "AboutLoginsGetHelp": {
         this.sendAsyncMessage("AboutLogins:GetHelp");
         break;
       }
-      case "AboutLoginsHideFooter": {
-        this.sendAsyncMessage("AboutLogins:HideFooter");
-        break;
-      }
-      case "AboutLoginsImport": {
+      case "AboutLoginsImportFromBrowser": {
         this.sendAsyncMessage("AboutLogins:Import");
-        break;
-      }
-      case "AboutLoginsOpenMobileAndroid": {
-        this.sendAsyncMessage("AboutLogins:OpenMobileAndroid", {
-          source: event.detail,
+        recordTelemetryEvent({
+          object: "import_from_browser",
+          method: "mgmt_menu_item_used",
         });
         break;
       }
-      case "AboutLoginsOpenMobileIos": {
-        this.sendAsyncMessage("AboutLogins:OpenMobileIos", {
-          source: event.detail,
+      case "AboutLoginsImportFromFile": {
+        this.sendAsyncMessage("AboutLogins:ImportPasswords");
+        recordTelemetryEvent({
+          object: "import_from_csv",
+          method: "mgmt_menu_item_used",
         });
         break;
       }
       case "AboutLoginsOpenPreferences": {
         this.sendAsyncMessage("AboutLogins:OpenPreferences");
+        recordTelemetryEvent({
+          object: "preferences",
+          method: "mgmt_menu_item_used",
+        });
         break;
       }
       case "AboutLoginsRecordTelemetryEvent": {
-        let { method, object, extra = {}, value = null } = event.detail;
+        let { method } = event.detail;
 
         if (method == "open_management") {
           let { docShell } = this.browsingContext;
@@ -157,20 +177,11 @@ class AboutLoginsChild extends JSWindowActorChild {
           lastOpenManagementEventTime = now;
           lastOpenManagementOuterWindowID = docShell.outerWindowID;
         }
-
-        try {
-          Services.telemetry.recordEvent(
-            TELEMETRY_EVENT_CATEGORY,
-            method,
-            object,
-            value,
-            extra
-          );
-        } catch (ex) {
-          Cu.reportError(
-            "AboutLoginsChild: error recording telemetry event: " + ex.message
-          );
-        }
+        recordTelemetryEvent(event.detail);
+        break;
+      }
+      case "AboutLoginsRemoveAllLogins": {
+        this.sendAsyncMessage("AboutLogins:RemoveAllLogins");
         break;
       }
       case "AboutLoginsSortChanged": {
@@ -199,25 +210,7 @@ class AboutLoginsChild extends JSWindowActorChild {
       case "AboutLogins:MasterPasswordResponse":
         if (masterPasswordPromise) {
           masterPasswordPromise.resolve(message.data.result);
-          try {
-            let {
-              method,
-              object,
-              extra = {},
-              value = null,
-            } = message.data.telemetryEvent;
-            Services.telemetry.recordEvent(
-              TELEMETRY_EVENT_CATEGORY,
-              method,
-              object,
-              value,
-              extra
-            );
-          } catch (ex) {
-            Cu.reportError(
-              "AboutLoginsChild: error recording telemetry event: " + ex.message
-            );
-          }
+          recordTelemetryEvent(message.data.telemetryEvent);
         }
         break;
       case "AboutLogins:Setup":

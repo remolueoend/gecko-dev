@@ -9,8 +9,8 @@
 #include "GraphDriver.h"
 #include "MediaTrackGraph.h"
 #include "MediaTrackGraphImpl.h"
-#include "mozilla/dom/WorkletThread.h"
 #include "nsISupportsImpl.h"
+#include "nsISupportsPriority.h"
 #include "prthread.h"
 #include "Tracing.h"
 #include "audio_thread_priority.h"
@@ -56,13 +56,13 @@ void GraphRunner::Shutdown() {
   mThread->Shutdown();
 }
 
-auto GraphRunner::OneIteration(GraphTime aStateEnd, GraphTime aIterationEnd,
+auto GraphRunner::OneIteration(GraphTime aStateTime, GraphTime aIterationEnd,
                                AudioMixer* aMixer) -> IterationResult {
   TRACE();
 
   MonitorAutoLock lock(mMonitor);
   MOZ_ASSERT(mThreadState == ThreadState::Wait);
-  mIterationState = Some(IterationState(aStateEnd, aIterationEnd, aMixer));
+  mIterationState = Some(IterationState(aStateTime, aIterationEnd, aMixer));
 
 #ifdef DEBUG
   if (auto audioDriver = mGraph->CurrentDriver()->AsAudioCallbackDriver()) {
@@ -95,8 +95,10 @@ auto GraphRunner::OneIteration(GraphTime aStateEnd, GraphTime aIterationEnd,
 }
 
 NS_IMETHODIMP GraphRunner::Run() {
+#ifndef XP_LINUX
   atp_handle* handle =
       atp_promote_current_thread_to_real_time(0, mGraph->GraphRate());
+#endif
 
   nsCOMPtr<nsIThreadInternal> threadInternal = do_QueryInterface(mThread);
   threadInternal->SetObserver(mGraph);
@@ -111,7 +113,7 @@ NS_IMETHODIMP GraphRunner::Run() {
     }
     MOZ_DIAGNOSTIC_ASSERT(mIterationState.isSome());
     TRACE();
-    mIterationResult = mGraph->OneIterationImpl(mIterationState->StateEnd(),
+    mIterationResult = mGraph->OneIterationImpl(mIterationState->StateTime(),
                                                 mIterationState->IterationEnd(),
                                                 mIterationState->Mixer());
     // Signal that mIterationResult was updated
@@ -119,21 +121,21 @@ NS_IMETHODIMP GraphRunner::Run() {
     mMonitor.Notify();
   }
 
+#ifndef XP_LINUX
   if (handle) {
     atp_demote_current_thread_from_real_time(handle);
   }
-
-  dom::WorkletThread::DeleteCycleCollectedJSContext();
+#endif
 
   return NS_OK;
 }
 
-bool GraphRunner::OnThread() {
+bool GraphRunner::OnThread() const {
   return mThread->EventTarget()->IsOnCurrentThread();
 }
 
 #ifdef DEBUG
-bool GraphRunner::InDriverIteration(GraphDriver* aDriver) {
+bool GraphRunner::InDriverIteration(const GraphDriver* aDriver) const {
   if (!OnThread()) {
     return false;
   }

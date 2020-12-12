@@ -4,32 +4,36 @@
 
 "use strict";
 
-const { Ci } = require("chrome");
-
 const {
+  START_WORKER,
+  UNREGISTER_WORKER,
   UPDATE_CAN_DEBUG_WORKERS,
   UPDATE_WORKERS,
 } = require("devtools/client/application/src/constants");
 
 function WorkersState() {
   return {
-    // Array of all service workers
+    // Array of all service worker registrations
     list: [],
     canDebugWorkers: false,
   };
 }
 
 function buildWorkerDataFromFronts({ registration, workers }) {
-  return workers.map(worker => ({
-    id: worker.id,
-    isActive: worker.state === Ci.nsIServiceWorkerInfo.STATE_ACTIVATED,
-    scope: registration.scope,
-    lastUpdateTime: registration.lastUpdateTime, // only available for active worker
-    url: worker.url,
+  return {
+    id: registration.id,
+    lastUpdateTime: registration.lastUpdateTime,
     registrationFront: registration,
-    workerTargetFront: worker.workerTargetFront,
-    stateText: worker.stateText,
-  }));
+    scope: registration.scope,
+    workers: workers.map(worker => ({
+      id: worker.id,
+      url: worker.url,
+      state: worker.state,
+      stateText: worker.stateText,
+      registrationFront: registration,
+      workerDescriptorFront: worker.workerDescriptorFront,
+    })),
+  };
 }
 
 function workersReducer(state = WorkersState(), action) {
@@ -45,6 +49,11 @@ function workersReducer(state = WorkersState(), action) {
         list: workers.map(buildWorkerDataFromFronts).flat(),
       });
     }
+    // these actions don't change the state, but get picked up by the
+    // telemetry middleware
+    case START_WORKER:
+    case UNREGISTER_WORKER:
+      return state;
     default:
       return state;
   }

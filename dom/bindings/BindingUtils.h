@@ -12,33 +12,31 @@
 #include "jsfriendapi.h"
 #include "js/CharacterEncoding.h"
 #include "js/Conversions.h"
+#include "js/experimental/JitInfo.h"  // JSJitGetterOp, JSJitInfo
+#include "js/friend/WindowProxy.h"  // js::IsWindow, js::IsWindowProxy, js::ToWindowProxyIfWindow
 #include "js/MemoryFunctions.h"
+#include "js/Object.h"  // JS::GetClass, JS::GetCompartment, JS::GetReservedSlot, JS::SetReservedSlot
+#include "js/String.h"  // JS::GetLatin1LinearStringChars, JS::GetTwoByteLinearStringChars, JS::GetLinearStringLength, JS::LinearStringHasLatin1Chars, JS::StringHasLatin1Chars
 #include "js/Wrapper.h"
 #include "mozilla/ArrayUtils.h"
-#include "mozilla/Alignment.h"
 #include "mozilla/Array.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/DeferredFinalize.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/BindingCallContext.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/CallbackObject.h"
 #include "mozilla/dom/DOMJSClass.h"
 #include "mozilla/dom/DOMJSProxyHandler.h"
-#include "mozilla/dom/Exceptions.h"
+#include "mozilla/dom/JSSlots.h"
 #include "mozilla/dom/NonRefcountedDOMObject.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/dom/PrototypeList.h"
 #include "mozilla/dom/RemoteObjectProxy.h"
-#include "mozilla/dom/RootedDictionary.h"
-#include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/SegmentedVector.h"
 #include "mozilla/ErrorResult.h"
 #include "mozilla/Likely.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/dom/Document.h"
 #include "nsIGlobalObject.h"
-#include "nsIVariant.h"
 #include "nsJSUtils.h"
 #include "nsISupportsImpl.h"
 #include "xpcObjectHelper.h"
@@ -48,7 +46,14 @@
 
 #include "nsWrapperCacheInlines.h"
 
-class nsGenericHTMLElement;
+// XXX(Bug 1674080) Remove this and let Codegen.py generate it instead when
+// needed.
+#include "mozilla/BasePrincipal.h"
+#include "nsJSPrincipals.h"
+
+class nsGlobalWindowInner;
+class nsGlobalWindowOuter;
+class nsIInterfaceRequestor;
 
 namespace mozilla {
 
@@ -57,11 +62,15 @@ enum class UseCounterWorker : int16_t;
 
 namespace dom {
 class CustomElementReactionsStack;
+class Document;
+class EventTarget;
 class MessageManagerGlobal;
 class DedicatedWorkerGlobalScope;
 template <typename KeyType, typename ValueType>
 class Record;
 class WindowProxyHolder;
+
+enum class DeprecatedOperations : uint16_t;
 
 nsresult UnwrapArgImpl(JSContext* cx, JS::Handle<JSObject*> src,
                        const nsIID& iid, void** ppArg);
@@ -99,10 +108,10 @@ static_assert(DOM_OBJECT_SLOT == 0,
               "Expect bad things");
 template <class T>
 inline T* UnwrapDOMObject(JSObject* obj) {
-  MOZ_ASSERT(IsDOMClass(js::GetObjectClass(obj)),
+  MOZ_ASSERT(IsDOMClass(JS::GetClass(obj)),
              "Don't pass non-DOM objects to this function");
 
-  JS::Value val = js::GetReservedSlot(obj, DOM_OBJECT_SLOT);
+  JS::Value val = JS::GetReservedSlot(obj, DOM_OBJECT_SLOT);
   return static_cast<T*>(val.toPrivate());
 }
 
@@ -112,10 +121,10 @@ inline T* UnwrapPossiblyNotInitializedDOMObject(JSObject* obj) {
   // JS_NewObject has returned and so before we have a chance to set
   // DOM_OBJECT_SLOT to anything useful.
 
-  MOZ_ASSERT(IsDOMClass(js::GetObjectClass(obj)),
+  MOZ_ASSERT(IsDOMClass(JS::GetClass(obj)),
              "Don't pass non-DOM objects to this function");
 
-  JS::Value val = js::GetReservedSlot(obj, DOM_OBJECT_SLOT);
+  JS::Value val = JS::GetReservedSlot(obj, DOM_OBJECT_SLOT);
   if (val.isUndefined()) {
     return nullptr;
   }
@@ -127,7 +136,7 @@ inline const DOMJSClass* GetDOMClass(const JSClass* clasp) {
 }
 
 inline const DOMJSClass* GetDOMClass(JSObject* obj) {
-  return GetDOMClass(js::GetObjectClass(obj));
+  return GetDOMClass(JS::GetClass(obj));
 }
 
 inline nsISupports* UnwrapDOMObjectToISupports(JSObject* aObject) {
@@ -139,9 +148,7 @@ inline nsISupports* UnwrapDOMObjectToISupports(JSObject* aObject) {
   return UnwrapPossiblyNotInitializedDOMObject<nsISupports>(aObject);
 }
 
-inline bool IsDOMObject(JSObject* obj) {
-  return IsDOMClass(js::GetObjectClass(obj));
-}
+inline bool IsDOMObject(JSObject* obj) { return IsDOMClass(JS::GetClass(obj)); }
 
 // There are two valid ways to use UNWRAP_OBJECT: Either obj needs to
 // be a MutableHandle<JSObject*>, or value needs to be a strong-reference
@@ -600,12 +607,12 @@ class ProtoAndIfaceCache {
 
 inline void AllocateProtoAndIfaceCache(JSObject* obj,
                                        ProtoAndIfaceCache::Kind aKind) {
-  MOZ_ASSERT(js::GetObjectClass(obj)->flags & JSCLASS_DOM_GLOBAL);
-  MOZ_ASSERT(js::GetReservedSlot(obj, DOM_PROTOTYPE_SLOT).isUndefined());
+  MOZ_ASSERT(JS::GetClass(obj)->flags & JSCLASS_DOM_GLOBAL);
+  MOZ_ASSERT(JS::GetReservedSlot(obj, DOM_PROTOTYPE_SLOT).isUndefined());
 
   ProtoAndIfaceCache* protoAndIfaceCache = new ProtoAndIfaceCache(aKind);
 
-  js::SetReservedSlot(obj, DOM_PROTOTYPE_SLOT,
+  JS::SetReservedSlot(obj, DOM_PROTOTYPE_SLOT,
                       JS::PrivateValue(protoAndIfaceCache));
 }
 
@@ -614,27 +621,21 @@ struct VerifyTraceProtoAndIfaceCacheCalledTracer : public JS::CallbackTracer {
   bool ok;
 
   explicit VerifyTraceProtoAndIfaceCacheCalledTracer(JSContext* cx)
-      : JS::CallbackTracer(cx), ok(false) {}
+      : JS::CallbackTracer(cx, JS::TracerKind::VerifyTraceProtoAndIface),
+        ok(false) {}
 
-  bool onChild(const JS::GCCellPtr&) override {
+  void onChild(const JS::GCCellPtr&) override {
     // We don't do anything here, we only want to verify that
     // TraceProtoAndIfaceCache was called.
-    return true;
-  }
-
-  TracerKind getTracerKind() const override {
-    return TracerKind::VerifyTraceProtoAndIface;
   }
 };
 #endif
 
 inline void TraceProtoAndIfaceCache(JSTracer* trc, JSObject* obj) {
-  MOZ_ASSERT(js::GetObjectClass(obj)->flags & JSCLASS_DOM_GLOBAL);
+  MOZ_ASSERT(JS::GetClass(obj)->flags & JSCLASS_DOM_GLOBAL);
 
 #ifdef DEBUG
-  if (trc->isCallbackTracer() &&
-      (trc->asCallbackTracer()->getTracerKind() ==
-       JS::CallbackTracer::TracerKind::VerifyTraceProtoAndIface)) {
+  if (trc->kind() == JS::TracerKind::VerifyTraceProtoAndIface) {
     // We don't do anything here, we only want to verify that
     // TraceProtoAndIfaceCache was called.
     static_cast<VerifyTraceProtoAndIfaceCacheCalledTracer*>(trc)->ok = true;
@@ -648,7 +649,7 @@ inline void TraceProtoAndIfaceCache(JSTracer* trc, JSObject* obj) {
 }
 
 inline void DestroyProtoAndIfaceCache(JSObject* obj) {
-  MOZ_ASSERT(js::GetObjectClass(obj)->flags & JSCLASS_DOM_GLOBAL);
+  MOZ_ASSERT(JS::GetClass(obj)->flags & JSCLASS_DOM_GLOBAL);
 
   if (!DOMGlobalHasProtoAndIFaceCache(obj)) {
     return;
@@ -693,8 +694,6 @@ struct NamedConstructor {
  * protoCache a pointer to a JSObject pointer where we should cache the
  *            interface prototype object. This must be null if protoClass is and
  *            vice versa.
- * toStringTag if not null, a string to define as @@toStringTag on the prototype.
- *             Must be null if protoClass is.
  * constructorClass is the JSClass to use for the interface object.
  *                  This is null if we should not create an interface object or
  *                  if it should be a function object.
@@ -732,17 +731,19 @@ struct NamedConstructor {
  * |name|, which must also be non-null.
  */
 // clang-format on
-void CreateInterfaceObjects(
-    JSContext* cx, JS::Handle<JSObject*> global,
-    JS::Handle<JSObject*> protoProto, const JSClass* protoClass,
-    JS::Heap<JSObject*>* protoCache, const char* toStringTag,
-    JS::Handle<JSObject*> interfaceProto, const JSClass* constructorClass,
-    unsigned ctorNargs, const NamedConstructor* namedConstructors,
-    JS::Heap<JSObject*>* constructorCache,
-    const NativeProperties* regularProperties,
-    const NativeProperties* chromeOnlyProperties, const char* name,
-    bool defineOnGlobal, const char* const* unscopableNames, bool isGlobal,
-    const char* const* legacyWindowAliases);
+void CreateInterfaceObjects(JSContext* cx, JS::Handle<JSObject*> global,
+                            JS::Handle<JSObject*> protoProto,
+                            const JSClass* protoClass,
+                            JS::Heap<JSObject*>* protoCache,
+                            JS::Handle<JSObject*> interfaceProto,
+                            const JSClass* constructorClass, unsigned ctorNargs,
+                            const NamedConstructor* namedConstructors,
+                            JS::Heap<JSObject*>* constructorCache,
+                            const NativeProperties* regularProperties,
+                            const NativeProperties* chromeOnlyProperties,
+                            const char* name, bool defineOnGlobal,
+                            const char* const* unscopableNames, bool isGlobal,
+                            const char* const* legacyWindowAliases);
 
 /**
  * Define the properties (regular and chrome-only) on obj.
@@ -889,7 +890,7 @@ bool MaybeWrapObjectValue(JSContext* cx, JS::MutableHandle<JS::Value> rval) {
 
   // Cross-compartment always requires wrapping.
   JSObject* obj = &rval.toObject();
-  if (js::GetObjectCompartment(obj) != js::GetContextCompartment(cx)) {
+  if (JS::GetCompartment(obj) != js::GetContextCompartment(cx)) {
     return JS_WrapValue(cx, rval);
   }
 
@@ -902,7 +903,7 @@ bool MaybeWrapObjectValue(JSContext* cx, JS::MutableHandle<JS::Value> rval) {
 // JS::MutableHandle<JSObject*> which must be non-null.
 MOZ_ALWAYS_INLINE
 bool MaybeWrapObject(JSContext* cx, JS::MutableHandle<JSObject*> obj) {
-  if (js::GetObjectCompartment(obj) != js::GetContextCompartment(cx)) {
+  if (JS::GetCompartment(obj) != js::GetContextCompartment(cx)) {
     return JS_WrapObject(cx, obj);
   }
 
@@ -934,7 +935,7 @@ bool MaybeWrapNonDOMObjectValue(JSContext* cx,
   MOZ_ASSERT(!GetDOMClass(&rval.toObject()));
 
   JSObject* obj = &rval.toObject();
-  if (js::GetObjectCompartment(obj) == js::GetContextCompartment(cx)) {
+  if (JS::GetCompartment(obj) == js::GetContextCompartment(cx)) {
     return true;
   }
   return JS_WrapValue(cx, rval);
@@ -1027,10 +1028,7 @@ struct CheckWrapperCacheTracing<T, true> {
     CallQueryInterface(ccISupports, &participant);
     MOZ_ASSERT(participant, "Can't QI to CycleCollectionParticipant?");
 
-    bool wasPreservingWrapper = wrapperCacheFromQI->PreservingWrapper();
-    wrapperCacheFromQI->SetPreservingWrapper(true);
     wrapperCacheFromQI->CheckCCWrapperTraversal(ccISupports, participant);
-    wrapperCacheFromQI->SetPreservingWrapper(wasPreservingWrapper);
   }
 };
 
@@ -1087,7 +1085,7 @@ MOZ_ALWAYS_INLINE bool DoGetOrCreateDOMReflector(
 
   rval.set(JS::ObjectValue(*obj));
 
-  if (js::GetObjectCompartment(obj) == js::GetContextCompartment(cx)) {
+  if (JS::GetCompartment(obj) == js::GetContextCompartment(cx)) {
     return TypeNeedsOuterization<T>::value ? TryToOuterize(rval) : true;
   }
 
@@ -1331,7 +1329,7 @@ inline bool FindEnumStringIndex(BindingCallContext& cx, JS::Handle<JS::Value> v,
   {
     size_t length;
     JS::AutoCheckCannotGC nogc;
-    if (js::StringHasLatin1Chars(str)) {
+    if (JS::StringHasLatin1Chars(str)) {
       const JS::Latin1Char* chars =
           JS_GetLatin1StringCharsAndLength(cx, nogc, str, &length);
       if (!chars) {
@@ -1418,6 +1416,8 @@ inline void UpdateWrapper(T* p, void*, JSObject* obj, const JSObject* old) {
 // This operation will return false only for non-nsISupports cycle-collected
 // objects, because we cannot determine if they are wrappercached or not.
 bool TryPreserveWrapper(JS::Handle<JSObject*> obj);
+
+bool HasReleasedWrapper(JS::Handle<JSObject*> obj);
 
 // Can only be called with a DOM JSClass.
 bool InstanceClassHasProtoAtDepth(const JSClass* clasp, uint32_t protoID,
@@ -1762,7 +1762,7 @@ inline JSObject* GetCallbackFromCallbackObject(JSContext* aCx, T& aObj) {
 static inline bool AtomizeAndPinJSString(JSContext* cx, jsid& id,
                                          const char* chars) {
   if (JSString* str = ::JS_AtomizeAndPinString(cx, chars)) {
-    id = INTERNED_STRING_TO_JSID(cx, str);
+    id = JS::PropertyKey::fromPinnedString(str);
     return true;
   }
   return false;
@@ -2078,23 +2078,20 @@ template <typename T>
 class MOZ_RAII SequenceRooter final : private JS::CustomAutoRooter {
  public:
   template <typename CX>
-  SequenceRooter(const CX& cx,
-                 FallibleTArray<T>* aSequence MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT),
+  SequenceRooter(const CX& cx, FallibleTArray<T>* aSequence)
+      : JS::CustomAutoRooter(cx),
         mFallibleArray(aSequence),
         mSequenceType(eFallibleArray) {}
 
   template <typename CX>
-  SequenceRooter(const CX& cx,
-                 nsTArray<T>* aSequence MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT),
+  SequenceRooter(const CX& cx, nsTArray<T>* aSequence)
+      : JS::CustomAutoRooter(cx),
         mInfallibleArray(aSequence),
         mSequenceType(eInfallibleArray) {}
 
   template <typename CX>
-  SequenceRooter(const CX& cx, Nullable<nsTArray<T>>* aSequence
-                                   MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT),
+  SequenceRooter(const CX& cx, Nullable<nsTArray<T>>* aSequence)
+      : JS::CustomAutoRooter(cx),
         mNullableArray(aSequence),
         mSequenceType(eNullableArray) {}
 
@@ -2128,16 +2125,12 @@ template <typename K, typename V>
 class MOZ_RAII RecordRooter final : private JS::CustomAutoRooter {
  public:
   template <typename CX>
-  RecordRooter(const CX& cx,
-               Record<K, V>* aRecord MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT),
-        mRecord(aRecord),
-        mRecordType(eRecord) {}
+  RecordRooter(const CX& cx, Record<K, V>* aRecord)
+      : JS::CustomAutoRooter(cx), mRecord(aRecord), mRecordType(eRecord) {}
 
   template <typename CX>
-  RecordRooter(const CX& cx,
-               Nullable<Record<K, V>>* aRecord MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT),
+  RecordRooter(const CX& cx, Nullable<Record<K, V>>* aRecord)
+      : JS::CustomAutoRooter(cx),
         mNullableRecord(aRecord),
         mRecordType(eNullableRecord) {}
 
@@ -2167,9 +2160,7 @@ template <typename T>
 class MOZ_RAII RootedUnion : public T, private JS::CustomAutoRooter {
  public:
   template <typename CX>
-  explicit RootedUnion(const CX& cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : T(),
-        JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT) {}
+  explicit RootedUnion(const CX& cx) : T(), JS::CustomAutoRooter(cx) {}
 
   virtual void trace(JSTracer* trc) override { this->TraceUnion(trc); }
 };
@@ -2179,9 +2170,8 @@ class MOZ_STACK_CLASS NullableRootedUnion : public Nullable<T>,
                                             private JS::CustomAutoRooter {
  public:
   template <typename CX>
-  explicit NullableRootedUnion(const CX& cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : Nullable<T>(),
-        JS::CustomAutoRooter(cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM_TO_PARENT) {}
+  explicit NullableRootedUnion(const CX& cx)
+      : Nullable<T>(), JS::CustomAutoRooter(cx) {}
 
   virtual void trace(JSTracer* trc) override {
     if (!this->IsNull()) {
@@ -2283,7 +2273,7 @@ inline bool XrayGetNativeProto(JSContext* cx, JS::Handle<JSObject*> obj,
       MOZ_ASSERT(JS_IsNativeFunction(obj, Constructor));
       protop.set(JS::GetRealmFunctionPrototype(cx));
     } else {
-      const JSClass* clasp = js::GetObjectClass(obj);
+      const JSClass* clasp = JS::GetClass(obj);
       MOZ_ASSERT(IsDOMIfaceAndProtoClass(clasp));
       ProtoGetter protoGetter =
           DOMIfaceAndProtoJSClass::FromJSClass(clasp)->mGetParentProto;
@@ -2347,7 +2337,7 @@ extern const JSClassOps sBoringInterfaceObjectClassClassOps;
 extern const js::ObjectOps sInterfaceObjectClassObjectOps;
 
 inline bool UseDOMXray(JSObject* obj) {
-  const JSClass* clasp = js::GetObjectClass(obj);
+  const JSClass* clasp = JS::GetClass(obj);
   return IsDOMClass(clasp) || JS_IsNativeFunction(obj, Constructor) ||
          IsDOMIfaceAndProtoClass(clasp);
 }
@@ -2358,7 +2348,7 @@ inline bool IsDOMConstructor(JSObject* obj) {
     return true;
   }
 
-  const JSClass* clasp = js::GetObjectClass(obj);
+  const JSClass* clasp = JS::GetClass(obj);
   // Check for a DOM interface object.
   return dom::IsDOMIfaceAndProtoClass(clasp) &&
          dom::DOMIfaceAndProtoJSClass::FromJSClass(clasp)->mType ==
@@ -2368,7 +2358,7 @@ inline bool IsDOMConstructor(JSObject* obj) {
 #ifdef DEBUG
 inline bool HasConstructor(JSObject* obj) {
   return JS_IsNativeFunction(obj, Constructor) ||
-         js::GetObjectClass(obj)->getConstruct();
+         JS::GetClass(obj)->getConstruct();
 }
 #endif
 
@@ -2472,6 +2462,10 @@ void ConstructJSImplementation(const char* aContractId,
                                nsIGlobalObject* aGlobal,
                                JS::MutableHandle<JSObject*> aObject,
                                ErrorResult& aRv);
+
+// XXX Avoid pulling in the whole ScriptSettings.h, however there should be a
+// unique declaration of this function somewhere else.
+JS::RootingContext* RootingCx();
 
 template <typename T>
 already_AddRefed<T> ConstructJSImplementation(const char* aContractId,
@@ -2617,7 +2611,7 @@ class MOZ_STACK_CLASS BindingJSObjectCreator {
 
   ~BindingJSObjectCreator() {
     if (mReflector) {
-      js::SetReservedSlot(mReflector, DOM_OBJECT_SLOT, JS::UndefinedValue());
+      JS::SetReservedSlot(mReflector, DOM_OBJECT_SLOT, JS::UndefinedValue());
     }
   }
 
@@ -2650,7 +2644,7 @@ class MOZ_STACK_CLASS BindingJSObjectCreator {
                     JS::MutableHandle<JSObject*> aReflector) {
     aReflector.set(JS_NewObjectWithGivenProto(aCx, aClass, aProto));
     if (aReflector) {
-      js::SetReservedSlot(aReflector, DOM_OBJECT_SLOT,
+      JS::SetReservedSlot(aReflector, DOM_OBJECT_SLOT,
                           JS::PrivateValue(aNative));
       mNative = aNative;
       mReflector = aReflector;
@@ -2883,7 +2877,7 @@ bool CreateGlobal(JSContext* aCx, T* aNative, nsWrapperCache* aCache,
   JSAutoRealm ar(aCx, aGlobal);
 
   {
-    js::SetReservedSlot(aGlobal, DOM_OBJECT_SLOT, JS::PrivateValue(aNative));
+    JS::SetReservedSlot(aGlobal, DOM_OBJECT_SLOT, JS::PrivateValue(aNative));
     NS_ADDREF(aNative);
 
     aCache->SetWrapper(aGlobal);
@@ -2921,31 +2915,6 @@ bool CreateGlobal(JSContext* aCx, T* aNative, nsWrapperCache* aCache,
 
   return true;
 }
-
-/*
- * Holds a jsid that is initialized to a pinned string, with automatic
- * conversion to Handle<jsid>, as it is held live forever by pinning.
- */
-class PinnedStringId {
-  jsid id;
-
- public:
-  constexpr PinnedStringId() : id(JSID_VOID) {}
-
-  bool init(JSContext* cx, const char* string) {
-    JSString* str = JS_AtomizeAndPinString(cx, string);
-    if (!str) return false;
-    id = INTERNED_STRING_TO_JSID(cx, str);
-    return true;
-  }
-
-  operator const jsid&() const { return id; }
-
-  operator JS::Handle<jsid>() const {
-    /* This is safe because we have pinned the string. */
-    return JS::Handle<jsid>::fromMarkedLocation(&id);
-  }
-} JS_HAZ_ROOTED;
 
 namespace binding_detail {
 /**
@@ -3138,10 +3107,10 @@ void SetUseCounter(UseCounterWorker aUseCounter);
 
 // Warnings
 void DeprecationWarning(JSContext* aCx, JSObject* aObject,
-                        Document::DeprecatedOperations aOperation);
+                        DeprecatedOperations aOperation);
 
 void DeprecationWarning(const GlobalObject& aGlobal,
-                        Document::DeprecatedOperations aOperation);
+                        DeprecatedOperations aOperation);
 
 // A callback to perform funToString on an interface object
 JSString* InterfaceObjectToString(JSContext* aCx, JS::Handle<JSObject*> aObject,
@@ -3164,6 +3133,7 @@ namespace binding_detail {
 // understanding of all the code that will run while we're using the return
 // value, including the SpiderMonkey parts.
 JSObject* UnprivilegedJunkScopeOrWorkerGlobal();
+JSObject* UnprivilegedJunkScopeOrWorkerGlobal(const fallible_t&);
 
 // Implementation of the [HTMLConstructor] extended attribute.
 bool HTMLConstructor(JSContext* aCx, unsigned aArgc, JS::Value* aVp,
@@ -3184,14 +3154,14 @@ class StringIdChars {
   // Require a non-const ref to an AutoRequireNoGC to prevent callers
   // from passing temporaries.
   StringIdChars(JS::AutoRequireNoGC& nogc, JSLinearString* str) {
-    mIsLatin1 = js::LinearStringHasLatin1Chars(str);
+    mIsLatin1 = JS::LinearStringHasLatin1Chars(str);
     if (mIsLatin1) {
-      mLatin1Chars = js::GetLatin1LinearStringChars(nogc, str);
+      mLatin1Chars = JS::GetLatin1LinearStringChars(nogc, str);
     } else {
-      mTwoByteChars = js::GetTwoByteLinearStringChars(nogc, str);
+      mTwoByteChars = JS::GetTwoByteLinearStringChars(nogc, str);
     }
 #ifdef DEBUG
-    mLength = js::GetLinearStringLength(str);
+    mLength = JS::GetLinearStringLength(str);
 #endif  // DEBUG
   }
 

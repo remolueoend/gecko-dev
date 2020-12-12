@@ -146,7 +146,8 @@ TEST_F(APZHitTestingTester, HitTesting1) {
   uint32_t paintSequenceNumber = 0;
 
   // Now we have a root APZC that will match the page
-  SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID);
+  SetScrollableFrameMetrics(root, ScrollableLayerGuid::START_SCROLL_ID,
+                            CSSRect(0, 0, 100, 100));
   UpdateHitTestingTree(paintSequenceNumber++);
   hit = GetTargetAPZC(ScreenPoint(15, 15));
   EXPECT_EQ(ApzcOf(root), hit.get());
@@ -157,8 +158,8 @@ TEST_F(APZHitTestingTester, HitTesting1) {
             transformToGecko.TransformPoint(ParentLayerPoint(15, 15)));
 
   // Now we have a sub APZC with a better fit
-  SetScrollableFrameMetrics(layers[3],
-                            ScrollableLayerGuid::START_SCROLL_ID + 1);
+  SetScrollableFrameMetrics(layers[3], ScrollableLayerGuid::START_SCROLL_ID + 1,
+                            CSSRect(0, 0, 100, 100));
   UpdateHitTestingTree(paintSequenceNumber++);
   EXPECT_NE(ApzcOf(root), ApzcOf(layers[3]));
   hit = GetTargetAPZC(ScreenPoint(25, 25));
@@ -175,8 +176,8 @@ TEST_F(APZHitTestingTester, HitTesting1) {
   EXPECT_EQ(ApzcOf(root), hit.get());
 
   // Now test hit testing when we have two scrollable layers
-  SetScrollableFrameMetrics(layers[4],
-                            ScrollableLayerGuid::START_SCROLL_ID + 2);
+  SetScrollableFrameMetrics(layers[4], ScrollableLayerGuid::START_SCROLL_ID + 2,
+                            CSSRect(0, 0, 100, 100));
   UpdateHitTestingTree(paintSequenceNumber++);
   hit = GetTargetAPZC(ScreenPoint(15, 15));
   EXPECT_EQ(ApzcOf(layers[4]), hit.get());
@@ -286,7 +287,7 @@ TEST_F(APZHitTestingTester, HitTesting2) {
   // Pan the root layer upward by 50 pixels.
   // This causes layers[1] to scroll out of view, and an async transform
   // of -50 to be set on the root layer.
-  EXPECT_CALL(*mcc, RequestContentRepaint(_)).Times(1);
+  EXPECT_CALL(*mcc, RequestContentRepaint(_)).Times(3);
 
   // This first pan will move the APZC by 50 pixels, and dispatch a paint
   // request. Since this paint request is in the queue to Gecko,
@@ -318,7 +319,7 @@ TEST_F(APZHitTestingTester, HitTesting2) {
             transformToGecko.TransformPoint(ParentLayerPoint(12.5, 75)));
 
   // This second pan will move the APZC by another 50 pixels.
-  EXPECT_CALL(*mcc, RequestContentRepaint(_)).Times(1);
+  EXPECT_CALL(*mcc, RequestContentRepaint(_)).Times(3);
   Pan(apzcroot, 100, 50, PanOptions::NoFling);
 
   // Hit where layers[3] used to be. It should now hit the root.
@@ -689,5 +690,5 @@ TEST_F(APZHitTestingTester, HitTestingRespectsScrollClip_Bug1257288) {
 
   // Test that the subframe hasn't scrolled.
   EXPECT_EQ(CSSPoint(0, 0),
-            ApzcOf(layers[2], 0)->GetFrameMetrics().GetScrollOffset());
+            ApzcOf(layers[2], 0)->GetFrameMetrics().GetVisualScrollOffset());
 }

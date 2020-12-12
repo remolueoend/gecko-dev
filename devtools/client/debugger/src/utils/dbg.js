@@ -6,7 +6,6 @@
 
 import * as timings from "./timings";
 import { prefs, asyncStore, features } from "./prefs";
-import { isDevelopment, isTesting } from "devtools-environment";
 import { getDocument } from "./editor/source-documents";
 import type { Source, URL } from "../types";
 import type { ThreadFront } from "../client/firefox/types";
@@ -78,6 +77,8 @@ function getDocumentForUrl(dbg, url) {
   return getDocument(source.id);
 }
 
+const diff = (a, b) => Object.keys(a).filter(key => !Object.is(a[key], b[key]));
+
 export function setupHelper(obj: Object) {
   const selectors = bindSelectors(obj);
   const dbg: Object = {
@@ -105,16 +106,8 @@ export function setupHelper(obj: Object) {
     _telemetry: {
       events: {},
     },
+    diff,
   };
 
   window.dbg = dbg;
-
-  if (isDevelopment() && !isTesting()) {
-    console.group("Development Notes");
-    const baseUrl = "https://firefox-devtools.github.io/debugger";
-    const localDevelopmentUrl = `${baseUrl}/docs/dbg.html`;
-    console.log("Debugging Tips", localDevelopmentUrl);
-    console.log("dbg", window.dbg);
-    console.groupEnd();
-  }
 }

@@ -176,6 +176,9 @@ impl Mixer {
         out_channel_count: usize,
         mut output_channels: Vec<audio_mixer::Channel>,
     ) -> Self {
+        assert!(in_channel_count > 0);
+        assert!(out_channel_count > 0);
+
         cubeb_log!(
             "Create a mixer with input channel count: {}, input layout: {:?}, \
              out channel count: {}, output channels: {:?}",
@@ -194,8 +197,8 @@ impl Mixer {
 
         // When having one or two channel, force mono or stereo. Some devices (namely,
         // Bose QC35, mark 1 and 2), expose a single channel mapped to the right for
-        // some reason.
-        // TODO: Only apply this setting when device is Bose QC35 (by device_property.rs).
+        // some reason. Some devices (e.g., builtin speaker on MacBook Pro 2018) map
+        // the channel layout to the undefined channels.
         if out_channel_count == 1 {
             output_channels = vec![audio_mixer::Channel::FrontCenter];
         } else if out_channel_count == 2 {
@@ -209,8 +212,9 @@ impl Mixer {
         if output_channels.is_empty()
             || out_channel_count != output_channels.len()
             || all_silence == output_channels
+            || Self::non_silent_duplicate_channel_present(&output_channels)
         {
-            cubeb_log!("Mismatch between output channels and layout. Apply default layout instead");
+            cubeb_log!("Use invalid layout. Apply default layout instead");
             output_channels = get_default_channel_order(out_channel_count);
         }
 
@@ -253,6 +257,19 @@ impl Mixer {
             self.buffer.as_ptr(),
             self.buffer.len() * mem::size_of::<u8>(),
         )
+    }
+
+    fn non_silent_duplicate_channel_present(channels: &[audio_mixer::Channel]) -> bool {
+        let mut bitmap: u32 = 0;
+        for channel in channels {
+            if channel != &Channel::Silence {
+                if (bitmap & channel.bitmask()) != 0 {
+                    return true;
+                }
+                bitmap |= channel.bitmask();
+            }
+        }
+        false
     }
 }
 
@@ -447,4 +464,27 @@ fn test_get_default_channel_order() {
             assert_eq!(&channels[CHANNEL_OERDER.len()..], silences.as_slice());
         }
     }
+}
+
+#[test]
+fn test_non_silent_duplicate_channels() {
+    let duplicate = [
+        Channel::FrontLeft,
+        Channel::Silence,
+        Channel::FrontRight,
+        Channel::FrontCenter,
+        Channel::Silence,
+        Channel::FrontRight,
+    ];
+    assert!(Mixer::non_silent_duplicate_channel_present(&duplicate));
+
+    let non_duplicate = [
+        Channel::FrontLeft,
+        Channel::Silence,
+        Channel::FrontRight,
+        Channel::FrontCenter,
+        Channel::Silence,
+        Channel::Silence,
+    ];
+    assert!(!Mixer::non_silent_duplicate_channel_present(&non_duplicate));
 }

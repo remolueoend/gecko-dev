@@ -8,6 +8,7 @@
 
 #include "nsGkAtoms.h"
 #include "nsCOMPtr.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/NodeInfo.h"
 #include "mozilla/dom/Element.h"
@@ -26,6 +27,7 @@
 #include "nsNodeInfoManager.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsContentUtils.h"
+#include "nsIFile.h"
 #include "nsUnicodeProperties.h"
 #include "mozilla/EventStates.h"
 #include "nsTextNode.h"
@@ -165,10 +167,12 @@ void nsFileControlFrame::Reflow(nsPresContext* aPresContext,
         labelBP +=
             lastLabelCont->GetLogicalUsedBorderAndPadding(wm).IStartEnd(wm);
       }
-      auto* buttonFrame = mBrowseFilesOrDirs->GetPrimaryFrame();
-      nscoord availableISizeForLabel =
-          contentISize - buttonFrame->ISize(wm) -
-          buttonFrame->GetLogicalUsedMargin(wm).IStartEnd(wm);
+      nscoord availableISizeForLabel = contentISize;
+      if (auto* buttonFrame = mBrowseFilesOrDirs->GetPrimaryFrame()) {
+        availableISizeForLabel -=
+            buttonFrame->ISize(wm) +
+            buttonFrame->GetLogicalUsedMargin(wm).IStartEnd(wm);
+      }
       if (CropTextToWidth(*aReflowInput.mRenderingContext, labelFrame,
                           availableISizeForLabel - labelBP, filename)) {
         nsBlockFrame::DidReflow(aPresContext, &aReflowInput);
@@ -191,10 +195,8 @@ void nsFileControlFrame::DestroyFrom(nsIFrame* aDestructRoot,
 
   // Remove the events.
   if (mContent) {
-    mContent->RemoveSystemEventListener(NS_LITERAL_STRING("drop"),
-                                        mMouseListener, false);
-    mContent->RemoveSystemEventListener(NS_LITERAL_STRING("dragover"),
-                                        mMouseListener, false);
+    mContent->RemoveSystemEventListener(u"drop"_ns, mMouseListener, false);
+    mContent->RemoveSystemEventListener(u"dragover"_ns, mMouseListener, false);
   }
 
   aPostDestroyData.AddAnonymousContent(mTextContent.forget());
@@ -212,6 +214,7 @@ static already_AddRefed<Element> MakeAnonButton(Document* aDoc,
   // NOTE: SetIsNativeAnonymousRoot() has to be called before setting any
   // attribute.
   button->SetIsNativeAnonymousRoot();
+  button->SetPseudoElementType(PseudoStyleType::fileSelectorButton);
 
   // Set the file picking button text depending on the current locale.
   nsAutoString buttonTxt;
@@ -256,9 +259,12 @@ nsresult nsFileControlFrame::CreateAnonymousContent(
   fileContent->GetAccessKey(accessKey);
 
   mBrowseFilesOrDirs = MakeAnonButton(doc, "Browse", fileContent, accessKey);
-  if (!mBrowseFilesOrDirs || !aElements.AppendElement(mBrowseFilesOrDirs)) {
+  if (!mBrowseFilesOrDirs) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier, or change the return type to void.
+  aElements.AppendElement(mBrowseFilesOrDirs);
 
   // Create and setup the text showing the selected files.
   mTextContent = doc->CreateHTMLElement(nsGkAtoms::label);
@@ -277,10 +283,8 @@ nsresult nsFileControlFrame::CreateAnonymousContent(
   aElements.AppendElement(mTextContent);
 
   // We should be able to interact with the element by doing drag and drop.
-  mContent->AddSystemEventListener(NS_LITERAL_STRING("drop"), mMouseListener,
-                                   false);
-  mContent->AddSystemEventListener(NS_LITERAL_STRING("dragover"),
-                                   mMouseListener, false);
+  mContent->AddSystemEventListener(u"drop"_ns, mMouseListener, false);
+  mContent->AddSystemEventListener(u"dragover"_ns, mMouseListener, false);
 
   SyncDisabledState();
 
@@ -363,7 +367,7 @@ nsFileControlFrame::DnDListener::HandleEvent(Event* aEvent) {
   bool supportsMultiple =
       inputElement->HasAttr(kNameSpaceID_None, nsGkAtoms::multiple);
   if (!CanDropTheseFiles(dataTransfer, supportsMultiple)) {
-    dataTransfer->SetDropEffect(NS_LITERAL_STRING("none"));
+    dataTransfer->SetDropEffect(u"none"_ns);
     aEvent->StopPropagation();
     return NS_OK;
   }
@@ -437,7 +441,7 @@ nsFileControlFrame::DnDListener::HandleEvent(Event* aEvent) {
                            "Failed to dispatch input event");
       nsContentUtils::DispatchTrustedEvent(
           inputElement->OwnerDoc(), static_cast<nsINode*>(inputElement),
-          NS_LITERAL_STRING("change"), CanBubble::eYes, Cancelable::eNo);
+          u"change"_ns, CanBubble::eYes, Cancelable::eNo);
     }
   }
 
@@ -536,8 +540,8 @@ nscoord nsFileControlFrame::GetPrefISize(gfxContext* aRenderingContext) {
 void nsFileControlFrame::SyncDisabledState() {
   EventStates eventStates = mContent->AsElement()->State();
   if (eventStates.HasState(NS_EVENT_STATE_DISABLED)) {
-    mBrowseFilesOrDirs->SetAttr(kNameSpaceID_None, nsGkAtoms::disabled,
-                                EmptyString(), true);
+    mBrowseFilesOrDirs->SetAttr(kNameSpaceID_None, nsGkAtoms::disabled, u""_ns,
+                                true);
   } else {
     mBrowseFilesOrDirs->UnsetAttr(kNameSpaceID_None, nsGkAtoms::disabled, true);
   }
@@ -551,7 +555,7 @@ void nsFileControlFrame::ContentStatesChanged(EventStates aStates) {
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsFileControlFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("FileControl"), aResult);
+  return MakeFrameName(u"FileControl"_ns, aResult);
 }
 #endif
 

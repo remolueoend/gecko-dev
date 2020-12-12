@@ -11,7 +11,6 @@ async function test_autocomplete(data) {
 
   await UrlbarTestUtils.promiseAutocompleteResultPopup({
     window,
-    waitForFocus: SimpleTest.waitForFocus,
     value: typed,
   });
   Assert.equal(gURLBar.value, autofilled, "autofilled value is as expected");
@@ -56,8 +55,8 @@ add_task(async function() {
     desc: "CTRL+ENTER on the autofilled part should bypass autofill",
     typed: "exam",
     autofilled: "example.com/",
-    modified: "www.exam.com",
-    waitForUrl: "http://www.exam.com/",
+    modified: "https://www.exam.com",
+    waitForUrl: "https://www.exam.com/",
     keys: [["KEY_Enter", { ctrlKey: true }]],
   });
 });

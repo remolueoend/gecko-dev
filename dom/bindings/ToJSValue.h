@@ -7,23 +7,37 @@
 #ifndef mozilla_dom_ToJSValue_h
 #define mozilla_dom_ToJSValue_h
 
-#include "mozilla/Assertions.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/dom/BindingUtils.h"
-#include "mozilla/dom/NonRefcountedDOMObject.h"
-#include "mozilla/dom/TypedArray.h"
-#include "jsapi.h"
-#include "js/Array.h"  // JS::NewArrayObject
-#include "nsISupports.h"
-#include "nsTArray.h"
-#include "nsWrapperCache.h"
-#include <type_traits>
+#include <cstddef>  // for size_t
+#include <cstdint>  // for int32_t, int64_t, uint32_t, uint64_t
+#include <type_traits>  // for is_base_of, enable_if_t, enable_if, is_pointer, is_same, void_t
+#include <utility>          // for forward
+#include "ErrorList.h"      // for nsresult
+#include "js/Array.h"       // for NewArrayObject
+#include "js/GCVector.h"    // for RootedVector, MutableWrappedPtrOperations
+#include "js/RootingAPI.h"  // for MutableHandle, Rooted, Handle, Heap
+#include "js/Value.h"       // for Value
+#include "js/ValueArray.h"  // for HandleValueArray
+#include "jsapi.h"          // for CurrentGlobalOrNull
+#include "mozilla/Assertions.h"  // for AssertionConditionType, MOZ_ASSERT, MOZ_ASSERT_HELPER1
+#include "mozilla/Attributes.h"        // for MOZ_MUST_USE
+#include "mozilla/UniquePtr.h"         // for UniquePtr
+#include "mozilla/Unused.h"            // for Unused
+#include "mozilla/dom/BindingUtils.h"  // for MaybeWrapValue, MaybeWrapObjectOrNullValue, XPCOMObjectToJsval, GetOrCreateDOMReflector
+#include "mozilla/dom/CallbackObject.h"  // for CallbackObject
+#include "nsID.h"                        // for NS_GET_TEMPLATE_IID, nsIID
+#include "nsISupports.h"                 // for nsISupports
+#include "nsStringFwd.h"                 // for nsAString
+#include "nsTArrayForwardDeclare.h"
+#include "xpcObjectHelper.h"  // for xpcObjectHelper
 
 namespace mozilla {
 namespace dom {
 
+class CallbackObject;
 class Promise;
 class WindowProxyHolder;
+template <typename TypedArrayType>
+class TypedArrayCreator;
 
 // If ToJSValue returns false, it must set an exception on the
 // JSContext.
@@ -190,6 +204,32 @@ MOZ_MUST_USE
   return true;
 }
 
+namespace binding_detail {
+// Helper type alias for picking a script-exposable non-wrappercached XPIDL
+// interface to expose to JS code. Falls back to `nsISupports` if the specific
+// interface type is ambiguous.
+template <typename T, typename = void>
+struct GetScriptableInterfaceType {
+  using Type = nsISupports;
+
+  static_assert(std::is_base_of_v<nsISupports, T>,
+                "T must inherit from nsISupports");
+};
+template <typename T>
+struct GetScriptableInterfaceType<
+    T, std::void_t<typename T::ScriptableInterfaceType>> {
+  using Type = typename T::ScriptableInterfaceType;
+
+  static_assert(std::is_base_of_v<Type, T>,
+                "T must inherit from ScriptableInterfaceType");
+  static_assert(std::is_base_of_v<nsISupports, Type>,
+                "ScriptableInterfaceType must inherit from nsISupports");
+};
+
+template <typename T>
+using ScriptableInterfaceType = typename GetScriptableInterfaceType<T>::Type;
+}  // namespace binding_detail
+
 // Accept objects that inherit from nsISupports but not nsWrapperCache (e.g.
 // DOM File).
 template <class T>
@@ -203,7 +243,9 @@ ToJSValue(JSContext* aCx, T& aArgument, JS::MutableHandle<JS::Value> aValue) {
 
   xpcObjectHelper helper(ToSupports(&aArgument));
   JS::Rooted<JSObject*> scope(aCx, JS::CurrentGlobalOrNull(aCx));
-  return XPCOMObjectToJsval(aCx, scope, helper, nullptr, true, aValue);
+  const nsIID& iid =
+      NS_GET_TEMPLATE_IID(binding_detail::ScriptableInterfaceType<T>);
+  return XPCOMObjectToJsval(aCx, scope, helper, &iid, true, aValue);
 }
 
 MOZ_MUST_USE bool ToJSValue(JSContext* aCx, const WindowProxyHolder& aArgument,

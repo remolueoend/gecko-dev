@@ -11,8 +11,7 @@
 #include "nsGlobalWindowInner.h"
 #include "VideoOutput.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 VideoStreamTrack::VideoStreamTrack(nsPIDOMWindowInner* aWindow,
                                    mozilla::MediaTrack* aInputTrack,
@@ -54,7 +53,7 @@ void VideoStreamTrack::AddVideoOutput(VideoOutput* aOutput) {
 }
 
 void VideoStreamTrack::RemoveVideoOutput(VideoFrameContainer* aSink) {
-  for (const auto& output : nsTArray<RefPtr<VideoOutput>>(mVideoOutputs)) {
+  for (const auto& output : mVideoOutputs.Clone()) {
     if (output->mVideoFrameContainer == aSink) {
       mVideoOutputs.RemoveElement(output);
       RemoveDirectListener(output);
@@ -64,7 +63,7 @@ void VideoStreamTrack::RemoveVideoOutput(VideoFrameContainer* aSink) {
 }
 
 void VideoStreamTrack::RemoveVideoOutput(VideoOutput* aOutput) {
-  for (const auto& output : nsTArray<RefPtr<VideoOutput>>(mVideoOutputs)) {
+  for (const auto& output : mVideoOutputs.Clone()) {
     if (output == aOutput) {
       mVideoOutputs.RemoveElement(aOutput);
       RemoveDirectListener(aOutput);
@@ -86,5 +85,4 @@ already_AddRefed<MediaStreamTrack> VideoStreamTrack::CloneInternal() {
                                         ReadyState(), Muted(), mConstraints));
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

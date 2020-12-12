@@ -6,7 +6,6 @@
 #ifndef TRANSFRMX_TXMOZILLAXSLTPROCESSOR_H
 #define TRANSFRMX_TXMOZILLAXSLTPROCESSOR_H
 
-#include "nsAutoPtr.h"
 #include "nsStubMutationObserver.h"
 #include "nsIDocumentTransformer.h"
 #include "txExpandedNameMap.h"
@@ -14,9 +13,7 @@
 #include "nsCycleCollectionParticipant.h"
 #include "nsWrapperCache.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/ReferrerPolicyBinding.h"
 #include "mozilla/dom/XSLTProcessorBinding.h"
 
 class nsINode;
@@ -27,13 +24,15 @@ class txResultRecycler;
 class txIGlobalParameter;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class DocGroup;
 class Document;
 class DocumentFragment;
 class GlobalObject;
-
+enum class ReferrerPolicy : uint8_t;
 }  // namespace dom
 }  // namespace mozilla
 

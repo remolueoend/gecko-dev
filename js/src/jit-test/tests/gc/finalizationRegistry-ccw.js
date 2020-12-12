@@ -1,5 +1,3 @@
-// |jit-test| --enable-weak-refs
-
 // Test combinations of arguments in different compartments.
 
 gczeal(0);
@@ -11,8 +9,8 @@ function ccwToObject() {
 }
 
 function newRegistry() {
-  return new FinalizationRegistry(iterator => {
-    heldValues.push(...iterator);
+  return new FinalizationRegistry(value => {
+    heldValues.push(value);
   });
 }
 
@@ -20,7 +18,7 @@ function ccwToRegistry() {
   let global = newGlobal({newCompartment: true});
   global.heldValues = heldValues;
   return global.eval(
-    `new FinalizationRegistry(iterator => heldValues.push(...iterator))`);
+    `new FinalizationRegistry(value => heldValues.push(value))`);
 }
 
 function incrementalGC() {

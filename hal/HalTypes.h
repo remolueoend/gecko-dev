@@ -6,7 +6,7 @@
 #ifndef mozilla_hal_Types_h
 #define mozilla_hal_Types_h
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 #include "mozilla/Observer.h"
 
 namespace mozilla {
@@ -35,7 +35,7 @@ enum ProcessPriority {
   // CurrentProcessIsForeground().
   PROCESS_PRIORITY_FOREGROUND,
   PROCESS_PRIORITY_FOREGROUND_HIGH,
-  PROCESS_PRIORITY_MASTER,
+  PROCESS_PRIORITY_PARENT_PROCESS,
   NUM_PROCESS_PRIORITY
 };
 

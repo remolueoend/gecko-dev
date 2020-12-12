@@ -82,9 +82,8 @@ nsContentTreeOwner::GetWebBrowserChrome() {
     return nullptr;
   }
 
-  nsCOMPtr<nsPIDOMWindowOuter> outer(docShell->GetWindow());
   if (nsCOMPtr<nsIWebBrowserChrome3> chrome =
-          do_QueryActor("WebBrowserChrome", outer)) {
+          do_QueryActor("WebBrowserChrome", docShell->GetDocument())) {
     return chrome.forget();
   }
 
@@ -313,8 +312,7 @@ nsContentTreeOwner::SetPersistence(bool aPersistPosition, bool aPersistSize,
 
   ErrorResult rv;
   if (saveString) {
-    docShellElement->SetAttribute(NS_LITERAL_STRING("persist"), persistString,
-                                  rv);
+    docShellElement->SetAttribute(u"persist"_ns, persistString, rv);
   }
 
   return NS_OK;
@@ -388,16 +386,6 @@ NS_IMETHODIMP nsContentTreeOwner::ShouldLoadURI(
     nsIDocShell* aDocShell, nsIURI* aURI, nsIReferrerInfo* aReferrerInfo,
     bool aHasPostData, nsIPrincipal* aTriggeringPrincipal,
     nsIContentSecurityPolicy* aCsp, bool* _retval) {
-  NS_ENSURE_STATE(mAppWindow);
-
-  nsCOMPtr<nsIXULBrowserWindow> xulBrowserWindow;
-  mAppWindow->GetXULBrowserWindow(getter_AddRefs(xulBrowserWindow));
-
-  if (xulBrowserWindow)
-    return xulBrowserWindow->ShouldLoadURI(aDocShell, aURI, aReferrerInfo,
-                                           aHasPostData, aTriggeringPrincipal,
-                                           aCsp, _retval);
-
   *_retval = true;
   return NS_OK;
 }
@@ -406,15 +394,6 @@ NS_IMETHODIMP nsContentTreeOwner::ShouldLoadURIInThisProcess(nsIURI* aURI,
                                                              bool* aRetVal) {
   MOZ_ASSERT_UNREACHABLE("Should only be called in child process.");
   *aRetVal = true;
-  return NS_OK;
-}
-
-NS_IMETHODIMP nsContentTreeOwner::ReloadInFreshProcess(
-    nsIDocShell* aDocShell, nsIURI* aURI, nsIReferrerInfo* aReferrerInfo,
-    nsIPrincipal* aTriggeringPrincipal, uint32_t aLoadFlags,
-    nsIContentSecurityPolicy* aCsp, bool* aRetVal) {
-  NS_WARNING("Cannot reload in fresh process from a nsContentTreeOwner!");
-  *aRetVal = false;
   return NS_OK;
 }
 
@@ -469,11 +448,6 @@ NS_IMETHODIMP nsContentTreeOwner::InitWindow(nativeWindow aParentNativeWindow,
   NS_ENSURE_SUCCESS(SetPositionAndSize(x, y, cx, cy, 0), NS_ERROR_FAILURE);
 
   return NS_OK;
-}
-
-NS_IMETHODIMP nsContentTreeOwner::Create() {
-  NS_ASSERTION(false, "You can't call this");
-  return NS_ERROR_UNEXPECTED;
 }
 
 NS_IMETHODIMP nsContentTreeOwner::Destroy() {
@@ -620,7 +594,7 @@ nsContentTreeOwner::ProvideWindow(
     bool aCalledFromJS, bool aWidthSpecified, nsIURI* aURI,
     const nsAString& aName, const nsACString& aFeatures, bool aForceNoOpener,
     bool aForceNoReferrer, nsDocShellLoadState* aLoadState, bool* aWindowIsNew,
-    BrowsingContext** aReturn) {
+    dom::BrowsingContext** aReturn) {
   NS_ENSURE_ARG_POINTER(aOpenWindowInfo);
 
   RefPtr<dom::BrowsingContext> parent = aOpenWindowInfo->GetParent();
@@ -641,10 +615,12 @@ nsContentTreeOwner::ProvideWindow(
 #endif
 
   int32_t openLocation = nsWindowWatcher::GetWindowOpenLocation(
-      parent->GetDOMWindow(), aChromeFlags, aCalledFromJS, aWidthSpecified);
+      parent->GetDOMWindow(), aChromeFlags, aCalledFromJS, aWidthSpecified,
+      aOpenWindowInfo->GetIsForPrinting());
 
   if (openLocation != nsIBrowserDOMWindow::OPEN_NEWTAB &&
-      openLocation != nsIBrowserDOMWindow::OPEN_CURRENTWINDOW) {
+      openLocation != nsIBrowserDOMWindow::OPEN_CURRENTWINDOW &&
+      openLocation != nsIBrowserDOMWindow::OPEN_PRINT_BROWSER) {
     // Just open a window normally
     return NS_OK;
   }

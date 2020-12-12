@@ -11,11 +11,6 @@
     static get markup() {
       return `
       <html:link rel="stylesheet" href="chrome://global/skin/global.css"/>
-      <html:style>
-        :host([orient=vertical]) .panel-arrowcontent {
-          -moz-box-orient: vertical;
-        }
-      </html:style>
       <vbox class="panel-arrowcontainer" flex="1">
         <box class="panel-arrowbox" part="arrowbox">
           <image class="panel-arrow" part="arrow"/>
@@ -100,21 +95,16 @@
       return this.getAttribute("type") == "arrow";
     }
 
-    adjustArrowPosition() {
-      if (!this.isArrowPanel) {
-        return;
-      }
-
-      var anchor = this.anchorNode;
-      if (!anchor) {
+    adjustArrowPosition(event) {
+      if (!this.isArrowPanel || !this.isAnchored) {
         return;
       }
 
       var container = this.shadowRoot.querySelector(".panel-arrowcontainer");
       var arrowbox = this.shadowRoot.querySelector(".panel-arrowbox");
 
-      var position = this.alignmentPosition;
-      var offset = this.alignmentOffset;
+      var position = event.alignmentPosition;
+      var offset = event.alignmentOffset;
 
       this.setAttribute("arrowposition", position);
 
@@ -164,7 +154,7 @@
     on_popupshowing(event) {
       if (this.isArrowPanel && event.target == this) {
         var arrow = this.shadowRoot.querySelector(".panel-arrow");
-        arrow.hidden = this.anchorNode == null;
+        arrow.hidden = !this.isAnchored;
         this.shadowRoot
           .querySelector(".panel-arrowbox")
           .style.removeProperty("transform");
@@ -306,7 +296,7 @@
 
     on_popuppositioned(event) {
       if (event.target == this) {
-        this.adjustArrowPosition();
+        this.adjustArrowPosition(event);
       }
     }
   }

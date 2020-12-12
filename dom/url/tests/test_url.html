@@ -378,7 +378,7 @@
     var url = URL.createObjectURL(blob);
 
     var u = new URL(url);
-    is(u.origin, "http://mochi.test:8888", "The URL generated from a blob URI has an origin");
+    is(u.origin, location.origin, "The URL generated from a blob URI has an origin");
   </script>
 
   <script>
@@ -387,7 +387,7 @@
 
     var a = document.createElement("A");
     a.href = url;
-    is(a.origin, "http://mochi.test:8888", "The 'a' element has the correct origin");
+    is(a.origin, location.origin, "The 'a' element has the correct origin");
   </script>
 
   <script>
@@ -486,6 +486,16 @@
     var u = new URL("http://www.example.org");
     is(u.toJSON(), "http://www.example.org/", "URL.toJSON()");
     is(JSON.stringify(u), "\"http://www.example.org/\"", "JSON.stringify(u) works");
+  </script>
+
+  <script>
+    // bug 1648493
+    var url = new URL("http://example.com/");
+    url.protocol = 'file'
+    url.protocol = 'resource'
+    url.password = 'Ãª'
+    url.username = 'Ã§'
+    url.protocol = 't'
   </script>
 </body>
 </html>

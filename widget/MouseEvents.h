@@ -24,8 +24,6 @@ class PBrowserBridgeParent;
 class WidgetPointerEvent;
 }  // namespace mozilla
 
-MOZ_DECLARE_COPY_CONSTRUCTIBLE(mozilla::WidgetPointerEvent)
-
 namespace mozilla {
 class WidgetPointerEventHolder final {
  public:
@@ -137,10 +135,10 @@ class WidgetMouseEventBase : public WidgetInputEvent {
   uint16_t mInputSource;
 
   bool IsLeftButtonPressed() const {
-    return !!(mButtons & MouseButtonsFlag::eLeftFlag);
+    return !!(mButtons & MouseButtonsFlag::ePrimaryFlag);
   }
   bool IsRightButtonPressed() const {
-    return !!(mButtons & MouseButtonsFlag::eRightFlag);
+    return !!(mButtons & MouseButtonsFlag::eSecondaryFlag);
   }
   bool IsMiddleButtonPressed() const {
     return !!(mButtons & MouseButtonsFlag::eMiddleFlag);
@@ -166,7 +164,7 @@ class WidgetMouseEventBase : public WidgetInputEvent {
    * Returns true if left click event.
    */
   bool IsLeftClickEvent() const {
-    return mMessage == eMouseClick && mButton == MouseButton::eLeft;
+    return mMessage == eMouseClick && mButton == MouseButton::ePrimary;
   }
 };
 
@@ -185,17 +183,25 @@ class WidgetMouseEvent : public WidgetMouseEventBase,
   typedef bool ReasonType;
   enum Reason : ReasonType { eReal, eSynthesized };
 
-  typedef bool ContextMenuTriggerType;
-  enum ContextMenuTrigger : ContextMenuTriggerType { eNormal, eContextMenuKey };
+  typedef uint8_t ContextMenuTriggerType;
+  enum ContextMenuTrigger : ContextMenuTriggerType {
+    eNormal,
+    eContextMenuKey,
+    eControlClick
+  };
 
-  typedef bool ExitFromType;
-  enum ExitFrom : ExitFromType { eChild, eTopLevel };
+  typedef uint8_t ExitFromType;
+  enum ExitFrom : ExitFromType {
+    eChild,
+    eTopLevel,
+    ePuppet,
+    ePuppetParentToPuppetChild
+  };
 
  protected:
   WidgetMouseEvent()
       : mReason(eReal),
         mContextMenuTrigger(eNormal),
-        mExitFrom(eChild),
         mIgnoreRootScrollFrame(false),
         mClickCount(0),
         mUseLegacyNonPrimaryDispatch(false) {}
@@ -205,7 +211,6 @@ class WidgetMouseEvent : public WidgetMouseEventBase,
       : WidgetMouseEventBase(aIsTrusted, aMessage, aWidget, aEventClassID),
         mReason(aReason),
         mContextMenuTrigger(eNormal),
-        mExitFrom(eChild),
         mIgnoreRootScrollFrame(false),
         mClickCount(0),
         mUseLegacyNonPrimaryDispatch(false) {}
@@ -219,13 +224,12 @@ class WidgetMouseEvent : public WidgetMouseEventBase,
       : WidgetMouseEventBase(aIsTrusted, aMessage, aWidget, eMouseEventClass),
         mReason(aReason),
         mContextMenuTrigger(aContextMenuTrigger),
-        mExitFrom(eChild),
         mIgnoreRootScrollFrame(false),
         mClickCount(0),
         mUseLegacyNonPrimaryDispatch(false) {
     if (aMessage == eContextMenu) {
-      mButton = (mContextMenuTrigger == eNormal) ? MouseButton::eRight
-                                                 : MouseButton::eLeft;
+      mButton = (mContextMenuTrigger == eNormal) ? MouseButton::eSecondary
+                                                 : MouseButton::ePrimary;
     }
   }
 
@@ -233,8 +237,10 @@ class WidgetMouseEvent : public WidgetMouseEventBase,
   virtual ~WidgetMouseEvent() {
     NS_WARNING_ASSERTION(
         mMessage != eContextMenu ||
-            mButton == ((mContextMenuTrigger == eNormal) ? MouseButton::eRight
-                                                         : MouseButton::eLeft),
+            (mButton == ((mContextMenuTrigger == eNormal)
+                             ? MouseButton::eSecondary
+                             : MouseButton::ePrimary) &&
+             (mContextMenuTrigger != eControlClick || IsControl())),
         "Wrong button set to eContextMenu event?");
   }
 #endif
@@ -265,10 +271,10 @@ class WidgetMouseEvent : public WidgetMouseEventBase,
   // other reasons (typically, a click of right mouse button).
   ContextMenuTrigger mContextMenuTrigger;
 
-  // mExitFrom is valid only when mMessage is eMouseExitFromWidget.
-  // This indicates if the mouse cursor exits from a top level widget or
-  // a child widget.
-  ExitFrom mExitFrom;
+  // mExitFrom contains a value only when mMessage is eMouseExitFromWidget.
+  // This indicates if the mouse cursor exits from a top level platform widget,
+  // a child widget or a puppet widget.
+  Maybe<ExitFrom> mExitFrom;
 
   // Whether the event should ignore scroll frame bounds during dispatch.
   bool mIgnoreRootScrollFrame;
@@ -286,6 +292,7 @@ class WidgetMouseEvent : public WidgetMouseEventBase,
     AssignMouseEventBaseData(aEvent, aCopyTargets);
     AssignPointerHelperData(aEvent, /* aCopyCoalescedEvents */ true);
 
+    mExitFrom = aEvent.mExitFrom;
     mIgnoreRootScrollFrame = aEvent.mIgnoreRootScrollFrame;
     mClickCount = aEvent.mClickCount;
     mUseLegacyNonPrimaryDispatch = aEvent.mUseLegacyNonPrimaryDispatch;

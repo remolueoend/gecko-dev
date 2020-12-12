@@ -11,20 +11,9 @@ var { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 
 ChromeUtils.defineModuleGetter(
   this,
-  "E10SUtils",
-  "resource://gre/modules/E10SUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
   "BrowserUtils",
   "resource://gre/modules/BrowserUtils.jsm"
 );
-
-var { ActorManagerChild } = ChromeUtils.import(
-  "resource://gre/modules/ActorManagerChild.jsm"
-);
-
-ActorManagerChild.attach(this, "browsers");
 
 // BrowserChildGlobal
 var global = this;
@@ -48,46 +37,10 @@ var WebBrowserChrome = {
     aTriggeringPrincipal,
     aCsp
   ) {
-    if (!E10SUtils.shouldLoadURI(aDocShell, aURI, aHasPostData)) {
-      E10SUtils.redirectLoad(
-        aDocShell,
-        aURI,
-        aReferrerInfo,
-        aTriggeringPrincipal,
-        false,
-        null,
-        aCsp
-      );
-      return false;
-    }
-
     return true;
   },
 
   shouldLoadURIInThisProcess(aURI) {
-    let remoteSubframes = docShell.QueryInterface(Ci.nsILoadContext)
-      .useRemoteSubframes;
-    return E10SUtils.shouldLoadURIInThisProcess(aURI, remoteSubframes);
-  },
-
-  // Try to reload the currently active or currently loading page in a new process.
-  reloadInFreshProcess(
-    aDocShell,
-    aURI,
-    aReferrerInfo,
-    aTriggeringPrincipal,
-    aLoadFlags,
-    aCsp
-  ) {
-    E10SUtils.redirectLoad(
-      aDocShell,
-      aURI,
-      aReferrerInfo,
-      aTriggeringPrincipal,
-      true,
-      aLoadFlags,
-      aCsp
-    );
     return true;
   },
 };

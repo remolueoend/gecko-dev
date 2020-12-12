@@ -55,33 +55,28 @@ nsMenuBarListener::nsMenuBarListener(nsMenuBarFrame* aMenuBarFrame,
   // Also hook up the listener to the window listening for focus events. This
   // is so we can keep proper state as the user alt-tabs through processes.
 
-  mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("keypress"), this,
-                                       false);
-  mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("keydown"), this,
-                                       false);
-  mEventTarget->AddSystemEventListener(NS_LITERAL_STRING("keyup"), this, false);
-  mEventTarget->AddSystemEventListener(
-      NS_LITERAL_STRING("mozaccesskeynotfound"), this, false);
+  mEventTarget->AddSystemEventListener(u"keypress"_ns, this, false);
+  mEventTarget->AddSystemEventListener(u"keydown"_ns, this, false);
+  mEventTarget->AddSystemEventListener(u"keyup"_ns, this, false);
+  mEventTarget->AddSystemEventListener(u"mozaccesskeynotfound"_ns, this, false);
   // Need a capturing event listener if the user has blocked pages from
   // overriding system keys so that we can prevent menu accesskeys from being
   // cancelled.
-  mEventTarget->AddEventListener(NS_LITERAL_STRING("keydown"), this, true);
+  mEventTarget->AddEventListener(u"keydown"_ns, this, true);
 
   // mousedown event should be handled in all phase
-  mEventTarget->AddEventListener(NS_LITERAL_STRING("mousedown"), this, true);
-  mEventTarget->AddEventListener(NS_LITERAL_STRING("mousedown"), this, false);
-  mEventTarget->AddEventListener(NS_LITERAL_STRING("blur"), this, true);
+  mEventTarget->AddEventListener(u"mousedown"_ns, this, true);
+  mEventTarget->AddEventListener(u"mousedown"_ns, this, false);
+  mEventTarget->AddEventListener(u"blur"_ns, this, true);
 
-  mEventTarget->AddEventListener(NS_LITERAL_STRING("MozDOMFullscreen:Entered"),
-                                 this, false);
+  mEventTarget->AddEventListener(u"MozDOMFullscreen:Entered"_ns, this, false);
 
   // Needs to listen to the deactivate event of the window.
   RefPtr<dom::EventTarget> topWindowEventTarget =
       nsContentUtils::GetWindowRoot(aMenuBarContent->GetComposedDoc());
   mTopWindowEventTarget = topWindowEventTarget.get();
 
-  mTopWindowEventTarget->AddSystemEventListener(NS_LITERAL_STRING("deactivate"),
-                                                this, true);
+  mTopWindowEventTarget->AddSystemEventListener(u"deactivate"_ns, this, true);
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -91,26 +86,22 @@ nsMenuBarListener::~nsMenuBarListener() {
 }
 
 void nsMenuBarListener::OnDestroyMenuBarFrame() {
-  mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("keypress"), this,
+  mEventTarget->RemoveSystemEventListener(u"keypress"_ns, this, false);
+  mEventTarget->RemoveSystemEventListener(u"keydown"_ns, this, false);
+  mEventTarget->RemoveSystemEventListener(u"keyup"_ns, this, false);
+  mEventTarget->RemoveSystemEventListener(u"mozaccesskeynotfound"_ns, this,
                                           false);
-  mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("keydown"), this,
-                                          false);
-  mEventTarget->RemoveSystemEventListener(NS_LITERAL_STRING("keyup"), this,
-                                          false);
-  mEventTarget->RemoveSystemEventListener(
-      NS_LITERAL_STRING("mozaccesskeynotfound"), this, false);
-  mEventTarget->RemoveEventListener(NS_LITERAL_STRING("keydown"), this, true);
+  mEventTarget->RemoveEventListener(u"keydown"_ns, this, true);
 
-  mEventTarget->RemoveEventListener(NS_LITERAL_STRING("mousedown"), this, true);
-  mEventTarget->RemoveEventListener(NS_LITERAL_STRING("mousedown"), this,
+  mEventTarget->RemoveEventListener(u"mousedown"_ns, this, true);
+  mEventTarget->RemoveEventListener(u"mousedown"_ns, this, false);
+  mEventTarget->RemoveEventListener(u"blur"_ns, this, true);
+
+  mEventTarget->RemoveEventListener(u"MozDOMFullscreen:Entered"_ns, this,
                                     false);
-  mEventTarget->RemoveEventListener(NS_LITERAL_STRING("blur"), this, true);
 
-  mEventTarget->RemoveEventListener(
-      NS_LITERAL_STRING("MozDOMFullscreen:Entered"), this, false);
-
-  mTopWindowEventTarget->RemoveSystemEventListener(
-      NS_LITERAL_STRING("deactivate"), this, true);
+  mTopWindowEventTarget->RemoveSystemEventListener(u"deactivate"_ns, this,
+                                                   true);
 
   mMenuBarFrame = nullptr;
   mEventTarget = nullptr;
@@ -173,62 +164,67 @@ void nsMenuBarListener::ToggleMenuActiveState() {
 
 ////////////////////////////////////////////////////////////////////////
 nsresult nsMenuBarListener::KeyUp(Event* aKeyEvent) {
-  RefPtr<KeyboardEvent> keyEvent = aKeyEvent->AsKeyboardEvent();
-  if (!keyEvent) {
+  WidgetKeyboardEvent* nativeKeyEvent =
+      aKeyEvent->WidgetEventPtr()->AsKeyboardEvent();
+  if (!nativeKeyEvent) {
     return NS_OK;
   }
 
   InitAccessKey();
 
   // handlers shouldn't be triggered by non-trusted events.
-  if (!keyEvent->IsTrusted()) {
+  if (!nativeKeyEvent->IsTrusted()) {
     return NS_OK;
   }
 
-  if (mAccessKey && StaticPrefs::ui_key_menuAccessKeyFocuses()) {
-    bool defaultPrevented = keyEvent->DefaultPrevented();
+  if (!mAccessKey || !StaticPrefs::ui_key_menuAccessKeyFocuses()) {
+    return NS_OK;
+  }
 
-    // On a press of the ALT key by itself, we toggle the menu's
-    // active/inactive state.
-    // Get the ascii key code.
-    uint32_t theChar = keyEvent->KeyCode();
-
-    if (!defaultPrevented && mAccessKeyDown && !mAccessKeyDownCanceled &&
-        (int32_t)theChar == mAccessKey) {
-      // The access key was down and is now up, and no other
-      // keys were pressed in between.
-      bool toggleMenuActiveState = true;
-      if (!mMenuBarFrame->IsActive()) {
-        // First, close all existing popups because other popups shouldn't
-        // handle key events when menubar is active and IME should be
-        // disabled.
-        nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
-        if (pm) {
-          pm->Rollup(0, false, nullptr, nullptr);
-        }
-        // If menubar active state is changed or the menubar is destroyed
-        // during closing the popups, we should do nothing anymore.
-        toggleMenuActiveState = !Destroyed() && !mMenuBarFrame->IsActive();
+  // On a press of the ALT key by itself, we toggle the menu's
+  // active/inactive state.
+  if (!nativeKeyEvent->DefaultPrevented() && mAccessKeyDown &&
+      !mAccessKeyDownCanceled &&
+      static_cast<int32_t>(nativeKeyEvent->mKeyCode) == mAccessKey) {
+    // The access key was down and is now up, and no other
+    // keys were pressed in between.
+    bool toggleMenuActiveState = true;
+    if (!mMenuBarFrame->IsActive()) {
+      // If the focused content is in a remote process, we should allow the
+      // focused web app to prevent to activate the menubar.
+      if (nativeKeyEvent->WillBeSentToRemoteProcess()) {
+        nativeKeyEvent->StopImmediatePropagation();
+        nativeKeyEvent->MarkAsWaitingReplyFromRemoteProcess();
+        return NS_OK;
       }
-      if (toggleMenuActiveState) {
-        if (!mMenuBarFrame->IsActive()) {
-          mMenuBarFrame->SetActiveByKeyboard();
-        }
-        ToggleMenuActiveState();
+      // First, close all existing popups because other popups shouldn't
+      // handle key events when menubar is active and IME should be
+      // disabled.
+      nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
+      if (pm) {
+        pm->Rollup(0, false, nullptr, nullptr);
       }
+      // If menubar active state is changed or the menubar is destroyed
+      // during closing the popups, we should do nothing anymore.
+      toggleMenuActiveState = !Destroyed() && !mMenuBarFrame->IsActive();
     }
-    mAccessKeyDown = false;
-    mAccessKeyDownCanceled = false;
-
-    bool active = !Destroyed() && mMenuBarFrame->IsActive();
-    if (active) {
-      keyEvent->StopPropagation();
-      keyEvent->PreventDefault();
-      return NS_OK;  // I am consuming event
+    if (toggleMenuActiveState) {
+      if (!mMenuBarFrame->IsActive()) {
+        mMenuBarFrame->SetActiveByKeyboard();
+      }
+      ToggleMenuActiveState();
     }
   }
 
-  return NS_OK;  // means I am NOT consuming event
+  mAccessKeyDown = false;
+  mAccessKeyDownCanceled = false;
+
+  if (!Destroyed() && mMenuBarFrame->IsActive()) {
+    nativeKeyEvent->StopPropagation();
+    nativeKeyEvent->PreventDefault();
+  }
+
+  return NS_OK;
 }
 
 ////////////////////////////////////////////////////////////////////////

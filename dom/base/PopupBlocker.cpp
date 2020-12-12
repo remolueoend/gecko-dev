@@ -15,8 +15,7 @@
 #include "nsXULPopupManager.h"
 #include "nsIPermissionManager.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 namespace {
 
@@ -27,10 +26,6 @@ static PopupBlocker::PopupControlState sPopupControlState =
 static uint32_t sPopupStatePusherCount = 0;
 
 static TimeStamp sLastAllowedExternalProtocolIFrameTimeStamp;
-
-// This token is by default set to false. When a popup/filePicker is shown, it
-// is set to true.
-static bool sUnusedPopupToken = false;
 
 static uint32_t sOpenPopupSpamCount = 0;
 
@@ -119,44 +114,18 @@ PopupBlocker::GetPopupControlState() {
 }
 
 /* static */
-bool PopupBlocker::CanShowPopupByPermission(nsIPrincipal* aPrincipal) {
-  MOZ_ASSERT(aPrincipal);
-  uint32_t permit;
+uint32_t PopupBlocker::GetPopupPermission(nsIPrincipal* aPrincipal) {
+  uint32_t permit = nsIPermissionManager::UNKNOWN_ACTION;
   nsCOMPtr<nsIPermissionManager> permissionManager =
       services::GetPermissionManager();
 
-  if (permissionManager &&
-      NS_SUCCEEDED(permissionManager->TestPermissionFromPrincipal(
-          aPrincipal, NS_LITERAL_CSTRING("popup"), &permit))) {
-    if (permit == nsIPermissionManager::ALLOW_ACTION) {
-      return true;
-    }
-    if (permit == nsIPermissionManager::DENY_ACTION) {
-      return false;
-    }
+  if (permissionManager) {
+    permissionManager->TestPermissionFromPrincipal(aPrincipal, "popup"_ns,
+                                                   &permit);
   }
 
-  return !StaticPrefs::dom_disable_open_during_load();
+  return permit;
 }
-
-/* static */
-bool PopupBlocker::TryUsePopupOpeningToken(nsIPrincipal* aPrincipal) {
-  MOZ_ASSERT(sPopupStatePusherCount);
-
-  if (!sUnusedPopupToken) {
-    sUnusedPopupToken = true;
-    return true;
-  }
-
-  if (aPrincipal && aPrincipal->IsSystemPrincipal()) {
-    return true;
-  }
-
-  return false;
-}
-
-/* static */
-bool PopupBlocker::IsPopupOpeningTokenUnused() { return sUnusedPopupToken; }
 
 /* static */
 void PopupBlocker::PopupStatePusherCreated() { ++sPopupStatePusherCount; }
@@ -164,10 +133,7 @@ void PopupBlocker::PopupStatePusherCreated() { ++sPopupStatePusherCount; }
 /* static */
 void PopupBlocker::PopupStatePusherDestroyed() {
   MOZ_ASSERT(sPopupStatePusherCount);
-
-  if (!--sPopupStatePusherCount) {
-    sUnusedPopupToken = false;
-  }
+  --sPopupStatePusherCount;
 }
 
 // static
@@ -297,7 +263,10 @@ PopupBlocker::PopupControlState PopupBlocker::GetEventPopupControlState(
       break;
     case eMouseEventClass:
       if (aEvent->IsTrusted()) {
-        if (aEvent->AsMouseEvent()->mButton == MouseButton::eLeft) {
+        // Let's ignore MouseButton::eSecondary because that is handled as
+        // context menu.
+        if (aEvent->AsMouseEvent()->mButton == MouseButton::ePrimary ||
+            aEvent->AsMouseEvent()->mButton == MouseButton::eMiddle) {
           abuse = PopupBlocker::openBlocked;
           switch (aEvent->mMessage) {
             case eMouseUp:
@@ -354,7 +323,7 @@ PopupBlocker::PopupControlState PopupBlocker::GetEventPopupControlState(
       break;
     case ePointerEventClass:
       if (aEvent->IsTrusted() &&
-          aEvent->AsPointerEvent()->mButton == MouseButton::eLeft) {
+          aEvent->AsPointerEvent()->mButton == MouseButton::ePrimary) {
         switch (aEvent->mMessage) {
           case ePointerUp:
             if (PopupAllowedForEvent("pointerup")) {
@@ -421,6 +390,10 @@ void PopupBlocker::Shutdown() {
 
 /* static */
 bool PopupBlocker::ConsumeTimerTokenForExternalProtocolIframe() {
+  if (!StaticPrefs::dom_delay_block_external_protocol_in_iframes_enabled()) {
+    return false;
+  }
+
   TimeStamp now = TimeStamp::Now();
 
   if (sLastAllowedExternalProtocolIFrameTimeStamp.IsNull()) {
@@ -429,7 +402,7 @@ bool PopupBlocker::ConsumeTimerTokenForExternalProtocolIframe() {
   }
 
   if ((now - sLastAllowedExternalProtocolIFrameTimeStamp).ToSeconds() <
-      (StaticPrefs::dom_delay_block_external_protocol_in_iframes())) {
+      StaticPrefs::dom_delay_block_external_protocol_in_iframes()) {
     return false;
   }
 
@@ -459,8 +432,7 @@ void PopupBlocker::UnregisterOpenPopupSpam() {
 /* static */
 uint32_t PopupBlocker::GetOpenPopupSpamCount() { return sOpenPopupSpamCount; }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 AutoPopupStatePusherInternal::AutoPopupStatePusherInternal(
     mozilla::dom::PopupBlocker::PopupControlState aState, bool aForce)

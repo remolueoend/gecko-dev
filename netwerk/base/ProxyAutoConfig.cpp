@@ -24,6 +24,7 @@
 #include "prnetdb.h"
 #include "nsITimer.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/net/DNS.h"
 #include "mozilla/Utf8.h"  // mozilla::Utf8Unit
 #include "nsServiceManagerUtils.h"
@@ -370,14 +371,14 @@ static void PACLogToConsole(nsString& aMessage) {
 // Javascript errors and warnings are logged to the main error console
 static void PACLogErrorOrWarning(const nsAString& aKind,
                                  JSErrorReport* aReport) {
-  nsString formattedMessage(NS_LITERAL_STRING("PAC Execution "));
+  nsString formattedMessage(u"PAC Execution "_ns);
   formattedMessage += aKind;
-  formattedMessage += NS_LITERAL_STRING(": ");
+  formattedMessage += u": "_ns;
   if (aReport->message())
     formattedMessage.Append(NS_ConvertUTF8toUTF16(aReport->message().c_str()));
-  formattedMessage += NS_LITERAL_STRING(" [");
+  formattedMessage += u" ["_ns;
   formattedMessage.Append(aReport->linebuf(), aReport->linebufLength());
-  formattedMessage += NS_LITERAL_STRING("]");
+  formattedMessage += u"]"_ns;
   PACLogToConsole(formattedMessage);
 }
 
@@ -385,7 +386,7 @@ static void PACWarningReporter(JSContext* aCx, JSErrorReport* aReport) {
   MOZ_ASSERT(aReport);
   MOZ_ASSERT(aReport->isWarning());
 
-  PACLogErrorOrWarning(NS_LITERAL_STRING("Warning"), aReport);
+  PACLogErrorOrWarning(u"Warning"_ns, aReport);
 }
 
 class MOZ_STACK_CLASS AutoPACErrorReporter {
@@ -397,19 +398,18 @@ class MOZ_STACK_CLASS AutoPACErrorReporter {
     if (!JS_IsExceptionPending(mCx)) {
       return;
     }
-    JS::RootedValue exn(mCx);
-    if (!JS_GetPendingException(mCx, &exn)) {
+    JS::ExceptionStack exnStack(mCx);
+    if (!JS::StealPendingExceptionStack(mCx, &exnStack)) {
       return;
     }
-    JS_ClearPendingException(mCx);
 
-    js::ErrorReport report(mCx);
-    if (!report.init(mCx, exn, js::ErrorReport::WithSideEffects)) {
+    JS::ErrorReportBuilder report(mCx);
+    if (!report.init(mCx, exnStack, JS::ErrorReportBuilder::WithSideEffects)) {
       JS_ClearPendingException(mCx);
       return;
     }
 
-    PACLogErrorOrWarning(NS_LITERAL_STRING("Error"), report.report());
+    PACLogErrorOrWarning(u"Error"_ns, report.report());
   }
 };
 
@@ -442,11 +442,19 @@ bool ProxyAutoConfig::ResolveAddress(const nsCString& aHostName,
   RefPtr<PACResolver> helper = new PACResolver(mMainThreadEventTarget);
   OriginAttributes attrs;
 
+  // When the PAC script attempts to resolve a domain, we must make sure we
+  // don't use TRR, otherwise the TRR channel might also attempt to resolve
+  // a name and we'll have a deadlock.
+  uint32_t flags =
+      nsIDNSService::RESOLVE_PRIORITY_MEDIUM |
+      nsIDNSService::GetFlagsFromTRRMode(nsIRequest::TRR_DISABLED_MODE);
+
   if (NS_FAILED(dns->AsyncResolveNative(
-          aHostName, nsIDNSService::RESOLVE_PRIORITY_MEDIUM, helper,
-          GetCurrentThreadEventTarget(), attrs,
-          getter_AddRefs(helper->mRequest))))
+          aHostName, nsIDNSService::RESOLVE_TYPE_DEFAULT, flags, nullptr,
+          helper, GetCurrentEventTarget(), attrs,
+          getter_AddRefs(helper->mRequest)))) {
     return false;
+  }
 
   if (aTimeout && helper->mRequest) {
     if (!mTimer) mTimer = NS_NewTimer();
@@ -472,9 +480,15 @@ bool ProxyAutoConfig::ResolveAddress(const nsCString& aHostName,
     return false;
   });
 
-  if (NS_FAILED(helper->mStatus) ||
-      NS_FAILED(helper->mResponse->GetNextAddr(0, aNetAddr)))
+  if (NS_FAILED(helper->mStatus)) {
     return false;
+  }
+
+  nsCOMPtr<nsIDNSAddrRecord> rec = do_QueryInterface(helper->mResponse);
+  if (!rec || NS_FAILED(rec->GetNextAddr(0, aNetAddr))) {
+    return false;
+  }
+
   return true;
 }
 
@@ -485,7 +499,7 @@ static bool PACResolveToString(const nsCString& aHostName,
   if (!PACResolve(aHostName, &netAddr, aTimeout)) return false;
 
   char dottedDecimal[128];
-  if (!NetAddrToString(&netAddr, dottedDecimal, sizeof(dottedDecimal)))
+  if (!netAddr.ToStringBuffer(dottedDecimal, sizeof(dottedDecimal)))
     return false;
 
   aDottedDecimal.Assign(dottedDecimal);
@@ -737,7 +751,7 @@ nsresult ProxyAutoConfig::SetupJS() {
     // and otherwise inflate Latin-1 to UTF-16 and compile that.
     const char* scriptData = this->mConcatenatedPACData.get();
     size_t scriptLength = this->mConcatenatedPACData.Length();
-    if (mozilla::IsUtf8(mozilla::MakeSpan(scriptData, scriptLength))) {
+    if (mozilla::IsUtf8(mozilla::Span(scriptData, scriptLength))) {
       JS::SourceText<Utf8Unit> srcBuf;
       if (!srcBuf.init(cx, scriptData, scriptLength,
                        JS::SourceOwnership::Borrowed)) {
@@ -762,10 +776,9 @@ nsresult ProxyAutoConfig::SetupJS() {
 
   JS::Rooted<JSScript*> script(cx, CompilePACScript(cx));
   if (!script || !JS_ExecuteScript(cx, script)) {
-    nsString alertMessage(
-        NS_LITERAL_STRING("PAC file failed to install from "));
+    nsString alertMessage(u"PAC file failed to install from "_ns);
     if (isDataURI) {
-      alertMessage += NS_LITERAL_STRING("data: URI");
+      alertMessage += u"data: URI"_ns;
     } else {
       alertMessage += NS_ConvertUTF8toUTF16(mPACURI);
     }
@@ -776,9 +789,9 @@ nsresult ProxyAutoConfig::SetupJS() {
   SetRunning(nullptr);
 
   mJSContext->SetOK();
-  nsString alertMessage(NS_LITERAL_STRING("PAC file installed from "));
+  nsString alertMessage(u"PAC file installed from "_ns);
   if (isDataURI) {
-    alertMessage += NS_LITERAL_STRING("data: URI");
+    alertMessage += u"data: URI"_ns;
   } else {
     alertMessage += NS_ConvertUTF8toUTF16(mPACURI);
   }
@@ -837,7 +850,7 @@ nsresult ProxyAutoConfig::GetProxyForURI(const nsCString& aTestURI,
   JS::RootedString hostString(cx, JS_NewStringCopyZ(cx, aTestHost.get()));
 
   if (uriString && hostString) {
-    JS::AutoValueArray<2> args(cx);
+    JS::RootedValueArray<2> args(cx);
     args[0].setString(uriString);
     args[1].setString(hostString);
 

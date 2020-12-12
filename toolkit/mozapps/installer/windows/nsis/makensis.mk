@@ -36,6 +36,7 @@ CUSTOM_NSIS_PLUGINS = \
 	CertCheck.dll \
 	CityHash.dll \
 	ExecInExplorer.dll \
+	HttpPostFile.dll \
 	InetBgDL.dll \
 	InvokeShellVerb.dll \
 	liteFirewallW.dll \
@@ -43,6 +44,7 @@ CUSTOM_NSIS_PLUGINS = \
 	ServicesHelper.dll \
 	ShellLink.dll \
 	UAC.dll \
+	WebBrowser.dll \
 	$(NULL)
 
 CUSTOM_UI = \
@@ -62,7 +64,7 @@ ifdef ZIP_IN
 installer:: $(CONFIG_DIR)/setup.exe $(ZIP_IN)
 	@echo 'Packaging $(WIN32_INSTALLER_OUT).'
 	$(NSINSTALL) -D '$(ABS_DIST)/$(PKG_INST_PATH)'
-	$(MOZILLA_DIR)/mach repackage installer \
+	$(PYTHON3) $(MOZILLA_DIR)/mach repackage installer \
 	  -o '$(ABS_DIST)/$(PKG_INST_PATH)$(PKG_INST_BASENAME).exe' \
 	  --package-name '$(MOZ_PKG_DIR)' \
 	  --package '$(ZIP_IN)' \
@@ -71,7 +73,7 @@ installer:: $(CONFIG_DIR)/setup.exe $(ZIP_IN)
 	  --sfx-stub $(SFX_MODULE) \
 	  $(USE_UPX)
 ifdef MOZ_STUB_INSTALLER
-	$(MOZILLA_DIR)/mach repackage installer \
+	$(PYTHON3) $(MOZILLA_DIR)/mach repackage installer \
 	  -o '$(ABS_DIST)/$(PKG_INST_PATH)$(PKG_STUB_BASENAME).exe' \
 	  --tag $(topsrcdir)/browser/installer/windows/stub.tag \
 	  --setupexe $(CONFIG_DIR)/setup-stub.exe \
@@ -98,9 +100,9 @@ $(CONFIG_DIR)/helper.exe: $(HELPER_DEPS)
 	$(MKDIR) $(CONFIG_DIR)
 	$(INSTALL) $(addprefix $(srcdir)/,$(INSTALLER_FILES)) $(CONFIG_DIR)
 	$(INSTALL) $(addprefix $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/,$(BRANDING_FILES)) $(CONFIG_DIR)
-	$(call py3_action,preprocessor,-Fsubstitution $(DEFINES) $(ACDEFINES) \
+	$(call py_action,preprocessor,-Fsubstitution $(DEFINES) $(ACDEFINES) \
 	  $(srcdir)/nsis/defines.nsi.in -o $(CONFIG_DIR)/defines.nsi)
-	$(PYTHON) $(topsrcdir)/toolkit/mozapps/installer/windows/nsis/preprocess-locale.py \
+	$(PYTHON3) $(topsrcdir)/toolkit/mozapps/installer/windows/nsis/preprocess-locale.py \
 	  --preprocess-locale $(topsrcdir) \
 	  $(PPL_LOCALE_ARGS) $(AB_CD) $(CONFIG_DIR)
 	$(INSTALL) $(addprefix $(MOZILLA_DIR)/toolkit/mozapps/installer/windows/nsis/,$(TOOLKIT_NSIS_FILES)) $(CONFIG_DIR)
@@ -117,9 +119,9 @@ maintenanceservice_installer::
 	$(MKDIR) $(CONFIG_DIR)
 	$(INSTALL) $(addprefix $(srcdir)/,$(INSTALLER_FILES)) $(CONFIG_DIR)
 	$(INSTALL) $(addprefix $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/,$(BRANDING_FILES)) $(CONFIG_DIR)
-	$(call py3_action,preprocessor,-Fsubstitution $(DEFINES) $(ACDEFINES) \
+	$(call py_action,preprocessor,-Fsubstitution $(DEFINES) $(ACDEFINES) \
 	  $(srcdir)/nsis/defines.nsi.in -o $(CONFIG_DIR)/defines.nsi)
-	$(PYTHON) $(topsrcdir)/toolkit/mozapps/installer/windows/nsis/preprocess-locale.py \
+	$(PYTHON3) $(topsrcdir)/toolkit/mozapps/installer/windows/nsis/preprocess-locale.py \
 	  --preprocess-locale $(topsrcdir) \
 	  $(PPL_LOCALE_ARGS) $(AB_CD) $(CONFIG_DIR)
 	$(INSTALL) $(addprefix $(MOZILLA_DIR)/toolkit/mozapps/installer/windows/nsis/,$(TOOLKIT_NSIS_FILES)) $(CONFIG_DIR)

@@ -30,7 +30,6 @@
         "computed::LengthPercentageOrAuto::auto()",
         engines="gecko servo-2013 servo-2020",
         spec="https://drafts.csswg.org/css-logical-props/#propdef-inset-%s" % side,
-        alias="offset-%s:layout.css.offset-logical-properties.enabled" % side,
         animation_value_type="ComputedValue",
         logical=True,
         logical_group="inset",
@@ -72,7 +71,8 @@ ${helpers.predefined_type(
 ${helpers.single_keyword(
     "flex-direction",
     "row row-reverse column column-reverse",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    servo_2020_pref="layout.flexbox.enabled",
     spec="https://drafts.csswg.org/css-flexbox/#flex-direction-property",
     extra_prefixes="webkit",
     animation_value_type="discrete",
@@ -83,7 +83,8 @@ ${helpers.single_keyword(
 ${helpers.single_keyword(
     "flex-wrap",
     "nowrap wrap wrap-reverse",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    servo_2020_pref="layout.flexbox.enabled",
     spec="https://drafts.csswg.org/css-flexbox/#flex-wrap-property",
     extra_prefixes="webkit",
     animation_value_type="discrete",
@@ -113,6 +114,17 @@ ${helpers.single_keyword(
         extra_prefixes="webkit",
         animation_value_type="discrete",
         servo_restyle_damage="reflow",
+    )}
+
+    ${helpers.predefined_type(
+        "justify-tracks",
+        "JustifyTracks",
+        "specified::JustifyTracks::default()",
+        engines="gecko",
+        gecko_pref="layout.css.grid-template-masonry-value.enabled",
+        animation_value_type="discrete",
+        servo_restyle_damage="reflow",
+        spec="https://github.com/w3c/csswg-drafts/issues/4650",
     )}
 % endif
 
@@ -152,6 +164,17 @@ ${helpers.single_keyword(
     )}
 
     ${helpers.predefined_type(
+        "align-tracks",
+        "AlignTracks",
+        "specified::AlignTracks::default()",
+        engines="gecko",
+        gecko_pref="layout.css.grid-template-masonry-value.enabled",
+        animation_value_type="discrete",
+        servo_restyle_damage="reflow",
+        spec="https://github.com/w3c/csswg-drafts/issues/4650",
+    )}
+
+    ${helpers.predefined_type(
         "align-items",
         "AlignItems",
         "specified::AlignItems::normal()",
@@ -183,7 +206,8 @@ ${helpers.predefined_type(
     "flex-grow",
     "NonNegativeNumber",
     "From::from(0.0)",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    servo_2020_pref="layout.flexbox.enabled",
     spec="https://drafts.csswg.org/css-flexbox/#flex-grow-property",
     extra_prefixes="webkit",
     animation_value_type="NonNegativeNumber",
@@ -194,7 +218,8 @@ ${helpers.predefined_type(
     "flex-shrink",
     "NonNegativeNumber",
     "From::from(1.0)",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    servo_2020_pref="layout.flexbox.enabled",
     spec="https://drafts.csswg.org/css-flexbox/#flex-shrink-property",
     extra_prefixes="webkit",
     animation_value_type="NonNegativeNumber",
@@ -244,7 +269,8 @@ ${helpers.predefined_type(
     "order",
     "Integer",
     "0",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    servo_2020_pref="layout.flexbox.enabled",
     extra_prefixes="webkit",
     animation_value_type="ComputedValue",
     spec="https://drafts.csswg.org/css-flexbox/#order-property",
@@ -255,7 +281,8 @@ ${helpers.predefined_type(
     "flex-basis",
     "FlexBasis",
     "computed::FlexBasis::auto()",
-    engines="gecko servo-2013",
+    engines="gecko servo-2013 servo-2020",
+    servo_2020_pref="layout.flexbox.enabled",
     spec="https://drafts.csswg.org/css-flexbox/#flex-basis-property",
     extra_prefixes="webkit",
     animation_value_type="FlexBasis",
@@ -373,6 +400,16 @@ ${helpers.predefined_type(
 % endfor
 
 ${helpers.predefined_type(
+    "masonry-auto-flow",
+    "MasonryAutoFlow",
+    "computed::MasonryAutoFlow::initial()",
+    engines="gecko",
+    gecko_pref="layout.css.grid-template-masonry-value.enabled",
+    animation_value_type="discrete",
+    spec="https://github.com/w3c/csswg-drafts/issues/4650",
+)}
+
+${helpers.predefined_type(
     "grid-auto-flow",
     "GridAutoFlow",
     "computed::GridAutoFlow::ROW",
@@ -415,17 +452,13 @@ ${helpers.predefined_type(
     servo_restyle_damage="reflow",
 )}
 
-// NOTE(emilio): Before exposing this property to content, we probably need to
-// change syntax and such, and make it apply to more elements.
-//
-// For now, it's used only for mapped attributes.
 ${helpers.predefined_type(
     "aspect-ratio",
-    "Number",
-    "computed::Number::zero()",
+    "AspectRatio",
+    "computed::AspectRatio::auto()",
     engines="gecko servo-2013",
-    animation_value_type="ComputedValue",
-    spec="Internal, for now",
-    enabled_in="",
+    animation_value_type="discrete",
+    spec="https://drafts.csswg.org/css-sizing-4/#aspect-ratio",
+    gecko_pref="layout.css.aspect-ratio.enabled",
     servo_restyle_damage="reflow",
 )}

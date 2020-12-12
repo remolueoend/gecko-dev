@@ -35,7 +35,6 @@
      each preference.
 */
 
-const kXULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 const kContentDoc =
   "http://www.example.com/browser/dom/tests/browser/test_new_window_from_content_child.html";
 const kNewWindowPrefKey = "browser.link.open_newwindow";
@@ -117,7 +116,7 @@ function prepareForResult(aBrowser, aExpectation) {
         await BrowserTestUtils.browserLoaded(aBrowser);
         is(aBrowser.currentURI.spec, expectedSpec, "Should be at dummy.html");
         // Now put the browser back where it came from
-        await BrowserTestUtils.loadURI(aBrowser, kContentDoc);
+        BrowserTestUtils.loadURI(aBrowser, kContentDoc);
         await BrowserTestUtils.browserLoaded(aBrowser);
       })();
     case kNewWin:

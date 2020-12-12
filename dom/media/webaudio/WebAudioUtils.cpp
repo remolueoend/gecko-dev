@@ -8,9 +8,12 @@
 #include "AudioNodeTrack.h"
 #include "blink/HRTFDatabaseLoader.h"
 
+#include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
 #include "nsIConsoleService.h"
 #include "nsIScriptError.h"
+#include "nsJSUtils.h"
+#include "nsServiceManagerUtils.h"
 #include "AudioEventTimeline.h"
 
 #include "mozilla/SchedulerGroup.h"
@@ -113,7 +116,7 @@ void WebAudioUtils::LogToDeveloperConsole(uint64_t aWindowID,
   }
 
   nsAutoString spec;
-  uint32_t aLineNumber, aColumnNumber;
+  uint32_t aLineNumber = 0, aColumnNumber = 0;
   JSContext* cx = nsContentUtils::GetCurrentJSContext();
   if (cx) {
     nsJSUtils::GetCallingLocation(cx, spec, &aLineNumber, &aColumnNumber);
@@ -136,7 +139,7 @@ void WebAudioUtils::LogToDeveloperConsole(uint64_t aWindowID,
     return;
   }
 
-  errorObject->InitWithWindowID(result, spec, EmptyString(), aLineNumber,
+  errorObject->InitWithWindowID(result, spec, u""_ns, aLineNumber,
                                 aColumnNumber, nsIScriptError::warningFlag,
                                 "Web Audio", aWindowID);
   console->LogMessage(errorObject);

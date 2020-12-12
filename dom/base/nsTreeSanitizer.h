@@ -5,10 +5,22 @@
 #ifndef nsTreeSanitizer_h_
 #define nsTreeSanitizer_h_
 
+#include "nsAtom.h"
+#include "nsHashKeys.h"
 #include "nsIPrincipal.h"
-#include "mozilla/dom/Element.h"
+#include "nsTHashtable.h"
 
 class nsIContent;
+class nsINode;
+
+namespace mozilla {
+class DeclarationBlock;
+}
+
+namespace mozilla::dom {
+class DocumentFragment;
+class Element;
+}  // namespace mozilla::dom
 
 /**
  * See the documentation of nsIParserUtils::sanitize for documentation
@@ -198,6 +210,12 @@ class MOZ_STACK_CLASS nsTreeSanitizer {
    * Removes all attributes from an element node.
    */
   void RemoveAllAttributes(mozilla::dom::Element* aElement);
+
+  /**
+   * Removes all attributes from the descendants of an element but not from
+   * the element itself.
+   */
+  void RemoveAllAttributesFromDescendants(mozilla::dom::Element* aElement);
 
   /**
    * Log a Console Service message to indicate we removed something.

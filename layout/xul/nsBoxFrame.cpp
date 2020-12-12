@@ -47,6 +47,7 @@
 
 #include "gfxUtils.h"
 #include "mozilla/ComputedStyle.h"
+#include "mozilla/CSSOrderAwareFrameIterator.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/PresShell.h"
@@ -63,6 +64,7 @@
 #include "nsGkAtoms.h"
 #include "nsHTMLParts.h"
 #include "nsIContent.h"
+#include "nsIFrameInlines.h"
 #include "nsIScrollableFrame.h"
 #include "nsITheme.h"
 #include "nsLayoutUtils.h"
@@ -132,7 +134,6 @@ void nsBoxFrame::SetInitialChildList(ChildListID aListID,
   if (aListID == kPrincipalList) {
     // initialize our list of infos.
     nsBoxLayoutState state(PresContext());
-    CheckBoxOrder();
     if (mLayoutManager)
       mLayoutManager->ChildrenSet(this, state, mFrames.FirstChild());
   }
@@ -154,7 +155,7 @@ void nsBoxFrame::Init(nsIContent* aContent, nsContainerFrame* aParent,
                       nsIFrame* aPrevInFlow) {
   nsContainerFrame::Init(aContent, aParent, aPrevInFlow);
 
-  if (GetStateBits() & NS_FRAME_FONT_INFLATION_CONTAINER) {
+  if (HasAnyStateBits(NS_FRAME_FONT_INFLATION_CONTAINER)) {
     AddStateBits(NS_FRAME_FONT_INFLATION_FLOW_ROOT);
   }
 
@@ -367,14 +368,14 @@ void nsBoxFrame::DidReflow(nsPresContext* aPresContext,
                            const ReflowInput* aReflowInput) {
   nsFrameState preserveBits =
       mState & (NS_FRAME_IS_DIRTY | NS_FRAME_HAS_DIRTY_CHILDREN);
-  nsFrame::DidReflow(aPresContext, aReflowInput);
+  nsIFrame::DidReflow(aPresContext, aReflowInput);
   AddStateBits(preserveBits);
   if (preserveBits & NS_FRAME_IS_DIRTY) {
     this->MarkSubtreeDirty();
   }
 }
 
-bool nsBoxFrame::HonorPrintBackgroundSettings() {
+bool nsBoxFrame::HonorPrintBackgroundSettings() const {
   return !mContent->IsInNativeAnonymousSubtree() &&
          nsContainerFrame::HonorPrintBackgroundSettings();
 }
@@ -469,7 +470,7 @@ void nsBoxFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
   WritingMode wm = aReflowInput.GetWritingMode();
   LogicalSize computedSize = aReflowInput.ComputedSize();
 
-  LogicalMargin m = aReflowInput.ComputedLogicalBorderPadding();
+  LogicalMargin m = aReflowInput.ComputedLogicalBorderPadding(wm);
   // GetXULBorderAndPadding(m);
 
   LogicalSize prefSize(wm);
@@ -482,7 +483,7 @@ void nsBoxFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
     nsSize minSize = GetXULMinSize(state);
     nsSize maxSize = GetXULMaxSize(state);
     // XXXbz isn't GetXULPrefSize supposed to bounds-check for us?
-    physicalPrefSize = BoundsCheck(minSize, physicalPrefSize, maxSize);
+    physicalPrefSize = XULBoundsCheck(minSize, physicalPrefSize, maxSize);
     prefSize = LogicalSize(wm, physicalPrefSize);
   }
 
@@ -493,7 +494,7 @@ void nsBoxFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
     computedSize.BSize(wm) = prefSize.BSize(wm);
     // prefSize is border-box but min/max constraints are content-box.
     nscoord blockDirBorderPadding =
-        aReflowInput.ComputedLogicalBorderPadding().BStartEnd(wm);
+        aReflowInput.ComputedLogicalBorderPadding(wm).BStartEnd(wm);
     nscoord contentBSize = computedSize.BSize(wm) - blockDirBorderPadding;
     // Note: contentHeight might be negative, but that's OK because min-height
     // is never negative.
@@ -552,7 +553,7 @@ nsSize nsBoxFrame::GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) {
 
   nsSize size(0, 0);
   DISPLAY_PREF_SIZE(this, size);
-  if (!DoesNeedRecalc(mPrefSize)) {
+  if (!XULNeedsRecalc(mPrefSize)) {
     size = mPrefSize;
     return size;
   }
@@ -567,26 +568,31 @@ nsSize nsBoxFrame::GetXULPrefSize(nsBoxLayoutState& aBoxLayoutState) {
       if (!widthSet) size.width = layoutSize.width;
       if (!heightSet) size.height = layoutSize.height;
     } else {
-      size = nsBox::GetXULPrefSize(aBoxLayoutState);
+      size = nsIFrame::GetUncachedXULPrefSize(aBoxLayoutState);
     }
   }
 
   nsSize minSize = GetXULMinSize(aBoxLayoutState);
   nsSize maxSize = GetXULMaxSize(aBoxLayoutState);
-  mPrefSize = BoundsCheck(minSize, size, maxSize);
+  mPrefSize = XULBoundsCheck(minSize, size, maxSize);
 
   return mPrefSize;
 }
 
 nscoord nsBoxFrame::GetXULBoxAscent(nsBoxLayoutState& aBoxLayoutState) {
-  if (!DoesNeedRecalc(mAscent)) return mAscent;
+  if (!XULNeedsRecalc(mAscent)) {
+    return mAscent;
+  }
 
-  if (IsXULCollapsed()) return 0;
+  if (IsXULCollapsed()) {
+    return 0;
+  }
 
-  if (mLayoutManager)
+  if (mLayoutManager) {
     mAscent = mLayoutManager->GetAscent(this, aBoxLayoutState);
-  else
-    mAscent = nsBox::GetXULBoxAscent(aBoxLayoutState);
+  } else {
+    mAscent = GetXULPrefSize(aBoxLayoutState).height;
+  }
 
   return mAscent;
 }
@@ -597,7 +603,7 @@ nsSize nsBoxFrame::GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) {
 
   nsSize size(0, 0);
   DISPLAY_MIN_SIZE(this, size);
-  if (!DoesNeedRecalc(mMinSize)) {
+  if (!XULNeedsRecalc(mMinSize)) {
     size = mMinSize;
     return size;
   }
@@ -612,7 +618,7 @@ nsSize nsBoxFrame::GetXULMinSize(nsBoxLayoutState& aBoxLayoutState) {
       if (!widthSet) size.width = layoutSize.width;
       if (!heightSet) size.height = layoutSize.height;
     } else {
-      size = nsBox::GetXULMinSize(aBoxLayoutState);
+      size = nsIFrame::GetUncachedXULMinSize(aBoxLayoutState);
     }
   }
 
@@ -627,7 +633,7 @@ nsSize nsBoxFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) {
 
   nsSize size(NS_UNCONSTRAINEDSIZE, NS_UNCONSTRAINEDSIZE);
   DISPLAY_MAX_SIZE(this, size);
-  if (!DoesNeedRecalc(mMaxSize)) {
+  if (!XULNeedsRecalc(mMaxSize)) {
     size = mMaxSize;
     return size;
   }
@@ -642,7 +648,7 @@ nsSize nsBoxFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) {
       if (!widthSet) size.width = layoutSize.width;
       if (!heightSet) size.height = layoutSize.height;
     } else {
-      size = nsBox::GetXULMaxSize(aBoxLayoutState);
+      size = nsIFrame::GetUncachedXULMaxSize(aBoxLayoutState);
     }
   }
 
@@ -652,9 +658,9 @@ nsSize nsBoxFrame::GetXULMaxSize(nsBoxLayoutState& aBoxLayoutState) {
 }
 
 nscoord nsBoxFrame::GetXULFlex() {
-  if (!DoesNeedRecalc(mFlex)) return mFlex;
-
-  mFlex = nsBox::GetXULFlex();
+  if (XULNeedsRecalc(mFlex)) {
+    nsIFrame::AddXULFlex(this, mFlex);
+  }
 
   return mFlex;
 }
@@ -670,7 +676,7 @@ nsBoxFrame::DoXULLayout(nsBoxLayoutState& aState) {
 
   nsresult rv = NS_OK;
   if (mLayoutManager) {
-    CoordNeedsRecalc(mAscent);
+    XULCoordNeedsRecalc(mAscent);
     rv = mLayoutManager->XULLayout(this, aState);
   }
 
@@ -724,11 +730,11 @@ void nsBoxFrame::DestroyFrom(nsIFrame* aDestructRoot,
 
 /* virtual */
 void nsBoxFrame::MarkIntrinsicISizesDirty() {
-  SizeNeedsRecalc(mPrefSize);
-  SizeNeedsRecalc(mMinSize);
-  SizeNeedsRecalc(mMaxSize);
-  CoordNeedsRecalc(mFlex);
-  CoordNeedsRecalc(mAscent);
+  XULSizeNeedsRecalc(mPrefSize);
+  XULSizeNeedsRecalc(mMinSize);
+  XULSizeNeedsRecalc(mMaxSize);
+  XULCoordNeedsRecalc(mFlex);
+  XULCoordNeedsRecalc(mAscent);
 
   if (mLayoutManager) {
     nsBoxLayoutState state(PresContext());
@@ -777,12 +783,6 @@ void nsBoxFrame::InsertFrames(ChildListID aListID, nsIFrame* aPrevFrame,
   if (mLayoutManager)
     mLayoutManager->ChildrenInserted(this, state, aPrevFrame, newFrames);
 
-  // Make sure to check box order _after_ notifying the layout
-  // manager; otherwise the slice we give the layout manager will
-  // just be bogus.  If the layout manager cares about the order, we
-  // just lose.
-  CheckBoxOrder();
-
   PresShell()->FrameNeedsReflow(this, IntrinsicDirty::TreeChange,
                                 NS_FRAME_HAS_DIRTY_CHILDREN);
 }
@@ -798,14 +798,8 @@ void nsBoxFrame::AppendFrames(ChildListID aListID, nsFrameList& aFrameList) {
   // notify the layout manager
   if (mLayoutManager) mLayoutManager->ChildrenAppended(this, state, newFrames);
 
-  // Make sure to check box order _after_ notifying the layout
-  // manager; otherwise the slice we give the layout manager will
-  // just be bogus.  If the layout manager cares about the order, we
-  // just lose.
-  CheckBoxOrder();
-
   // XXXbz why is this NS_FRAME_FIRST_REFLOW check here?
-  if (!(GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
+  if (!HasAnyStateBits(NS_FRAME_FIRST_REFLOW)) {
     PresShell()->FrameNeedsReflow(this, IntrinsicDirty::TreeChange,
                                   NS_FRAME_HAS_DIRTY_CHILDREN);
   }
@@ -813,8 +807,9 @@ void nsBoxFrame::AppendFrames(ChildListID aListID, nsFrameList& aFrameList) {
 
 /* virtual */
 nsContainerFrame* nsBoxFrame::GetContentInsertionFrame() {
-  if (GetStateBits() & NS_STATE_BOX_WRAPS_KIDS_IN_BLOCK)
+  if (HasAnyStateBits(NS_STATE_BOX_WRAPS_KIDS_IN_BLOCK)) {
     return PrincipalChildList().FirstChild()->GetContentInsertionFrame();
+  }
   return nsContainerFrame::GetContentInsertionFrame();
 }
 
@@ -834,9 +829,6 @@ nsresult nsBoxFrame::AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
 
   if (aAttribute == nsGkAtoms::width || aAttribute == nsGkAtoms::height ||
       aAttribute == nsGkAtoms::align || aAttribute == nsGkAtoms::valign ||
-      aAttribute == nsGkAtoms::left || aAttribute == nsGkAtoms::top ||
-      aAttribute == nsGkAtoms::right || aAttribute == nsGkAtoms::bottom ||
-      aAttribute == nsGkAtoms::start || aAttribute == nsGkAtoms::end ||
       aAttribute == nsGkAtoms::minwidth || aAttribute == nsGkAtoms::maxwidth ||
       aAttribute == nsGkAtoms::minheight ||
       aAttribute == nsGkAtoms::maxheight || aAttribute == nsGkAtoms::flex ||
@@ -878,11 +870,6 @@ nsresult nsBoxFrame::AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
         AddStateBits(NS_STATE_AUTO_STRETCH);
       else
         RemoveStateBits(NS_STATE_AUTO_STRETCH);
-    } else if (aAttribute == nsGkAtoms::left || aAttribute == nsGkAtoms::top ||
-               aAttribute == nsGkAtoms::right ||
-               aAttribute == nsGkAtoms::bottom ||
-               aAttribute == nsGkAtoms::start || aAttribute == nsGkAtoms::end) {
-      RemoveStateBits(NS_STATE_STACK_NOT_POSITIONED);
     }
 
     PresShell()->FrameNeedsReflow(this, IntrinsicDirty::StyleChange,
@@ -916,7 +903,8 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     // Check for frames that are marked as a part of the region used
     // in calculating glass margins on Windows.
     const nsStyleDisplay* styles = StyleDisplay();
-    if (styles && styles->mAppearance == StyleAppearance::MozWinExcludeGlass) {
+    if (styles &&
+        styles->EffectiveAppearance() == StyleAppearance::MozWinExcludeGlass) {
       aBuilder->AddWindowExcludeGlassRegion(
           this, nsRect(aBuilder->ToReferenceFrame(this), GetSize()));
     }
@@ -952,32 +940,33 @@ void nsBoxFrame::BuildDisplayList(nsDisplayListBuilder* aBuilder,
     const ActiveScrolledRoot* ownLayerASR = contASRTracker->GetContainerASR();
     DisplayListClipState::AutoSaveRestore ownLayerClipState(aBuilder);
 
-    if (forceLayer) {
-      // Wrap the list to make it its own layer
-      aLists.Content()->AppendNewToTop<nsDisplayOwnLayer>(
-          aBuilder, this, &masterList, ownLayerASR,
-          nsDisplayOwnLayerFlags::None, mozilla::layers::ScrollbarData{}, true,
-          true, nsDisplayOwnLayer::OwnLayerForBoxFrame);
-    }
+    // Wrap the list to make it its own layer
+    aLists.Content()->AppendNewToTopWithIndex<nsDisplayOwnLayer>(
+        aBuilder, this, /* aIndex = */ nsDisplayOwnLayer::OwnLayerForBoxFrame,
+        &masterList, ownLayerASR, nsDisplayOwnLayerFlags::None,
+        mozilla::layers::ScrollbarData{}, true, true);
   }
 }
 
 void nsBoxFrame::BuildDisplayListForChildren(nsDisplayListBuilder* aBuilder,
                                              const nsDisplayListSet& aLists) {
-  nsIFrame* kid = mFrames.FirstChild();
+  // Iterate over the children in CSS order.
+  auto iter = CSSOrderAwareFrameIterator(
+      this, mozilla::layout::kPrincipalList,
+      CSSOrderAwareFrameIterator::ChildFilter::IncludeAll,
+      CSSOrderAwareFrameIterator::OrderState::Unknown,
+      CSSOrderAwareFrameIterator::OrderingProperty::BoxOrdinalGroup);
   // Put each child's background onto the BlockBorderBackgrounds list
   // to emulate the existing two-layer XUL painting scheme.
   nsDisplayListSet set(aLists, aLists.BlockBorderBackgrounds());
-  // The children should be in the right order
-  while (kid) {
-    BuildDisplayListForChild(aBuilder, kid, set);
-    kid = kid->GetNextSibling();
+  for (; !iter.AtEnd(); iter.Next()) {
+    BuildDisplayListForChild(aBuilder, iter.get(), set);
   }
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsBoxFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Box"), aResult);
+  return MakeFrameName(u"Box"_ns, aResult);
 }
 #endif
 
@@ -1011,24 +1000,8 @@ void nsBoxFrame::RegUnregAccessKey(bool aDoReg) {
 }
 
 void nsBoxFrame::AppendDirectlyOwnedAnonBoxes(nsTArray<OwnedAnonBox>& aResult) {
-  if (GetStateBits() & NS_STATE_BOX_WRAPS_KIDS_IN_BLOCK) {
+  if (HasAnyStateBits(NS_STATE_BOX_WRAPS_KIDS_IN_BLOCK)) {
     aResult.AppendElement(OwnedAnonBox(PrincipalChildList().FirstChild()));
-  }
-}
-
-// Helper less-than-or-equal function, used in CheckBoxOrder() as a
-// template-parameter for the sorting functions.
-static bool IsBoxOrdinalLEQ(nsIFrame* aFrame1, nsIFrame* aFrame2) {
-  // If we've got a placeholder frame, use its out-of-flow frame's ordinal val.
-  nsIFrame* aRealFrame1 = nsPlaceholderFrame::GetRealFrameFor(aFrame1);
-  nsIFrame* aRealFrame2 = nsPlaceholderFrame::GetRealFrameFor(aFrame2);
-  return aRealFrame1->StyleXUL()->mBoxOrdinal <=
-         aRealFrame2->StyleXUL()->mBoxOrdinal;
-}
-
-void nsBoxFrame::CheckBoxOrder() {
-  if (!nsIFrame::IsFrameListSorted<IsBoxOrdinalLEQ>(mFrames)) {
-    nsIFrame::SortFrameList<IsBoxOrdinalLEQ>(mFrames);
   }
 }
 
@@ -1038,44 +1011,12 @@ nsresult nsBoxFrame::LayoutChildAt(nsBoxLayoutState& aState, nsIFrame* aBox,
   nsRect oldRect(aBox->GetRect());
   aBox->SetXULBounds(aState, aRect);
 
-  bool layout = NS_SUBTREE_DIRTY(aBox);
+  bool layout = aBox->IsSubtreeDirty();
 
   if (layout ||
       (oldRect.width != aRect.width || oldRect.height != aRect.height)) {
     return aBox->XULLayout(aState);
   }
-
-  return NS_OK;
-}
-
-nsresult nsBoxFrame::XULRelayoutChildAtOrdinal(nsIFrame* aChild) {
-  int32_t ord = aChild->StyleXUL()->mBoxOrdinal;
-
-  nsIFrame* child = mFrames.FirstChild();
-  nsIFrame* newPrevSib = nullptr;
-
-  while (child) {
-    if (ord < child->StyleXUL()->mBoxOrdinal) {
-      break;
-    }
-
-    if (child != aChild) {
-      newPrevSib = child;
-    }
-
-    child = GetNextXULBox(child);
-  }
-
-  if (aChild->GetPrevSibling() == newPrevSib) {
-    // This box is not moving.
-    return NS_OK;
-  }
-
-  // Take |aChild| out of its old position in the child list.
-  mFrames.RemoveFrame(aChild);
-
-  // Insert it after |newPrevSib| or at the start if it's null.
-  mFrames.InsertFrame(nullptr, newPrevSib, aChild);
 
   return NS_OK;
 }
@@ -1188,7 +1129,8 @@ void nsBoxFrame::WrapListsInRedirector(nsDisplayListBuilder* aBuilder,
 bool nsBoxFrame::GetEventPoint(WidgetGUIEvent* aEvent, nsPoint& aPoint) {
   LayoutDeviceIntPoint refPoint;
   bool res = GetEventPoint(aEvent, refPoint);
-  aPoint = nsLayoutUtils::GetEventCoordinatesRelativeTo(aEvent, refPoint, this);
+  aPoint = nsLayoutUtils::GetEventCoordinatesRelativeTo(aEvent, refPoint,
+                                                        RelativeTo{this});
   return res;
 }
 

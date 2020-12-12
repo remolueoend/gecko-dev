@@ -6,6 +6,7 @@
 
 #include "nsGenericHTMLFrameElement.h"
 
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLIFrameElement.h"
 #include "mozilla/dom/XULFrameElement.h"
 #include "mozilla/dom/BrowserBridgeChild.h"
@@ -121,7 +122,7 @@ Nullable<WindowProxyHolder> nsGenericHTMLFrameElement::GetContentWindow() {
 }
 
 void nsGenericHTMLFrameElement::EnsureFrameLoader() {
-  if (!IsInComposedDoc() || mFrameLoader || mFrameLoaderCreationDisallowed) {
+  if (!IsInComposedDoc() || mFrameLoader || OwnerDoc()->IsStaticDocument()) {
     // If frame loader is there, we just keep it around, cached
     return;
   }
@@ -129,36 +130,6 @@ void nsGenericHTMLFrameElement::EnsureFrameLoader() {
   // Strangely enough, this method doesn't actually ensure that the
   // frameloader exists.  It's more of a best-effort kind of thing.
   mFrameLoader = nsFrameLoader::Create(this, mNetworkCreated);
-}
-
-void nsGenericHTMLFrameElement::DisallowCreateFrameLoader() {
-  MOZ_ASSERT(!mFrameLoader);
-  MOZ_ASSERT(!mFrameLoaderCreationDisallowed);
-  mFrameLoaderCreationDisallowed = true;
-}
-
-void nsGenericHTMLFrameElement::AllowCreateFrameLoader() {
-  MOZ_ASSERT(!mFrameLoader);
-  MOZ_ASSERT(mFrameLoaderCreationDisallowed);
-  mFrameLoaderCreationDisallowed = false;
-}
-
-void nsGenericHTMLFrameElement::CreateRemoteFrameLoader(
-    BrowserParent* aBrowserParent) {
-  MOZ_ASSERT(!mFrameLoader);
-  EnsureFrameLoader();
-  if (NS_WARN_IF(!mFrameLoader)) {
-    return;
-  }
-  mFrameLoader->InitializeFromBrowserParent(aBrowserParent);
-
-  if (nsSubDocumentFrame* subdocFrame = do_QueryFrame(GetPrimaryFrame())) {
-    // The reflow for this element already happened while we were waiting
-    // for the iframe creation. Therefore the subdoc frame didn't have a
-    // frameloader when UpdatePositionAndSize was supposed to be called in
-    // ReflowFinished, and we need to do it properly now.
-    mFrameLoader->UpdatePositionAndSize(subdocFrame);
-  }
 }
 
 void nsGenericHTMLFrameElement::SwapFrameLoaders(
@@ -255,17 +226,6 @@ ScrollbarPreference nsGenericHTMLFrameElement::MapScrollingAttribute(
   return ScrollbarPreference::Auto;
 }
 
-static bool PrincipalAllowsBrowserFrame(nsIPrincipal* aPrincipal) {
-  nsCOMPtr<nsIPermissionManager> permMgr =
-      mozilla::services::GetPermissionManager();
-  NS_ENSURE_TRUE(permMgr, false);
-  uint32_t permission = nsIPermissionManager::DENY_ACTION;
-  nsresult rv = permMgr->TestPermissionFromPrincipal(
-      aPrincipal, NS_LITERAL_CSTRING("browser"), &permission);
-  NS_ENSURE_SUCCESS(rv, false);
-  return permission == nsIPermissionManager::ALLOW_ACTION;
-}
-
 /* virtual */
 nsresult nsGenericHTMLFrameElement::AfterSetAttr(
     int32_t aNameSpaceID, nsAtom* aName, const nsAttrValue* aValue,
@@ -296,9 +256,8 @@ nsresult nsGenericHTMLFrameElement::AfterSetAttr(
         }
       }
     } else if (aName == nsGkAtoms::mozbrowser) {
-      mReallyIsBrowser = !!aValue &&
-                         StaticPrefs::dom_mozBrowserFramesEnabled() &&
-                         PrincipalAllowsBrowserFrame(NodePrincipal());
+      mReallyIsBrowser = !!aValue && XRE_IsParentProcess() &&
+                         NodePrincipal()->IsSystemPrincipal();
     }
   }
 
@@ -321,8 +280,7 @@ void nsGenericHTMLFrameElement::AfterMaybeChangeAttr(
   if (aNamespaceID == kNameSpaceID_None) {
     if (aName == nsGkAtoms::src) {
       mSrcTriggeringPrincipal = nsContentUtils::GetAttrTriggeringPrincipal(
-          this, aValue ? aValue->String() : EmptyString(),
-          aMaybeScriptedPrincipal);
+          this, aValue ? aValue->String() : u""_ns, aMaybeScriptedPrincipal);
       if (!IsHTMLElement(nsGkAtoms::iframe) ||
           !HasAttr(kNameSpaceID_None, nsGkAtoms::srcdoc)) {
         // Don't propagate error here. The attribute was successfully
@@ -334,11 +292,7 @@ void nsGenericHTMLFrameElement::AfterMaybeChangeAttr(
       RefPtr<BrowsingContext> bc =
           mFrameLoader ? mFrameLoader->GetExtantBrowsingContext() : nullptr;
       if (bc) {
-        if (aValue) {
-          bc->SetName(aValue->String());
-        } else {
-          bc->SetName(EmptyString());
-        }
+        MOZ_ALWAYS_SUCCEEDS(bc->SetName(aValue ? aValue->String() : u""_ns));
       }
     }
   }
@@ -361,10 +315,7 @@ nsresult nsGenericHTMLFrameElement::CopyInnerTo(Element* aDest) {
   if (doc->IsStaticDocument() && mFrameLoader) {
     nsGenericHTMLFrameElement* dest =
         static_cast<nsGenericHTMLFrameElement*>(aDest);
-    RefPtr<nsFrameLoader> fl = nsFrameLoader::Create(dest, false);
-    NS_ENSURE_STATE(fl);
-    dest->mFrameLoader = fl;
-    mFrameLoader->CreateStaticClone(fl);
+    doc->AddPendingFrameStaticClone(dest, mFrameLoader);
   }
 
   return rv;

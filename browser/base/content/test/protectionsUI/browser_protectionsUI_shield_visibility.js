@@ -17,6 +17,16 @@ const TEST_CASES = [
     hidden: false,
   },
   {
+    type: "chrome page",
+    testURL: "chrome://global/skin/in-content/info-pages.css",
+    hidden: true,
+  },
+  {
+    type: "content-privileged about page",
+    testURL: "about:robots",
+    hidden: true,
+  },
+  {
     type: "non-chrome about page",
     testURL: "about:about",
     hidden: true,
@@ -34,7 +44,7 @@ const TEST_CASES = [
   {
     type: "certificateError",
     testURL: "https://self-signed.example.com",
-    hidden: false,
+    hidden: true,
   },
   {
     type: "localhost",
@@ -55,6 +65,12 @@ const TEST_CASES = [
     type: "view-source HTTPS",
     testURL: "view-source:https://example.com/",
     hidden: true,
+  },
+  {
+    type: "top level sandbox",
+    testURL:
+      "https://example.com/browser/browser/base/content/test/protectionsUI/sandboxed.html",
+    hidden: false,
   },
 ];
 
@@ -87,7 +103,7 @@ add_task(async function setup() {
         if (testData.type === "certificateError") {
           pageLoaded = BrowserTestUtils.waitForErrorPage(browser);
         } else {
-          pageLoaded = BrowserTestUtils.browserLoaded(browser);
+          pageLoaded = BrowserTestUtils.browserLoaded(browser, true);
         }
       },
       false

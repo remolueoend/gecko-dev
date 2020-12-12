@@ -148,7 +148,8 @@ class gfxWindowsPlatform final : public gfxPlatform {
    */
   void VerifyD2DDevice(bool aAttemptForce);
 
-  void GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh, Script aRunScript,
+  void GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
+                              eFontPresentation aPresentation,
                               nsTArray<const char*>& aFontList) override;
 
   bool CanUseHardwareVideoDecoding() override;
@@ -179,6 +180,8 @@ class gfxWindowsPlatform final : public gfxPlatform {
   }
   inline DWRITE_MEASURING_MODE DWriteMeasuringMode() { return mMeasuringMode; }
 
+  // Note that this may return nullptr, if we encountered an error initializing
+  // the default rendering params.
   IDWriteRenderingParams* GetRenderingParams(TextRenderingMode aRenderMode) {
     return mRenderingParams[aRenderMode];
   }
@@ -212,6 +215,7 @@ class gfxWindowsPlatform final : public gfxPlatform {
   void GetAcceleratedCompositorBackends(
       nsTArray<mozilla::layers::LayersBackend>& aBackends) override;
   nsTArray<uint8_t> GetPlatformCMSOutputProfileData() override;
+  void GetPlatformDisplayInfo(mozilla::widget::InfoObject& aObj) override;
 
   void ImportGPUDeviceData(const mozilla::gfx::GPUDeviceData& aData) override;
   void ImportContentDeviceData(
@@ -226,6 +230,12 @@ class gfxWindowsPlatform final : public gfxPlatform {
   RenderMode mRenderMode;
 
  private:
+  enum class DwmCompositionStatus : uint32_t {
+    Unknown,
+    Disabled,
+    Enabled,
+  };
+
   void Init();
   void InitAcceleration() override;
   void InitWebRenderConfig() override;
@@ -234,7 +244,7 @@ class gfxWindowsPlatform final : public gfxPlatform {
   void InitializeD3D11();
   void InitializeD2D();
   bool InitDWriteSupport();
-  bool InitGPUProcessSupport();
+  void InitGPUProcessSupport();
 
   void DisableD2D(mozilla::gfx::FeatureStatus aStatus, const char* aMessage,
                   const nsACString& aFailureId);
@@ -253,6 +263,9 @@ class gfxWindowsPlatform final : public gfxPlatform {
 
   RefPtr<mozilla::layers::ReadbackManagerD3D11> mD3D11ReadbackManager;
   bool mInitializedDevices = false;
+
+  mozilla::Atomic<DwmCompositionStatus, mozilla::ReleaseAcquire>
+      mDwmCompositionStatus;
 
   // Cached contents of the output color profile file
   nsTArray<uint8_t> mCachedOutputColorProfile;

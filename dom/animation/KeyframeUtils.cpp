@@ -171,7 +171,7 @@ static void MarkAsComputeValuesFailureKey(PropertyValuePair& aPair);
 
 static nsTArray<ComputedKeyframeValues> GetComputedKeyframeValues(
     const nsTArray<Keyframe>& aKeyframes, dom::Element* aElement,
-    const ComputedStyle* aComputedValues);
+    PseudoStyleType aPseudoType, const ComputedStyle* aComputedValues);
 
 static void BuildSegmentsFromValueEntries(
     nsTArray<KeyframeValueEntry>& aEntries,
@@ -276,11 +276,12 @@ void KeyframeUtils::DistributeKeyframes(nsTArray<Keyframe>& aKeyframes) {
 /* static */
 nsTArray<AnimationProperty> KeyframeUtils::GetAnimationPropertiesFromKeyframes(
     const nsTArray<Keyframe>& aKeyframes, dom::Element* aElement,
-    const ComputedStyle* aStyle, dom::CompositeOperation aEffectComposite) {
+    PseudoStyleType aPseudoType, const ComputedStyle* aStyle,
+    dom::CompositeOperation aEffectComposite) {
   nsTArray<AnimationProperty> result;
 
   const nsTArray<ComputedKeyframeValues> computedValues =
-      GetComputedKeyframeValues(aKeyframes, aElement, aStyle);
+      GetComputedKeyframeValues(aKeyframes, aElement, aPseudoType, aStyle);
   if (computedValues.IsEmpty()) {
     // In rare cases GetComputedKeyframeValues might fail and return an empty
     // array, in which case we likewise return an empty array from here.
@@ -408,7 +409,7 @@ static bool ConvertKeyframeSequence(JSContext* aCx, dom::Document* aDocument,
 
     // Convert the JS value into a BaseKeyframe dictionary value.
     dom::binding_detail::FastBaseKeyframe keyframeDict;
-    BindingCallContext callCx(aCx, aContext);
+    dom::BindingCallContext callCx(aCx, aContext);
     if (!keyframeDict.Init(callCx, value,
                            "Element of sequence<Keyframe> argument")) {
       // This may happen if the value type of the member of BaseKeyframe is
@@ -443,8 +444,8 @@ static bool ConvertKeyframeSequence(JSContext* aCx, dom::Document* aDocument,
     }
 
     if (!parseEasingResult.Failed()) {
-      keyframe->mTimingFunction = TimingParams::ParseEasing(
-          keyframeDict.mEasing, aDocument, parseEasingResult);
+      keyframe->mTimingFunction =
+          TimingParams::ParseEasing(keyframeDict.mEasing, parseEasingResult);
       // Even if the above fails, we still need to continue reading off all the
       // properties since checking the validity of easing should be treated as
       // a separate step that happens *after* all the other processing in this
@@ -625,9 +626,9 @@ static void ReportInvalidPropertyValueToConsole(
   params.AppendElement(aInvalidPropertyValue);
   CopyASCIItoUTF16(nsCSSProps::GetStringValue(aProperty),
                    *params.AppendElement());
-  nsContentUtils::ReportToConsole(
-      nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Animation"), aDoc,
-      nsContentUtils::eDOM_PROPERTIES, "InvalidKeyframePropertyValue", params);
+  nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Animation"_ns,
+                                  aDoc, nsContentUtils::eDOM_PROPERTIES,
+                                  "InvalidKeyframePropertyValue", params);
 }
 
 /**
@@ -704,7 +705,7 @@ static void MarkAsComputeValuesFailureKey(PropertyValuePair& aPair) {
  */
 static nsTArray<ComputedKeyframeValues> GetComputedKeyframeValues(
     const nsTArray<Keyframe>& aKeyframes, dom::Element* aElement,
-    const ComputedStyle* aComputedStyle) {
+    PseudoStyleType aPseudoType, const ComputedStyle* aComputedStyle) {
   MOZ_ASSERT(aElement);
 
   nsTArray<ComputedKeyframeValues> result;
@@ -719,7 +720,7 @@ static nsTArray<ComputedKeyframeValues> GetComputedKeyframeValues(
   }
 
   result = presContext->StyleSet()->GetComputedKeyframeValuesFor(
-      aKeyframes, aElement, aComputedStyle);
+      aKeyframes, aElement, aPseudoType, aComputedStyle);
   return result;
 }
 
@@ -1098,7 +1099,7 @@ static void GetKeyframeListFromPropertyIndexedKeyframe(
   FallibleTArray<Maybe<ComputedTimingFunction>> easings;
   auto parseAndAppendEasing = [&](const nsString& easingString,
                                   ErrorResult& aRv) {
-    auto easing = TimingParams::ParseEasing(easingString, aDocument, aRv);
+    auto easing = TimingParams::ParseEasing(easingString, aRv);
     if (!aRv.Failed() && !easings.AppendElement(std::move(easing), fallible)) {
       aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     }

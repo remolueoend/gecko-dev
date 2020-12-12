@@ -7,16 +7,25 @@
 #ifndef NSEXPIRATIONTRACKER_H_
 #define NSEXPIRATIONTRACKER_H_
 
-#include "mozilla/Logging.h"
+#include <cstring>
+#include "MainThreadUtils.h"
+#include "nsAlgorithm.h"
+#include "nsDebug.h"
 #include "nsTArray.h"
 #include "nsITimer.h"
 #include "nsCOMPtr.h"
-#include "nsComponentManagerUtils.h"
 #include "nsIEventTarget.h"
 #include "nsIObserver.h"
 #include "nsIObserverService.h"
+#include "nsISupports.h"
+#include "nsIThread.h"
 #include "nsThreadUtils.h"
-#include "mozilla/Attributes.h"
+#include "nscore.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Likely.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/RefCountType.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/Services.h"
 
 /**
@@ -162,9 +171,9 @@ class ExpirationTrackerImpl {
         return rv;
       }
     }
-    if (!generation.AppendElement(aObj)) {
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    generation.AppendElement(aObj);
     state->mGeneration = mNewestGeneration;
     state->mIndexInGeneration = index;
     return NS_OK;
@@ -189,12 +198,13 @@ class ExpirationTrackerImpl {
     MOZ_ASSERT(generation.Length() > index && generation[index] == aObj,
                "Object is lying about its index");
     // Move the last object to fill the hole created by removing aObj
-    uint32_t last = generation.Length() - 1;
-    T* lastObj = generation[last];
-    generation[index] = lastObj;
+    T* lastObj = generation.PopLastElement();
+    // XXX It looks weird that index might point to the element that was just
+    // removed. Is that really correct?
+    if (index < generation.Length()) {
+      generation[index] = lastObj;
+    }
     lastObj->GetExpirationState()->mIndexInGeneration = index;
-    generation.RemoveElementAt(last);
-    MOZ_ASSERT(generation.Length() == last);
     state->mGeneration = nsExpirationState::NOT_TRACKED;
     // We do not check whether we need to stop the timer here. The timer
     // will check that itself next time it fires. Checking here would not

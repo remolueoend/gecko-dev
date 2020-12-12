@@ -20,11 +20,11 @@ describe("<isAllowedCSS>", () => {
     assert.isTrue(isAllowedCSS("color", "red"));
   });
 
-  it("should allow resource urls", () => {
+  it("should allow chrome urls", () => {
     assert.isTrue(
       isAllowedCSS(
         "background-image",
-        `url("resource://activity-stream/data/content/assets/glyph-info-16.svg")`
+        `url("chrome://activity-stream/content/data/content/assets/glyph-info-16.svg")`
       )
     );
   });
@@ -107,6 +107,7 @@ describe("<DiscoveryStreamBase>", () => {
         Prefs={{
           values: {
             "feeds.section.topstories": true,
+            "feeds.system.topstories": true,
             "feeds.topsites": true,
           },
         }}
@@ -275,6 +276,13 @@ describe("<DiscoveryStreamBase>", () => {
         .at(0)
         .type(),
       CollapsibleSection
+    );
+    assert.equal(
+      wrapper
+        .children()
+        .at(0)
+        .props().eventSource,
+      "CARDGRID"
     );
   });
 

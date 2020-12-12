@@ -171,17 +171,11 @@ static const char kFontSTIXGeneral[] = "STIXGeneral";
 static const char kFontTamilMN[] = "Tamil MN";
 static const char kFontZapfDingbats[] = "Zapf Dingbats";
 
-void gfxPlatformMac::GetCommonFallbackFonts(uint32_t aCh, uint32_t aNextCh,
-                                            Script aRunScript,
+void gfxPlatformMac::GetCommonFallbackFonts(uint32_t aCh, Script aRunScript,
+                                            eFontPresentation aPresentation,
                                             nsTArray<const char*>& aFontList) {
-  EmojiPresentation emoji = GetEmojiPresentation(aCh);
-  if (emoji != EmojiPresentation::TextOnly) {
-    if (aNextCh == kVariationSelector16 ||
-        (aNextCh != kVariationSelector15 &&
-         emoji == EmojiPresentation::EmojiDefault)) {
-      // if char is followed by VS16, try for a color emoji glyph
-      aFontList.AppendElement(kFontAppleColorEmoji);
-    }
+  if (PrefersColor(aPresentation)) {
+    aFontList.AppendElement(kFontAppleColorEmoji);
   }
 
   aFontList.AppendElement(kFontLucidaGrande);
@@ -361,9 +355,9 @@ static CVReturn VsyncCallback(CVDisplayLinkRef aDisplayLink,
 
 class OSXVsyncSource final : public VsyncSource {
  public:
-  OSXVsyncSource() {}
+  OSXVsyncSource() : mGlobalDisplay(new OSXDisplay()) {}
 
-  Display& GetGlobalDisplay() override { return mGlobalDisplay; }
+  Display& GetGlobalDisplay() override { return *mGlobalDisplay; }
 
   class OSXDisplay final : public VsyncSource::Display {
    public:
@@ -507,7 +501,7 @@ class OSXVsyncSource final : public VsyncSource {
  private:
   virtual ~OSXVsyncSource() = default;
 
-  OSXDisplay mGlobalDisplay;
+  RefPtr<OSXDisplay> mGlobalDisplay;
 };  // OSXVsyncSource
 
 static CVReturn VsyncCallback(CVDisplayLinkRef aDisplayLink,
@@ -518,10 +512,10 @@ static CVReturn VsyncCallback(CVDisplayLinkRef aDisplayLink,
   // Executed on OS X hardware vsync thread
   OSXVsyncSource::OSXDisplay* display =
       (OSXVsyncSource::OSXDisplay*)aDisplayLinkContext;
-  int64_t nextVsyncTimestamp = aOutputTime->hostTime;
 
-  mozilla::TimeStamp nextVsync =
-      mozilla::TimeStamp::FromSystemTime(nextVsyncTimestamp);
+  mozilla::TimeStamp outputTime =
+      mozilla::TimeStamp::FromSystemTime(aOutputTime->hostTime);
+  mozilla::TimeStamp nextVsync = outputTime;
   mozilla::TimeStamp previousVsync = display->mPreviousTimestamp;
   mozilla::TimeStamp now = TimeStamp::Now();
 
@@ -540,7 +534,7 @@ static CVReturn VsyncCallback(CVDisplayLinkRef aDisplayLink,
 
   display->mPreviousTimestamp = nextVsync;
 
-  display->NotifyVsync(previousVsync);
+  display->NotifyVsync(previousVsync, outputTime);
   return kCVReturnSuccess;
 }
 
@@ -607,5 +601,5 @@ void gfxPlatformMac::InitPlatformGPUProcessPrefs() {
   FeatureState& gpuProc = gfxConfig::GetFeature(Feature::GPU_PROCESS);
   gpuProc.ForceDisable(FeatureStatus::Blocked,
                        "GPU process does not work on Mac",
-                       NS_LITERAL_CSTRING("FEATURE_FAILURE_MAC_GPU_PROC"));
+                       "FEATURE_FAILURE_MAC_GPU_PROC"_ns);
 }

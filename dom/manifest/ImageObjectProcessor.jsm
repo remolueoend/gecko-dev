@@ -17,7 +17,6 @@
  *   .process(aManifest, aBaseURL, aMemberName);
  *
  */
-/* exported EXPORTED_SYMBOLS*/
 
 "use strict";
 
@@ -34,7 +33,7 @@ function ImageObjectProcessor(aErrors, aExtractor, aBundle) {
   this.domBundle = aBundle;
 }
 
-const iconPurposes = Object.freeze(["any", "maskable"]);
+const iconPurposes = Object.freeze(["any", "maskable", "monochrome"]);
 
 // Static getters
 Object.defineProperties(ImageObjectProcessor, {
@@ -185,11 +184,7 @@ ImageObjectProcessor.prototype.process = function(
     };
     let value = extractor.extractValue(spec);
     if (value) {
-      value = Services.netUtils.parseRequestContentType(
-        value,
-        charset,
-        hadCharset
-      );
+      value = Services.io.parseRequestContentType(value, charset, hadCharset);
     }
     return value || undefined;
   }
@@ -262,4 +257,4 @@ ImageObjectProcessor.prototype.process = function(
     }
   }
 };
-var EXPORTED_SYMBOLS = ["ImageObjectProcessor"]; // jshint ignore:line
+var EXPORTED_SYMBOLS = ["ImageObjectProcessor"];

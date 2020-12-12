@@ -35,7 +35,7 @@
 }
 
 * {
-  -moz-user-select: text;
+  user-select: text;
 }
 
 /*
@@ -89,7 +89,7 @@ button,
 treecol,
 html|option {
   /* override the * rule */
-  -moz-user-select: none;
+  user-select: none;
 }
 
 /* Buttons get a default min-width in XUL. When they also have flex, they will
@@ -141,7 +141,6 @@ button > hbox > label {
 }
 
 .accessory-button {
-  min-height: 30px;
   min-width: 150px;
   margin: 4px 0;
 }
@@ -209,6 +208,10 @@ button > hbox > label {
 
 #category-sync > .category-icon {
   list-style-image: url("chrome://browser/skin/preferences/sync.svg");
+}
+
+#category-experimental > .category-icon {
+  list-style-image: url("chrome://browser/skin/preferences/experiments.svg");
 }
 
 /* header */
@@ -363,6 +366,10 @@ button > hbox > label {
   min-height: 0;
 }
 
+.certManagerRichlistBox > richlistitem {
+  min-height: 30px !important;
+}
+
 .typeIcon {
   margin-inline: 10px 9px !important;
 }
@@ -433,6 +440,10 @@ button > hbox > label {
   margin-block: 0;
 }
 
+.addon-with-favicon .menu-iconic-icon {
+  margin-inline-start: 0;
+}
+
 /* Search Pane */
 
 #engineList {
@@ -488,11 +499,6 @@ button > hbox > label {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-}
-
-#sanitizeEverythingWarningBox {
-  background-color: var(--in-content-box-background);
-  border: 1px solid var(--in-content-box-border-color);
 }
 
 #blockCookies,
@@ -572,7 +578,7 @@ button > hbox > label {
   font-size: .9em;
   font-weight: 600;
   text-align: center;
-  -moz-user-select: none;
+  user-select: none;
 }
 
 .close-icon {
@@ -796,6 +802,11 @@ dialog > .sync-engines-list + hbox {
   list-style-image: url("chrome://browser/skin/preferences/formfill.svg");
 }
 
+.sync-engine-creditcards .checkbox-icon,
+.sync-engine-creditcards.sync-engine-image {
+  list-style-image: url("chrome://formautofill/content/icon-credit-card-generic.svg");
+}
+
 .fxaMobilePromo {
   margin-top: 2px !important;
 }
@@ -836,6 +847,20 @@ image.update-throbber {
 .navigation {
   overflow-x: hidden;
   overflow-y: auto;
+  position: relative;
+}
+
+@media (prefers-reduced-motion) {
+  /* Setting border-inline-end on .navigation makes it a focusable element */
+  .navigation::after {
+    content: "";
+    width: 1px;
+    height: 100%;
+    background-color: var(--in-content-border-color);
+    top: 0;
+    inset-inline-end: 0;
+    position: absolute;
+  }
 }
 
 .face-sad {
@@ -935,7 +960,7 @@ image.update-throbber {
 }
 
 .search-tooltip > span {
-  -moz-user-select: none;
+  user-select: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -943,11 +968,6 @@ image.update-throbber {
 
 .visually-hidden {
   visibility: collapse;
-}
-
-menulist {
-  min-height: 30px;
-  margin-block: 4px;
 }
 
 menulist[indicator=true] > menupopup menuitem:not([image]) > .menu-iconic-left {
@@ -1012,14 +1032,20 @@ menulist[indicator=true] > menupopup menuitem[indicator=true]:not([image]) > .me
   min-width: 20em;
 }
 
-#selectedLocales > richlistitem {
-  padding-inline-start: 13px;
+#availableLanguages,
+#availableLocales {
+  margin-inline-start: 0;
 }
 
 #availableLanguages,
-#availableLocales {
-  margin: 0;
+#availableLocales,
+#activeLanguages,
+#selectedLocales {
   margin-inline-end: 4px;
+}
+
+#selectedLocales > richlistitem {
+  padding-inline-start: 13px;
 }
 
 #warning-message > .message-bar-description {
@@ -1028,12 +1054,6 @@ menulist[indicator=true] > menupopup menuitem[indicator=true]:not([image]) > .me
 
 #warning-message {
   margin-top: 8px;
-}
-
-.add-web-language,
-.add-browser-language {
-  margin: 0;
-  margin-inline-start: 4px;
 }
 
 .action-button {
@@ -1083,12 +1103,50 @@ richlistitem .text-link:hover {
   align-items: center;
 }
 
+.proxy-grid-row:not([hidden]),
+.dnsOverHttps-grid-row:not([hidden]) {
+  display: contents;
+}
+
 #proxy-grid > .thin {
-  grid-column-end: 3;
+  grid-column: span 2;
   height: 20px;
 }
 
-#dnsOverHttps-grid.custom-container-hidden #networkCustomDnsOverHttpsInputLabelContainer,
-#dnsOverHttps-grid.custom-container-hidden #networkCustomDnsOverHttpsInput {
-  display: none;
+#pane-experimental-search-results-header,
+#pane-experimental-subtitle {
+  background-image: url("chrome://global/skin/icons/warning.svg");
+  background-repeat: no-repeat;
+  background-position: 0 center;
+  background-size: contain;
+  min-height: 30px;
+  padding-inline-start: 38px;
+  display: flex;
+  align-items: center;
+}
+
+#pane-experimental-search-results-header:-moz-locale-dir(rtl),
+#pane-experimental-subtitle:-moz-locale-dir(rtl) {
+  background-position-x: right;
+}
+
+#pane-experimental-featureGates {
+  margin-top: 16px;
+}
+
+.featureGate {
+  margin-bottom: 16px;
+}
+
+.featureGateCheckbox {
+  font-size: 1.14em;
+  -moz-box-align: center;
+}
+
+.featureGateCheckbox > .checkbox-label-box {
+  -moz-box-align: center;
+}
+
+.featureGateDescription {
+  margin-inline-start: 28px;
 }

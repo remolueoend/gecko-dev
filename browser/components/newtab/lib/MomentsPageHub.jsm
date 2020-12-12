@@ -17,6 +17,13 @@ XPCOMUtils.defineLazyModuleGetters(this, {
 const SYSTEM_TICK_INTERVAL = 5 * 60 * 1000;
 const HOMEPAGE_OVERRIDE_PREF = "browser.startup.homepage_override.once";
 
+// For the "reach" event of Messaging Experiments
+const REACH_EVENT_CATEGORY = "messaging_experiments";
+const REACH_EVENT_METHOD = "reach";
+// Note it's not "moments-page" as Telemetry Events only accepts understores
+// for the event `object`
+const REACH_EVENT_OBJECT = "moments_page";
+
 class _MomentsPageHub {
   constructor() {
     this.id = "moments-page-hub";
@@ -26,12 +33,12 @@ class _MomentsPageHub {
 
   async init(
     waitForInitialized,
-    { handleMessageRequest, addImpression, blockMessageById, dispatch }
+    { handleMessageRequest, addImpression, blockMessageById, sendTelemetry }
   ) {
     this._handleMessageRequest = handleMessageRequest;
     this._addImpression = addImpression;
     this._blockMessageById = blockMessageById;
-    this._dispatch = dispatch;
+    this._sendTelemetry = sendTelemetry;
 
     // Need to wait for ASRouter to initialize before trying to fetch messages
     await waitForInitialized;
@@ -48,15 +55,15 @@ class _MomentsPageHub {
     this.state = { _intervalId };
   }
 
-  _sendTelemetry(ping) {
-    this._dispatch({
+  _sendPing(ping) {
+    this._sendTelemetry({
       type: "MOMENTS_PAGE_TELEMETRY",
-      data: { action: "cfr_user_event", source: "CFR", ...ping },
+      data: { action: "moments_user_event", ...ping },
     });
   }
 
   sendUserEventTelemetry(message) {
-    this._sendTelemetry({
+    this._sendPing({
       message_id: message.id,
       bucket_id: message.id,
       event: "MOMENTS_PAGE_SET",
@@ -97,16 +104,42 @@ class _MomentsPageHub {
     }
   }
 
+  _recordReachEvent(message) {
+    const extra = { branches: message.branchSlug };
+    Services.telemetry.recordEvent(
+      REACH_EVENT_CATEGORY,
+      REACH_EVENT_METHOD,
+      REACH_EVENT_OBJECT,
+      message.experimentSlug,
+      extra
+    );
+  }
+
   async messageRequest({ triggerId, template }) {
     const telemetryObject = { triggerId };
     TelemetryStopwatch.start("MS_MESSAGE_REQUEST_TIME_MS", telemetryObject);
-    const message = await this._handleMessageRequest({
+    const messages = await this._handleMessageRequest({
       triggerId,
       template,
+      returnAll: true,
     });
     TelemetryStopwatch.finish("MS_MESSAGE_REQUEST_TIME_MS", telemetryObject);
-    if (message) {
-      this.executeAction(message);
+
+    // Record the "reach" event for all the messages with `forReachEvent`,
+    // only execute action for the first message without forReachEvent.
+    const nonReachMessages = [];
+    for (const message of messages) {
+      if (message.forReachEvent) {
+        if (!message.forReachEvent.sent) {
+          this._recordReachEvent(message);
+          message.forReachEvent.sent = true;
+        }
+      } else {
+        nonReachMessages.push(message);
+      }
+    }
+    if (nonReachMessages.length) {
+      this.executeAction(nonReachMessages[0]);
     }
   }
 

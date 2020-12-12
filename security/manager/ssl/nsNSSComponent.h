@@ -12,13 +12,13 @@
 #include "EnterpriseRoots.h"
 #include "ScopedNSSTypes.h"
 #include "SharedCertVerifier.h"
-#include "mozilla/Attributes.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/RefPtr.h"
 #include "nsCOMPtr.h"
 #include "nsIObserver.h"
 #include "nsNSSCallbacks.h"
+#include "nsServiceManagerUtils.h"
 #include "prerror.h"
 #include "sslt.h"
 
@@ -29,13 +29,14 @@
 
 class nsIDOMWindow;
 class nsIPrompt;
-class SmartCardThreadList;
+class nsISerialEventTarget;
+class nsITimer;
 
 namespace mozilla {
 namespace psm {
 
-MOZ_MUST_USE
-::already_AddRefed<mozilla::psm::SharedCertVerifier> GetDefaultCertVerifier();
+[[nodiscard]] ::already_AddRefed<mozilla::psm::SharedCertVerifier>
+GetDefaultCertVerifier();
 UniqueCERTCertList FindClientCertificatesWithPrivateKeys();
 
 }  // namespace psm
@@ -79,7 +80,11 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
 
   static nsresult SetEnabledTLSVersions();
 
-  static void ClearSSLExternalAndInternalSessionCacheNative();
+  // This function does the actual work of clearing the session cache. It is to
+  // be used by the socket process (where there is no nsINSSComponent) and
+  // internally by nsNSSComponent.
+  // NB: NSS must have already been initialized before this is called.
+  static void DoClearSSLExternalAndInternalSessionCache();
 
  protected:
   virtual ~nsNSSComponent();
@@ -90,6 +95,13 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
 
   void setValidationOptions(bool isInitialSetting,
                             const mozilla::MutexAutoLock& proofOfLock);
+  void GetRevocationBehaviorFromPrefs(
+      /*out*/ mozilla::psm::CertVerifier::OcspDownloadConfig* odc,
+      /*out*/ mozilla::psm::CertVerifier::OcspStrictConfig* osc,
+      /*out*/ uint32_t* certShortLifetimeInDays,
+      /*out*/ TimeDuration& softTimeout,
+      /*out*/ TimeDuration& hardTimeout,
+      const mozilla::MutexAutoLock& proofOfLock);
   void UpdateCertVerifierWithEnterpriseRoots();
   nsresult RegisterObservers();
 
@@ -100,6 +112,8 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
       nsTArray<nsTArray<uint8_t>>& enterpriseCerts, bool getRoots);
 
   bool ShouldEnableEnterpriseRootsForFamilySafety(uint32_t familySafetyMode);
+
+  nsresult MaybeEnableIntermediatePreloadingHealer();
 
   // mLoadableCertsLoadedMonitor protects mLoadableCertsLoaded.
   mozilla::Monitor mLoadableCertsLoadedMonitor;
@@ -114,7 +128,7 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
 #ifdef DEBUG
   nsString mTestBuiltInRootHash;
 #endif
-  nsString mContentSigningRootHash;
+  nsCString mContentSigningRootHash;
   RefPtr<mozilla::psm::SharedCertVerifier> mDefaultCertVerifier;
   nsString mMitmCanaryIssuer;
   bool mMitmDetecionEnabled;
@@ -130,6 +144,13 @@ class nsNSSComponent final : public nsINSSComponent, public nsIObserver {
   // to complete (because it will never complete) so we use this boolean to keep
   // track of if we should wait.
   bool mLoadLoadableCertsTaskDispatched;
+  // If the intermediate preloading healer is enabled, the following timer
+  // periodically dispatches events to the background task queue. Each of these
+  // events scans the NSS certdb for preloaded intermediates that are in
+  // cert_storage and thus can be removed. By default, the interval is 5
+  // minutes.
+  nsCOMPtr<nsISerialEventTarget> mIntermediatePreloadingHealerTaskQueue;
+  nsCOMPtr<nsITimer> mIntermediatePreloadingHealerTimer;
 };
 
 inline nsresult BlockUntilLoadableCertsLoaded() {

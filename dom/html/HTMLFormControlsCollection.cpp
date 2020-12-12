@@ -17,8 +17,7 @@
 #include "RadioNodeList.h"
 #include "jsfriendapi.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /* static */
 bool HTMLFormControlsCollection::ShouldBeInElements(
@@ -208,11 +207,10 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
       NS_ASSERTION(notInElementsIdx < notInElementsLen,
                    "Should have remaining not-in-elements");
       // Append the remaining mNotInElements elements
-      if (!aControls.AppendElements(
-              mNotInElements.Elements() + notInElementsIdx,
-              notInElementsLen - notInElementsIdx)) {
-        return NS_ERROR_OUT_OF_MEMORY;
-      }
+      // XXX(Bug 1631371) Check if this should use a fallible operation as it
+      // pretended earlier.
+      aControls.AppendElements(mNotInElements.Elements() + notInElementsIdx,
+                               notInElementsLen - notInElementsIdx);
       break;
     }
     // Check whether we're done with mNotInElements
@@ -220,10 +218,10 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
       NS_ASSERTION(elementsIdx < elementsLen,
                    "Should have remaining in-elements");
       // Append the remaining mElements elements
-      if (!aControls.AppendElements(mElements.Elements() + elementsIdx,
-                                    elementsLen - elementsIdx)) {
-        return NS_ERROR_OUT_OF_MEMORY;
-      }
+      // XXX(Bug 1631371) Check if this should use a fallible operation as it
+      // pretended earlier.
+      aControls.AppendElements(mElements.Elements() + elementsIdx,
+                               elementsLen - elementsIdx);
       break;
     }
     // Both lists have elements left.
@@ -242,9 +240,9 @@ nsresult HTMLFormControlsCollection::GetSortedControls(
       ++notInElementsIdx;
     }
     // Add the first element to the list.
-    if (!aControls.AppendElement(elementToAdd)) {
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier.
+    aControls.AppendElement(elementToAdd);
   }
 
   NS_ASSERTION(aControls.Length() == elementsLen + notInElementsLen,
@@ -322,5 +320,4 @@ JSObject* HTMLFormControlsCollection::WrapObject(
   return HTMLFormControlsCollection_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

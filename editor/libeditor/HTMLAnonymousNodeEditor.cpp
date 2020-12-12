@@ -33,6 +33,7 @@
 #include "nsReadableUtils.h"
 #include "nsString.h"
 #include "nsStringFwd.h"
+#include "nsStyledElement.h"
 #include "nsUnicharUtils.h"
 #include "nscore.h"
 #include "nsContentUtils.h"  // for nsAutoScriptBlocker
@@ -151,7 +152,7 @@ ManualNACPtr HTMLEditor::CreateAnonymousElement(nsAtom* aTag,
   // add the "hidden" class if needed
   if (aIsCreatedHidden) {
     nsresult rv = newElement->SetAttr(kNameSpaceID_None, nsGkAtoms::_class,
-                                      NS_LITERAL_STRING("hidden"), true);
+                                      u"hidden"_ns, true);
     if (NS_FAILED(rv)) {
       NS_WARNING("Element::SetAttr(nsGkAtoms::_class, hidden) failed");
       return nullptr;
@@ -194,8 +195,8 @@ ManualNACPtr HTMLEditor::CreateAnonymousElement(nsAtom* aTag,
     styleSet->StyleNewSubtree(newNativeAnonymousContent);
   }
 
-  ElementDeletionObserver* observer = new ElementDeletionObserver(
-      newNativeAnonymousContent, aParentContent.AsElement());
+  auto* observer = new ElementDeletionObserver(newNativeAnonymousContent,
+                                               aParentContent.AsElement());
   NS_ADDREF(observer);  // NodeWillBeDestroyed releases.
   aParentContent.AddMutationObserver(observer);
   newNativeAnonymousContent->AddMutationObserver(observer);
@@ -248,7 +249,7 @@ void HTMLEditor::DeleteRefToAnonymousNode(ManualNACPtr aContent,
   // See bug 338129.
   if (aContent->IsInComposedDoc() && aPresShell &&
       !aPresShell->IsDestroying()) {
-    MOZ_ASSERT(aContent->IsRootOfAnonymousSubtree());
+    MOZ_ASSERT(aContent->IsRootOfNativeAnonymousSubtree());
     MOZ_ASSERT(!aContent->GetPreviousSibling(), "NAC has no siblings");
 
     // FIXME(emilio): This is the only caller to PresShell::ContentRemoved that
@@ -534,21 +535,16 @@ nsresult HTMLEditor::GetPositionAndDimensions(Element& aElement, int32_t& aX,
       return NS_ERROR_FAILURE;
     }
 
-    aBorderLeft = GetCSSFloatValue(computedDOMStyle,
-                                   NS_LITERAL_CSTRING("border-left-width"));
-    aBorderTop = GetCSSFloatValue(computedDOMStyle,
-                                  NS_LITERAL_CSTRING("border-top-width"));
-    aMarginLeft =
-        GetCSSFloatValue(computedDOMStyle, NS_LITERAL_CSTRING("margin-left"));
-    aMarginTop =
-        GetCSSFloatValue(computedDOMStyle, NS_LITERAL_CSTRING("margin-top"));
+    aBorderLeft = GetCSSFloatValue(computedDOMStyle, "border-left-width"_ns);
+    aBorderTop = GetCSSFloatValue(computedDOMStyle, "border-top-width"_ns);
+    aMarginLeft = GetCSSFloatValue(computedDOMStyle, "margin-left"_ns);
+    aMarginTop = GetCSSFloatValue(computedDOMStyle, "margin-top"_ns);
 
-    aX = GetCSSFloatValue(computedDOMStyle, NS_LITERAL_CSTRING("left")) +
-         aMarginLeft + aBorderLeft;
-    aY = GetCSSFloatValue(computedDOMStyle, NS_LITERAL_CSTRING("top")) +
-         aMarginTop + aBorderTop;
-    aW = GetCSSFloatValue(computedDOMStyle, NS_LITERAL_CSTRING("width"));
-    aH = GetCSSFloatValue(computedDOMStyle, NS_LITERAL_CSTRING("height"));
+    aX = GetCSSFloatValue(computedDOMStyle, "left"_ns) + aMarginLeft +
+         aBorderLeft;
+    aY = GetCSSFloatValue(computedDOMStyle, "top"_ns) + aMarginTop + aBorderTop;
+    aW = GetCSSFloatValue(computedDOMStyle, "width"_ns);
+    aH = GetCSSFloatValue(computedDOMStyle, "height"_ns);
   } else {
     mResizedObjectIsAbsolutelyPositioned = false;
     RefPtr<nsGenericHTMLElement> htmlElement =
@@ -571,20 +567,34 @@ nsresult HTMLEditor::GetPositionAndDimensions(Element& aElement, int32_t& aX,
   return NS_OK;
 }
 
-// self-explanatory
-void HTMLEditor::SetAnonymousElementPosition(int32_t aX, int32_t aY,
-                                             Element* aElement) {
-  DebugOnly<nsresult> rvIgnored = NS_OK;
-  rvIgnored =
-      mCSSEditUtils->SetCSSPropertyPixels(*aElement, *nsGkAtoms::left, aX);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
-                       "CSSEditUtils::SetCSSPropertyPixels(nsGkAtoms::left) "
-                       "failed, but ignored");
-  rvIgnored =
-      mCSSEditUtils->SetCSSPropertyPixels(*aElement, *nsGkAtoms::top, aY);
-  NS_WARNING_ASSERTION(NS_SUCCEEDED(rvIgnored),
-                       "CSSEditUtils::SetCSSPropertyPixels(nsGkAtoms::top) "
-                       "failed, but ignored");
+nsresult HTMLEditor::SetAnonymousElementPositionWithoutTransaction(
+    nsStyledElement& aStyledElement, int32_t aX, int32_t aY) {
+  nsresult rv;
+  rv = mCSSEditUtils->SetCSSPropertyPixelsWithoutTransaction(
+      aStyledElement, *nsGkAtoms::left, aX);
+  if (rv == NS_ERROR_EDITOR_DESTROYED) {
+    NS_WARNING(
+        "CSSEditUtils::SetCSSPropertyPixelsWithoutTransaction(nsGkAtoms::left) "
+        "destroyed the editor");
+    return NS_ERROR_EDITOR_DESTROYED;
+  }
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rv),
+      "CSSEditUtils::SetCSSPropertyPixelsWithoutTransaction(nsGkAtoms::left) "
+      "failed, but ignored");
+  rv = mCSSEditUtils->SetCSSPropertyPixelsWithoutTransaction(
+      aStyledElement, *nsGkAtoms::top, aY);
+  if (rv == NS_ERROR_EDITOR_DESTROYED) {
+    NS_WARNING(
+        "CSSEditUtils::SetCSSPropertyPixelsWithoutTransaction(nsGkAtoms::top) "
+        "destroyed the editor");
+    return NS_ERROR_EDITOR_DESTROYED;
+  }
+  NS_WARNING_ASSERTION(
+      NS_SUCCEEDED(rv),
+      "CSSEditUtils::SetCSSPropertyPixelsWithoutTransaction(nsGkAtoms::top) "
+      "failed, but ignored");
+  return NS_OK;
 }
 
 }  // namespace mozilla

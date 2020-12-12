@@ -12,18 +12,21 @@
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/MediaMetadata.h"
 #include "mozilla/dom/MediaSessionBinding.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/EnumeratedArray.h"
 #include "nsCycleCollectionParticipant.h"
+#include "nsIDocumentActivity.h"
 #include "nsWrapperCache.h"
 
 class nsPIDOMWindowInner;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 // https://w3c.github.io/mediasession/#position-state
 struct PositionState {
+  PositionState() = default;
   PositionState(double aDuration, double aPlaybackRate,
                 double aLastReportedTime)
       : mDuration(aDuration),
@@ -34,11 +37,12 @@ struct PositionState {
   double mLastReportedPlaybackPosition;
 };
 
-class MediaSession final : public nsISupports, public nsWrapperCache {
+class MediaSession final : public nsIDocumentActivity, public nsWrapperCache {
  public:
   // Ref counting and cycle collection
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaSession)
+  NS_DECL_NSIDOCUMENTACTIVITY
 
   explicit MediaSession(nsPIDOMWindowInner* aParent);
 
@@ -63,22 +67,38 @@ class MediaSession final : public nsISupports, public nsWrapperCache {
 
   bool IsSupportedAction(MediaSessionAction aAction) const;
 
-  // Use these methods to trigger media session action handler asynchronously.
+  // Use this method to trigger media session action handler asynchronously.
   void NotifyHandler(const MediaSessionActionDetails& aDetails);
-  void NotifyHandler(MediaSessionAction aAction);
 
   void Shutdown();
 
- private:
-  // Propagate media context status to the media session controller in the
-  // chrome process when we create or destroy the media session.
-  enum class SessionStatus : bool {
-    eDestroyed = false,
-    eCreated = true,
-  };
-  void NotifyMediaSessionStatus(SessionStatus aState);
+  // `MediaStatusManager` would determine which media session is an active media
+  // session and update it from the chrome process. This active session is not
+  // 100% equal to the active media session in the spec, which is a globally
+  // active media session *among all tabs*. The active session here is *among
+  // different windows but in same tab*, so each tab can have at most one
+  // active media session.
+  bool IsActive() const;
 
+ private:
+  // When the document which media session belongs to is going to be destroyed,
+  // or is in the bfcache, then the session would be inactive. Otherwise, it's
+  // active all the time.
+  enum class SessionDocStatus : bool {
+    eInactive = false,
+    eActive = true,
+  };
+  void SetMediaSessionDocStatus(SessionDocStatus aState);
+
+  // These methods are used to propagate media session's status to the chrome
+  // process.
+  void NotifyMediaSessionDocStatus(SessionDocStatus aState);
+  void NotifyMediaSessionAttributes();
+  void NotifyPlaybackStateUpdated();
   void NotifyMetadataUpdated();
+  void NotifyEnableSupportedAction(MediaSessionAction aAction);
+  void NotifyDisableSupportedAction(MediaSessionAction aAction);
+  void NotifyPositionStateChanged();
 
   void DispatchNotifyHandler(const MediaSessionActionDetails& aDetails);
 
@@ -101,6 +121,8 @@ class MediaSession final : public nsISupports, public nsWrapperCache {
       MediaSessionPlaybackState::None;
 
   Maybe<PositionState> mPositionState;
+  RefPtr<Document> mDoc;
+  SessionDocStatus mSessionDocState = SessionDocStatus::eInactive;
 };
 
 }  // namespace dom

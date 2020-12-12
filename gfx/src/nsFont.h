@@ -7,18 +7,16 @@
 #ifndef nsFont_h___
 #define nsFont_h___
 
-#include <stdint.h>     // for uint8_t, uint16_t
-#include <sys/types.h>  // for int16_t
+#include <cstdint>
 #include "gfxFontFamilyList.h"
 #include "gfxFontConstants.h"  // for NS_FONT_KERNING_AUTO, etc
-#include "gfxFontFeatures.h"
 #include "gfxFontVariations.h"
 #include "mozilla/FontPropertyTypes.h"
-#include "mozilla/RefPtr.h"             // for RefPtr
+#include "mozilla/ServoStyleConstsInlines.h"
 #include "mozilla/StyleColorInlines.h"  // for StyleRGBA
-#include "nsCoord.h"                    // for nscoord
 #include "nsTArray.h"                   // for nsTArray
 
+struct gfxFontFeature;
 struct gfxFontStyle;
 
 // Font structure.
@@ -32,13 +30,13 @@ struct nsFont final {
   mozilla::FontFamilyList fontlist;
 
   // Font features from CSS font-feature-settings
-  nsTArray<gfxFontFeature> fontFeatureSettings;
+  CopyableTArray<gfxFontFeature> fontFeatureSettings;
 
   // Font variations from CSS font-variation-settings
-  nsTArray<gfxFontVariation> fontVariationSettings;
+  CopyableTArray<gfxFontVariation> fontVariationSettings;
 
-  // The logical size of the font, in nscoord units
-  nscoord size = 0;
+  // The logical size of the font, in CSS Pixels
+  mozilla::NonNegativeLength size{0};
 
   // The aspect-value (ie., the ratio actualsize:actualxheight) that any
   // actual physical font created from this font structure must have when
@@ -94,10 +92,10 @@ struct nsFont final {
   bool systemFont = false;
 
   // initialize the font with a fontlist
-  nsFont(const mozilla::FontFamilyList& aFontlist, nscoord aSize);
+  nsFont(const mozilla::FontFamilyList& aFontlist, mozilla::Length aSize);
 
   // initialize the font with a single generic
-  nsFont(mozilla::StyleGenericFontFamily, nscoord aSize);
+  nsFont(mozilla::StyleGenericFontFamily, mozilla::Length aSize);
 
   // Make a copy of the given font
   nsFont(const nsFont& aFont);

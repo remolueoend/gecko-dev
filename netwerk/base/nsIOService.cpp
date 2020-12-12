@@ -58,6 +58,7 @@
 #include "nsContentUtils.h"
 #include "nsExceptionHandler.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/StaticPrefs_security.h"
 #include "nsNSSComponent.h"
 #include "ssl.h"
 
@@ -75,7 +76,6 @@ using mozilla::dom::ServiceWorkerDescriptor;
 #define PORT_PREF_PREFIX "network.security.ports."
 #define PORT_PREF(x) PORT_PREF_PREFIX x
 #define MANAGE_OFFLINE_STATUS_PREF "network.manage-offline-status"
-#define OFFLINE_MIRRORS_CONNECTIVITY "network.offline-mirrors-connectivity"
 
 // Nb: these have been misnomers since bug 715770 removed the buffer cache.
 // "network.segment.count" and "network.segment.size" would be better names,
@@ -98,78 +98,89 @@ static LazyLogModule gIOServiceLog("nsIOService");
 // A general port blacklist.  Connections to these ports will not be allowed
 // unless the protocol overrides.
 //
-// TODO: I am sure that there are more ports to be added.
-//       This cut is based on the classic mozilla codebase
+// This list is to be kept in sync with "bad ports" as defined in the
+// WHATWG Fetch standard at <https://fetch.spec.whatwg.org/#port-blocking>
 
 int16_t gBadPortList[] = {
-    1,     // tcpmux
-    7,     // echo
-    9,     // discard
-    11,    // systat
-    13,    // daytime
-    15,    // netstat
-    17,    // qotd
-    19,    // chargen
-    20,    // ftp-data
-    21,    // ftp
-    22,    // ssh
-    23,    // telnet
-    25,    // smtp
-    37,    // time
-    42,    // name
-    43,    // nicname
-    53,    // domain
-    77,    // priv-rjs
-    79,    // finger
-    87,    // ttylink
-    95,    // supdup
-    101,   // hostriame
-    102,   // iso-tsap
-    103,   // gppitnp
-    104,   // acr-nema
-    109,   // pop2
-    110,   // pop3
-    111,   // sunrpc
-    113,   // auth
-    115,   // sftp
-    117,   // uucp-path
-    119,   // nntp
-    123,   // ntp
-    135,   // loc-srv / epmap
-    139,   // netbios
-    143,   // imap2
-    179,   // bgp
-    389,   // ldap
-    427,   // afp (alternate)
-    465,   // smtp (alternate)
-    512,   // print / exec
-    513,   // login
-    514,   // shell
-    515,   // printer
-    526,   // tempo
-    530,   // courier
-    531,   // chat
-    532,   // netnews
-    540,   // uucp
-    548,   // afp
-    556,   // remotefs
-    563,   // nntp+ssl
-    587,   // smtp (outgoing)
-    601,   // syslog-conn
-    636,   // ldap+ssl
-    993,   // imap+ssl
-    995,   // pop3+ssl
-    2049,  // nfs
-    3659,  // apple-sasl
-    4045,  // lockd
-    6000,  // x11
-    6665,  // irc (alternate)
-    6666,  // irc (alternate)
-    6667,  // irc (default)
-    6668,  // irc (alternate)
-    6669,  // irc (alternate)
-    6697,  // irc+tls
-    0,     // Sentinel value: This MUST be zero
+    1,      // tcpmux
+    7,      // echo
+    9,      // discard
+    11,     // systat
+    13,     // daytime
+    15,     // netstat
+    17,     // qotd
+    19,     // chargen
+    20,     // ftp-data
+    21,     // ftp
+    22,     // ssh
+    23,     // telnet
+    25,     // smtp
+    37,     // time
+    42,     // name
+    43,     // nicname
+    53,     // domain
+    69,     // tftp
+    77,     // priv-rjs
+    79,     // finger
+    87,     // ttylink
+    95,     // supdup
+    101,    // hostriame
+    102,    // iso-tsap
+    103,    // gppitnp
+    104,    // acr-nema
+    109,    // pop2
+    110,    // pop3
+    111,    // sunrpc
+    113,    // auth
+    115,    // sftp
+    117,    // uucp-path
+    119,    // nntp
+    123,    // ntp
+    135,    // loc-srv / epmap
+    137,    // netbios
+    139,    // netbios
+    143,    // imap2
+    161,    // snmp
+    179,    // bgp
+    389,    // ldap
+    427,    // afp (alternate)
+    465,    // smtp (alternate)
+    512,    // print / exec
+    513,    // login
+    514,    // shell
+    515,    // printer
+    526,    // tempo
+    530,    // courier
+    531,    // chat
+    532,    // netnews
+    540,    // uucp
+    548,    // afp
+    554,    // rtsp
+    556,    // remotefs
+    563,    // nntp+ssl
+    587,    // smtp (outgoing)
+    601,    // syslog-conn
+    636,    // ldap+ssl
+    993,    // imap+ssl
+    995,    // pop3+ssl
+    1719,   // h323gatestat
+    1720,   // h323hostcall
+    1723,   // pptp
+    2049,   // nfs
+    3659,   // apple-sasl
+    4045,   // lockd
+    5060,   // sip
+    5061,   // sips
+    6000,   // x11
+    6566,   // sane-port
+    6665,   // irc (alternate)
+    6666,   // irc (alternate)
+    6667,   // irc (default)
+    6668,   // irc (alternate)
+    6669,   // irc (alternate)
+    6697,   // irc+tls
+    10080,  // amanda
+    0,      // Sentinel value: This MUST be zero
 };
 
 static const char kProfileChangeNetTeardownTopic[] =
@@ -182,8 +193,6 @@ static const char kProfileDoChange[] = "profile-do-change";
 uint32_t nsIOService::gDefaultSegmentSize = 4096;
 uint32_t nsIOService::gDefaultSegmentCount = 24;
 
-bool nsIOService::sBlockToplevelDataUriNavigations = false;
-
 ////////////////////////////////////////////////////////////////////////////////
 
 nsIOService::nsIOService()
@@ -191,7 +200,6 @@ nsIOService::nsIOService()
       mOfflineForProfileChange(false),
       mManageLinkStatus(false),
       mConnectivity(true),
-      mOfflineMirrorsConnectivity(true),
       mSettingOffline(false),
       mSetOfflineValue(false),
       mSocketProcessLaunchComplete(false),
@@ -222,6 +230,12 @@ static const char* gCallbackPrefsForSocketProcess[] = {
     WEBRTC_PREF_PREFIX,
     NETWORK_DNS_PREF,
     "network.ssl_tokens_cache_enabled",
+    "network.send_ODA_to_content_directly",
+    "network.trr.",
+    "doh-rollout.",
+    "network.dns.disableIPv6",
+    "network.dns.skipTRR-when-parental-control-enabled",
+    "network.offline-mirrors-connectivity",
     nullptr,
 };
 
@@ -244,6 +258,8 @@ static const char* gCallbackSecurityPrefs[] = {
     "security.ssl.enable_ocsp_stapling",
     "security.ssl.enable_ocsp_must_staple",
     "security.pki.certificate_transparency.mode",
+    "security.cert_pinning.enforcement_level",
+    "security.pki.name_matching_mode",
     nullptr,
 };
 
@@ -267,25 +283,28 @@ nsresult nsIOService::Init() {
                                        gCallbackPrefs, this);
   PrefsChanged();
 
-  // Register for profile change notifications
-  nsCOMPtr<nsIObserverService> observerService = services::GetObserverService();
-  if (observerService) {
-    observerService->AddObserver(this, kProfileChangeNetTeardownTopic, true);
-    observerService->AddObserver(this, kProfileChangeNetRestoreTopic, true);
-    observerService->AddObserver(this, kProfileDoChange, true);
-    observerService->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, true);
-    observerService->AddObserver(this, NS_NETWORK_LINK_TOPIC, true);
-    observerService->AddObserver(this, NS_NETWORK_ID_CHANGED_TOPIC, true);
-    observerService->AddObserver(this, NS_WIDGET_WAKE_OBSERVER_TOPIC, true);
-    observerService->AddObserver(this, NS_PREFSERVICE_READ_TOPIC_ID, true);
-  } else
-    NS_WARNING("failed to get observer service");
+  mSocketProcessTopicBlackList.PutEntry(
+      nsLiteralCString(NS_XPCOM_WILL_SHUTDOWN_OBSERVER_ID));
+  mSocketProcessTopicBlackList.PutEntry(
+      nsLiteralCString(NS_XPCOM_SHUTDOWN_OBSERVER_ID));
+  mSocketProcessTopicBlackList.PutEntry("xpcom-shutdown-threads"_ns);
+  mSocketProcessTopicBlackList.PutEntry("profile-do-change"_ns);
 
-  Preferences::AddBoolVarCache(
-      &sBlockToplevelDataUriNavigations,
-      "security.data_uri.block_toplevel_data_uri_navigations", false);
-  Preferences::AddBoolVarCache(&mOfflineMirrorsConnectivity,
-                               OFFLINE_MIRRORS_CONNECTIVITY, true);
+  // Register for profile change notifications
+  mObserverService = services::GetObserverService();
+  AddObserver(this, kProfileChangeNetTeardownTopic, true);
+  AddObserver(this, kProfileChangeNetRestoreTopic, true);
+  AddObserver(this, kProfileDoChange, true);
+  AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, true);
+  AddObserver(this, NS_NETWORK_LINK_TOPIC, true);
+  AddObserver(this, NS_NETWORK_ID_CHANGED_TOPIC, true);
+  AddObserver(this, NS_WIDGET_WAKE_OBSERVER_TOPIC, true);
+
+  // Register observers for sending notifications to nsSocketTransportService
+  if (XRE_IsParentProcess()) {
+    AddObserver(this, "profile-initial-state", true);
+    AddObserver(this, NS_WIDGET_SLEEP_OBSERVER_TOPIC, true);
+  }
 
   if (IsSocketProcessChild()) {
     Preferences::RegisterCallbacks(nsIOService::OnTLSPrefChange,
@@ -300,6 +319,65 @@ nsresult nsIOService::Init() {
   SetOffline(false);
 
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsIOService::AddObserver(nsIObserver* aObserver, const char* aTopic,
+                         bool aOwnsWeak) {
+  if (!mObserverService) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // Register for the origional observer.
+  nsresult rv = mObserverService->AddObserver(aObserver, aTopic, aOwnsWeak);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  if (!XRE_IsParentProcess()) {
+    return NS_OK;
+  }
+
+  if (!UseSocketProcess()) {
+    return NS_OK;
+  }
+
+  nsAutoCString topic(aTopic);
+  if (mSocketProcessTopicBlackList.Contains(topic)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // Avoid registering  duplicate topics.
+  if (mObserverTopicForSocketProcess.Contains(topic)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  mObserverTopicForSocketProcess.PutEntry(topic);
+
+  // This happens when AddObserver() is called by nsIOService::Init(). We don't
+  // want to add nsIOService again.
+  if (SameCOMIdentity(aObserver, static_cast<nsIObserver*>(this))) {
+    return NS_OK;
+  }
+
+  return mObserverService->AddObserver(this, aTopic, true);
+}
+
+NS_IMETHODIMP
+nsIOService::RemoveObserver(nsIObserver* aObserver, const char* aTopic) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsIOService::EnumerateObservers(const char* aTopic,
+                                nsISimpleEnumerator** anEnumerator) {
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP nsIOService::NotifyObservers(nsISupports* aSubject,
+                                           const char* aTopic,
+                                           const char16_t* aSomeData) {
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 nsIOService::~nsIOService() {
@@ -325,10 +403,11 @@ void nsIOService::OnTLSPrefChange(const char* aPref, void* aSelf) {
     LOG(("HandleTLSPrefChange done"));
   } else if (pref.EqualsLiteral("security.ssl.enable_ocsp_stapling") ||
              pref.EqualsLiteral("security.ssl.enable_ocsp_must_staple") ||
-             pref.EqualsLiteral("security.pki.certificate_transparency.mode")) {
+             pref.EqualsLiteral("security.pki.certificate_transparency.mode") ||
+             pref.EqualsLiteral("security.cert_pinning.enforcement_level") ||
+             pref.EqualsLiteral("security.pki.name_matching_mode")) {
     SetValidationOptionsCommon();
   }
-  nsNSSComponent::ClearSSLExternalAndInternalSessionCacheNative();
 }
 
 nsresult nsIOService::InitializeCaptivePortalService() {
@@ -381,10 +460,11 @@ nsresult nsIOService::InitializeNetworkLinkService() {
   }
 
   // go into managed mode if we can, and chrome process
-  if (XRE_IsParentProcess()) {
-    mNetworkLinkService =
-        do_GetService(NS_NETWORK_LINK_SERVICE_CONTRACTID, &rv);
+  if (!XRE_IsParentProcess()) {
+    return NS_ERROR_NOT_AVAILABLE;
   }
+
+  mNetworkLinkService = do_GetService(NS_NETWORK_LINK_SERVICE_CONTRACTID, &rv);
 
   if (mNetworkLinkService) {
     mNetworkLinkServiceInitialized = true;
@@ -445,12 +525,16 @@ nsresult nsIOService::LaunchSocketProcess() {
     return NS_OK;
   }
 
+  if (mShutdown) {
+    return NS_OK;
+  }
+
   if (mSocketProcess) {
     return NS_OK;
   }
 
-  if (!XRE_IsE10sParentProcess()) {
-    LOG(("nsIOService skipping LaunchSocketProcess because e10s is disabled"));
+  if (PR_GetEnv("MOZ_DISABLE_SOCKET_PROCESS")) {
+    LOG(("nsIOService skipping LaunchSocketProcess because of the env"));
     return NS_OK;
   }
 
@@ -477,6 +561,7 @@ nsresult nsIOService::LaunchSocketProcess() {
 }
 
 void nsIOService::DestroySocketProcess() {
+  LOG(("nsIOService::DestroySocketProcess"));
   MOZ_ASSERT(NS_IsMainThread());
 
   if (XRE_GetProcessType() != GeckoProcessType_Default || !mSocketProcess) {
@@ -499,15 +584,26 @@ static bool sUseSocketProcess = false;
 static bool sUseSocketProcessChecked = false;
 
 // static
-bool nsIOService::UseSocketProcess() {
-  if (sUseSocketProcessChecked) {
+bool nsIOService::UseSocketProcess(bool aCheckAgain) {
+  if (sUseSocketProcessChecked && !aCheckAgain) {
     return sUseSocketProcess;
   }
 
   sUseSocketProcessChecked = true;
-  if (Preferences::GetBool("network.process.enabled")) {
-    sUseSocketProcess = Preferences::GetBool(
-        "network.http.network_access_on_socket_process.enabled", true);
+  sUseSocketProcess = false;
+
+  if (PR_GetEnv("MOZ_DISABLE_SOCKET_PROCESS")) {
+    return sUseSocketProcess;
+  }
+
+  if (PR_GetEnv("MOZ_FORCE_USE_SOCKET_PROCESS")) {
+    sUseSocketProcess = true;
+    return sUseSocketProcess;
+  }
+
+  if (StaticPrefs::network_process_enabled()) {
+    sUseSocketProcess =
+        StaticPrefs::network_http_network_access_on_socket_process_enabled();
   }
   return sUseSocketProcess;
 }
@@ -551,8 +647,7 @@ void nsIOService::OnProcessLaunchComplete(SocketProcessHost* aHost,
   }
 
   if (!mPendingEvents.IsEmpty()) {
-    nsTArray<std::function<void()>> pendingEvents;
-    mPendingEvents.SwapElements(pendingEvents);
+    nsTArray<std::function<void()>> pendingEvents = std::move(mPendingEvents);
     for (auto& func : pendingEvents) {
       func();
     }
@@ -613,7 +708,8 @@ nsIOService::SocketProcessTelemetryPing() {
 }
 
 NS_IMPL_ISUPPORTS(nsIOService, nsIIOService, nsINetUtil, nsISpeculativeConnect,
-                  nsIObserver, nsIIOServiceInternal, nsISupportsWeakReference)
+                  nsIObserver, nsIIOServiceInternal, nsISupportsWeakReference,
+                  nsIObserverService)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -654,9 +750,8 @@ nsresult nsIOService::RecheckCaptivePortalIfLocalRedirect(nsIChannel* newChan) {
     return NS_OK;
   }
 
-  NetAddr netAddr;
-  PRNetAddrToNetAddr(&prAddr, &netAddr);
-  if (IsIPAddrLocal(&netAddr)) {
+  NetAddr netAddr(&prAddr);
+  if (netAddr.IsIPAddrLocal()) {
     // Redirects to local IP addresses are probably captive portals
     RecheckCaptivePortal();
   }
@@ -764,9 +859,8 @@ nsresult nsIOService::GetCachedProtocolHandler(const char* scheme,
 }
 
 static bool UsesExternalProtocolHandler(const char* aScheme) {
-  if (NS_LITERAL_CSTRING("file").Equals(aScheme) ||
-      NS_LITERAL_CSTRING("chrome").Equals(aScheme) ||
-      NS_LITERAL_CSTRING("resource").Equals(aScheme)) {
+  if ("file"_ns.Equals(aScheme) || "chrome"_ns.Equals(aScheme) ||
+      "resource"_ns.Equals(aScheme)) {
     // Don't allow file:, chrome: or resource: URIs to be handled with
     // nsExternalProtocolHandler, since internally we rely on being able to
     // use and read from these URIs.
@@ -775,7 +869,7 @@ static bool UsesExternalProtocolHandler(const char* aScheme) {
 
   // When ftp protocol is disabled, return true if external protocol handler was
   // not explicitly disabled by the prererence.
-  if (NS_LITERAL_CSTRING("ftp").Equals(aScheme) &&
+  if ("ftp"_ns.Equals(aScheme) &&
       !Preferences::GetBool("network.ftp.enabled", true) &&
       Preferences::GetBool("network.protocol-handler.external.ftp", true)) {
     return true;
@@ -864,9 +958,8 @@ nsIOService::HostnameIsLocalIPAddress(nsIURI* aURI, bool* aResult) {
   PRNetAddr addr;
   PRStatus result = PR_StringToNetAddr(host.get(), &addr);
   if (result == PR_SUCCESS) {
-    NetAddr netAddr;
-    PRNetAddrToNetAddr(&addr, &netAddr);
-    if (IsIPAddrLocal(&netAddr)) {
+    NetAddr netAddr(&addr);
+    if (netAddr.IsIPAddrLocal()) {
       *aResult = true;
     }
   }
@@ -892,9 +985,8 @@ nsIOService::HostnameIsSharedIPAddress(nsIURI* aURI, bool* aResult) {
   PRNetAddr addr;
   PRStatus result = PR_StringToNetAddr(host.get(), &addr);
   if (result == PR_SUCCESS) {
-    NetAddr netAddr;
-    PRNetAddrToNetAddr(&addr, &netAddr);
-    if (IsIPAddrShared(&netAddr)) {
+    NetAddr netAddr(&addr);
+    if (netAddr.IsIPAddrShared()) {
       *aResult = true;
     }
   }
@@ -957,8 +1049,7 @@ already_AddRefed<nsIURI> nsIOService::CreateExposableURI(nsIURI* aURI) {
   nsAutoCString userPass;
   uri->GetUserPass(userPass);
   if (!userPass.IsEmpty()) {
-    DebugOnly<nsresult> rv =
-        NS_MutateURI(uri).SetUserPass(EmptyCString()).Finalize(uri);
+    DebugOnly<nsresult> rv = NS_MutateURI(uri).SetUserPass(""_ns).Finalize(uri);
     MOZ_ASSERT(NS_SUCCEEDED(rv) && uri, "Mutating URI should never fail");
   }
   return uri.forget();
@@ -1017,42 +1108,9 @@ nsresult nsIOService::NewChannelFromURIWithProxyFlagsInternal(
     const Maybe<ClientInfo>& aLoadingClientInfo,
     const Maybe<ServiceWorkerDescriptor>& aController, uint32_t aSecurityFlags,
     uint32_t aContentPolicyType, uint32_t aSandboxFlags, nsIChannel** result) {
-  // Ideally all callers of NewChannelFromURIWithProxyFlagsInternal provide
-  // the necessary arguments to create a loadinfo.
-  //
-  // Note, historically this could be called with nullptr aLoadingNode,
-  // aLoadingPrincipal, and aTriggeringPrincipal from addons using
-  // newChannelFromURIWithProxyFlags().  This code tried to accomodate
-  // by not creating a LoadInfo in such cases.  Now that both the legacy
-  // addons and that API are gone we could possibly require always creating a
-  // LoadInfo here.  See bug 1432205.
-  nsCOMPtr<nsILoadInfo> loadInfo;
-
-  // TYPE_DOCUMENT loads don't require a loadingNode or principal, but other
-  // types do.
-  if (aLoadingNode || aLoadingPrincipal ||
-      aContentPolicyType == nsIContentPolicy::TYPE_DOCUMENT) {
-    loadInfo = new LoadInfo(aLoadingPrincipal, aTriggeringPrincipal,
-                            aLoadingNode, aSecurityFlags, aContentPolicyType,
-                            aLoadingClientInfo, aController, aSandboxFlags);
-  }
-  if (!loadInfo) {
-    JSContext* cx = nsContentUtils::GetCurrentJSContext();
-    // if coming from JS we like to know the JS stack, otherwise
-    // we just assert that we are able to create a valid loadinfo!
-    if (cx) {
-      JS::UniqueChars chars = xpc_PrintJSStack(cx,
-                                               /*showArgs=*/false,
-                                               /*showLocals=*/false,
-                                               /*showThisProps=*/false);
-      nsDependentCString stackTrace(chars.get());
-      CrashReporter::AnnotateCrashReport(CrashReporter::Annotation::Bug_1541161,
-                                         stackTrace);
-    }
-    MOZ_DIAGNOSTIC_ASSERT(false,
-                          "Please pass security info when creating a channel");
-    return NS_ERROR_INVALID_ARG;
-  }
+  nsCOMPtr<nsILoadInfo> loadInfo = new LoadInfo(
+      aLoadingPrincipal, aTriggeringPrincipal, aLoadingNode, aSecurityFlags,
+      aContentPolicyType, aLoadingClientInfo, aController, aSandboxFlags);
   return NewChannelFromURIWithProxyFlagsInternal(aURI, aProxyURI, aProxyFlags,
                                                  loadInfo, result);
 }
@@ -1062,6 +1120,9 @@ nsresult nsIOService::NewChannelFromURIWithProxyFlagsInternal(
     nsILoadInfo* aLoadInfo, nsIChannel** result) {
   nsresult rv;
   NS_ENSURE_ARG_POINTER(aURI);
+  // all channel creations must provide a valid loadinfo
+  MOZ_ASSERT(aLoadInfo, "can not create channel without aLoadInfo");
+  NS_ENSURE_ARG_POINTER(aLoadInfo);
 
   nsAutoCString scheme;
   rv = aURI->GetScheme(scheme);
@@ -1086,20 +1147,16 @@ nsresult nsIOService::NewChannelFromURIWithProxyFlagsInternal(
   if (NS_FAILED(rv)) return rv;
 
   // Make sure that all the individual protocolhandlers attach a loadInfo.
-  if (aLoadInfo) {
-    // make sure we have the same instance of loadInfo on the newly created
-    // channel
-    nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
-    if (aLoadInfo != loadInfo) {
-      MOZ_ASSERT(false, "newly created channel must have a loadinfo attached");
-      return NS_ERROR_UNEXPECTED;
-    }
+  nsCOMPtr<nsILoadInfo> loadInfo = channel->LoadInfo();
+  if (aLoadInfo != loadInfo) {
+    MOZ_ASSERT(false, "newly created channel must have a loadinfo attached");
+    return NS_ERROR_UNEXPECTED;
+  }
 
-    // If we're sandboxed, make sure to clear any owner the channel
-    // might already have.
-    if (loadInfo->GetLoadingSandboxed()) {
-      channel->SetOwner(nullptr);
-    }
+  // If we're sandboxed, make sure to clear any owner the channel
+  // might already have.
+  if (loadInfo->GetLoadingSandboxed()) {
+    channel->SetOwner(nullptr);
   }
 
   // Some extensions override the http protocol handler and provide their own
@@ -1179,7 +1236,7 @@ bool nsIOService::IsLinkUp() {
 
 NS_IMETHODIMP
 nsIOService::GetOffline(bool* offline) {
-  if (mOfflineMirrorsConnectivity) {
+  if (StaticPrefs::network_offline_mirrors_connectivity()) {
     *offline = mOffline || !mConnectivity;
   } else {
     *offline = mOffline;
@@ -1215,6 +1272,9 @@ nsIOService::SetOffline(bool offline) {
       (void)observerService->NotifyObservers(nullptr,
                                              NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC,
                                              offline ? u"true" : u"false");
+    }
+    if (SocketProcessReady()) {
+      Unused << mSocketProcess->GetActor()->SendSetOffline(offline);
     }
   }
 
@@ -1317,6 +1377,9 @@ nsresult nsIOService::SetConnectivityInternal(bool aConnectivity) {
     observerService->NotifyObservers(nullptr,
                                      NS_IPC_IOSERVICE_SET_CONNECTIVITY_TOPIC,
                                      aConnectivity ? u"true" : u"false");
+    if (SocketProcessReady()) {
+      Unused << mSocketProcess->GetActor()->SendSetConnectivity(aConnectivity);
+    }
   }
 
   if (mOffline) {
@@ -1550,10 +1613,7 @@ nsIOService::Observe(nsISupports* subject, const char* topic,
       SetOffline(false);
     }
   } else if (!strcmp(topic, kProfileDoChange)) {
-    if (!data) {
-      return NS_OK;
-    }
-    if (NS_LITERAL_STRING("startup").Equals(data)) {
+    if (data && u"startup"_ns.Equals(data)) {
       // Lazy initialization of network link service (see bug 620472)
       InitializeNetworkLinkService();
       // Set up the initilization flag regardless the actuall result.
@@ -1568,9 +1628,6 @@ nsIOService::Observe(nsISupports* subject, const char* topic,
       // before something calls into the cookie service.
       nsCOMPtr<nsISupports> cookieServ =
           do_GetService(NS_COOKIESERVICE_CONTRACTID);
-    } else if (NS_LITERAL_STRING("xpcshell-do-get-profile").Equals(data)) {
-      // xpcshell doesn't read user profile.
-      LaunchSocketProcess();
     }
   } else if (!strcmp(topic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
     // Remember we passed XPCOM shutdown notification to prevent any
@@ -1609,10 +1666,17 @@ nsIOService::Observe(nsISupports* subject, const char* topic,
     // https://bugzilla.mozilla.org/show_bug.cgi?id=1152048#c19
     nsCOMPtr<nsIRunnable> wakeupNotifier = new nsWakeupNotifier(this);
     NS_DispatchToMainThread(wakeupNotifier);
-  } else if (!strcmp(topic, NS_PREFSERVICE_READ_TOPIC_ID)) {
-    // Launch socket process after we load user's pref. This is to make sure
-    // that socket process can get the latest prefs.
-    LaunchSocketProcess();
+  }
+
+  if (UseSocketProcess() &&
+      mObserverTopicForSocketProcess.Contains(nsDependentCString(topic))) {
+    nsCString topicStr(topic);
+    nsString dataStr(data);
+    auto sendObserver = [topicStr, dataStr]() {
+      Unused << gIOService->mSocketProcess->GetActor()->SendNotifyObserver(
+          topicStr, dataStr);
+    };
+    CallOrWaitForSocketProcess(sendObserver);
   }
 
   return NS_OK;
@@ -1917,13 +1981,13 @@ nsresult nsIOService::SpeculativeConnectInternal(
   // channel we create underneath - hence it's safe to use
   // the systemPrincipal as the loadingPrincipal for this channel.
   nsCOMPtr<nsIChannel> channel;
-  rv = NewChannelFromURI(aURI,
-                         nullptr,  // aLoadingNode,
-                         loadingPrincipal,
-                         nullptr,  // aTriggeringPrincipal,
-                         nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
-                         nsIContentPolicy::TYPE_SPECULATIVE,
-                         getter_AddRefs(channel));
+  rv = NewChannelFromURI(
+      aURI,
+      nullptr,  // aLoadingNode,
+      loadingPrincipal,
+      nullptr,  // aTriggeringPrincipal,
+      nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
+      nsIContentPolicy::TYPE_SPECULATIVE, getter_AddRefs(channel));
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (aAnonymous) {
@@ -1955,11 +2019,6 @@ NS_IMETHODIMP
 nsIOService::SpeculativeAnonymousConnect(nsIURI* aURI, nsIPrincipal* aPrincipal,
                                          nsIInterfaceRequestor* aCallbacks) {
   return SpeculativeConnectInternal(aURI, aPrincipal, aCallbacks, true);
-}
-
-/*static*/
-bool nsIOService::BlockToplevelDataUriNavigations() {
-  return sBlockToplevelDataUriNavigations;
 }
 
 NS_IMETHODIMP

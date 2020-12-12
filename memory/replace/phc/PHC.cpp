@@ -495,7 +495,9 @@ static GConst* gConst;
 
 // Thread-local state.
 class GTls {
-  DISALLOW_COPY_AND_ASSIGN(GTls);
+  GTls(const GTls&) = delete;
+
+  const GTls& operator=(const GTls&) = delete;
 
   // When true, PHC does as little as possible.
   //
@@ -570,7 +572,10 @@ class GTls {
 PHC_THREAD_LOCAL(bool) GTls::tlsIsDisabled;
 
 class AutoDisableOnCurrentThread {
-  DISALLOW_COPY_AND_ASSIGN(AutoDisableOnCurrentThread);
+  AutoDisableOnCurrentThread(const AutoDisableOnCurrentThread&) = delete;
+
+  const AutoDisableOnCurrentThread& operator=(
+      const AutoDisableOnCurrentThread&) = delete;
 
  public:
   explicit AutoDisableOnCurrentThread() { GTls::DisableOnCurrentThread(); }
@@ -1356,8 +1361,9 @@ static size_t replace_malloc_usable_size(usable_ptr_t aPtr) {
   return gMut->PageUsableSize(lock, index);
 }
 
-void replace_jemalloc_stats(jemalloc_stats_t* aStats) {
-  sMallocTable.jemalloc_stats(aStats);
+void replace_jemalloc_stats(jemalloc_stats_t* aStats,
+                            jemalloc_bin_stats_t* aBinStats) {
+  sMallocTable.jemalloc_stats_internal(aStats, aBinStats);
 
   // Add all the pages to `mapped`.
   size_t mapped = kAllPagesSize;
@@ -1523,7 +1529,7 @@ class PHCBridge : public ReplaceMallocBridge {
 void replace_init(malloc_table_t* aMallocTable, ReplaceMallocBridge** aBridge) {
   // Don't run PHC if the page size isn't 4 KiB.
   jemalloc_stats_t stats;
-  aMallocTable->jemalloc_stats(&stats);
+  aMallocTable->jemalloc_stats_internal(&stats, nullptr);
   if (stats.page_size != kPageSize) {
     return;
   }
@@ -1544,7 +1550,7 @@ void replace_init(malloc_table_t* aMallocTable, ReplaceMallocBridge** aBridge) {
   aMallocTable->malloc_usable_size = replace_malloc_usable_size;
   // default malloc_good_size: the default suffices.
 
-  aMallocTable->jemalloc_stats = replace_jemalloc_stats;
+  aMallocTable->jemalloc_stats_internal = replace_jemalloc_stats;
   // jemalloc_purge_freed_pages: the default suffices.
   // jemalloc_free_dirty_pages: the default suffices.
   // jemalloc_thread_local_arena: the default suffices.

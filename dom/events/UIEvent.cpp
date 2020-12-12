@@ -19,10 +19,10 @@
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIDocShell.h"
 #include "nsIFrame.h"
+#include "nsLayoutUtils.h"
 #include "prtime.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 UIEvent::UIEvent(EventTarget* aOwner, nsPresContext* aPresContext,
                  WidgetGUIEvent* aEvent)
@@ -133,7 +133,7 @@ void UIEvent::InitUIEvent(const nsAString& typeArg, bool canBubbleArg,
 }
 
 already_AddRefed<nsIContent> UIEvent::GetRangeParentContentAndOffset(
-    int32_t* aOffset) {
+    int32_t* aOffset) const {
   if (NS_WARN_IF(!mPresContext)) {
     return nullptr;
   }
@@ -181,7 +181,8 @@ nsIntPoint UIEvent::GetLayerPoint() const {
   nsIFrame* targetFrame = mPresContext->EventStateManager()->GetEventTarget();
   if (!targetFrame) return mLayerPoint;
   nsIFrame* layer = nsLayoutUtils::GetClosestLayer(targetFrame);
-  nsPoint pt(nsLayoutUtils::GetEventCoordinatesRelativeTo(mEvent, layer));
+  nsPoint pt(
+      nsLayoutUtils::GetEventCoordinatesRelativeTo(mEvent, RelativeTo{layer}));
   return nsIntPoint(nsPresContext::AppUnitsToIntCSSPixels(pt.x),
                     nsPresContext::AppUnitsToIntCSSPixels(pt.y));
 }
@@ -207,7 +208,7 @@ void UIEvent::DuplicatePrivateData() {
 
 void UIEvent::Serialize(IPC::Message* aMsg, bool aSerializeInterfaceType) {
   if (aSerializeInterfaceType) {
-    IPC::WriteParam(aMsg, NS_LITERAL_STRING("uievent"));
+    IPC::WriteParam(aMsg, u"uievent"_ns);
   }
 
   Event::Serialize(aMsg, false);
@@ -319,8 +320,7 @@ void UIEvent::InitModifiers(const EventModifierInit& aParam) {
 #undef SET_MODIFIER
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
 
 using namespace mozilla;
 using namespace mozilla::dom;

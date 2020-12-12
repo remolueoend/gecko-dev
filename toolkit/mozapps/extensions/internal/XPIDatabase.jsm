@@ -25,7 +25,6 @@ XPCOMUtils.defineLazyModuleGetters(this, {
   AddonManagerPrivate: "resource://gre/modules/AddonManager.jsm",
   AddonRepository: "resource://gre/modules/addons/AddonRepository.jsm",
   AddonSettings: "resource://gre/modules/addons/AddonSettings.jsm",
-  AppConstants: "resource://gre/modules/AppConstants.jsm",
   DeferredTask: "resource://gre/modules/DeferredTask.jsm",
   ExtensionUtils: "resource://gre/modules/ExtensionUtils.jsm",
   FileUtils: "resource://gre/modules/FileUtils.jsm",
@@ -88,6 +87,7 @@ const TOOLKIT_ID = "toolkit@mozilla.org";
 
 const KEY_APP_SYSTEM_ADDONS = "app-system-addons";
 const KEY_APP_SYSTEM_DEFAULTS = "app-system-defaults";
+const KEY_APP_SYSTEM_PROFILE = "app-system-profile";
 const KEY_APP_BUILTINS = "app-builtin";
 const KEY_APP_SYSTEM_LOCAL = "app-system-local";
 const KEY_APP_SYSTEM_SHARE = "app-system-share";
@@ -146,6 +146,7 @@ const PROP_JSON_FIELDS = [
   "targetApplications",
   "targetPlatforms",
   "signedState",
+  "signedDate",
   "seen",
   "dependencies",
   "incognito",
@@ -406,6 +407,13 @@ class AddonInternal {
 
   get isCorrectlySigned() {
     switch (this.location.name) {
+      case KEY_APP_SYSTEM_PROFILE:
+        // Add-ons installed via Normandy must be signed by the system
+        // key or the "Mozilla Extensions" key.
+        return [
+          AddonManager.SIGNEDSTATE_SYSTEM,
+          AddonManager.SIGNEDSTATE_PRIVILEGED,
+        ].includes(this.signedState);
       case KEY_APP_SYSTEM_ADDONS:
         // System add-ons must be signed by the system key.
         return this.signedState == AddonManager.SIGNEDSTATE_SYSTEM;
@@ -567,6 +575,10 @@ class AddonInternal {
   }
 
   async updateBlocklistState(options = {}) {
+    if (this.location.isSystem || this.location.isBuiltin) {
+      return;
+    }
+
     let { applySoftBlock = true, updateDatabase = true } = options;
 
     let oldState = this.blocklistState;
@@ -594,7 +606,7 @@ class AddonInternal {
     }
 
     if (this.inDatabase && updateDatabase) {
-      XPIDatabase.updateAddonDisabledState(this, {
+      await XPIDatabase.updateAddonDisabledState(this, {
         userDisabled,
         softDisabled,
       });
@@ -700,6 +712,7 @@ class AddonInternal {
       if (this.userDisabled || this.softDisabled) {
         permissions |= AddonManager.PERM_CAN_ENABLE;
       } else if (this.type != "theme" || this.id != DEFAULT_THEME_ID) {
+        // We do not expose disabling the default theme.
         permissions |= AddonManager.PERM_CAN_DISABLE;
       }
     }
@@ -714,9 +727,10 @@ class AddonInternal {
     let changesAllowed = !this.location.locked && !this.pendingUninstall;
     if (changesAllowed) {
       // System add-on upgrades are triggered through a different mechanism (see updateSystemAddons())
-      let isSystem = this.location.isSystem;
+      // Builtin addons are only upgraded with Firefox (or app) updates.
+      let isSystem = this.location.isSystem || this.location.isBuiltin;
       // Add-ons that are installed by a file link cannot be upgraded.
-      if (!this.location.isLinkedAddon(this.id) && !isSystem) {
+      if (!isSystem && !this.location.isLinkedAddon(this.id)) {
         permissions |= AddonManager.PERM_CAN_UPGRADE;
       }
     }
@@ -782,7 +796,7 @@ AddonWrapper = class {
   }
 
   get __AddonInternal__() {
-    return AppConstants.DEBUG ? addonFor(this) : undefined;
+    return addonFor(this);
   }
 
   get seen() {
@@ -924,7 +938,7 @@ AddonWrapper = class {
     return null;
   }
 
-  get isRecommended() {
+  get recommendationStates() {
     let addon = addonFor(this);
     let state = addon.recommendationState;
     if (
@@ -934,9 +948,24 @@ AddonWrapper = class {
       addon.isCorrectlySigned &&
       !this.temporarilyInstalled
     ) {
-      return state.states.includes("recommended");
+      return state.states;
     }
-    return false;
+    return [];
+  }
+
+  get isRecommended() {
+    return this.recommendationStates.includes("recommended");
+  }
+
+  get canBypassThirdParyInstallPrompt() {
+    // We only bypass if the extension is signed (to support distributions
+    // that turn off the signing requirement) and has recommendation states,
+    // or the extension is signed as privileged.
+    return (
+      this.signedState == AddonManager.SIGNEDSTATE_PRIVILEGED ||
+      (this.signedState >= AddonManager.SIGNEDSTATE_SIGNED &&
+        this.recommendationStates.length)
+    );
   }
 
   get applyBackgroundUpdates() {
@@ -1150,7 +1179,7 @@ AddonWrapper = class {
     return addonFor(this).setUserDisabled(true, allowSystemAddons);
   }
 
-  set softDisabled(val) {
+  async setSoftDisabled(val) {
     let addon = addonFor(this);
     if (val == addon.softDisabled) {
       return val;
@@ -1160,10 +1189,14 @@ AddonWrapper = class {
       // When softDisabling a theme just enable the active theme
       if (addon.type === "theme" && val && !addon.userDisabled) {
         if (addon.isWebExtension) {
-          XPIDatabase.updateAddonDisabledState(addon, { softDisabled: val });
+          await XPIDatabase.updateAddonDisabledState(addon, {
+            softDisabled: val,
+          });
         }
       } else {
-        XPIDatabase.updateAddonDisabledState(addon, { softDisabled: val });
+        await XPIDatabase.updateAddonDisabledState(addon, {
+          softDisabled: val,
+        });
       }
     } else if (!addon.userDisabled) {
       // Only set softDisabled if not already disabled
@@ -1366,11 +1399,18 @@ function defineAddonWrapperProperty(name, getter) {
 ["installDate", "updateDate"].forEach(function(aProp) {
   defineAddonWrapperProperty(aProp, function() {
     let addon = addonFor(this);
-    if (addon[aProp]) {
-      return new Date(addon[aProp]);
-    }
-    return null;
+    // installDate is always set, updateDate is sometimes missing.
+    return new Date(addon[aProp] ?? addon.installDate);
   });
+});
+
+defineAddonWrapperProperty("signedDate", function() {
+  let addon = addonFor(this);
+  let { signedDate } = addon;
+  if (signedDate != null) {
+    return new Date(signedDate);
+  }
+  return null;
 });
 
 ["sourceURI", "releaseNotesURI"].forEach(function(aProp) {
@@ -2811,6 +2851,12 @@ this.XPIDatabaseReconcile = {
         );
       } else if (unsigned && !isNewInstall) {
         logger.warn("Not uninstalling existing unsigned add-on");
+      } else if (aLocation.name == KEY_APP_BUILTINS) {
+        // If a builtin has been removed from the build, we need to remove it from our
+        // data sets.  We cannot use location.isBuiltin since the system addon locations
+        // mix it up.
+        XPIDatabase.removeAddonMetadata(aAddonState);
+        aLocation.removeAddon(aId);
       } else {
         aLocation.installer.uninstallAddon(aId);
       }
@@ -2823,7 +2869,8 @@ this.XPIDatabaseReconcile = {
 
     // Assume that add-ons in the system add-ons install location aren't
     // foreign and should default to enabled.
-    aNewAddon.foreignInstall = isDetectedInstall && !aLocation.isSystem;
+    aNewAddon.foreignInstall =
+      isDetectedInstall && !aLocation.isSystem && !aLocation.isBuiltin;
 
     // appDisabled depends on whether the add-on is a foreignInstall so update
     aNewAddon.appDisabled = !XPIDatabase.isUsableAddon(aNewAddon);
@@ -2881,9 +2928,8 @@ this.XPIDatabaseReconcile = {
    *        The new state of the add-on
    * @param {AddonInternal?} [aNewAddon]
    *        The manifest for the new add-on if it has already been loaded
-   * @returns {boolean?}
-   *        A boolean indicating if flushing caches is required to complete
-   *        changing this add-on
+   * @returns {AddonInternal}
+   *        The AddonInternal that was added to the database
    */
   updateMetadata(aLocation, aOldAddon, aAddonState, aNewAddon) {
     logger.debug(`Add-on ${aOldAddon.id} modified in ${aLocation.name}`);
@@ -2926,6 +2972,8 @@ this.XPIDatabaseReconcile = {
 
     // Set the additional properties on the new AddonInternal
     aNewAddon.updateDate = aAddonState.mtime;
+
+    XPIProvider.persistStartupData(aNewAddon, aAddonState);
 
     // Update the database
     return XPIDatabase.updateAddonMetadata(
@@ -2984,9 +3032,23 @@ this.XPIDatabaseReconcile = {
 
     let checkSigning =
       aOldAddon.signedState === undefined && SIGNED_TYPES.has(aOldAddon.type);
+    // signedDate must be set if signedState is set.
+    let signedDateMissing =
+      aOldAddon.signedDate === undefined &&
+      (aOldAddon.signedState || checkSigning);
+
+    // If maxVersion was inadvertently updated for a locale, force a reload
+    // from the manifest.  See Bug 1646016 for details.
+    if (
+      !aReloadMetadata &&
+      aOldAddon.type === "locale" &&
+      aOldAddon.matchingTargetApplication
+    ) {
+      aReloadMetadata = aOldAddon.matchingTargetApplication.maxVersion === "*";
+    }
 
     let manifest = null;
-    if (checkSigning || aReloadMetadata) {
+    if (checkSigning || aReloadMetadata || signedDateMissing) {
       try {
         manifest = XPIInstall.syncLoadManifest(aAddonState, aLocation);
       } catch (err) {
@@ -3003,12 +3065,15 @@ this.XPIDatabaseReconcile = {
       aOldAddon.signedState = manifest.signedState;
     }
 
+    if (signedDateMissing) {
+      aOldAddon.signedDate = manifest.signedDate;
+    }
+
     // May be updating from a version of the app that didn't support all the
     // properties of the currently-installed add-ons.
     if (aReloadMetadata) {
       // Avoid re-reading these properties from manifest,
       // use existing addon instead.
-      // TODO - consider re-scanning for targetApplications.
       let remove = [
         "syncGUID",
         "foreignInstall",
@@ -3019,9 +3084,13 @@ this.XPIDatabaseReconcile = {
         "applyBackgroundUpdates",
         "sourceURI",
         "releaseNotesURI",
-        "targetApplications",
         "installTelemetryInfo",
       ];
+
+      // TODO - consider re-scanning for targetApplications for other addon types.
+      if (aOldAddon.type !== "locale") {
+        remove.push("targetApplications");
+      }
 
       let props = PROP_JSON_FIELDS.filter(a => !remove.includes(a));
       copyProperties(manifest, props, aOldAddon);
@@ -3370,30 +3439,24 @@ this.XPIDatabaseReconcile = {
           id
         );
 
-        if (
-          previousAddon.location &&
-          (!previousAddon._sourceBundle ||
-            (previousAddon._sourceBundle.exists() &&
-              !previousAddon._sourceBundle.equals(currentAddon._sourceBundle)))
-        ) {
-          promise = XPIInternal.BootstrapScope.get(previousAddon).update(
-            currentAddon
+        // Bug 1664144:  If the addon changed on disk we will catch it during
+        // the second scan initiated by getNewSideloads.  The addon may have
+        // already started, if so we need to ensure it restarts during the
+        // update, otherwise we're left in a state where the addon is enabled
+        // but not started.  We use the bootstrap started state to check that.
+        // isActive alone is not sufficient as that changes the characteristics
+        // of other updates and breaks many tests.
+        let restart =
+          isActive && XPIInternal.BootstrapScope.get(currentAddon).started;
+        if (restart) {
+          logger.warn(
+            `Updating and restart addon ${previousAddon.id} that changed on disk after being already started.`
           );
-        } else if (
-          this.isSystemAddonLocation(currentAddon.location) &&
-          previousAddon.version == currentAddon.version &&
-          previousAddon.userDisabled != currentAddon.userDisabled
-        ) {
-          // A system addon change, no need for install or update events.
-        } else {
-          let reason = XPIInstall.newVersionReason(
-            previousAddon.version,
-            currentAddon.version
-          );
-          XPIInternal.BootstrapScope.get(currentAddon).install(reason, false, {
-            oldVersion: previousAddon.version,
-          });
         }
+        promise = XPIInternal.BootstrapScope.get(previousAddon).update(
+          currentAddon,
+          restart
+        );
       }
 
       if (isActive != wasActive) {

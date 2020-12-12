@@ -7,15 +7,16 @@
 
 #include "RetainedDisplayListBuilder.h"
 
-#include "DisplayListChecker.h"
 #include "mozilla/StaticPrefs_layout.h"
 #include "nsIFrame.h"
 #include "nsIFrameInlines.h"
+#include "nsIScrollableFrame.h"
 #include "nsPlaceholderFrame.h"
 #include "nsSubDocumentFrame.h"
 #include "nsViewManager.h"
 #include "nsCanvasFrame.h"
 #include "mozilla/AutoRestore.h"
+#include "mozilla/DisplayPortUtils.h"
 #include "mozilla/PresShell.h"
 
 /**
@@ -253,8 +254,7 @@ bool RetainedDisplayListBuilder::PreProcessDisplayList(
       bool keepLinked = aKeepLinked;
       nsIFrame* invalid = item->FrameForInvalidation();
       if (!invalid->ForceDescendIntoIfVisible() &&
-          !(invalid->GetStateBits() &
-            NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO)) {
+          !invalid->HasAnyStateBits(NS_FRAME_FORCE_DISPLAY_LIST_DESCEND_INTO)) {
         keepLinked = true;
       }
 
@@ -283,7 +283,9 @@ bool RetainedDisplayListBuilder::PreProcessDisplayList(
     // TODO: This is here because we sometimes reuse the previous display list
     // completely. For optimization, we could only restore the state for reused
     // display items.
-    item->RestoreState();
+    if (item->RestoreState()) {
+      item->InvalidateItemCacheEntry();
+    }
 
     // If we're going to keep this linked list and not merge it, then mark the
     // item as used and put it back into the list.
@@ -1027,16 +1029,15 @@ static bool ProcessFrameInternal(nsIFrame* aFrame,
 
     MOZ_ASSERT(currentFrame);
 
-    if (nsLayoutUtils::FrameHasDisplayPort(currentFrame)) {
+    // Check whether the current frame is a scrollable frame with display port.
+    nsRect displayPort;
+    nsIScrollableFrame* sf = do_QueryFrame(currentFrame);
+    nsIContent* content = sf ? currentFrame->GetContent() : nullptr;
+
+    if (content && DisplayPortUtils::GetDisplayPort(content, &displayPort)) {
       CRR_LOG("Frame belongs to displayport frame %p\n", currentFrame);
-      nsIScrollableFrame* sf = do_QueryFrame(currentFrame);
-      MOZ_ASSERT(sf);
-      nsRect displayPort;
-      DebugOnly<bool> hasDisplayPort = nsLayoutUtils::GetDisplayPort(
-          currentFrame->GetContent(), &displayPort,
-          DisplayportRelativeTo::ScrollPort);
-      MOZ_ASSERT(hasDisplayPort);
-      // get it relative to the scrollport (from the scrollframe)
+
+      // Get overflow relative to the scrollport (from the scrollframe)
       nsRect r = aOverflow - sf->GetScrollPortRect().TopLeft();
       r.IntersectRect(r, displayPort);
       if (!r.IsEmpty()) {
@@ -1063,8 +1064,8 @@ static bool ProcessFrameInternal(nsIFrame* aFrame,
         aOverflow.SetEmpty();
       }
     } else {
-      aOverflow.IntersectRect(
-          aOverflow, currentFrame->GetVisualOverflowRectRelativeToSelf());
+      aOverflow.IntersectRect(aOverflow,
+                              currentFrame->InkOverflowRectRelativeToSelf());
     }
 
     if (aOverflow.IsEmpty()) {
@@ -1129,7 +1130,7 @@ static bool ProcessFrameInternal(nsIFrame* aFrame,
       if (!data->mModifiedAGR) {
         data->mModifiedAGR = *aAGR;
       } else if (data->mModifiedAGR != *aAGR) {
-        data->mDirtyRect = currentFrame->GetVisualOverflowRectRelativeToSelf();
+        data->mDirtyRect = currentFrame->InkOverflowRectRelativeToSelf();
         CRR_LOG(
             "Found multiple modified AGRs within this stacking context, "
             "giving up\n");
@@ -1173,7 +1174,7 @@ bool RetainedDisplayListBuilder::ProcessFrame(
   // outside of the stacking context, since we know the stacking context item
   // exists in the old list, so we can trivially merge without needing other
   // items.
-  nsRect overflow = aFrame->GetVisualOverflowRectRelativeToSelf();
+  nsRect overflow = aFrame->InkOverflowRectRelativeToSelf();
 
   // If the modified frame is also a caret frame, include the caret area.
   // This is needed because some frames (for example text frames without text)
@@ -1402,7 +1403,7 @@ void RetainedDisplayListBuilder::ClearFramesWithProps() {
 }
 
 PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
-    nscolor aBackstop, mozilla::DisplayListChecker* aChecker) {
+    nscolor aBackstop) {
   mBuilder.RemoveModifiedWindowRegions();
 
   if (mBuilder.ShouldSyncDecodeImages()) {
@@ -1414,8 +1415,8 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
   mBuilder.EnterPresShell(mBuilder.RootReferenceFrame());
 
   // We set the override dirty regions during ComputeRebuildRegion or in
-  // nsLayoutUtils::InvalidateForDisplayPortChange. The display port change also
-  // marks the frame modified, so those regions are cleared here as well.
+  // DisplayPortUtils::InvalidateForDisplayPortChange. The display port change
+  // also marks the frame modified, so those regions are cleared here as well.
   AutoClearFramePropsArray modifiedFrames(64);
   AutoClearFramePropsArray framesWithProps;
   GetModifiedAndFramesWithProps(&mBuilder, &modifiedFrames.Frames(),
@@ -1452,7 +1453,7 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
 
   modifiedDirty.IntersectRect(
       modifiedDirty,
-      mBuilder.RootReferenceFrame()->GetVisualOverflowRectRelativeToSelf());
+      mBuilder.RootReferenceFrame()->InkOverflowRectRelativeToSelf());
 
   mBuilder.SetDirtyRect(modifiedDirty);
   mBuilder.SetPartialUpdate(true);
@@ -1465,7 +1466,7 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
     nsLayoutUtils::AddExtraBackgroundItems(
         &mBuilder, &modifiedDL, mBuilder.RootReferenceFrame(),
         nsRect(nsPoint(0, 0), mBuilder.RootReferenceFrame()->GetSize()),
-        mBuilder.RootReferenceFrame()->GetVisualOverflowRectRelativeToSelf(),
+        mBuilder.RootReferenceFrame()->InkOverflowRectRelativeToSelf(),
         aBackstop);
   }
   mBuilder.SetPartialUpdate(false);
@@ -1478,14 +1479,10 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
     return PartialUpdateResult::Failed;
   }
 
-  if (aChecker) {
-    aChecker->Set(&modifiedDL, "TM");
-  }
-
   // printf_stderr("Painting --- Modified list (dirty %d,%d,%d,%d):\n",
   //              modifiedDirty.x, modifiedDirty.y, modifiedDirty.width,
   //              modifiedDirty.height);
-  // nsFrame::PrintDisplayList(&mBuilder, modifiedDL);
+  // nsIFrame::PrintDisplayList(&mBuilder, modifiedDL);
 
   // |modifiedDL| can sometimes be empty here. We still perform the
   // display list merging to prune unused items (for example, items that
@@ -1502,7 +1499,7 @@ PartialUpdateResult RetainedDisplayListBuilder::AttemptPartialUpdate(
   }
 
   // printf_stderr("Painting --- Merged list:\n");
-  // nsFrame::PrintDisplayList(&mBuilder, mList);
+  // nsIFrame::PrintDisplayList(&mBuilder, mList);
 
   mBuilder.LeavePresShell(mBuilder.RootReferenceFrame(), List());
   return result;

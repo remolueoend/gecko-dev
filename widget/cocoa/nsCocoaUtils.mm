@@ -9,6 +9,7 @@
 
 #include "AppleUtils.h"
 #include "gfx2DGlue.h"
+#include "gfxContext.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "ImageRegion.h"
@@ -27,16 +28,16 @@
 #include "nsMenuUtilsX.h"
 #include "nsToolkit.h"
 #include "nsCRT.h"
-#include "SVGImageContext.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/Promise.h"
-#include "mozilla/gfx/2D.h"
 #include "mozilla/Logging.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_media.h"
+#include "mozilla/SVGImageContext.h"
+#include "mozilla/dom/Promise.h"
+#include "mozilla/gfx/2D.h"
 
 using namespace mozilla;
 using namespace mozilla::widget;
@@ -571,7 +572,8 @@ void nsCocoaUtils::GetStringForNSString(const NSString* aSrc, nsAString& aDist) 
   }
 
   aDist.SetLength([aSrc length]);
-  [aSrc getCharacters:reinterpret_cast<unichar*>(aDist.BeginWriting())];
+  [aSrc getCharacters:reinterpret_cast<unichar*>(aDist.BeginWriting())
+                range:NSMakeRange(0, [aSrc length])];
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
@@ -1106,25 +1108,14 @@ bool nsCocoaUtils::ShouldZoomOnTitlebarDoubleClick() {
   if ([NSWindow respondsToSelector:@selector(_shouldZoomOnDoubleClick)]) {
     return [NSWindow _shouldZoomOnDoubleClick];
   }
-  if (nsCocoaFeatures::OnElCapitanOrLater()) {
-    return [ActionOnDoubleClickSystemPref() isEqualToString:@"Maximize"];
-  }
-  return false;
+  return [ActionOnDoubleClickSystemPref() isEqualToString:@"Maximize"];
 }
 
 bool nsCocoaUtils::ShouldMinimizeOnTitlebarDoubleClick() {
   // Check the system preferences.
   // We could also check -[NSWindow _shouldMiniaturizeOnDoubleClick]. It's not clear to me which
   // approach would be preferable; neither is public API.
-  if (nsCocoaFeatures::OnElCapitanOrLater()) {
-    return [ActionOnDoubleClickSystemPref() isEqualToString:@"Minimize"];
-  }
-
-  // Pre-10.11:
-  NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
-  NSString* kAppleMiniaturizeOnDoubleClickKey = @"AppleMiniaturizeOnDoubleClick";
-  id value1 = [userDefaults objectForKey:kAppleMiniaturizeOnDoubleClickKey];
-  return [value1 isKindOfClass:[NSValue class]] && [value1 boolValue];
+  return [ActionOnDoubleClickSystemPref() isEqualToString:@"Minimize"];
 }
 
 // AVAuthorizationStatus is not needed unless we are running on 10.14.
@@ -1420,8 +1411,7 @@ void nsCocoaUtils::ResolveMediaCapturePromises(bool aGranted, PromiseArray& aPro
 
   // Remove each promise from the list and resolve it.
   while (aPromiseList->Length() > 0) {
-    RefPtr<Promise> promise = aPromiseList->LastElement();
-    aPromiseList->RemoveLastElement();
+    RefPtr<Promise> promise = aPromiseList->PopLastElement();
 
     // Resolve on main thread
     nsCOMPtr<nsIRunnable> runnable(NS_NewRunnableFunction(

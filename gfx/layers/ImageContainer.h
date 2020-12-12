@@ -7,124 +7,29 @@
 #ifndef GFX_IMAGECONTAINER_H
 #define GFX_IMAGECONTAINER_H
 
-#include <stdint.h>     // for uint32_t, uint8_t, uint64_t
-#include <sys/types.h>  // for int32_t
-#include "gfxTypes.h"
-#include "ImageTypes.h"                  // for ImageFormat, etc
-#include "mozilla/Assertions.h"          // for MOZ_ASSERT_HELPER2
-#include "mozilla/Mutex.h"               // for Mutex
-#include "mozilla/RecursiveMutex.h"      // for RecursiveMutex, etc
-#include "mozilla/TimeStamp.h"           // for TimeStamp
-#include "mozilla/gfx/Point.h"           // For IntSize
+#include <stdint.h>      // for int32_t, uint32_t, uint8_t, uint64_t
+#include "ImageTypes.h"  // for ImageFormat, etc
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"      // for MOZ_ASSERT_HELPER2
+#include "mozilla/Mutex.h"           // for Mutex
+#include "mozilla/RecursiveMutex.h"  // for RecursiveMutex, etc
+#include "mozilla/ThreadSafeWeakPtr.h"
+#include "mozilla/TimeStamp.h"  // for TimeStamp
+#include "mozilla/gfx/Point.h"  // For IntSize
+#include "mozilla/gfx/Rect.h"
 #include "mozilla/gfx/Types.h"           // For ColorDepth
 #include "mozilla/layers/LayersTypes.h"  // for LayersBackend, etc
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/mozalloc.h"  // for operator delete, etc
-#include "nsAutoRef.h"         // for nsCountedRef
-#include "nsCOMPtr.h"          // for already_AddRefed
 #include "nsDebug.h"           // for NS_ASSERTION
 #include "nsISupportsImpl.h"   // for Image::Release, etc
-#include "nsRect.h"            // for mozilla::gfx::IntRect
 #include "nsTArray.h"          // for nsTArray
 #include "mozilla/Atomics.h"
-#include "mozilla/WeakPtr.h"
-#include "nsThreadUtils.h"
 #include "mozilla/gfx/2D.h"
 #include "nsDataHashtable.h"
 #include "mozilla/EnumeratedArray.h"
 #include "mozilla/UniquePtr.h"
-
-#ifndef XPCOM_GLUE_AVOID_NSPR
-/**
- * We need to be able to hold a reference to a Moz2D SourceSurface from Image
- * subclasses. Whilst SourceSurface is atomic refcounted and thus safe to
- * AddRef/Release on any thread, it is potentially a problem since clean up code
- * may need to run on a the main thread.
- *
- * We use nsCountedRef<nsMainThreadSourceSurfaceRef> to reference the
- * SourceSurface. When Releasing, if we're not on the main thread, we post an
- * event to the main thread to do the actual release.
- */
-class nsMainThreadSourceSurfaceRef;
-
-template <>
-class nsAutoRefTraits<nsMainThreadSourceSurfaceRef> {
- public:
-  typedef mozilla::gfx::SourceSurface* RawRef;
-
-  /**
-   * The XPCOM event that will do the actual release on the main thread.
-   */
-  class SurfaceReleaser : public mozilla::Runnable {
-   public:
-    explicit SurfaceReleaser(RawRef aRef)
-        : mozilla::Runnable(
-              "nsAutoRefTraits<nsMainThreadSourceSurfaceRef>::SurfaceReleaser"),
-          mRef(aRef) {}
-    NS_IMETHOD Run() override {
-      mRef->Release();
-      return NS_OK;
-    }
-    RawRef mRef;
-  };
-
-  static RawRef Void() { return nullptr; }
-  static void Release(RawRef aRawRef) {
-    if (NS_IsMainThread()) {
-      aRawRef->Release();
-      return;
-    }
-    nsCOMPtr<nsIRunnable> runnable = new SurfaceReleaser(aRawRef);
-    NS_DispatchToMainThread(runnable);
-  }
-  static void AddRef(RawRef aRawRef) { aRawRef->AddRef(); }
-};
-
-class nsOwningThreadSourceSurfaceRef;
-
-template <>
-class nsAutoRefTraits<nsOwningThreadSourceSurfaceRef> {
- public:
-  typedef mozilla::gfx::SourceSurface* RawRef;
-
-  /**
-   * The XPCOM event that will do the actual release on the creation thread.
-   */
-  class SurfaceReleaser : public mozilla::Runnable {
-   public:
-    explicit SurfaceReleaser(RawRef aRef)
-        : mozilla::Runnable(
-              "nsAutoRefTraits<nsOwningThreadSourceSurfaceRef>::"
-              "SurfaceReleaser"),
-          mRef(aRef) {}
-    NS_IMETHOD Run() override {
-      mRef->Release();
-      return NS_OK;
-    }
-    RawRef mRef;
-  };
-
-  static RawRef Void() { return nullptr; }
-  void Release(RawRef aRawRef) {
-    MOZ_ASSERT(mOwningEventTarget);
-    if (mOwningEventTarget->IsOnCurrentThread()) {
-      aRawRef->Release();
-      return;
-    }
-    nsCOMPtr<nsIRunnable> runnable = new SurfaceReleaser(aRawRef);
-    mOwningEventTarget->Dispatch(runnable, nsIThread::DISPATCH_NORMAL);
-  }
-  void AddRef(RawRef aRawRef) {
-    MOZ_ASSERT(!mOwningEventTarget);
-    mOwningEventTarget = mozilla::GetCurrentThreadSerialEventTarget();
-    aRawRef->AddRef();
-  }
-
- private:
-  nsCOMPtr<nsISerialEventTarget> mOwningEventTarget;
-};
-
-#endif
+#include "MediaInfo.h"
 
 #ifdef XP_WIN
 struct ID3D10Texture2D;
@@ -152,6 +57,9 @@ class NVImage;
 #ifdef XP_WIN
 class D3D11YCbCrRecycleAllocator;
 #endif
+#ifdef XP_MACOSX
+class MacIOSurfaceRecycleAllocator;
+#endif
 class SurfaceDescriptorBuffer;
 
 struct ImageBackendData {
@@ -169,7 +77,7 @@ class SurfaceTextureImage;
 #elif defined(XP_MACOSX)
 class MacIOSurfaceImage;
 #elif MOZ_WAYLAND
-class WaylandDMABUFSurfaceImage;
+class DMABUFSurfaceImage;
 #endif
 
 /**
@@ -231,9 +139,7 @@ class Image {
 #endif
   virtual PlanarYCbCrImage* AsPlanarYCbCrImage() { return nullptr; }
 #ifdef MOZ_WAYLAND
-  virtual WaylandDMABUFSurfaceImage* AsWaylandDMABUFSurfaceImage() {
-    return nullptr;
-  }
+  virtual DMABUFSurfaceImage* AsDMABUFSurfaceImage() { return nullptr; }
 #endif
 
   virtual NVImage* AsNVImage() { return nullptr; }
@@ -365,13 +271,12 @@ class ImageContainerListener final {
  * synchronously updates the shared state to point to the new image and the old
  * image is immediately released (not true in Normal or Asynchronous modes).
  */
-class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
+class ImageContainer final : public SupportsThreadSafeWeakPtr<ImageContainer> {
   friend class ImageContainerChild;
 
-  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageContainer)
-
  public:
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(ImageContainer)
+  MOZ_DECLARE_THREADSAFEWEAKREFERENCE_TYPENAME(ImageContainer)
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(ImageContainer)
 
   enum Mode { SYNCHRONOUS = 0x0, ASYNCHRONOUS = 0x01 };
 
@@ -385,6 +290,8 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
    * @param aAsyncContainerID async container ID for which we are a proxy
    */
   explicit ImageContainer(const CompositableHandle& aHandle);
+
+  ~ImageContainer();
 
   typedef ContainerFrameID FrameID;
   typedef ContainerProducerID ProducerID;
@@ -540,6 +447,10 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
 
   const gfx::Matrix& GetTransformHint() const { return mTransformHint; }
 
+  void SetRotation(VideoInfo::Rotation aRotation) { mRotation = aRotation; }
+
+  VideoInfo::Rotation GetRotation() const { return mRotation; }
+
   void SetImageFactory(ImageFactory* aFactory) {
     RecursiveMutexAutoLock lock(mRecursiveMutex);
     mImageFactory = aFactory ? aFactory : new ImageFactory();
@@ -552,6 +463,10 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
 #ifdef XP_WIN
   D3D11YCbCrRecycleAllocator* GetD3D11YCbCrRecycleAllocator(
       KnowsCompositor* aKnowsCompositor);
+#endif
+
+#ifdef XP_MACOSX
+  MacIOSurfaceRecycleAllocator* GetMacIOSurfaceRecycleAllocator();
 #endif
 
   /**
@@ -616,9 +531,6 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
  private:
   typedef mozilla::RecursiveMutex RecursiveMutex;
 
-  // Private destructor, to discourage deletion outside of Release():
-  ~ImageContainer();
-
   void SetCurrentImageInternal(const nsTArray<NonOwningImage>& aImages);
 
   // This is called to ensure we have an active image, this may not be true
@@ -637,6 +549,9 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
 
 #ifdef XP_WIN
   RefPtr<D3D11YCbCrRecycleAllocator> mD3D11YCbCrRecycleAllocator;
+#endif
+#ifdef XP_MACOSX
+  RefPtr<MacIOSurfaceRecycleAllocator> mMacIOSurfaceRecycleAllocator;
 #endif
 
   nsTArray<OwningImage> mCurrentImages;
@@ -663,6 +578,8 @@ class ImageContainer final : public SupportsWeakPtr<ImageContainer> {
   gfx::IntSize mScaleHint;
 
   gfx::Matrix mTransformHint;
+
+  VideoInfo::Rotation mRotation = VideoInfo::Rotation::kDegree_0;
 
   RefPtr<BufferRecycleBin> mRecycleBin;
 
@@ -769,16 +686,16 @@ struct PlanarYCbCrData {
  * formats from hardware decoder. They are per-pixel skips in the
  * source image.
  *
- * For example when image width is 640, mYStride is 670, mYSkip is 3,
+ * For example when image width is 640, mYStride is 670, mYSkip is 2,
  * the mYChannel buffer looks like:
  *
  * |<----------------------- mYStride ----------------------------->|
  * |<----------------- mYSize.width --------------->|
- *  0   3   6   9   12  15  18  21                659             669
+ *  0   3   6   9   12  15  18  21                639             669
  * |----------------------------------------------------------------|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                      |%%%%%%%%%|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                      |%%%%%%%%%|
- * |Y___Y___Y___Y___Y___Y___Y___Y...                      |%%%%%%%%%|
+ * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
+ * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
+ * |Y___Y___Y___Y___Y___Y___Y___Y...                |%%%%%%%%%%%%%%%|
  * |            |<->|
  *                mYSkip
  */
@@ -788,7 +705,7 @@ class PlanarYCbCrImage : public Image {
 
   enum { MAX_DIMENSION = 16384 };
 
-  virtual ~PlanarYCbCrImage() = default;
+  virtual ~PlanarYCbCrImage();
 
   /**
    * This makes a copy of the data buffers, in order to support functioning
@@ -854,7 +771,7 @@ class PlanarYCbCrImage : public Image {
   gfx::IntPoint mOrigin;
   gfx::IntSize mSize;
   gfxImageFormat mOffscreenFormat;
-  nsCountedRef<nsMainThreadSourceSurfaceRef> mSourceSurface;
+  RefPtr<gfx::SourceSurface> mSourceSurface;
   uint32_t mBufferSize;
 };
 
@@ -908,13 +825,13 @@ class NVImage final : public Image {
   /**
    * Return a buffer to store image data in.
    */
-  mozilla::UniquePtr<uint8_t> AllocateBuffer(uint32_t aSize);
+  mozilla::UniquePtr<uint8_t[]> AllocateBuffer(uint32_t aSize);
 
-  mozilla::UniquePtr<uint8_t> mBuffer;
+  mozilla::UniquePtr<uint8_t[]> mBuffer;
   uint32_t mBufferSize;
   gfx::IntSize mSize;
   Data mData;
-  nsCountedRef<nsMainThreadSourceSurfaceRef> mSourceSurface;
+  RefPtr<gfx::SourceSurface> mSourceSurface;
 };
 
 /**
@@ -943,7 +860,7 @@ class SourceSurfaceImage final : public Image {
 
  private:
   gfx::IntSize mSize;
-  nsCountedRef<nsOwningThreadSourceSurfaceRef> mSourceSurface;
+  RefPtr<gfx::SourceSurface> mSourceSurface;
   nsDataHashtable<nsUint32HashKey, RefPtr<TextureClient>> mTextureClients;
   TextureFlags mTextureFlags;
 };

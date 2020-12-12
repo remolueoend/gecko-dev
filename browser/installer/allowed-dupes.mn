@@ -1,5 +1,5 @@
 # Known duplicate files
-# This file is ideally removed, but some existing files will be grandfathered in
+# This file is ideally removed, but some existing files will be allowed exceptions
 # See bug 1303184
 #
 # PLEASE DO NOT ADD MORE EXCEPTIONS TO THIS LIST
@@ -62,6 +62,8 @@ browser/chrome/browser/res/payments/formautofill/autofillEditForms.js
 # Bug 1451050 - Remote settings empty dumps (will be populated with data eventually)
 browser/defaults/settings/pinning/pins.json
 browser/defaults/settings/main/example.json
+browser/defaults/settings/main/search-default-override-allowlist.json
+browser/defaults/settings/main/url-classifier-skip-urls.json
 
 #ifdef MOZ_EME_WIN32_ARTIFACT
 gmp-clearkey/0.1/manifest.json
@@ -74,26 +76,22 @@ browser/chrome/browser/search-extensions/amazondotcn/favicon.ico
 browser/chrome/browser/search-extensions/amazondotcom/favicon.ico
 browser/chrome/browser/search-extensions/mercadolibre/favicon.ico
 browser/chrome/browser/search-extensions/mercadolivre/favicon.ico
-
-# Bug 1550165 - We want to support both Norwegian languages codes (nb and nn) for App Store and Play Store icons
-browser/chrome/browser/content/browser/aboutlogins/third-party/app-store/app_nb.png
-browser/chrome/browser/content/browser/aboutlogins/third-party/app-store/app_nn.png
-browser/chrome/browser/content/browser/aboutlogins/third-party/play-store/play_nb.png
-browser/chrome/browser/content/browser/aboutlogins/third-party/play-store/play_nn.png
+browser/chrome/browser/search-extensions/qwant/favicon.ico
+browser/chrome/browser/search-extensions/qwantjr/favicon.ico
 
 # Bug 1606928 - There's no reliable way to connect Top Sites favicons with the favicons in the Search Service
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/bbc-uk.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/bbc-uk.ico
 browser/chrome/browser/search-extensions/bbc-alba/favicon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/allegro-pl.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/allegro-pl.ico
 browser/chrome/browser/search-extensions/allegro-pl/favicon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/amazon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/ebay.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/amazon.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/ebay.ico
 browser/chrome/browser/search-extensions/ebay/favicon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/twitter-com.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/twitter-com.ico
 browser/chrome/browser/search-extensions/twitter/favicon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/bing-com.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/bing-com.ico
 browser/chrome/browser/search-extensions/bing/favicon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/duckduckgo-com.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/duckduckgo-com.ico
 browser/chrome/browser/search-extensions/ddg/favicon.ico
-browser/chrome/browser/res/activity-stream/data/content/tippytop/favicons/google-com.ico
+browser/chrome/browser/content/activity-stream/data/content/tippytop/favicons/google-com.ico
 browser/chrome/browser/search-extensions/google/favicon.ico

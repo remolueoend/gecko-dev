@@ -212,14 +212,12 @@ class nsCocoaWindow final : public nsBaseWidget, public nsPIWidgetCocoa {
  public:
   nsCocoaWindow();
 
-  // clang-format off
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_NSPIWIDGETCOCOA
+  NS_DECL_NSPIWIDGETCOCOA;  // semicolon for clang-format bug 1629756
 
   [[nodiscard]] virtual nsresult Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
                                         const DesktopIntRect& aRect,
                                         nsWidgetInitData* aInitData = nullptr) override;
-  // clang-format on
 
   [[nodiscard]] virtual nsresult Create(nsIWidget* aParent, nsNativeWidget aNativeParent,
                                         const LayoutDeviceIntRect& aRect,
@@ -228,6 +226,8 @@ class nsCocoaWindow final : public nsBaseWidget, public nsPIWidgetCocoa {
   virtual void Destroy() override;
 
   virtual void Show(bool aState) override;
+  virtual bool NeedsRecreateToReshow() override;
+
   virtual nsIWidget* GetSheetWindowParent(void) override;
   virtual void Enable(bool aState) override;
   virtual bool IsEnabled() const override;
@@ -304,7 +304,7 @@ class nsCocoaWindow final : public nsBaseWidget, public nsPIWidgetCocoa {
   virtual void SetWindowTransform(const mozilla::gfx::Matrix& aTransform) override;
   virtual void SetWindowMouseTransparent(bool aIsTransparent) override;
   virtual void SetShowsToolbarButton(bool aShow) override;
-  virtual void SetShowsFullScreenButton(bool aShow) override;
+  virtual void SetSupportsNativeFullscreen(bool aShow) override;
   virtual void SetWindowAnimationType(WindowAnimationType aType) override;
   virtual void SetDrawsTitle(bool aDrawTitle) override;
   virtual void SetUseBrightTitlebarForeground(bool aBrightForeground) override;
@@ -339,6 +339,9 @@ class nsCocoaWindow final : public nsBaseWidget, public nsPIWidgetCocoa {
   void SetPopupWindowLevel();
 
   bool InFullScreenMode() const { return mInFullScreenMode; }
+
+  void PauseCompositor();
+  void ResumeCompositor();
 
  protected:
   virtual ~nsCocoaWindow();
@@ -389,8 +392,6 @@ class nsCocoaWindow final : public nsBaseWidget, public nsPIWidgetCocoa {
   bool mModal;
   bool mFakeModal;
 
-  // Only true on 10.7+ if SetShowsFullScreenButton(true) is called.
-  bool mSupportsNativeFullScreen;
   // Whether we are currently using native fullscreen. It could be false because
   // we are in the DOM fullscreen where we do not use the native fullscreen.
   bool mInNativeFullScreenMode;
@@ -406,6 +407,10 @@ class nsCocoaWindow final : public nsBaseWidget, public nsPIWidgetCocoa {
   int32_t mNumModalDescendents;
   InputContext mInputContext;
   NSWindowAnimationBehavior mWindowAnimationBehavior;
+
+ private:
+  // true if Show() has been called.
+  bool mWasShown;
 };
 
 #endif  // nsCocoaWindow_h_

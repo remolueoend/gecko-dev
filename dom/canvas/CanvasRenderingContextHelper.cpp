@@ -4,8 +4,10 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CanvasRenderingContextHelper.h"
+#include "GLContext.h"
 #include "ImageBitmapRenderingContext.h"
 #include "ImageEncoder.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/GfxMessageUtils.h"
 #include "mozilla/Telemetry.h"
@@ -18,8 +20,10 @@
 #include "nsJSUtils.h"
 #include "ClientWebGLContext.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
+
+CanvasRenderingContextHelper::CanvasRenderingContextHelper()
+    : mCurrentContextType(CanvasContextType::NoContext) {}
 
 void CanvasRenderingContextHelper::ToBlob(
     JSContext* aCx, nsIGlobalObject* aGlobal, BlobCallback& aCallback,
@@ -262,7 +266,7 @@ nsresult CanvasRenderingContextHelper::ParseParams(
   // parse options string as is and pass it to the encoder.
   *outUsingCustomParseOptions = false;
   if (outParams.Length() == 0 && aEncoderOptions.isString()) {
-    NS_NAMED_LITERAL_STRING(mozParseOptions, "-moz-parse-options:");
+    constexpr auto mozParseOptions = u"-moz-parse-options:"_ns;
     nsAutoJSString paramString;
     if (!paramString.init(aCx, aEncoderOptions.toString())) {
       return NS_ERROR_FAILURE;
@@ -279,5 +283,4 @@ nsresult CanvasRenderingContextHelper::ParseParams(
   return NS_OK;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

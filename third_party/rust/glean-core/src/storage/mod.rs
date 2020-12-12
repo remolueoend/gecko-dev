@@ -17,41 +17,41 @@ use crate::Lifetime;
 /// Snapshot metrics from the underlying database.
 pub struct StorageManager;
 
-/// Labeled metrics are stored as `<metric name>/<label>`.
+/// Labeled metrics are stored as `<metric id>/<label>`.
 /// They need to go into a nested object in the final snapshot.
 ///
-/// We therefore extract the metric name and the label from the key and construct the new object or
+/// We therefore extract the metric id and the label from the key and construct the new object or
 /// add to it.
 fn snapshot_labeled_metrics(
     snapshot: &mut HashMap<String, HashMap<String, JsonValue>>,
-    metric_name: &str,
+    metric_id: &str,
     metric: &Metric,
 ) {
     let ping_section = format!("labeled_{}", metric.ping_section());
     let map = snapshot.entry(ping_section).or_insert_with(HashMap::new);
 
-    let mut s = metric_name.splitn(2, '/');
-    let metric_name = s.next().unwrap(); // Safe unwrap, the function is only called when the name does contain a '/'
+    let mut s = metric_id.splitn(2, '/');
+    let metric_id = s.next().unwrap(); // Safe unwrap, the function is only called when the id does contain a '/'
     let label = s.next().unwrap(); // Safe unwrap, the function is only called when the name does contain a '/'
 
-    let obj = map.entry(metric_name.into()).or_insert_with(|| json!({}));
+    let obj = map.entry(metric_id.into()).or_insert_with(|| json!({}));
     let obj = obj.as_object_mut().unwrap(); // safe unwrap, we constructed the object above
     obj.insert(label.into(), metric.as_json());
 }
 
 impl StorageManager {
-    /// Snapshot the given store and optionally clear it.
+    /// Snapshots the given store and optionally clear it.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `storage` - the database to read from.
     /// * `store_name` - the store to snapshot.
     /// * `clear_store` - whether to clear the data after snapshotting.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns the stored data in a string encoded as JSON.
-    /// Returns `None` if no data for the store exists.
+    /// The stored data in a string encoded as JSON.
+    /// If no data for the store exists, `None` is returned.
     pub fn snapshot(
         &self,
         storage: &Database,
@@ -62,18 +62,18 @@ impl StorageManager {
             .map(|data| ::serde_json::to_string_pretty(&data).unwrap())
     }
 
-    /// Snapshot the given store and optionally clear it.
+    /// Snapshots the given store and optionally clear it.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `storage` - the database to read from.
     /// * `store_name` - the store to snapshot.
     /// * `clear_store` - whether to clear the data after snapshotting.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns a JSON representation of the stored data.
-    /// Returns `None` if no data for the store exists.
+    /// A JSON representation of the stored data.
+    /// If no data for the store exists, `None` is returned.
     pub fn snapshot_as_json(
         &self,
         storage: &Database,
@@ -82,15 +82,15 @@ impl StorageManager {
     ) -> Option<JsonValue> {
         let mut snapshot: HashMap<String, HashMap<String, JsonValue>> = HashMap::new();
 
-        let mut snapshotter = |metric_name: &[u8], metric: &Metric| {
-            let metric_name = String::from_utf8_lossy(metric_name).into_owned();
-            if metric_name.contains('/') {
-                snapshot_labeled_metrics(&mut snapshot, &metric_name, &metric);
+        let mut snapshotter = |metric_id: &[u8], metric: &Metric| {
+            let metric_id = String::from_utf8_lossy(metric_id).into_owned();
+            if metric_id.contains('/') {
+                snapshot_labeled_metrics(&mut snapshot, &metric_id, &metric);
             } else {
                 let map = snapshot
                     .entry(metric.ping_section().into())
                     .or_insert_with(HashMap::new);
-                map.insert(metric_name, metric.as_json());
+                map.insert(metric_id, metric.as_json());
             }
         };
 
@@ -100,7 +100,7 @@ impl StorageManager {
 
         if clear_store {
             if let Err(e) = storage.clear_ping_lifetime_storage(store_name) {
-                log::error!("Failed to clear lifetime storage: {:?}", e);
+                log::warn!("Failed to clear lifetime storage: {:?}", e);
             }
         }
 
@@ -111,19 +111,19 @@ impl StorageManager {
         }
     }
 
-    /// Get the current value of a single metric identified by name.
+    /// Gets the current value of a single metric identified by name.
     ///
     /// This look for a value in stores for all lifetimes.
     ///
-    /// ## Arguments:
+    /// # Arguments
     ///
     /// * `storage` - The database to get data from.
     /// * `store_name` - The store name to look into.
     /// * `metric_id` - The full metric identifier.
     ///
-    /// ## Return value:
+    /// # Returns
     ///
-    /// Returns the decoded metric or `None` if no data is found.
+    /// The decoded metric or `None` if no data is found.
     pub fn snapshot_metric(
         &self,
         storage: &Database,
@@ -132,9 +132,9 @@ impl StorageManager {
     ) -> Option<Metric> {
         let mut snapshot: Option<Metric> = None;
 
-        let mut snapshotter = |metric_name: &[u8], metric: &Metric| {
-            let metric_name = String::from_utf8_lossy(metric_name).into_owned();
-            if metric_name == metric_id {
+        let mut snapshotter = |id: &[u8], metric: &Metric| {
+            let id = String::from_utf8_lossy(id).into_owned();
+            if id == metric_id {
                 snapshot = Some(metric.clone())
             }
         };
@@ -146,16 +146,16 @@ impl StorageManager {
         snapshot
     }
 
-    ///  Snapshot the experiments.
+    ///  Snapshots the experiments.
     ///
-    /// ## Arguments:
+    /// # Arguments
     ///
     /// * `storage` - The database to get data from.
     /// * `store_name` - The store name to look into.
     ///
-    /// ## Return value
+    /// # Returns
     ///
-    /// Returns a JSON representation of the experiment data, in the following format:
+    /// A JSON representation of the experiment data, in the following format:
     ///
     /// ```json
     /// {
@@ -169,7 +169,7 @@ impl StorageManager {
     /// }
     /// ```
     ///
-    /// Returns `None` if no data for experiments exists.
+    /// If no data for the store exists, `None` is returned.
     pub fn snapshot_experiments_as_json(
         &self,
         storage: &Database,
@@ -177,10 +177,10 @@ impl StorageManager {
     ) -> Option<JsonValue> {
         let mut snapshot: HashMap<String, JsonValue> = HashMap::new();
 
-        let mut snapshotter = |metric_name: &[u8], metric: &Metric| {
-            let metric_name = String::from_utf8_lossy(metric_name).into_owned();
-            if metric_name.ends_with("#experiment") {
-                let name = metric_name.splitn(2, '#').next().unwrap(); // safe unwrap, first field of a split always valid
+        let mut snapshotter = |metric_id: &[u8], metric: &Metric| {
+            let metric_id = String::from_utf8_lossy(metric_id).into_owned();
+            if metric_id.ends_with("#experiment") {
+                let name = metric_id.splitn(2, '#').next().unwrap(); // safe unwrap, first field of a split always valid
                 snapshot.insert(name.to_string(), metric.as_json());
             }
         };
@@ -207,7 +207,7 @@ mod test {
     fn test_experiments_json_serialization() {
         let t = tempfile::tempdir().unwrap();
         let name = t.path().display().to_string();
-        let glean = Glean::with_options(&name, "org.mozilla.glean", true).unwrap();
+        let glean = Glean::with_options(&name, "org.mozilla.glean", true);
 
         let extra: HashMap<String, String> = [("test-key".into(), "test-value".into())]
             .iter()
@@ -236,7 +236,7 @@ mod test {
     fn test_experiments_json_serialization_empty() {
         let t = tempfile::tempdir().unwrap();
         let name = t.path().display().to_string();
-        let glean = Glean::with_options(&name, "org.mozilla.glean", true).unwrap();
+        let glean = Glean::with_options(&name, "org.mozilla.glean", true);
 
         let metric = ExperimentMetric::new(&glean, "some-experiment".to_string());
 

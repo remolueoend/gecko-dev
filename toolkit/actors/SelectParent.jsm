@@ -26,7 +26,7 @@ const PROPERTIES_RESET_WHEN_ACTIVE = [
 
 // Duplicated in SelectChild.jsm
 // Please keep these lists in sync.
-const SUPPORTED_PROPERTIES = [
+const SUPPORTED_OPTION_OPTGROUP_PROPERTIES = [
   "direction",
   "color",
   "background-color",
@@ -35,6 +35,12 @@ const SUPPORTED_PROPERTIES = [
   "font-weight",
   "font-size",
   "font-style",
+];
+
+const SUPPORTED_SELECT_PROPERTIES = [
+  ...SUPPORTED_OPTION_OPTGROUP_PROPERTIES,
+  "scrollbar-width",
+  "scrollbar-color",
 ];
 
 const customStylingEnabled = Services.prefs.getBoolPref(
@@ -122,7 +128,7 @@ var SelectParentHelper = {
       }
 
       let addedRule = false;
-      for (let property of SUPPORTED_PROPERTIES) {
+      for (let property of SUPPORTED_SELECT_PROPERTIES) {
         if (property == "direction") {
           continue;
         } // Handled above, or before.
@@ -136,7 +142,13 @@ var SelectParentHelper = {
           sheet.insertRule("#ContentSelectDropdown > menupopup {}", 0);
           addedRule = true;
         }
-        sheet.cssRules[0].style[property] = selectStyle[property];
+        let value = selectStyle[property];
+        if (property == "scrollbar-width") {
+          // This needs to actually apply to the relevant scrollbox, because
+          // scrollbar-width doesn't inherit.
+          property = "--content-select-scrollbar-width";
+        }
+        sheet.cssRules[0].style.setProperty(property, value);
       }
       // Some webpages set the <select> backgroundColor to transparent,
       // but they don't intend to change the popup to transparent.
@@ -442,7 +454,7 @@ var SelectParentHelper = {
 
       if (customStylingEnabled) {
         let addedRule = false;
-        for (const property of SUPPORTED_PROPERTIES) {
+        for (const property of SUPPORTED_OPTION_OPTGROUP_PROPERTIES) {
           if (property == "direction" || property == "font-size") {
             continue;
           } // handled above
@@ -704,11 +716,6 @@ class SelectParent extends JSWindowActorParent {
         let topBrowsingContext = this.manager.browsingContext.top;
         let browser = topBrowsingContext.embedderElement;
 
-        if (browser.outerBrowser) {
-          // We are in RDM mode
-          browser = browser.outerBrowser;
-        }
-
         if (!browser.hasAttribute("selectmenulist")) {
           return;
         }
@@ -727,18 +734,15 @@ class SelectParent extends JSWindowActorParent {
         let data = message.data;
         menulist.menupopup.style.direction = data.style.direction;
 
-        let useFullZoom =
-          !browser.isRemoteBrowser ||
-          Services.prefs.getBoolPref("browser.zoom.full") ||
-          browser.isSyntheticDocument;
-        let zoom = useFullZoom ? browser._fullZoom : browser._textZoom;
-
+        let { ZoomManager } = topBrowsingContext.topChromeWindow;
         SelectParentHelper.populate(
           menulist,
           data.options.options,
           data.options.uniqueStyles,
           data.selectedIndex,
-          zoom,
+          // We only want to apply the full zoom. The text zoom is already
+          // applied in the font-size.
+          ZoomManager.getFullZoomForBrowser(browser),
           data.defaultStyle,
           data.style
         );
@@ -755,11 +759,6 @@ class SelectParent extends JSWindowActorParent {
       case "Forms:HideDropDown": {
         let topBrowsingContext = this.manager.browsingContext.top;
         let browser = topBrowsingContext.embedderElement;
-
-        if (browser.outerBrowser) {
-          // We are in RDM mode
-          browser = browser.outerBrowser;
-        }
 
         SelectParentHelper.hide(this._menulist, browser);
         break;

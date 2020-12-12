@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "HTMLFontElement.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLFontElementBinding.h"
 #include "mozilla/MappedDeclarations.h"
 #include "nsAttrValueInlines.h"
@@ -13,8 +14,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Font)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLFontElement::~HTMLFontElement() = default;
 
@@ -102,5 +102,4 @@ nsMapRuleToAttributesFunc HTMLFontElement::GetAttributeMappingFunction() const {
   return &MapAttributesIntoRule;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

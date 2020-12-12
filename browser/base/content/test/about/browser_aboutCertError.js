@@ -384,9 +384,6 @@ add_task(async function checkCautionClass() {
 
 add_task(async function checkViewCertificate() {
   info("Loading a cert error and checking that the certificate can be shown.");
-  SpecialPowers.pushPrefEnv({
-    set: [["security.aboutcertificate.enabled", true]],
-  });
   for (let useFrame of [true, false]) {
     if (useFrame) {
       // Bug #1573502
@@ -500,18 +497,27 @@ add_task(async function checkSandboxedIframe() {
   let bc = browser.browsingContext.children[0];
   await SpecialPowers.spawn(bc, [], async function() {
     let doc = content.document;
+
+    // aboutNetError.js is using async localization to format several messages
+    // and in result the translation may be applied later.
+    // We want to return the textContent of the element only after
+    // the translation completes, so let's wait for it here.
+    await ContentTaskUtils.waitForCondition(() => {
+      let elements = [
+        doc.querySelector(".title-text"),
+        doc.getElementById("errorCode"),
+      ];
+
+      return elements.every(elem => !!elem.textContent.trim().length);
+    });
+
     let titleText = doc.querySelector(".title-text");
     Assert.ok(
       titleText.textContent.endsWith("Security Issue"),
       "Title shows Did Not Connect: Potential Security Issue"
     );
 
-    // Wait until fluent sets the errorCode inner text.
-    let el;
-    await ContentTaskUtils.waitForCondition(() => {
-      el = doc.getElementById("errorCode");
-      return el.textContent != "";
-    }, "error code has been set inside the advanced button panel");
+    let el = doc.getElementById("errorCode");
 
     Assert.equal(
       el.textContent,
@@ -520,5 +526,79 @@ add_task(async function checkSandboxedIframe() {
     );
     Assert.equal(el.tagName, "a", "Error message is a link");
   });
+  BrowserTestUtils.removeTab(gBrowser.selectedTab);
+});
+
+add_task(async function checkViewSource() {
+  info(
+    "Loading a bad sts cert error in a sandboxed iframe and check that the correct headline is shown"
+  );
+  let uri = "view-source:" + BAD_CERT;
+  let tab = await openErrorPage(uri);
+  let browser = tab.linkedBrowser;
+
+  await SpecialPowers.spawn(browser, [], async function() {
+    let doc = content.document;
+
+    // Wait until fluent sets the errorCode inner text.
+    let el;
+    await ContentTaskUtils.waitForCondition(() => {
+      el = doc.getElementById("errorCode");
+      return el.textContent != "";
+    }, "error code has been set inside the advanced button panel");
+    Assert.equal(
+      el.textContent,
+      "SEC_ERROR_EXPIRED_CERTIFICATE",
+      "Correct error message found"
+    );
+    Assert.equal(el.tagName, "a", "Error message is a link");
+
+    let titleText = doc.querySelector(".title-text");
+    Assert.equal(
+      titleText.textContent,
+      "Warning: Potential Security Risk Ahead"
+    );
+
+    let shortDescText = doc.getElementById("errorShortDescText");
+    Assert.ok(
+      shortDescText.textContent.includes("expired.example.com"),
+      "Should list hostname in error message."
+    );
+
+    let whatToDoText = doc.getElementById("errorWhatToDoText");
+    Assert.ok(
+      whatToDoText.textContent.includes("expired.example.com"),
+      "Should list hostname in what to do text."
+    );
+  });
+
+  let loaded = BrowserTestUtils.browserLoaded(browser, false, uri);
+  info("Clicking the exceptionDialogButton in advanced panel");
+  await SpecialPowers.spawn(browser, [], async function() {
+    let doc = content.document;
+    let exceptionButton = doc.getElementById("exceptionDialogButton");
+    exceptionButton.click();
+  });
+
+  info("Loading the url after adding exception");
+  await loaded;
+
+  await SpecialPowers.spawn(browser, [], async function() {
+    let doc = content.document;
+    ok(
+      !doc.documentURI.startsWith("about:certerror"),
+      "Exception has been added"
+    );
+  });
+
+  let certOverrideService = Cc[
+    "@mozilla.org/security/certoverride;1"
+  ].getService(Ci.nsICertOverrideService);
+  certOverrideService.clearValidityOverride("expired.example.com", -1);
+
+  loaded = BrowserTestUtils.waitForErrorPage(browser);
+  BrowserReloadSkipCache();
+  await loaded;
+
   BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });

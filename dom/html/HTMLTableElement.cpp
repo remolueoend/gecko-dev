@@ -9,6 +9,7 @@
 #include "nsAttrValueInlines.h"
 #include "nsHTMLStyleSheet.h"
 #include "nsMappedAttributes.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/HTMLCollectionBinding.h"
 #include "mozilla/dom/HTMLTableElementBinding.h"
 #include "nsContentUtils.h"
@@ -16,8 +17,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Table)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 /* ------------------------- TableRowsCollection --------------------------- */
 /**
@@ -1025,5 +1025,4 @@ nsresult HTMLTableElement::AfterSetAttr(int32_t aNameSpaceID, nsAtom* aName,
       aNameSpaceID, aName, aValue, aOldValue, aSubjectPrincipal, aNotify);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

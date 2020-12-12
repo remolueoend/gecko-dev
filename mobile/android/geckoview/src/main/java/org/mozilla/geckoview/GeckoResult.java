@@ -9,10 +9,10 @@ import org.mozilla.gecko.util.XPCOMEventTarget;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.support.annotation.AnyThread;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.v4.util.SimpleArrayMap;
+import androidx.annotation.AnyThread;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.collection.SimpleArrayMap;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -214,6 +214,7 @@ public class GeckoResult<T> {
     }
 
     public static final class UncaughtException extends RuntimeException {
+        @SuppressWarnings("checkstyle:javadocmethod")
         public UncaughtException(final Throwable cause) {
             super(cause);
         }

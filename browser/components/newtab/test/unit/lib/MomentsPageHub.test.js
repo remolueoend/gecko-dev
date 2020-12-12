@@ -10,7 +10,7 @@ describe("MomentsPageHub", () => {
   let handleMessageRequestStub;
   let addImpressionStub;
   let blockMessageByIdStub;
-  let dispatchStub;
+  let sendTelemetryStub;
   let getStringPrefStub;
   let setStringPrefStub;
   let setIntervalStub;
@@ -20,17 +20,17 @@ describe("MomentsPageHub", () => {
     globals = new GlobalOverrider();
     sandbox = sinon.createSandbox();
     instance = new _MomentsPageHub();
-    const [msg] = (await PanelTestProvider.getMessages()).filter(
+    const messages = (await PanelTestProvider.getMessages()).filter(
       ({ template }) => template === "update_action"
     );
-    handleMessageRequestStub = sandbox.stub().resolves(msg);
+    handleMessageRequestStub = sandbox.stub().resolves(messages);
     addImpressionStub = sandbox.stub();
     blockMessageByIdStub = sandbox.stub();
     getStringPrefStub = sandbox.stub();
     setStringPrefStub = sandbox.stub();
     setIntervalStub = sandbox.stub();
     clearIntervalStub = sandbox.stub();
-    dispatchStub = sandbox.stub();
+    sendTelemetryStub = sandbox.stub();
     globals.set({
       setInterval: setIntervalStub,
       clearInterval: clearIntervalStub,
@@ -38,6 +38,9 @@ describe("MomentsPageHub", () => {
         prefs: {
           getStringPref: getStringPrefStub,
           setStringPref: setStringPrefStub,
+        },
+        telemetry: {
+          recordEvent: () => {},
         },
       },
     });
@@ -85,7 +88,7 @@ describe("MomentsPageHub", () => {
         handleMessageRequest: handleMessageRequestStub,
         addImpression: addImpressionStub,
         blockMessageById: blockMessageByIdStub,
-        dispatch: dispatchStub,
+        sendTelemetry: sendTelemetryStub,
       });
     });
     afterEach(() => {
@@ -101,12 +104,13 @@ describe("MomentsPageHub", () => {
       assert.calledWithExactly(handleMessageRequestStub, {
         triggerId: "trigger",
         template: "template",
+        returnAll: true,
       });
     });
     it("shouldn't do anything if no message is provided", async () => {
       // Reset the call from `instance.init`
       setStringPrefStub.reset();
-      handleMessageRequestStub.resolves(null);
+      handleMessageRequestStub.resolves([]);
       await instance.messageRequest({ triggerId: "trigger" });
 
       assert.notCalled(setStringPrefStub);
@@ -136,6 +140,59 @@ describe("MomentsPageHub", () => {
         { triggerId: "trigger" }
       );
     });
+    it("should record Reach event for the Moments page experiment", async () => {
+      const momentsMessages = (await PanelTestProvider.getMessages()).filter(
+        ({ template }) => template === "update_action"
+      );
+      const messages = [
+        {
+          forReachEvent: { sent: false },
+          experimentSlug: "foo",
+          branchSlug: "bar",
+        },
+        ...momentsMessages,
+      ];
+      handleMessageRequestStub.resolves(messages);
+      sandbox.spy(global.Services.telemetry, "recordEvent");
+      sandbox.spy(instance, "executeAction");
+
+      await instance.messageRequest({ triggerId: "trigger" });
+
+      assert.calledOnce(global.Services.telemetry.recordEvent);
+      assert.calledOnce(instance.executeAction);
+    });
+    it("should not record the Reach event if it's already sent", async () => {
+      const messages = [
+        {
+          forReachEvent: { sent: true },
+          experimentSlug: "foo",
+          branchSlug: "bar",
+        },
+      ];
+      handleMessageRequestStub.resolves(messages);
+      sandbox.spy(global.Services.telemetry, "recordEvent");
+
+      await instance.messageRequest({ triggerId: "trigger" });
+
+      assert.notCalled(global.Services.telemetry.recordEvent);
+    });
+    it("should not trigger the action if it's only for the Reach event", async () => {
+      const messages = [
+        {
+          forReachEvent: { sent: false },
+          experimentSlug: "foo",
+          branchSlug: "bar",
+        },
+      ];
+      handleMessageRequestStub.resolves(messages);
+      sandbox.spy(global.Services.telemetry, "recordEvent");
+      sandbox.spy(instance, "executeAction");
+
+      await instance.messageRequest({ triggerId: "trigger" });
+
+      assert.calledOnce(global.Services.telemetry.recordEvent);
+      assert.notCalled(instance.executeAction);
+    });
   });
   describe("executeAction", () => {
     beforeEach(async () => {
@@ -143,11 +200,11 @@ describe("MomentsPageHub", () => {
       await instance.init(sandbox.stub().resolves(), {
         addImpression: addImpressionStub,
         blockMessageById: blockMessageByIdStub,
-        dispatch: dispatchStub,
+        sendTelemetry: sendTelemetryStub,
       });
     });
     it("should set HOMEPAGE_OVERRIDE_PREF on `moments-wnp` action", async () => {
-      const msg = await handleMessageRequestStub();
+      const [msg] = await handleMessageRequestStub();
       sandbox.useFakeTimers();
       instance.executeAction(msg);
 
@@ -165,7 +222,7 @@ describe("MomentsPageHub", () => {
       );
     });
     it("should block after taking the action", async () => {
-      const msg = await handleMessageRequestStub();
+      const [msg] = await handleMessageRequestStub();
       instance.executeAction(msg);
 
       assert.calledOnce(blockMessageByIdStub);
@@ -174,7 +231,7 @@ describe("MomentsPageHub", () => {
     it("should compute expire based on expireDelta", async () => {
       sandbox.spy(instance, "getExpirationDate");
 
-      const msg = await handleMessageRequestStub();
+      const [msg] = await handleMessageRequestStub();
       instance.executeAction(msg);
 
       assert.calledOnce(instance.getExpirationDate);
@@ -186,7 +243,7 @@ describe("MomentsPageHub", () => {
     it("should compute expire based on expireDelta", async () => {
       sandbox.spy(instance, "getExpirationDate");
 
-      const msg = await handleMessageRequestStub();
+      const [msg] = await handleMessageRequestStub();
       const msgWithExpire = {
         ...msg,
         content: {
@@ -212,23 +269,22 @@ describe("MomentsPageHub", () => {
       );
     });
     it("should send user telemetry", async () => {
-      const msg = await handleMessageRequestStub();
+      const [msg] = await handleMessageRequestStub();
       const sendUserEventTelemetrySpy = sandbox.spy(
         instance,
         "sendUserEventTelemetry"
       );
       instance.executeAction(msg);
 
-      assert.calledOnce(dispatchStub);
+      assert.calledOnce(sendTelemetryStub);
       assert.calledWithExactly(sendUserEventTelemetrySpy, msg);
-      assert.calledWithExactly(dispatchStub, {
+      assert.calledWithExactly(sendTelemetryStub, {
         type: "MOMENTS_PAGE_TELEMETRY",
         data: {
-          action: "cfr_user_event",
+          action: "moments_user_event",
           bucket_id: "WNP_THANK_YOU",
           event: "MOMENTS_PAGE_SET",
           message_id: "WNP_THANK_YOU",
-          source: "CFR",
         },
       });
     });

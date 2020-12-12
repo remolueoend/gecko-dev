@@ -10,13 +10,13 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "nsPrintfCString.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 bool CallbackInterface::GetCallableProperty(
     BindingCallContext& cx, JS::Handle<jsid> aPropId,
     JS::MutableHandle<JS::Value> aCallable) {
-  if (!JS_GetPropertyById(cx, CallbackKnownNotGray(), aPropId, aCallable)) {
+  JS::Rooted<JSObject*> obj(cx, CallbackKnownNotGray());
+  if (!JS_GetPropertyById(cx, obj, aPropId, aCallable)) {
     return false;
   }
   if (!aCallable.isObject() || !JS::IsCallable(&aCallable.toObject())) {
@@ -30,5 +30,4 @@ bool CallbackInterface::GetCallableProperty(
   return true;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -13,7 +13,7 @@ const TEST_ORIGIN = "https://example.com";
 const TEST_HTTP_ORIGIN = "http://example.com";
 const TEST_SUB_ORIGIN = "https://test1.example.com";
 const REMOVE_DIALOG_URL =
-  "chrome://browser/content/preferences/siteDataRemoveSelected.xhtml";
+  "chrome://browser/content/preferences/dialogs/siteDataRemoveSelected.xhtml";
 const TEST_ORIGIN_CERT_ERROR = "https://expired.example.com";
 
 const TEST_PATH = getRootDirectory(gTestPath).replace(
@@ -23,9 +23,6 @@ const TEST_PATH = getRootDirectory(gTestPath).replace(
 
 // Test opening the correct certificate information when clicking "Show certificate".
 add_task(async function test_ShowCertificate() {
-  SpecialPowers.pushPrefEnv({
-    set: [["security.aboutcertificate.enabled", true]],
-  });
   let tab1 = await BrowserTestUtils.openNewForegroundTab(gBrowser, TEST_ORIGIN);
   let tab2;
   let pageLoaded;

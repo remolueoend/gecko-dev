@@ -29,7 +29,6 @@ LIRGraph::LIRGraph(MIRGraph* mir)
       numInstructions_(1),  // First id is 1.
       localSlotCount_(0),
       argumentSlotCount_(0),
-      entrySnapshot_(nullptr),
       mir_(*mir) {}
 
 bool LIRGraph::addConstantToPool(const Value& v, uint32_t* index) {
@@ -288,10 +287,10 @@ bool LRecoverInfo::init(MResumePoint* rp) {
 }
 
 LSnapshot::LSnapshot(LRecoverInfo* recoverInfo, BailoutKind kind)
-    : numSlots_(TotalOperandCount(recoverInfo) * BOX_PIECES),
-      slots_(nullptr),
+    : slots_(nullptr),
       recoverInfo_(recoverInfo),
       snapshotOffset_(INVALID_SNAPSHOT_OFFSET),
+      numSlots_(TotalOperandCount(recoverInfo) * BOX_PIECES),
       bailoutId_(INVALID_BAILOUT_ID),
       bailoutKind_(kind) {}
 
@@ -363,10 +362,8 @@ static const char* DefTypeName(LDefinition::Type type) {
       return "f";
     case LDefinition::DOUBLE:
       return "d";
-    case LDefinition::SIMD128INT:
-      return "simd128int";
-    case LDefinition::SIMD128FLOAT:
-      return "simd128float";
+    case LDefinition::SIMD128:
+      return "simd128";
     case LDefinition::STACKRESULTS:
       return "stackresults";
 #  ifdef JS_NUNBOX32
@@ -643,7 +640,12 @@ bool LMoveGroup::add(LAllocation from, LAllocation to, LDefinition::Type type) {
   }
 
   // Check that SIMD moves are aligned according to ABI requirements.
-  if (LDefinition(type).isSimdType()) {
+#  ifdef ENABLE_WASM_SIMD
+  // Alignment is not currently required for SIMD on x86/x64.  See also
+  // CodeGeneratorShared::CodeGeneratorShared and in general everywhere
+  // SimdMemoryAignment is used.  Likely, alignment requirements will return.
+#    if !defined(JS_CODEGEN_X86) && !defined(JS_CODEGEN_X64)
+  if (LDefinition(type).type() == LDefinition::SIMD128) {
     MOZ_ASSERT(from.isMemory() || from.isFloatReg());
     if (from.isMemory()) {
       if (from.isArgument()) {
@@ -661,6 +663,8 @@ bool LMoveGroup::add(LAllocation from, LAllocation to, LDefinition::Type type) {
       }
     }
   }
+#    endif
+#  endif
 #endif
   return moves_.append(LMove(from, to, type));
 }

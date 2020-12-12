@@ -1,19 +1,23 @@
 use crate::ast_emitter::AstEmitter;
 use crate::emitter::EmitError;
 use crate::emitter_scope::NameLocation;
-use crate::script_atom_set::ScriptAtomSetIndex;
 use ast::source_atom_set::SourceAtomSetIndex;
-use scope::data::BindingKind;
-use scope::frame_slot::FrameSlot;
+use stencil::env_coord::{EnvironmentHops, EnvironmentSlot};
+use stencil::frame_slot::FrameSlot;
+use stencil::gcthings::GCThingIndex;
+use stencil::scope::BindingKind;
 
 #[derive(Debug, PartialEq)]
 enum AssignmentReferenceKind {
-    GlobalVar(ScriptAtomSetIndex),
-    GlobalLexical(ScriptAtomSetIndex),
-    FrameSlot(FrameSlot),
-    Dynamic(ScriptAtomSetIndex),
+    GlobalVar(GCThingIndex),
+    GlobalLexical(GCThingIndex),
+    FrameSlotLexical(FrameSlot),
+    FrameSlotNonLexical(FrameSlot),
+    EnvironmentCoordLexical(EnvironmentHops, EnvironmentSlot),
+    EnvironmentCoordNonLexical(EnvironmentHops, EnvironmentSlot),
+    Dynamic(GCThingIndex),
     #[allow(dead_code)]
-    Prop(ScriptAtomSetIndex),
+    Prop(GCThingIndex),
     #[allow(dead_code)]
     Elem,
 }
@@ -34,7 +38,10 @@ impl AssignmentReference {
         match self.kind {
             AssignmentReferenceKind::GlobalVar(_) => 1,
             AssignmentReferenceKind::GlobalLexical(_) => 1,
-            AssignmentReferenceKind::FrameSlot(_) => 0,
+            AssignmentReferenceKind::FrameSlotLexical(_) => 0,
+            AssignmentReferenceKind::FrameSlotNonLexical(_) => 0,
+            AssignmentReferenceKind::EnvironmentCoordLexical(_, _) => 0,
+            AssignmentReferenceKind::EnvironmentCoordNonLexical(_, _) => 0,
             AssignmentReferenceKind::Dynamic(_) => 1,
             AssignmentReferenceKind::Prop(_) => 1,
             AssignmentReferenceKind::Elem => 2,
@@ -44,9 +51,10 @@ impl AssignmentReference {
 
 #[derive(Debug, PartialEq)]
 enum DeclarationReferenceKind {
-    GlobalVar(ScriptAtomSetIndex),
-    GlobalLexical(ScriptAtomSetIndex),
+    GlobalVar(GCThingIndex),
+    GlobalLexical(GCThingIndex),
     FrameSlot(FrameSlot),
+    EnvironmentCoord(EnvironmentHops, EnvironmentSlot),
 }
 
 // See DeclarationReferenceEmitter.
@@ -68,6 +76,65 @@ enum CallKind {
     // FIXME: Support eval, Function#call, Function#apply etc.
 }
 
+#[derive(Debug, PartialEq)]
+enum ValueIsOnStack {
+    No,
+    Yes,
+}
+
+fn check_frame_temporary_dead_zone(
+    emitter: &mut AstEmitter,
+    slot: FrameSlot,
+    is_on_stack: ValueIsOnStack,
+) {
+    // FIXME: Use cache to avoid emitting check_lexical twice or more.
+    // FIXME: Support aliased lexical.
+
+    //                  [stack] VAL?
+
+    if is_on_stack == ValueIsOnStack::No {
+        emitter.emit.get_local(slot.into());
+        //              [stack] VAL
+    }
+
+    emitter.emit.check_lexical(slot.into());
+    //                  [stack] VAL
+
+    if is_on_stack == ValueIsOnStack::No {
+        emitter.emit.pop();
+        //              [stack]
+    }
+
+    //                  [stack] VAL?
+}
+
+fn check_env_temporary_dead_zone(
+    emitter: &mut AstEmitter,
+    hops: EnvironmentHops,
+    slot: EnvironmentSlot,
+    is_on_stack: ValueIsOnStack,
+) {
+    // FIXME: Use cache to avoid emitting check_lexical twice or more.
+    // FIXME: Support aliased lexical.
+
+    //                  [stack] VAL?
+
+    if is_on_stack == ValueIsOnStack::No {
+        emitter.emit.get_aliased_var(hops.into(), slot.into());
+        //              [stack] VAL
+    }
+
+    emitter.emit.check_aliased_lexical(hops.into(), slot.into());
+    //                  [stack] VAL
+
+    if is_on_stack == ValueIsOnStack::No {
+        emitter.emit.pop();
+        //              [stack]
+    }
+
+    //                  [stack] VAL?
+}
+
 // See *ReferenceEmitter.
 // This uses struct to hide the details from the consumer.
 #[derive(Debug)]
@@ -87,7 +154,7 @@ pub struct GetNameEmitter {
 }
 impl GetNameEmitter {
     pub fn emit(self, emitter: &mut AstEmitter) {
-        let name_index = emitter.emit.get_atom_index(self.name);
+        let name_index = emitter.emit.get_atom_gcthing_index(self.name);
         let loc = emitter.lookup_name(self.name);
 
         //              [stack]
@@ -101,9 +168,22 @@ impl GetNameEmitter {
                 emitter.emit.get_name(name_index);
                 //      [stack] VAL
             }
-            NameLocation::FrameSlot(slot, _kind) => {
+            NameLocation::FrameSlot(slot, kind) => {
                 emitter.emit.get_local(slot.into());
                 //      [stack] VAL
+
+                if kind == BindingKind::Let || kind == BindingKind::Const {
+                    check_frame_temporary_dead_zone(emitter, slot, ValueIsOnStack::Yes);
+                    //  [stack] VAL
+                }
+            }
+            NameLocation::EnvironmentCoord(hops, slot, kind) => {
+                emitter.emit.get_aliased_var(hops.into(), slot.into());
+
+                if kind == BindingKind::Let || kind == BindingKind::Const {
+                    check_env_temporary_dead_zone(emitter, hops, slot, ValueIsOnStack::Yes);
+                    //  [stack] VAL
+                }
             }
         }
     }
@@ -122,7 +202,7 @@ where
     F: Fn(&mut AstEmitter) -> Result<(), EmitError>,
 {
     pub fn emit(self, emitter: &mut AstEmitter) -> Result<(), EmitError> {
-        let key_index = emitter.emit.get_atom_index(self.key);
+        let key_index = emitter.emit.get_atom_gcthing_index(self.key);
 
         //              [stack]
 
@@ -151,7 +231,7 @@ where
     F: Fn(&mut AstEmitter) -> Result<(), EmitError>,
 {
     pub fn emit(self, emitter: &mut AstEmitter) -> Result<(), EmitError> {
-        let key_index = emitter.emit.get_atom_index(self.key);
+        let key_index = emitter.emit.get_atom_gcthing_index(self.key);
 
         //              [stack]
 
@@ -253,7 +333,7 @@ pub struct NameReferenceEmitter {
 }
 impl NameReferenceEmitter {
     pub fn emit_for_call(self, emitter: &mut AstEmitter) -> CallReference {
-        let name_index = emitter.emit.get_atom_index(self.name);
+        let name_index = emitter.emit.get_atom_gcthing_index(self.name);
         let loc = emitter.lookup_name(self.name);
 
         //              [stack]
@@ -273,9 +353,26 @@ impl NameReferenceEmitter {
                 emitter.emit.g_implicit_this(name_index);
                 //      [stack] CALLEE THIS
             }
-            NameLocation::FrameSlot(slot, _kind) => {
+            NameLocation::FrameSlot(slot, kind) => {
                 emitter.emit.get_local(slot.into());
                 //      [stack] CALLEE
+
+                if kind == BindingKind::Let || kind == BindingKind::Const {
+                    check_frame_temporary_dead_zone(emitter, slot, ValueIsOnStack::Yes);
+                    //  [stack] CALLEE
+                }
+
+                emitter.emit.undefined();
+                //      [stack] CALLEE THIS
+            }
+            NameLocation::EnvironmentCoord(hops, slot, kind) => {
+                emitter.emit.get_aliased_var(hops.into(), slot.into());
+                //      [stack] CALLEE
+
+                if kind == BindingKind::Let || kind == BindingKind::Const {
+                    check_env_temporary_dead_zone(emitter, hops, slot, ValueIsOnStack::Yes);
+                    //  [stack] CALLEE
+                }
 
                 emitter.emit.undefined();
                 //      [stack] CALLEE THIS
@@ -285,9 +382,12 @@ impl NameReferenceEmitter {
         CallReference::new(CallKind::Normal)
     }
 
-    pub fn emit_for_assignment(self, emitter: &mut AstEmitter) -> AssignmentReference {
-        let name_index = emitter.emit.get_atom_index(self.name);
-        let loc = emitter.lookup_name(self.name);
+    pub fn emit_for_assignment_with_loc(
+        self,
+        emitter: &mut AstEmitter,
+        loc: NameLocation,
+    ) -> AssignmentReference {
+        let name_index = emitter.emit.get_atom_gcthing_index(self.name);
 
         //              [stack]
 
@@ -310,14 +410,41 @@ impl NameReferenceEmitter {
 
                 AssignmentReference::new(AssignmentReferenceKind::Dynamic(name_index))
             }
-            NameLocation::FrameSlot(slot, _kind) => {
-                AssignmentReference::new(AssignmentReferenceKind::FrameSlot(slot))
+            NameLocation::FrameSlot(slot, kind) => {
+                if kind == BindingKind::Let || kind == BindingKind::Const {
+                    AssignmentReference::new(AssignmentReferenceKind::FrameSlotLexical(slot))
+                } else {
+                    AssignmentReference::new(AssignmentReferenceKind::FrameSlotNonLexical(slot))
+                }
+            }
+            NameLocation::EnvironmentCoord(hops, slot, kind) => {
+                if kind == BindingKind::Let || kind == BindingKind::Const {
+                    AssignmentReference::new(AssignmentReferenceKind::EnvironmentCoordLexical(
+                        hops, slot,
+                    ))
+                } else {
+                    AssignmentReference::new(AssignmentReferenceKind::EnvironmentCoordNonLexical(
+                        hops, slot,
+                    ))
+                }
             }
         }
     }
 
+    pub fn emit_for_assignment(self, emitter: &mut AstEmitter) -> AssignmentReference {
+        let loc = emitter.lookup_name(self.name);
+        self.emit_for_assignment_with_loc(emitter, loc)
+    }
+
+    /// Ignore any lexical scope and assign to var scope.
+    /// Used by Annex B function.
+    pub fn emit_for_var_assignment(self, emitter: &mut AstEmitter) -> AssignmentReference {
+        let loc = emitter.lookup_name_in_var(self.name);
+        self.emit_for_assignment_with_loc(emitter, loc)
+    }
+
     pub fn emit_for_declaration(self, emitter: &mut AstEmitter) -> DeclarationReference {
-        let name_index = emitter.emit.get_atom_index(self.name);
+        let name_index = emitter.emit.get_atom_gcthing_index(self.name);
         let loc = emitter.lookup_name(self.name);
 
         //              [stack]
@@ -339,6 +466,10 @@ impl NameReferenceEmitter {
             NameLocation::FrameSlot(slot, _kind) => {
                 DeclarationReference::new(DeclarationReferenceKind::FrameSlot(slot))
             }
+            NameLocation::EnvironmentCoord(hops, slot, _kind) => {
+                // FIXME: does this happen????
+                DeclarationReference::new(DeclarationReferenceKind::EnvironmentCoord(hops, slot))
+            }
         }
     }
 }
@@ -356,7 +487,7 @@ where
     F: Fn(&mut AstEmitter) -> Result<(), EmitError>,
 {
     pub fn emit_for_call(self, emitter: &mut AstEmitter) -> Result<CallReference, EmitError> {
-        let key_index = emitter.emit.get_atom_index(self.key);
+        let key_index = emitter.emit.get_atom_gcthing_index(self.key);
 
         //              [stack]
 
@@ -369,7 +500,7 @@ where
         //              [stack] THIS THIS
 
         // FIXME: Support super.
-        emitter.emit.call_prop(key_index);
+        emitter.emit.get_prop(key_index);
         //              [stack] THIS CALLEE
 
         emitter.emit.swap();
@@ -383,7 +514,7 @@ where
         self,
         emitter: &mut AstEmitter,
     ) -> Result<AssignmentReference, EmitError> {
-        let key_index = emitter.emit.get_atom_index(self.key);
+        let key_index = emitter.emit.get_atom_gcthing_index(self.key);
 
         //              [stack]
 
@@ -429,7 +560,7 @@ where
         //              [stack] THIS THIS KEY
 
         // FIXME: Support super.
-        emitter.emit.call_elem();
+        emitter.emit.get_elem();
         //              [stack] THIS CALLEE
 
         emitter.emit.swap();
@@ -585,10 +716,34 @@ where
                 emitter.emit.set_name(name_index);
                 //      [stack] VAL
             }
-            AssignmentReferenceKind::FrameSlot(slot) => {
+            AssignmentReferenceKind::FrameSlotLexical(slot) => {
+                //      [stack] VAL
+
+                check_frame_temporary_dead_zone(emitter, slot, ValueIsOnStack::No);
                 //      [stack] VAL
 
                 emitter.emit.set_local(slot.into());
+                //      [stack] VAL
+            }
+            AssignmentReferenceKind::FrameSlotNonLexical(slot) => {
+                //      [stack] VAL
+
+                emitter.emit.set_local(slot.into());
+                //      [stack] VAL
+            }
+            AssignmentReferenceKind::EnvironmentCoordLexical(hops, slot) => {
+                //      [stack] VAL
+
+                check_env_temporary_dead_zone(emitter, hops, slot, ValueIsOnStack::No);
+                //      [stack] VAL
+
+                emitter.emit.set_aliased_var(hops.into(), slot.into());
+                //      [stack] VAL
+            }
+            AssignmentReferenceKind::EnvironmentCoordNonLexical(hops, slot) => {
+                //      [stack] VAL
+
+                emitter.emit.set_aliased_var(hops.into(), slot.into());
                 //      [stack] VAL
             }
             AssignmentReferenceKind::Prop(key_index) => {
@@ -649,6 +804,12 @@ where
                 //      [stack] VAL
 
                 emitter.emit.init_lexical(slot.into());
+                //      [stack] VAL
+            }
+            DeclarationReferenceKind::EnvironmentCoord(hops, slot) => {
+                //      [stack] VAL
+
+                emitter.emit.init_aliased_lexical(hops.into(), slot.into());
                 //      [stack] VAL
             }
         }

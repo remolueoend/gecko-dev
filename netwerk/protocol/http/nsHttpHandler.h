@@ -30,12 +30,15 @@
 #  include "nsIOService.h"
 #endif
 
-class nsIHttpChannel;
+// XXX These includes can be replaced by forward declarations by moving the On*
+// method implementations to the cpp file
+#include "nsIChannel.h"
+#include "nsIHttpChannel.h"
+
 class nsIHttpUpgradeListener;
 class nsIPrefBranch;
 class nsICancelable;
 class nsICookieService;
-class nsIProcessSwitchRequestor;
 class nsIIOService;
 class nsIRequestContextService;
 class nsISiteSecurityService;
@@ -51,10 +54,13 @@ class EventTokenBucket;
 class Tickler;
 class nsHttpConnection;
 class nsHttpConnectionInfo;
+class HttpBaseChannel;
+class HttpHandlerInitArgs;
 class HttpTransactionShell;
 class AltSvcMapping;
 class TRR;
 class TRRServiceChannel;
+class SocketProcessChild;
 
 /*
  * FRAMECHECK_LAX - no check
@@ -167,7 +173,6 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
     return mCriticalRequestPrioritization;
   }
 
-  bool IsDocumentNosniffEnabled() { return mRespectDocumentNoSniff; }
   bool UseH2Deps() { return mUseH2Deps; }
   bool IsH2WebsocketsEnabled() { return mEnableH2Websockets; }
 
@@ -325,16 +330,18 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
 
   [[nodiscard]] nsresult SpeculativeConnect(nsHttpConnectionInfo* ci,
                                             nsIInterfaceRequestor* callbacks,
-                                            uint32_t caps = 0) {
+                                            uint32_t caps = 0,
+                                            bool aFetchHTTPSRR = false) {
     TickleWifi(callbacks);
     RefPtr<nsHttpConnectionInfo> clone = ci->Clone();
-    return mConnMgr->SpeculativeConnect(clone, callbacks, caps);
+    return mConnMgr->SpeculativeConnect(clone, callbacks, caps, nullptr,
+                                        aFetchHTTPSRR);
   }
 
   [[nodiscard]] nsresult SpeculativeConnect(nsHttpConnectionInfo* ci,
                                             nsIInterfaceRequestor* callbacks,
                                             uint32_t caps,
-                                            NullHttpTransaction* aTrans) {
+                                            SpeculativeTransaction* aTrans) {
     RefPtr<nsHttpConnectionInfo> clone = ci->Clone();
     return mConnMgr->SpeculativeConnect(clone, callbacks, caps, aTrans);
   }
@@ -347,13 +354,22 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
                                           originAttributes);
   }
 
+  void UpdateAltServiceMappingWithoutValidation(
+      AltSvcMapping* map, nsProxyInfo* proxyInfo,
+      nsIInterfaceRequestor* callbacks, uint32_t caps,
+      const OriginAttributes& originAttributes) {
+    mAltSvcCache->UpdateAltServiceMappingWithoutValidation(
+        map, proxyInfo, callbacks, caps, originAttributes);
+  }
+
   already_AddRefed<AltSvcMapping> GetAltServiceMapping(
       const nsACString& scheme, const nsACString& host, int32_t port, bool pb,
       bool isolated, const nsACString& topWindowOrigin,
-      const OriginAttributes& originAttributes, bool aHttp3Allowed) {
+      const OriginAttributes& originAttributes, bool aHttp2Allowed,
+      bool aHttp3Allowed) {
     return mAltSvcCache->GetAltServiceMapping(scheme, host, port, pb, isolated,
                                               topWindowOrigin, originAttributes,
-                                              aHttp3Allowed);
+                                              aHttp2Allowed, aHttp3Allowed);
   }
 
   //
@@ -364,9 +380,6 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   [[nodiscard]] nsresult GetIOService(nsIIOService** service);
   nsICookieService* GetCookieService();  // not addrefed
   nsISiteSecurityService* GetSSService();
-
-  // callable from socket thread only
-  uint32_t Get32BitsOfPseudoRandom();
 
   // Called by the channel synchronously during asyncOpen
   void OnFailedOpeningRequest(nsIHttpChannel* chan) {
@@ -385,6 +398,10 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   // Called by the channel before writing a request
   void OnModifyRequest(nsIHttpChannel* chan) {
     NotifyObservers(chan, NS_HTTP_ON_MODIFY_REQUEST_TOPIC);
+  }
+
+  void OnModifyDocumentRequest(nsIIdentChannel* chan) {
+    NotifyObservers(chan, NS_DOCUMENT_ON_MODIFY_REQUEST_TOPIC);
   }
 
   // Called by the channel before writing a request
@@ -448,8 +465,7 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   bool Bug1563695() const { return mBug1563695; }
   bool Bug1556491() const { return mBug1556491; }
 
-  bool IsHttp3VersionSupportedHex(const nsACString& version);
-  nsCString Http3Version() { return kHttp3Version; }
+  bool IsHttp3VersionSupported(const nsACString& version);
 
   bool IsHttp3Enabled() const { return mHttp3Enabled; }
   uint32_t DefaultQpackTableSize() const { return mQpackTableSize; }
@@ -460,6 +476,8 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   uint32_t MaxHttpResponseHeaderSize() const {
     return mMaxHttpResponseHeaderSize;
   }
+
+  const nsCString& Http3QlogDir();
 
   float FocusedWindowTransactionRatio() const {
     return mFocusedWindowTransactionRatio;
@@ -484,7 +502,25 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   nsresult CompleteUpgrade(HttpTransactionShell* aTrans,
                            nsIHttpUpgradeListener* aUpgradeListener);
 
-  nsresult DoShiftReloadConnectionCleanup(nsHttpConnectionInfo* aCI = nullptr);
+  nsresult DoShiftReloadConnectionCleanupWithConnInfo(
+      nsHttpConnectionInfo* aCI);
+
+  void MaybeAddAltSvcForTesting(nsIURI* aUri, const nsACString& aUsername,
+                                const nsACString& aTopWindowOrigin,
+                                bool aPrivateBrowsing, bool aIsolated,
+                                nsIInterfaceRequestor* aCallbacks,
+                                const OriginAttributes& aOriginAttributes);
+
+  bool UseHTTPSRRAsAltSvcEnabled() const;
+
+  bool EchConfigEnabled() const;
+  // When EchConfig is enabled and all records with echConfig are failed, this
+  // functon indicate whether we can fallback to the origin server.
+  // In the case an HTTPS RRSet contains some RRs with echConfig and some
+  // without, we always fallback to the origin one.
+  bool FallbackToOriginIfConfigsAreECHAndAllFailed() const;
+
+  bool UseHTTPSRRForSpeculativeConnection() const;
 
  private:
   nsHttpHandler();
@@ -509,6 +545,10 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   void NotifyObservers(nsIChannel* chan, const char* event);
 
   void SetFastOpenOSSupport();
+
+  friend class SocketProcessChild;
+  void SetHttpHandlerInitArgs(const HttpHandlerInitArgs& aArgs);
+  void SetDeviceModelId(const nsCString& aModelId);
 
   // Checks if there are any user certs or active smart cards on a different
   // thread. Updates mSpeculativeConnectEnabled when done.
@@ -599,6 +639,7 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   bool mEnforceAssocReq;
 
   nsCString mImageAcceptHeader;
+  nsCString mDocumentAcceptHeader;
 
   nsCString mAcceptLanguages;
   nsCString mHttpAcceptEncodings;
@@ -693,9 +734,6 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   // while those elements load.
   bool mCriticalRequestPrioritization;
 
-  // Whether to respect X-Content-Type nosniff on Page loads
-  bool mRespectDocumentNoSniff;
-
   // TCP Keepalive configuration values.
 
   // True if TCP keepalive is enabled for short-lived conns.
@@ -730,6 +768,7 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   Atomic<uint32_t, Relaxed>
       mHttp3MaxBlockedStreams;  // uint16_t is enough here, but Atomic only
                                 // supports uint32_t or uint64_t.
+  nsCString mHttp3QlogDir;
 
   // The max size (in bytes) for received Http response header.
   uint32_t mMaxHttpResponseHeaderSize;
@@ -811,7 +850,7 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   Mutex mLastActiveTabLoadOptimizationLock;
   TimeStamp mLastActiveTabLoadOptimizationHit;
 
-  Mutex mSpdyBlacklistLock;
+  Mutex mHttpExclusionLock;
 
  public:
   [[nodiscard]] nsresult NewChannelId(uint64_t& channelId);
@@ -819,16 +858,24 @@ class nsHttpHandler final : public nsIHttpProtocolHandler,
   void RemoveHttpChannel(uint64_t aId);
   nsWeakPtr GetWeakHttpChannel(uint64_t aId);
 
-  void BlacklistSpdy(const nsHttpConnectionInfo* ci);
-  [[nodiscard]] bool IsSpdyBlacklisted(const nsHttpConnectionInfo* ci);
+  void ExcludeHttp2(const nsHttpConnectionInfo* ci);
+  [[nodiscard]] bool IsHttp2Excluded(const nsHttpConnectionInfo* ci);
+  void ExcludeHttp3(const nsHttpConnectionInfo* ci);
+  [[nodiscard]] bool IsHttp3Excluded(const nsACString& aRoutedHost);
 
  private:
-  nsTHashtable<nsCStringHashKey> mBlacklistedSpdyOrigins;
+  nsTHashtable<nsCStringHashKey> mExcludedHttp2Origins;
+  nsTHashtable<nsCStringHashKey> mExcludedHttp3Origins;
 
   bool mThroughCaptivePortal;
 
   // The mapping of channel id and the weak pointer of nsHttpChannel.
   nsDataHashtable<nsUint64HashKey, nsWeakPtr> mIDToHttpChannelMap;
+
+  // This is parsed pref network.http.http3.alt-svc-mapping-for-testing.
+  // The pref set artificial altSvc-s for origin for testing.
+  // This maps an origin to an altSvc.
+  nsClassHashtable<nsCStringHashKey, nsCString> mAltSvcMappingTemptativeMap;
 };
 
 extern StaticRefPtr<nsHttpHandler> gHttpHandler;

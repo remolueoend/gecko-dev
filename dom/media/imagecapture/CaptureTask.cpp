@@ -6,6 +6,7 @@
 
 #include "CaptureTask.h"
 #include "gfxUtils.h"
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/ImageCapture.h"
 #include "mozilla/dom/ImageCaptureError.h"
 #include "mozilla/dom/ImageEncoder.h"
@@ -150,7 +151,7 @@ void CaptureTask::NotifyRealtimeTrackData(MediaTrackGraph* aGraph,
 
     // Encode image.
     nsresult rv;
-    nsAutoString type(NS_LITERAL_STRING("image/jpeg"));
+    nsAutoString type(u"image/jpeg"_ns);
     nsAutoString options;
     rv = dom::ImageEncoder::ExtractDataFromLayersImageAsync(
         type, options, false, image, false, new EncodeComplete(this));

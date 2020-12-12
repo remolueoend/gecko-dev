@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 "use strict";
 
 var EXPORTED_SYMBOLS = ["MockRegistry"];
@@ -33,7 +37,7 @@ class MockRegistry {
       values: null,
 
       // --- Overridden nsISupports interface functions ---
-      QueryInterface: ChromeUtils.generateQI([Ci.nsIWindowsRegKey]),
+      QueryInterface: ChromeUtils.generateQI(["nsIWindowsRegKey"]),
 
       // --- Overridden nsIWindowsRegKey interface functions ---
       open(root, path, mode) {
@@ -50,7 +54,7 @@ class MockRegistry {
 
       get valueCount() {
         if (!this.values) {
-          throw Cr.NS_ERROR_FAILURE;
+          throw Components.Exception("", Cr.NS_ERROR_FAILURE);
         }
         return this.values.size;
       },
@@ -68,7 +72,7 @@ class MockRegistry {
 
       getValueName(index) {
         if (!this.values || index >= this.values.size) {
-          throw Cr.NS_ERROR_FAILURE;
+          throw Components.Exception("", Cr.NS_ERROR_FAILURE);
         }
         let names = Array.from(this.values.keys());
         return names[index];

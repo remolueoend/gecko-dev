@@ -9,6 +9,7 @@ const {
   Component,
   createFactory,
 } = require("devtools/client/shared/vendor/react");
+const dom = require("devtools/client/shared/vendor/react-dom-factories");
 
 const PropTypes = require("devtools/client/shared/vendor/react-prop-types");
 const { connect } = require("devtools/client/shared/vendor/react-redux");
@@ -18,7 +19,10 @@ const webconsoleActions = require("devtools/client/webconsole/actions/index");
 
 const { l10n } = require("devtools/client/webconsole/utils/messages");
 const targetSelectors = require("devtools/client/framework/reducers/targets");
-const { TARGET_TYPES } = frameworkActions;
+
+loader.lazyGetter(this, "TARGET_TYPES", function() {
+  return require("devtools/shared/resources/target-list").TargetList.TYPES;
+});
 
 // Additional Components
 const MenuButton = createFactory(
@@ -49,6 +53,23 @@ class EvaluationContextSelector extends Component {
     };
   }
 
+  shouldComponentUpdate(nextProps) {
+    if (this.props.selectedTarget !== nextProps.selectedTarget) {
+      return true;
+    }
+    if (this.props.targets.length !== nextProps.targets.length) {
+      return true;
+    }
+    for (let i = 0; i < nextProps.targets.length; i++) {
+      const target = this.props.targets[i];
+      const nextTarget = nextProps.targets[i];
+      if (target.url != nextTarget.url || target.name != nextTarget.name) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   componentDidUpdate(prevProps) {
     if (this.props.selectedTarget !== prevProps.selectedTarget) {
       this.props.updateInstantEvaluationResultForCurrentExpression();
@@ -56,16 +77,20 @@ class EvaluationContextSelector extends Component {
   }
 
   getIcon(target) {
-    if (target.type === TARGET_TYPES.FRAME) {
-      return "resource://devtools/client/debugger/images/globe-small.svg";
+    if (target.targetType === TARGET_TYPES.FRAME) {
+      return "chrome://devtools/content/debugger/images/globe-small.svg";
     }
 
-    if (target.type === TARGET_TYPES.WORKER) {
-      return "resource://devtools/client/debugger/images/worker.svg";
+    if (
+      target.targetType === TARGET_TYPES.WORKER ||
+      target.targetType === TARGET_TYPES.SHARED_WORKER ||
+      target.targetType === TARGET_TYPES.SERVICE_WORKER
+    ) {
+      return "chrome://devtools/content/debugger/images/worker.svg";
     }
 
-    if (target.type === TARGET_TYPES.CONTENT_PROCESS) {
-      return "resource://devtools/client/debugger/images/window.svg";
+    if (target.targetType === TARGET_TYPES.PROCESS) {
+      return "chrome://devtools/content/debugger/images/window.svg";
     }
 
     return null;
@@ -74,18 +99,15 @@ class EvaluationContextSelector extends Component {
   renderMenuItem(target) {
     const { selectTarget, selectedTarget } = this.props;
 
-    const label =
-      target.type == TARGET_TYPES.MAIN_TARGET
-        ? l10n.getStr("webconsole.input.selector.top")
-        : target.name;
+    const label = target.isTopLevel
+      ? l10n.getStr("webconsole.input.selector.top")
+      : target.name;
 
     return MenuItem({
       key: `webconsole-evaluation-selector-item-${target.actorID}`,
       className: "menu-item webconsole-evaluation-selector-item",
       type: "checkbox",
-      checked: selectedTarget
-        ? selectedTarget == target
-        : target.type == TARGET_TYPES.MAIN_TARGET,
+      checked: selectedTarget ? selectedTarget == target : target.isTopLevel,
       label,
       tooltip: target.url,
       icon: this.getIcon(target),
@@ -103,54 +125,49 @@ class EvaluationContextSelector extends Component {
     let mainTarget;
     const frames = [];
     const contentProcesses = [];
-    const workers = [];
+    const dedicatedWorkers = [];
+    const sharedWorkers = [];
+    const serviceWorkers = [];
 
     const dict = {
       [TARGET_TYPES.FRAME]: frames,
-      [TARGET_TYPES.CONTENT_PROCESS]: contentProcesses,
-      [TARGET_TYPES.WORKER]: workers,
+      [TARGET_TYPES.PROCESS]: contentProcesses,
+      [TARGET_TYPES.WORKER]: dedicatedWorkers,
+      [TARGET_TYPES.SHARED_WORKER]: sharedWorkers,
+      [TARGET_TYPES.SERVICE_WORKER]: serviceWorkers,
     };
 
     for (const target of targets) {
       const menuItem = this.renderMenuItem(target);
 
-      if (target.type == TARGET_TYPES.MAIN_TARGET) {
+      if (target.isTopLevel) {
         mainTarget = menuItem;
       } else {
-        dict[target.type].push(menuItem);
+        dict[target.targetType].push(menuItem);
       }
     }
 
     const items = [mainTarget];
 
-    if (frames.length > 0) {
-      items.push(
-        MenuItem({ role: "menuseparator", key: "frames-separator" }),
-        ...frames
-      );
+    for (const [targetType, menuItems] of Object.entries(dict)) {
+      if (menuItems.length > 0) {
+        items.push(
+          dom.hr({ role: "menuseparator", key: `${targetType}-separator` }),
+          ...menuItems
+        );
+      }
     }
 
-    if (contentProcesses.length > 0) {
-      items.push(
-        MenuItem({ role: "menuseparator", key: "process-separator" }),
-        ...contentProcesses
-      );
-    }
-
-    if (workers.length > 0) {
-      items.push(
-        MenuItem({ role: "menuseparator", key: "worker-separator" }),
-        ...workers
-      );
-    }
-
-    return MenuList({ id: "webconsole-console-settings-menu-list" }, items);
+    return MenuList(
+      { id: "webconsole-console-evaluation-context-selector-menu-list" },
+      items
+    );
   }
 
   getLabel() {
     const { selectedTarget } = this.props;
 
-    if (!selectedTarget || selectedTarget.type == TARGET_TYPES.MAIN_TARGET) {
+    if (!selectedTarget || selectedTarget.isTopLevel) {
       return l10n.getStr("webconsole.input.selector.top");
     }
 
@@ -173,7 +190,7 @@ class EvaluationContextSelector extends Component {
         label: this.getLabel(),
         className:
           "webconsole-evaluation-selector-button devtools-button devtools-dropdown-button" +
-          (selectedTarget && selectedTarget.type !== TARGET_TYPES.MAIN_TARGET
+          (selectedTarget && !selectedTarget.isTopLevel
             ? " webconsole-evaluation-selector-button-non-top"
             : ""),
         title: l10n.getStr("webconsole.input.selector.tooltip"),

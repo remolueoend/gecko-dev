@@ -27,6 +27,8 @@ import kotlin.math.max
 import android.graphics.BitmapFactory
 import android.graphics.Bitmap
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assume.assumeThat
+import java.lang.IllegalStateException
 import java.lang.NullPointerException
 
 
@@ -138,6 +140,92 @@ class ScreenshotTest : BaseSessionTest() {
             val surface = Surface(texture)
             it.surfaceChanged(surface, SCREEN_WIDTH, SCREEN_HEIGHT)
             sessionRule.waitForResult(result)
+        }
+    }
+
+    // This tests tries to catch problems like Bug 1644561.
+    @WithDisplay(height = SCREEN_HEIGHT, width = SCREEN_WIDTH)
+    @Test
+    fun capturePixelsStressTest() {
+        val screenshots = mutableListOf<GeckoResult<Bitmap>>()
+        sessionRule.display?.let {
+            for (i in 0..100) {
+                screenshots.add(it.capturePixels())
+            }
+
+            for (i in 0..50) {
+                sessionRule.waitForResult(screenshots[i])
+            }
+
+            it.surfaceDestroyed()
+            screenshots.add(it.capturePixels())
+            it.surfaceDestroyed()
+
+            val texture = SurfaceTexture(0)
+            texture.setDefaultBufferSize(SCREEN_WIDTH, SCREEN_HEIGHT)
+            val surface = Surface(texture)
+            it.surfaceChanged(surface, SCREEN_WIDTH, SCREEN_HEIGHT)
+
+            for (i in 0..100) {
+                screenshots.add(it.capturePixels())
+            }
+
+            for (i in 0..100) {
+                it.surfaceDestroyed()
+                screenshots.add(it.capturePixels())
+                val newTexture = SurfaceTexture(0)
+                newTexture.setDefaultBufferSize(SCREEN_WIDTH, SCREEN_HEIGHT)
+                val newSurface = Surface(newTexture)
+                it.surfaceChanged(newSurface, SCREEN_WIDTH, SCREEN_HEIGHT)
+            }
+
+            try {
+                for (result in screenshots) {
+                    sessionRule.waitForResult(result)
+                }
+            } catch (ex: RuntimeException) {
+                // Rejecting the screenshot is fine
+            }
+        }
+    }
+
+    @WithDisplay(height = SCREEN_HEIGHT, width = SCREEN_WIDTH)
+    @Test(expected = IllegalStateException::class)
+    fun capturePixelsFailsCompositorPaused() {
+        sessionRule.display?.let {
+            it.surfaceDestroyed()
+            val result = it.capturePixels()
+            it.surfaceDestroyed()
+
+            sessionRule.waitForResult(result)
+        }
+    }
+
+    @WithDisplay(height = SCREEN_HEIGHT, width = SCREEN_WIDTH)
+    @Test
+    fun capturePixelsWhileSessionDeactivated() {
+        // TODO: Bug 1673955
+        assumeThat(sessionRule.env.isFission, equalTo(false))
+        val screenshotFile = getComparisonScreenshot(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+        sessionRule.session.loadTestPath(COLORS_HTML_PATH)
+        sessionRule.waitUntilCalled(object : Callbacks.ContentDelegate {
+            @AssertCalled(count = 1)
+            override fun onFirstContentfulPaint(session: GeckoSession) {
+            }
+        })
+
+        sessionRule.session.setActive(false)
+
+        // Deactivating the session should trigger a flush state change
+        sessionRule.waitUntilCalled(object : Callbacks.ProgressDelegate {
+            @AssertCalled(count = 1)
+            override fun onSessionStateChange(session: GeckoSession,
+                                              sessionState: GeckoSession.SessionState) {}
+        })
+
+        sessionRule.display?.let {
+            assertScreenshotResult(it.capturePixels(), screenshotFile)
         }
     }
 

@@ -7,10 +7,8 @@
 #define mozilla_dom_XPathEvaluator_h
 
 #include "mozilla/dom/NonRefcountedDOMObject.h"
-#include "nsAutoPtr.h"
 #include "nsString.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Document.h"
 
 class nsINode;
@@ -18,6 +16,8 @@ class txIParseContext;
 class txResultRecycler;
 
 namespace mozilla {
+class ErrorResult;
+
 namespace dom {
 
 class GlobalObject;

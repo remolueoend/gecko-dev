@@ -1,6 +1,7 @@
 #include "gtest/gtest.h"
 
 #include "mozilla/SlicedInputStream.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "nsCOMPtr.h"
 #include "nsIInputStream.h"
 #include "nsIPipe.h"
@@ -593,8 +594,7 @@ TEST(TestSlicedInputStream, AsyncInputStreamLength)
 
   RefPtr<testing::LengthCallback> callback = new testing::LengthCallback();
 
-  nsresult rv =
-      qi->AsyncLengthWait(callback, GetCurrentThreadSerialEventTarget());
+  nsresult rv = qi->AsyncLengthWait(callback, GetCurrentSerialEventTarget());
   ASSERT_EQ(NS_OK, rv);
 
   MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return callback->Called(); }));
@@ -619,8 +619,7 @@ TEST(TestSlicedInputStream, NegativeAsyncInputStreamLength)
 
   RefPtr<testing::LengthCallback> callback = new testing::LengthCallback();
 
-  nsresult rv =
-      qi->AsyncLengthWait(callback, GetCurrentThreadSerialEventTarget());
+  nsresult rv = qi->AsyncLengthWait(callback, GetCurrentSerialEventTarget());
   ASSERT_EQ(NS_OK, rv);
 
   MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return callback->Called(); }));
@@ -644,12 +643,11 @@ TEST(TestSlicedInputStream, AbortLengthCallback)
   ASSERT_TRUE(!!qi);
 
   RefPtr<testing::LengthCallback> callback1 = new testing::LengthCallback();
-  nsresult rv =
-      qi->AsyncLengthWait(callback1, GetCurrentThreadSerialEventTarget());
+  nsresult rv = qi->AsyncLengthWait(callback1, GetCurrentSerialEventTarget());
   ASSERT_EQ(NS_OK, rv);
 
   RefPtr<testing::LengthCallback> callback2 = new testing::LengthCallback();
-  rv = qi->AsyncLengthWait(callback2, GetCurrentThreadSerialEventTarget());
+  rv = qi->AsyncLengthWait(callback2, GetCurrentSerialEventTarget());
   ASSERT_EQ(NS_OK, rv);
 
   MOZ_ALWAYS_TRUE(SpinEventLoopUntil([&]() { return callback2->Called(); }));

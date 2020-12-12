@@ -49,7 +49,7 @@ const EXPORTED_SYMBOLS = ["BroadcastConduit", "ConduitsParent"];
  */
 
 const {
-  ExtensionUtils: { DefaultWeakMap },
+  ExtensionUtils: { DefaultWeakMap, ExtensionError },
 } = ChromeUtils.import("resource://gre/modules/ExtensionUtils.jsm");
 
 const { BaseConduit } = ChromeUtils.import(
@@ -246,23 +246,61 @@ class BroadcastConduit extends BaseConduit {
       // Target Messengers in extension pages by extensionId and envType.
       messenger: r =>
         r.verified &&
-        r.recv.includes(method) &&
         r.id !== arg.sender.contextId &&
         r.extensionId === arg.extensionId &&
+        r.recv.includes(method) &&
         // TODO: Bug 1453343 - get rid of this:
         (r.envType === "addon_child" || arg.sender.envType !== "content_child"),
 
-      // Target content Messengers by extensionId, tabId (topBC) and frameId.
+      // Target Messengers by extensionId, tabId (topBC) and frameId.
       tab: remote =>
-        remote.recv.includes(method) &&
         remote.extensionId === arg.extensionId &&
         remote.actor.manager.browsingContext.top.id === arg.topBC &&
-        (arg.frameId == null || remote.frameId === arg.frameId),
+        (arg.frameId == null || remote.frameId === arg.frameId) &&
+        remote.recv.includes(method),
     };
 
     let targets = Array.from(Hub.remotes.values()).filter(filters[kind]);
-    let responses = targets.map(c => this._send(method, true, c.id, arg));
-    return Promise.allSettled(responses);
+    let promises = targets.map(c => this._send(method, true, c.id, arg));
+
+    return arg.firstResponse
+      ? this._raceResponses(promises)
+      : Promise.allSettled(promises);
+  }
+
+  /**
+   * Custom Promise.race() function that ignores certain resolutions and errors.
+   * @param {Promise<response>[]} promises
+   * @returns {Promise<response?>}
+   */
+  _raceResponses(promises) {
+    return new Promise((resolve, reject) => {
+      let result;
+      promises.map(p =>
+        p
+          .then(value => {
+            if (value.response) {
+              // We have an explicit response, resolve immediately.
+              resolve(value);
+            } else if (value.received) {
+              // Message was received, but no response.
+              // Resolve with this only if there is no other explicit response.
+              result = value;
+            }
+          })
+          .catch(err => {
+            // Forward errors that are exposed to extension, but ignore
+            // internal errors such as actor destruction and DataCloneError.
+            if (err instanceof ExtensionError || err?.mozWebExtLocation) {
+              reject(err);
+            } else {
+              Cu.reportError(err);
+            }
+          })
+      );
+      // Ensure resolving when there are no responses.
+      Promise.allSettled(promises).then(() => resolve(result));
+    });
   }
 
   async close() {
@@ -334,16 +372,9 @@ class ConduitsParent extends JSWindowActorParent {
   }
 
   /**
-   * JSWindowActor method, called before actor is destroyed.
-   */
-  willDestroy() {
-    Hub.actorClosed(this);
-  }
-
-  /**
-   * JSWindowActor method, ensure cleanup (see bug 1596187).
+   * JSWindowActor method, ensure cleanup.
    */
   didDestroy() {
-    this.willDestroy();
+    Hub.actorClosed(this);
   }
 }

@@ -24,6 +24,7 @@
 #include "nsIURI.h"
 #include "nsCOMPtr.h"
 #include "nsString.h"
+#include "mozilla/Atomics.h"
 #include "mozilla/Logging.h"
 
 class nsJARInputThunk;
@@ -69,6 +70,7 @@ class nsJARChannel final : public nsIJARChannel,
 
   bool mOpened;
   bool mCanceled;
+  bool mOnDataCalled = false;
 
   RefPtr<nsJARProtocolHandler> mJarHandler;
   nsCOMPtr<nsIJARURI> mJarURI;
@@ -91,7 +93,7 @@ class nsJARChannel final : public nsIJARChannel,
   // |Cancel()|, |Suspend()|, and |Resume()| might be called during AsyncOpen.
   struct {
     bool isCanceled;
-    uint32_t suspendCount;
+    Atomic<uint32_t> suspendCount;
   } mPendingEvent;
 
   nsCOMPtr<nsIInputStreamPump> mPump;

@@ -10,7 +10,7 @@
 #include "vm/JSFunction.h"
 
 #include "gc/Allocator.h"
-#include "gc/GCTrace.h"
+#include "gc/GCProbes.h"
 #include "js/CharacterEncoding.h"
 #include "vm/EnvironmentObject.h"
 
@@ -28,66 +28,22 @@ inline const char* GetFunctionNameBytes(JSContext* cx, JSFunction* fun,
   return js_anonymous_str;
 }
 
-inline bool CanReuseFunctionForClone(JSContext* cx, HandleFunction fun) {
-  if (!fun->isSingleton()) {
-    return false;
-  }
-
-  if (fun->baseScript()->hasBeenCloned()) {
-    return false;
-  }
-  fun->baseScript()->setHasBeenCloned();
-
-  return true;
-}
-
-inline JSFunction* CloneFunctionObjectIfNotSingleton(
-    JSContext* cx, HandleFunction fun, HandleObject enclosingEnv,
-    HandleObject proto = nullptr, NewObjectKind newKind = GenericObject) {
-  /*
-   * For attempts to clone functions at a function definition opcode,
-   * try to avoid the the clone if the function has singleton type. This
-   * was called pessimistically, and we need to preserve the type's
-   * property that if it is singleton there is only a single object
-   * with its type in existence.
-   *
-   * For functions inner to run once lambda, it may be possible that
-   * the lambda runs multiple times and we repeatedly clone it. In these
-   * cases, fall through to CloneFunctionObject, which will deep clone
-   * the function's script.
-   */
-  if (CanReuseFunctionForClone(cx, fun)) {
-    if (proto && !SetPrototypeForClonedFunction(cx, fun, proto)) {
-      return nullptr;
-    }
-    fun->setEnvironment(enclosingEnv);
-    return fun;
-  }
-
+inline JSFunction* CloneFunctionObject(JSContext* cx, HandleFunction fun,
+                                       HandleObject enclosingEnv,
+                                       HandleObject proto = nullptr) {
   // These intermediate variables are needed to avoid link errors on some
   // platforms.  Sigh.
   gc::AllocKind finalizeKind = gc::AllocKind::FUNCTION;
   gc::AllocKind extendedFinalizeKind = gc::AllocKind::FUNCTION_EXTENDED;
   gc::AllocKind kind = fun->isExtended() ? extendedFinalizeKind : finalizeKind;
 
-  if (CanReuseScriptForClone(cx->realm(), fun, enclosingEnv)) {
-    return CloneFunctionReuseScript(cx, fun, enclosingEnv, kind, newKind,
-                                    proto);
-  }
-
-  RootedScript script(cx, JSFunction::getOrCreateScript(cx, fun));
-  if (!script) {
-    return nullptr;
-  }
-  RootedScope enclosingScope(cx, script->enclosingScope());
-  Rooted<ScriptSourceObject*> sourceObject(cx, script->sourceObject());
-  return CloneFunctionAndScript(cx, fun, enclosingEnv, enclosingScope,
-                                sourceObject, kind, proto);
+  MOZ_ASSERT(CanReuseScriptForClone(cx->realm(), fun, enclosingEnv));
+  return CloneFunctionReuseScript(cx, fun, enclosingEnv, kind, proto);
 }
 
 } /* namespace js */
 
-/* static */ inline JS::Result<JSFunction*, JS::OOM&> JSFunction::create(
+/* static */ inline JS::Result<JSFunction*, JS::OOM> JSFunction::create(
     JSContext* cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
     js::HandleShape shape, js::HandleObjectGroup group) {
   MOZ_ASSERT(kind == js::gc::AllocKind::FUNCTION ||
@@ -99,8 +55,8 @@ inline JSFunction* CloneFunctionObjectIfNotSingleton(
   MOZ_ASSERT(clasp->isJSFunction());
 
   static constexpr size_t NumDynamicSlots = 0;
-  MOZ_ASSERT(dynamicSlotsCount(shape->numFixedSlots(), shape->slotSpan(),
-                               clasp) == NumDynamicSlots);
+  MOZ_ASSERT(calculateDynamicSlots(shape->numFixedSlots(), shape->slotSpan(),
+                                   clasp) == NumDynamicSlots);
 
   JSObject* obj = js::AllocateObject(cx, kind, NumDynamicSlots, heap, clasp);
   if (!obj) {
@@ -111,7 +67,7 @@ inline JSFunction* CloneFunctionObjectIfNotSingleton(
   nobj->initGroup(group);
   nobj->initShape(shape);
 
-  nobj->initSlots(nullptr);
+  nobj->initEmptyDynamicSlots();
   nobj->setEmptyElements();
 
   MOZ_ASSERT(!clasp->hasPrivate());
@@ -124,13 +80,12 @@ inline JSFunction* CloneFunctionObjectIfNotSingleton(
   // value to which we could sensibly initialize this.
   MOZ_MAKE_MEM_UNDEFINED(&fun->u, sizeof(u));
 
-  // Safe: we're initializing for the very first time.
-  fun->atom_.unsafeSet(nullptr);
+  fun->atom_.init(nullptr);
 
   if (kind == js::gc::AllocKind::FUNCTION_EXTENDED) {
     fun->setFlags(FunctionFlags::EXTENDED);
     for (js::GCPtrValue& extendedSlot : fun->toExtended()->extendedSlots) {
-      extendedSlot.unsafeSet(JS::UndefinedValue());
+      extendedSlot.init(JS::UndefinedValue());
     }
   } else {
     fun->setFlags(0);
@@ -142,7 +97,7 @@ inline JSFunction* CloneFunctionObjectIfNotSingleton(
              "building of metadata for it");
   fun = SetNewObjectMetadata(cx, fun);
 
-  js::gc::gcTracer.traceCreateObject(fun);
+  js::gc::gcprobes::CreateObject(fun);
 
   return fun;
 }

@@ -16,8 +16,8 @@ body {
   min-width: 30em;
   max-width: 65em;
   margin: 4em auto;
-  background-color: -moz-field;
-  color: -moz-fieldtext;
+  background-color: Field;
+  color: FieldText;
 }
 
 h1 {
@@ -33,6 +33,11 @@ a {
 
 a:hover {
   text-decoration: underline;
+}
+
+/* ensure multiple spaces are shown correctly. */
+td:first-child > a {
+  white-space: pre;
 }
 
 p {

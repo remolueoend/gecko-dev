@@ -8,8 +8,8 @@
 #define mozilla_dom_HTMLFormSubmission_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/dom/Element.h"
 #include "mozilla/dom/UserActivation.h"
+#include "mozilla/dom/HTMLDialogElement.h"
 #include "nsCOMPtr.h"
 #include "mozilla/Encoding.h"
 #include "nsString.h"
@@ -24,6 +24,7 @@ namespace dom {
 
 class Blob;
 class Directory;
+class Element;
 class HTMLFormElement;
 
 /**
@@ -110,6 +111,8 @@ class HTMLFormSubmission {
    */
   bool IsInitiatedFromUserInput() const { return mInitiatedFromUserInput; }
 
+  virtual DialogFormSubmission* GetAsDialogSubmission() { return nullptr; }
+
  protected:
   /**
    * Can only be constructed by subclasses.
@@ -119,14 +122,7 @@ class HTMLFormSubmission {
    */
   HTMLFormSubmission(nsIURI* aActionURL, const nsAString& aTarget,
                      mozilla::NotNull<const mozilla::Encoding*> aEncoding,
-                     Element* aSubmitter)
-      : mActionURL(aActionURL),
-        mTarget(aTarget),
-        mEncoding(aEncoding),
-        mSubmitter(aSubmitter),
-        mInitiatedFromUserInput(UserActivation::IsHandlingUserInput()) {
-    MOZ_COUNT_CTOR(HTMLFormSubmission);
-  }
+                     Element* aSubmitter);
 
   // The action url.
   nsCOMPtr<nsIURI> mActionURL;
@@ -165,6 +161,49 @@ class EncodingFormSubmission : public HTMLFormSubmission {
                      bool aHeaderEncode);
 };
 
+class DialogFormSubmission final : public HTMLFormSubmission {
+ public:
+  DialogFormSubmission(nsAString& aResult, nsIURI* aActionURL,
+                       const nsAString& aTarget,
+                       NotNull<const Encoding*> aEncoding, Element* aSubmitter,
+                       HTMLDialogElement* aDialogElement)
+      : HTMLFormSubmission(aActionURL, aTarget, aEncoding, aSubmitter),
+        mDialogElement(aDialogElement),
+        mReturnValue(aResult) {}
+  nsresult AddNameValuePair(const nsAString& aName,
+                            const nsAString& aValue) override {
+    MOZ_CRASH("This method should not be called");
+    return NS_OK;
+  }
+
+  nsresult AddNameBlobOrNullPair(const nsAString& aName, Blob* aBlob) override {
+    MOZ_CRASH("This method should not be called");
+    return NS_OK;
+  }
+
+  nsresult AddNameDirectoryPair(const nsAString& aName,
+                                Directory* aDirectory) override {
+    MOZ_CRASH("This method should not be called");
+    return NS_OK;
+  }
+
+  nsresult GetEncodedSubmission(nsIURI* aURI, nsIInputStream** aPostDataStream,
+                                nsCOMPtr<nsIURI>& aOutURI) override {
+    MOZ_CRASH("This method should not be called");
+    return NS_OK;
+  }
+
+  DialogFormSubmission* GetAsDialogSubmission() override { return this; }
+
+  HTMLDialogElement* DialogElement() { return mDialogElement; }
+
+  nsString& ReturnValue() { return mReturnValue; }
+
+ private:
+  const RefPtr<HTMLDialogElement> mDialogElement;
+  nsString mReturnValue;
+};
+
 /**
  * Handle multipart/form-data encoding, which does files as well as normal
  * inputs.  This always does POST.
@@ -193,8 +232,7 @@ class FSMultipartFormData : public EncodingFormSubmission {
                                         nsCOMPtr<nsIURI>& aOutURI) override;
 
   void GetContentType(nsACString& aContentType) {
-    aContentType =
-        NS_LITERAL_CSTRING("multipart/form-data; boundary=") + mBoundary;
+    aContentType = "multipart/form-data; boundary="_ns + mBoundary;
   }
 
   nsIInputStream* GetSubmissionBody(uint64_t* aContentLength);

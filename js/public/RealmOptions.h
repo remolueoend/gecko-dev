@@ -51,6 +51,16 @@ enum class CompartmentSpecifier {
 };
 
 /**
+ * Specification for whether weak refs should be enabled and if so whether the
+ * FinalizationRegistry.cleanupSome method should be present.
+ */
+enum class WeakRefSpecifier {
+  Disabled,
+  EnabledWithCleanupSome,
+  EnabledWithoutCleanupSome
+};
+
+/**
  * RealmCreationOptions specifies options relevant to creating a new realm, that
  * are either immutable characteristics of that realm or that are discarded
  * after the realm has been created.
@@ -116,12 +126,6 @@ class JS_PUBLIC_API RealmCreationOptions {
   bool preserveJitCode() const { return preserveJitCode_; }
   RealmCreationOptions& setPreserveJitCode(bool flag) {
     preserveJitCode_ = flag;
-    return *this;
-  }
-
-  bool cloneSingletons() const { return cloneSingletons_; }
-  RealmCreationOptions& setCloneSingletons(bool flag) {
-    cloneSingletons_ = flag;
     return *this;
   }
 
@@ -208,9 +212,9 @@ class JS_PUBLIC_API RealmCreationOptions {
     return *this;
   }
 
-  bool getWeakRefsEnabled() const { return weakRefs_; }
-  RealmCreationOptions& setWeakRefsEnabled(bool flag) {
-    weakRefs_ = flag;
+  WeakRefSpecifier getWeakRefsEnabled() const { return weakRefs_; }
+  RealmCreationOptions& setWeakRefsEnabled(WeakRefSpecifier spec) {
+    weakRefs_ = spec;
     return *this;
   }
 
@@ -225,6 +229,12 @@ class JS_PUBLIC_API RealmCreationOptions {
   }
   RealmCreationOptions& setPropertyErrorMessageFixEnabled(bool flag) {
     propertyErrorMessageFix_ = flag;
+    return *this;
+  }
+
+  bool getIteratorHelpersEnabled() const { return iteratorHelpers_; }
+  RealmCreationOptions& setIteratorHelpersEnabled(bool flag) {
+    iteratorHelpers_ = flag;
     return *this;
   }
 
@@ -252,10 +262,10 @@ class JS_PUBLIC_API RealmCreationOptions {
     Zone* zone_;
   };
   uint64_t profilerRealmID_ = 0;
+  WeakRefSpecifier weakRefs_ = WeakRefSpecifier::Disabled;
   bool invisibleToDebugger_ = false;
   bool mergeable_ = false;
   bool preserveJitCode_ = false;
-  bool cloneSingletons_ = false;
   bool sharedMemoryAndAtomics_ = false;
   bool defineSharedArrayBufferConstructor_ = true;
   bool coopAndCoep_ = false;
@@ -264,9 +274,9 @@ class JS_PUBLIC_API RealmCreationOptions {
   bool byobStreamReaders_ = false;
   bool writableStreams_ = false;
   bool readableStreamPipeTo_ = false;
-  bool weakRefs_ = false;
   bool toSource_ = false;
   bool propertyErrorMessageFix_ = false;
+  bool iteratorHelpers_ = false;
   bool secureContext_ = false;
 };
 
@@ -321,12 +331,6 @@ class JS_PUBLIC_API RealmBehaviors {
     Mode mode_;
   };
 
-  bool getSingletonsAsTemplates() const { return singletonsAsTemplates_; }
-  RealmBehaviors& setSingletonsAsValues() {
-    singletonsAsTemplates_ = false;
-    return *this;
-  }
-
   // A Realm can stop being "live" in all the ways that matter before its global
   // is actually GCed.  Consumers that tear down parts of a Realm or its global
   // before that point should set isNonLive accordingly.
@@ -340,11 +344,6 @@ class JS_PUBLIC_API RealmBehaviors {
   bool discardSource_ = false;
   bool disableLazyParsing_ = false;
   bool clampAndJitterTime_ = true;
-
-  // To XDR singletons, we need to ensure that all singletons are all used as
-  // templates, by making JSOP_OBJECT return a clone of the JSScript
-  // singleton, instead of returning the value which is baked in the JSScript.
-  bool singletonsAsTemplates_ = true;
   bool isNonLive_ = false;
 };
 

@@ -14,6 +14,7 @@ mod boilerplate;
 use crate::boilerplate::{Example, HandyDandyRectBuilder};
 use std::cmp;
 use webrender::api::*;
+use webrender::render_api::*;
 use webrender::api::units::DeviceIntSize;
 
 
@@ -24,7 +25,7 @@ struct App {
 impl Example for App {
     fn render(
         &mut self,
-        _api: &RenderApi,
+        _api: &mut RenderApi,
         builder: &mut DisplayListBuilder,
         _txn: &mut Transaction,
         _device_size: DeviceIntSize,
@@ -54,7 +55,7 @@ impl Example for App {
     fn on_event(
         &mut self,
         event: winit::WindowEvent,
-        _api: &RenderApi,
+        _api: &mut RenderApi,
         _document_id: DocumentId
     ) -> bool {
         match event {

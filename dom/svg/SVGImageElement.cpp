@@ -13,6 +13,7 @@
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 #include "imgINotificationObserver.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/SVGImageElementBinding.h"
 #include "mozilla/dom/SVGLengthBinding.h"
 #include "mozilla/dom/UserActivation.h"
@@ -64,7 +65,7 @@ SVGImageElement::SVGImageElement(
   AddStatesSilently(NS_EVENT_STATE_BROKEN);
 }
 
-SVGImageElement::~SVGImageElement() { DestroyImageLoadingContent(); }
+SVGImageElement::~SVGImageElement() { nsImageLoadingContent::Destroy(); }
 
 nsCSSPropertyID SVGImageElement::GetCSSPropertyIdForAttrEnum(
     uint8_t aAttrEnum) {
@@ -147,6 +148,10 @@ nsresult SVGImageElement::LoadSVGImage(bool aForce, bool aNotify) {
   return LoadImage(href, aForce, aNotify, eImageLoadType_Normal);
 }
 
+bool SVGImageElement::ShouldLoadImage() const {
+  return LoadingEnabled() && OwnerDoc()->ShouldLoadImages();
+}
+
 //----------------------------------------------------------------------
 // EventTarget methods:
 
@@ -180,7 +185,9 @@ nsresult SVGImageElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
   if (aName == nsGkAtoms::href && (aNamespaceID == kNameSpaceID_None ||
                                    aNamespaceID == kNameSpaceID_XLink)) {
     if (aValue) {
-      LoadSVGImage(true, aNotify);
+      if (ShouldLoadImage()) {
+        LoadSVGImage(true, aNotify);
+      }
     } else {
       CancelImageRequests(aNotify);
     }
@@ -209,8 +216,9 @@ nsresult SVGImageElement::BindToTree(BindContext& aContext, nsINode& aParent) {
 
   nsImageLoadingContent::BindToTree(aContext, aParent);
 
-  if (mStringAttributes[HREF].IsExplicitlySet() ||
-      mStringAttributes[XLINK_HREF].IsExplicitlySet()) {
+  if ((mStringAttributes[HREF].IsExplicitlySet() ||
+       mStringAttributes[XLINK_HREF].IsExplicitlySet()) &&
+      ShouldLoadImage()) {
     nsContentUtils::AddScriptRunner(
         NewRunnableMethod("dom::SVGImageElement::MaybeLoadSVGImage", this,
                           &SVGImageElement::MaybeLoadSVGImage));
@@ -227,6 +235,11 @@ void SVGImageElement::UnbindFromTree(bool aNullParent) {
 EventStates SVGImageElement::IntrinsicState() const {
   return SVGImageElementBase::IntrinsicState() |
          nsImageLoadingContent::ImageState();
+}
+
+void SVGImageElement::DestroyContent() {
+  nsImageLoadingContent::Destroy();
+  SVGImageElementBase::DestroyContent();
 }
 
 NS_IMETHODIMP_(bool)
@@ -250,9 +263,11 @@ bool SVGImageElement::GetGeometryBounds(
     const Matrix& aToBoundsSpace, const Matrix* aToNonScalingStrokeSpace) {
   Rect rect;
 
-  MOZ_ASSERT(GetPrimaryFrame());
-  SVGGeometryProperty::ResolveAll<SVGT::X, SVGT::Y, SVGT::Width, SVGT::Height>(
-      this, &rect.x, &rect.y, &rect.width, &rect.height);
+  DebugOnly<bool> ok =
+      SVGGeometryProperty::ResolveAll<SVGT::X, SVGT::Y, SVGT::Width,
+                                      SVGT::Height>(this, &rect.x, &rect.y,
+                                                    &rect.width, &rect.height);
+  MOZ_ASSERT(ok, "SVGGeometryProperty::ResolveAll failed");
 
   if (rect.IsEmpty()) {
     // Rendering of the element disabled
@@ -265,7 +280,7 @@ bool SVGImageElement::GetGeometryBounds(
 
 already_AddRefed<Path> SVGImageElement::BuildPath(PathBuilder* aBuilder) {
   // To get bound, the faster method GetGeometryBounds() should already return
-  // success. For render and hittest, nsSVGImageFrame should have its own
+  // success. For render and hittest, SVGImageFrame should have its own
   // implementation that doesn't need to build path for an image.
   MOZ_ASSERT_UNREACHABLE(
       "There is no reason to call BuildPath for SVGImageElement");
@@ -279,9 +294,10 @@ already_AddRefed<Path> SVGImageElement::BuildPath(PathBuilder* aBuilder) {
 bool SVGImageElement::HasValidDimensions() const {
   float width, height;
 
-  MOZ_ASSERT(GetPrimaryFrame());
-  SVGGeometryProperty::ResolveAll<SVGT::Width, SVGT::Height>(this, &width,
-                                                             &height);
+  DebugOnly<bool> ok =
+      SVGGeometryProperty::ResolveAll<SVGT::Width, SVGT::Height>(this, &width,
+                                                                 &height);
+  MOZ_ASSERT(ok, "SVGGeometryProperty::ResolveAll failed");
 
   return width > 0 && height > 0;
 }
@@ -299,13 +315,6 @@ SVGImageElement::GetAnimatedPreserveAspectRatio() {
 SVGElement::StringAttributesInfo SVGImageElement::GetStringInfo() {
   return StringAttributesInfo(mStringAttributes, sStringInfo,
                               ArrayLength(sStringInfo));
-}
-
-nsresult SVGImageElement::CopyInnerTo(Element* aDest) {
-  if (aDest->OwnerDoc()->IsStaticDocument()) {
-    CreateStaticImageClone(static_cast<SVGImageElement*>(aDest));
-  }
-  return SVGImageElementBase::CopyInnerTo(aDest);
 }
 
 }  // namespace dom

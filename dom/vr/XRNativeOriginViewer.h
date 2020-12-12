@@ -8,6 +8,7 @@
 #define mozilla_dom_XRNativeOriginViewer_h_
 
 #include "gfxVR.h"
+#include "XRNativeOrigin.h"
 
 namespace mozilla {
 namespace gfx {
@@ -21,6 +22,7 @@ class XRNativeOriginViewer : public XRNativeOrigin {
   explicit XRNativeOriginViewer(gfx::VRDisplayClient* aDisplay);
 
   gfx::PointDouble3D GetPosition() override;
+  gfx::QuaternionDouble GetOrientation() override;
 
  private:
   ~XRNativeOriginViewer() = default;

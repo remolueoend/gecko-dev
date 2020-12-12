@@ -158,6 +158,57 @@ class ECDH():
 
         return result
 
+class DSA():
+    pub_keys = {}
+    def format_testcase(self, testcase, key, hash_oid, keySize, out_defs):
+        key_name = "kPubKey"
+        if key in self.pub_keys:
+            key_name = self.pub_keys[key]
+        else:
+            key_name += str(len(self.pub_keys))
+            self.pub_keys[key] = key_name
+            out_defs.append('static const std::vector<uint8_t> ' + key_name + string_to_hex_array(key) + ';\n\n')
+        result = '\n// Comment: {}'.format(testcase['comment'])
+        result += '\n// tcID: {}\n'.format(testcase['tcId'])
+        result += '{{{}, {},\n'.format(hash_oid, testcase['tcId'])
+        result += '{},\n'.format(string_to_hex_array(testcase['sig']))
+        result += '{},\n'.format(key_name)
+        result += '{},\n'.format(string_to_hex_array(testcase['msg']))
+        valid = testcase['result'] == 'valid' or (testcase['result'] == 'acceptable' and 'NoLeadingZero' in testcase['flags'])
+        result += '{}}},\n'.format(str(valid).lower())
+
+        return result
+
+class ECDSA():
+    """Class that provides the generator function for a single ECDSA test case."""
+
+    def format_testcase(self, testcase, key, hash_oid, keySize, out_defs):
+        result = '\n// Comment: {}'.format(testcase['comment'])
+        result += '\n// tcID: {}\n'.format(testcase['tcId'])
+        result += '{{{}, {},\n'.format(hash_oid, testcase['tcId'])
+        result += '{},\n'.format(string_to_hex_array(testcase['sig']))
+        result += '{},\n'.format(string_to_hex_array(key))
+        result += '{},\n'.format(string_to_hex_array(testcase['msg']))
+        valid = testcase['result'] == 'valid'
+        if not valid and testcase['result'] == 'acceptable':
+            valid = 'MissingZero' in testcase['flags']
+        result += '{}}},\n'.format(str(valid).lower())
+
+        return result
+
+class HKDF():
+    """Class that provides the generator function for a single HKDF test case."""
+
+    def format_testcase(self, vector):
+        """Format an HKDF testcase object. Return a string in C-header format."""
+        result = '{{ {},\n'.format(vector['tcId'])
+        for key in ['ikm', 'salt', 'info', "okm"]:
+            result += ' \"{}\",\n'.format(vector[key])
+        result += ' {},\n'.format(vector['size'])
+        result += ' {}}},\n\n'.format(str(vector['result'] == 'valid').lower())
+
+        return result
+
 class RSA_PKCS1_SIGNATURE():
     pub_keys = {}
 
@@ -310,7 +361,7 @@ def generate_vectors_file(params):
             if 'key' in group:
                 if 'curve' in group['key'] and group['key']['curve'] not in ['secp256r1', 'secp384r1', 'secp521r1']:
                     continue
-                vectors_file += params['formatter'].format_testcase(test, group['keyDer'], getSha(group['sha']), group['key']['keySize'])
+                vectors_file += params['formatter'].format_testcase(test, group['keyDer'], getSha(group['sha']), group['key']['keySize'], shared_defs)
             elif 'type' in group and group['type'] == 'RsassaPssVerify':
                 sLen = group['sLen'] if 'sLen' in group else 0
                 vectors_file += params['formatter'].format_testcase(test, group['keyDer'], getSha(group['sha']), getMgfSha(group['mgfSha']), sLen, shared_defs)
@@ -431,6 +482,61 @@ curve25519_params = {
     // tests at this moment because validity of the public key is not checked.\n'
 }
 
+dsa_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'dsa_test.json',
+    'target': '../testvectors/dsa-vectors.h',
+    'array_init': 'const DsaTestVector kDsaWycheproofVectors[] = {\n',
+    'formatter' : DSA(),
+    'crop_size_end': -2,
+    'section': 'dsa_vectors_h__',
+    'comment' : ''
+}
+
+hkdf_sha1_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'hkdf_sha1_test.json',
+    'target': '../testvectors/hkdf-sha1-vectors.h',
+    'array_init': 'const HkdfTestVector kHkdfSha1WycheproofVectors[] = {\n',
+    'formatter' : HKDF(),
+    'crop_size_end': -3,
+    'section': 'hkdf_sha1_vectors_h__',
+    'comment' : ''
+}
+
+hkdf_sha256_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'hkdf_sha256_test.json',
+    'target': '../testvectors/hkdf-sha256-vectors.h',
+    'array_init': 'const HkdfTestVector kHkdfSha256WycheproofVectors[] = {\n',
+    'formatter' : HKDF(),
+    'crop_size_end': -3,
+    'section': 'hkdf_sha256_vectors_h__',
+    'comment' : ''
+}
+
+hkdf_sha384_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'hkdf_sha384_test.json',
+    'target': '../testvectors/hkdf-sha384-vectors.h',
+    'array_init': 'const HkdfTestVector kHkdfSha384WycheproofVectors[] = {\n',
+    'formatter' : HKDF(),
+    'crop_size_end': -3,
+    'section': 'hkdf_sha384_vectors_h__',
+    'comment' : ''
+}
+
+hkdf_sha512_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'hkdf_sha512_test.json',
+    'target': '../testvectors/hkdf-sha512-vectors.h',
+    'array_init': 'const HkdfTestVector kHkdfSha512WycheproofVectors[] = {\n',
+    'formatter' : HKDF(),
+    'crop_size_end': -3,
+    'section': 'hkdf_sha512_vectors_h__',
+    'comment' : ''
+}
+
 p256ecdh_params = {
     'source_dir': 'source_vectors/',
     'source_file': 'ecdh_secp256r1_test.json',
@@ -461,6 +567,39 @@ p521ecdh_params = {
     'formatter' : ECDH(),
     'crop_size_end': -2,
     'section': 'p521ecdh_vectors_h__',
+    'comment' : ''
+}
+
+p256ecdsa_sha256_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'ecdsa_secp256r1_sha256_test.json',
+    'target': '../testvectors/p256ecdsa-sha256-vectors.h',
+    'array_init': 'const EcdsaTestVector kP256EcdsaSha256Vectors[] = {\n',
+    'formatter' : ECDSA(),
+    'crop_size_end': -2,
+    'section': 'p256ecdsa_sha256_vectors_h__',
+    'comment' : ''
+}
+
+p384ecdsa_sha384_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'ecdsa_secp384r1_sha384_test.json',
+    'target': '../testvectors/p384ecdsa-sha384-vectors.h',
+    'array_init': 'const EcdsaTestVector kP384EcdsaSha384Vectors[] = {\n',
+    'formatter' : ECDSA(),
+    'crop_size_end': -2,
+    'section': 'p384ecdsa_sha384_vectors_h__',
+    'comment' : ''
+}
+
+p521ecdsa_sha512_params = {
+    'source_dir': 'source_vectors/',
+    'source_file': 'ecdsa_secp521r1_sha512_test.json',
+    'target': '../testvectors/p521ecdsa-sha512-vectors.h',
+    'array_init': 'const EcdsaTestVector kP521EcdsaSha512Vectors[] = {\n',
+    'formatter' : ECDSA(),
+    'crop_size_end': -2,
+    'section': 'p521ecdsa_sha512_vectors_h__',
     'comment' : ''
 }
 
@@ -780,6 +919,14 @@ def generate_test_vectors():
                  aes_gcm_params,
                  chacha_poly_params,
                  curve25519_params,
+                 dsa_params,
+                 hkdf_sha1_params,
+                 hkdf_sha256_params,
+                 hkdf_sha384_params,
+                 hkdf_sha512_params,
+                 p256ecdsa_sha256_params,
+                 p384ecdsa_sha384_params,
+                 p521ecdsa_sha512_params,
                  p256ecdh_params,
                  p384ecdh_params,
                  p521ecdh_params,

@@ -6,8 +6,11 @@
 
 #include "mozilla/dom/XRFrame.h"
 #include "mozilla/dom/XRRenderState.h"
+#include "mozilla/dom/XRRigidTransform.h"
 #include "mozilla/dom/XRViewerPose.h"
 #include "mozilla/dom/XRView.h"
+#include "mozilla/dom/XRReferenceSpace.h"
+#include "VRDisplayClient.h"
 
 namespace mozilla {
 namespace dom {
@@ -51,32 +54,27 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
   // TODO (Bug 1616393) - Check if poses must be limited:
   // https://immersive-web.github.io/webxr/#poses-must-be-limited
 
-  gfx::PointDouble3D viewerPosition;
-  gfx::QuaternionDouble viewerOrientation;
   bool emulatedPosition = aReferenceSpace.IsPositionEmulated();
-  nsTArray<RefPtr<XRView>> views;
 
   XRRenderState* renderState = mSession->GetActiveRenderState();
   float depthNear = (float)renderState->DepthNear();
   float depthFar = (float)renderState->DepthFar();
 
+  RefPtr<XRViewerPose> viewerPose;
+
   gfx::VRDisplayClient* display = mSession->GetDisplayClient();
   if (display) {
     // Have a VRDisplayClient
-    const VRDisplayInfo& displayInfo =
+    const gfx::VRDisplayInfo& displayInfo =
         mSession->GetDisplayClient()->GetDisplayInfo();
     const gfx::VRHMDSensorState& sensorState = display->GetSensorState();
 
-    viewerPosition = gfx::PointDouble3D(sensorState.pose.position[0],
-                                        sensorState.pose.position[1],
-                                        sensorState.pose.position[2]);
-    viewerOrientation = gfx::QuaternionDouble(
+    gfx::PointDouble3D viewerPosition = gfx::PointDouble3D(
+        sensorState.pose.position[0], sensorState.pose.position[1],
+        sensorState.pose.position[2]);
+    gfx::QuaternionDouble viewerOrientation = gfx::QuaternionDouble(
         sensorState.pose.orientation[0], sensorState.pose.orientation[1],
         sensorState.pose.orientation[2], sensorState.pose.orientation[3]);
-
-    // Quaternion was inverted for WebVR. We need to invert it here again.
-    // TODO: Remove those extra inverts when WebVR support is disabled.
-    viewerOrientation.Invert();
 
     gfx::Matrix4x4Double headTransform;
     headTransform.SetRotationFromQuaternion(viewerOrientation);
@@ -84,12 +82,14 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
 
     gfx::Matrix4x4Double originTransform;
     originTransform.SetRotationFromQuaternion(
-        aReferenceSpace.GetEffectiveOriginOrientation());
+        aReferenceSpace.GetEffectiveOriginOrientation().Inverse());
     originTransform.PreTranslate(-aReferenceSpace.GetEffectiveOriginPosition());
 
     headTransform *= originTransform;
 
-    auto addEye = [&](XREye xrEye, VRDisplayState::Eye eye) {
+    viewerPose = mSession->PooledViewerPose(headTransform, emulatedPosition);
+
+    auto updateEye = [&](int32_t viewIndex, gfx::VRDisplayState::Eye eye) {
       auto offset = displayInfo.GetEyeTranslation(eye);
       auto eyeFromHead = gfx::Matrix4x4Double::Translation(
           gfx::PointDouble3D(offset.x, offset.y, offset.z));
@@ -100,15 +100,14 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
       eyeTransform.Decompose(eyePosition, eyeRotation, eyeScale);
 
       const gfx::VRFieldOfView fov = displayInfo.mDisplayState.eyeFOV[eye];
-      Matrix4x4 projection =
+      gfx::Matrix4x4 projection =
           fov.ConstructProjectionMatrix(depthNear, depthFar, true);
-      RefPtr<XRView> view =
-          new XRView(mParent, xrEye, eyePosition, eyeRotation, projection);
-      views.AppendElement(view);
+      viewerPose->GetEye(viewIndex)->Update(eyePosition, eyeRotation,
+                                            projection);
     };
 
-    addEye(XREye::Left, gfx::VRDisplayState::Eye_Left);
-    addEye(XREye::Right, gfx::VRDisplayState::Eye_Right);
+    updateEye(0, gfx::VRDisplayState::Eye_Left);
+    updateEye(1, gfx::VRDisplayState::Eye_Right);
   } else {
     auto inlineVerticalFov = renderState->GetInlineVerticalFieldOfView();
     const double fov =
@@ -118,24 +117,21 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
     if (canvas) {
       aspect = (float)canvas->Width() / (float)canvas->Height();
     }
-    Matrix4x4 projection =
+    gfx::Matrix4x4 projection =
         ConstructInlineProjection((float)fov, aspect, depthNear, depthFar);
-    RefPtr<XRView> view = new XRView(mParent, XREye::None, gfx::PointDouble3D(),
-                                     gfx::QuaternionDouble(), projection);
-    views.AppendElement(view);
+
+    viewerPose =
+        mSession->PooledViewerPose(gfx::Matrix4x4Double(), emulatedPosition);
+    viewerPose->GetEye(0)->Update(gfx::PointDouble3D(), gfx::QuaternionDouble(),
+                                  projection);
   }
 
-  RefPtr<XRRigidTransform> transform =
-      new XRRigidTransform(mParent, viewerPosition, viewerOrientation);
-
-  RefPtr<XRViewerPose> pose =
-      new XRViewerPose(mParent, transform, emulatedPosition, views);
-
-  return pose.forget();
+  return viewerPose.forget();
 }
 
-XRPose* XRFrame::GetPose(const XRSpace& aSpace, const XRSpace& aBaseSpace,
-                         ErrorResult& aRv) {
+already_AddRefed<XRPose> XRFrame::GetPose(const XRSpace& aSpace,
+                                          const XRSpace& aBaseSpace,
+                                          ErrorResult& aRv) {
   if (!mActive) {
     aRv.ThrowInvalidStateError(
         "GetPose can not be called on an XRFrame that is not active.");
@@ -160,16 +156,18 @@ XRPose* XRFrame::GetPose(const XRSpace& aSpace, const XRSpace& aBaseSpace,
   // TODO (Bug 1616393) - Check if poses must be limited:
   // https://immersive-web.github.io/webxr/#poses-must-be-limited
 
+  const bool emulatedPosition = aSpace.IsPositionEmulated();
   gfx::Matrix4x4Double base;
-  base.SetRotationFromQuaternion(aBaseSpace.GetEffectiveOriginOrientation());
+  base.SetRotationFromQuaternion(
+      aBaseSpace.GetEffectiveOriginOrientation().Inverse());
   base.PreTranslate(-aBaseSpace.GetEffectiveOriginPosition());
 
   gfx::Matrix4x4Double matrix = aSpace.GetEffectiveOriginTransform() * base;
 
   RefPtr<XRRigidTransform> transform = new XRRigidTransform(mParent, matrix);
-  RefPtr<XRPose> pose = new XRPose(mParent, transform, false);
+  RefPtr<XRPose> pose = new XRPose(mParent, transform, emulatedPosition);
 
-  return pose;
+  return pose.forget();
 }
 
 void XRFrame::StartAnimationFrame() {
@@ -185,7 +183,7 @@ void XRFrame::EndInputSourceEvent() { mActive = false; }
 
 gfx::Matrix4x4 XRFrame::ConstructInlineProjection(float aFov, float aAspect,
                                                   float aNear, float aFar) {
-  Matrix4x4 m;
+  gfx::Matrix4x4 m;
   const float depth = aFar - aNear;
   const float invDepth = 1 / depth;
   if (aFov == 0) {

@@ -5,7 +5,10 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/WebAuthnManagerBase.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/WebAuthnTransactionChild.h"
+#include "mozilla/ipc/BackgroundChild.h"
+#include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/dom/Event.h"
 #include "nsGlobalWindowInner.h"
 #include "nsPIWindowRoot.h"
@@ -13,8 +16,8 @@
 namespace mozilla {
 namespace dom {
 
-NS_NAMED_LITERAL_STRING(kDeactivateEvent, "deactivate");
-NS_NAMED_LITERAL_STRING(kVisibilityChange, "visibilitychange");
+constexpr auto kDeactivateEvent = u"deactivate"_ns;
+constexpr auto kVisibilityChange = u"visibilitychange"_ns;
 
 WebAuthnManagerBase::WebAuthnManagerBase(nsPIDOMWindowInner* aParent)
     : mParent(aParent) {
@@ -45,7 +48,8 @@ bool WebAuthnManagerBase::MaybeCreateBackgroundActor() {
     return true;
   }
 
-  PBackgroundChild* actorChild = BackgroundChild::GetOrCreateForCurrentThread();
+  ::mozilla::ipc::PBackgroundChild* actorChild =
+      ::mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!actorChild)) {
     return false;
   }

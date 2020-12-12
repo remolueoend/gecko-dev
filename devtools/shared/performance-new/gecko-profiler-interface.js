@@ -89,8 +89,6 @@ class ActorReadyGeckoProfilerInterface {
     // to be tweaked or made configurable as needed.
     const settings = {
       entries: options.entries || 1000000,
-      // Window length should be Infinite if nothing's been passed.
-      // options.duration is supported for `perfActorVersion > 0`.
       duration: options.duration || 0,
       interval: options.interval || 1,
       features: options.features || [
@@ -149,6 +147,10 @@ class ActorReadyGeckoProfilerInterface {
     if (!IS_SUPPORTED_PLATFORM) {
       return null;
     }
+
+    // Pause profiler before we collect the profile, so that we don't capture
+    // more samples while the parent process or android threads wait for subprocess profiles.
+    Services.profiler.Pause();
 
     let profile;
     try {
@@ -235,7 +237,6 @@ class ActorReadyGeckoProfilerInterface {
 
   /**
    * Lists the supported features of the profiler for the current browser.
-   * This method was added in Firefox 72.
    * @returns {string[]}
    */
   getSupportedFeatures() {

@@ -12,7 +12,7 @@
 #include "mozilla/gfx/2D.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Text.h"
-#include "nsFrame.h"
+#include "nsIFrame.h"
 #include "nsFrameSelection.h"
 #include "nsSplittableFrame.h"
 #include "nsLineBox.h"
@@ -31,13 +31,13 @@
 class nsTextPaintStyle;
 struct SelectionDetails;
 class nsTextFragment;
-class SVGTextFrame;
 
 namespace mozilla {
 class SVGContextPaint;
-};
+class SVGTextFrame;
+}  // namespace mozilla
 
-class nsTextFrame : public nsFrame {
+class nsTextFrame : public nsIFrame {
   typedef mozilla::LayoutDeviceRect LayoutDeviceRect;
   typedef mozilla::SelectionTypeMask SelectionTypeMask;
   typedef mozilla::SelectionType SelectionType;
@@ -161,23 +161,7 @@ class nsTextFrame : public nsFrame {
    protected:
     void SetupJustificationSpacing(bool aPostReflow);
 
-    void InitFontGroupAndFontMetrics() const {
-      if (!mFontMetrics) {
-        if (mWhichTextRun == nsTextFrame::eInflated) {
-          if (!mFrame->InflatedFontMetrics()) {
-            float inflation = mFrame->GetFontSizeInflation();
-            mFontMetrics =
-                nsLayoutUtils::GetFontMetricsForFrame(mFrame, inflation);
-            mFrame->SetInflatedFontMetrics(mFontMetrics);
-          } else {
-            mFontMetrics = mFrame->InflatedFontMetrics();
-          }
-        } else {
-          mFontMetrics = nsLayoutUtils::GetFontMetricsForFrame(mFrame, 1.0f);
-        }
-      }
-      mFontGroup = mFontMetrics->GetThebesFontGroup();
-    }
+    void InitFontGroupAndFontMetrics() const;
 
     const RefPtr<gfxTextRun> mTextRun;
     mutable gfxFontGroup* mFontGroup;
@@ -214,7 +198,7 @@ class nsTextFrame : public nsFrame {
 
   explicit nsTextFrame(ComputedStyle* aStyle, nsPresContext* aPresContext,
                        ClassID aID = kClassID)
-      : nsFrame(aStyle, aPresContext, aID),
+      : nsIFrame(aStyle, aPresContext, aID),
         mNextContinuation(nullptr),
         mContentOffset(0),
         mContentLengthHint(0),
@@ -260,8 +244,8 @@ class nsTextFrame : public nsFrame {
     }
   }
   nsTextFrame* GetNextInFlow() const final {
-    return mNextContinuation && (mNextContinuation->GetStateBits() &
-                                 NS_FRAME_IS_FLUID_CONTINUATION)
+    return mNextContinuation && mNextContinuation->HasAnyStateBits(
+                                    NS_FRAME_IS_FLUID_CONTINUATION)
                ? mNextContinuation
                : nullptr;
   }
@@ -291,7 +275,7 @@ class nsTextFrame : public nsFrame {
   bool IsFrameOfType(uint32_t aFlags) const final {
     // Set the frame state bit for text frames to mark them as replaced.
     // XXX kipp: temporary
-    return nsFrame::IsFrameOfType(
+    return nsIFrame::IsFrameOfType(
         aFlags & ~(nsIFrame::eReplaced | nsIFrame::eLineParticipant));
   }
 
@@ -317,6 +301,8 @@ class nsTextFrame : public nsFrame {
             ListFlags aFlags = ListFlags()) const final;
   nsresult GetFrameName(nsAString& aResult) const final;
   void ToCString(nsCString& aBuf, int32_t* aTotalContentLength) const;
+  void ListTextRuns(FILE* out,
+                    nsTHashtable<nsVoidPtrHashKey>& aSeen) const final;
 #endif
 
   // Returns this text frame's content's text fragment.
@@ -391,7 +377,7 @@ class nsTextFrame : public nsFrame {
    * characters are present.
    */
   bool HasNoncollapsedCharacters() const {
-    return (GetStateBits() & TEXT_HAS_NONCOLLAPSED_CHARACTERS) != 0;
+    return HasAnyStateBits(TEXT_HAS_NONCOLLAPSED_CHARACTERS);
   }
 
 #ifdef ACCESSIBILITY
@@ -401,7 +387,7 @@ class nsTextFrame : public nsFrame {
   float GetFontSizeInflation() const;
   bool IsCurrentFontInflation(float aInflation) const;
   bool HasFontSizeInflation() const {
-    return (GetStateBits() & TEXT_HAS_FONT_INFLATION) != 0;
+    return HasAnyStateBits(TEXT_HAS_FONT_INFLATION);
   }
   void SetFontSizeInflation(float aInflation);
 
@@ -412,11 +398,13 @@ class nsTextFrame : public nsFrame {
                          InlineMinISizeData* aData) override;
   void AddInlinePrefISize(gfxContext* aRenderingContext,
                           InlinePrefISizeData* aData) override;
-  mozilla::LogicalSize ComputeSize(
-      gfxContext* aRenderingContext, mozilla::WritingMode aWritingMode,
-      const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-      const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-      const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) final;
+  SizeComputationResult ComputeSize(gfxContext* aRenderingContext,
+                                    mozilla::WritingMode aWM,
+                                    const mozilla::LogicalSize& aCBSize,
+                                    nscoord aAvailableISize,
+                                    const mozilla::LogicalSize& aMargin,
+                                    const mozilla::LogicalSize& aBorderPadding,
+                                    mozilla::ComputeSizeFlags aFlags) final;
   nsRect ComputeTightBounds(DrawTarget* aDrawTarget) const final;
   nsresult GetPrefWidthTightBounds(gfxContext* aContext, nscoord* aX,
                                    nscoord* aXMost) final;
@@ -440,8 +428,8 @@ class nsTextFrame : public nsFrame {
       TrailingWhitespace aTrimTrailingWhitespace =
           TrailingWhitespace::Trim) final;
 
-  nsOverflowAreas RecomputeOverflow(nsIFrame* aBlockFrame,
-                                    bool aIncludeShadows = true);
+  mozilla::OverflowAreas RecomputeOverflow(nsIFrame* aBlockFrame,
+                                           bool aIncludeShadows = true);
 
   enum TextRunType : uint8_t {
     // Anything in reflow (but not intrinsic width calculation) or
@@ -705,8 +693,8 @@ class nsTextFrame : public nsFrame {
   void SetTextRun(gfxTextRun* aTextRun, TextRunType aWhichTextRun,
                   float aInflation);
   bool IsInTextRunUserData() const {
-    return GetStateBits() &
-           (TEXT_IN_TEXTRUN_USER_DATA | TEXT_IN_UNINFLATED_TEXTRUN_USER_DATA);
+    return HasAnyStateBits(TEXT_IN_TEXTRUN_USER_DATA |
+                           TEXT_IN_UNINFLATED_TEXTRUN_USER_DATA);
   }
   /**
    * Notify the frame that it should drop its pointer to a text run.
@@ -763,8 +751,8 @@ class nsTextFrame : public nsFrame {
 
   bool IsInitialLetterChild() const;
 
-  bool ComputeCustomOverflow(nsOverflowAreas& aOverflowAreas) final;
-  bool ComputeCustomOverflowInternal(nsOverflowAreas& aOverflowAreas,
+  bool ComputeCustomOverflow(mozilla::OverflowAreas& aOverflowAreas) final;
+  bool ComputeCustomOverflowInternal(mozilla::OverflowAreas& aOverflowAreas,
                                      bool aIncludeShadows);
 
   void AssignJustificationGaps(const mozilla::JustificationAssignment& aAssign);
@@ -824,7 +812,7 @@ class nsTextFrame : public nsFrame {
 
   void UnionAdditionalOverflow(nsPresContext* aPresContext, nsIFrame* aBlock,
                                PropertyProvider& aProvider,
-                               nsRect* aVisualOverflowRect,
+                               nsRect* aInkOverflowRect,
                                bool aIncludeTextDecorations,
                                bool aIncludeShadows);
 

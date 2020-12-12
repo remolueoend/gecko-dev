@@ -23,7 +23,6 @@
 #include "nsThreadUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsObjCExceptions.h"
-#include "nsCocoaFeatures.h"
 #include "nsCocoaUtils.h"
 #include "nsChildView.h"
 #include "nsToolkit.h"
@@ -83,6 +82,8 @@ class MacWakeLockListener final : public nsIDOMMozWakeLockListener {
         shouldKeepDisplayOn ? kIOPMAssertionTypeNoDisplaySleep : kIOPMAssertionTypeNoIdleSleep;
     IOPMAssertionID& assertionId =
         shouldKeepDisplayOn ? mAssertionNoDisplaySleepID : mAssertionNoIdleSleepID;
+    WAKE_LOCK_LOG("topic=%s, state=%s, shouldKeepDisplayOn=%d", NS_ConvertUTF16toUTF8(aTopic).get(),
+                  NS_ConvertUTF16toUTF8(aState).get(), shouldKeepDisplayOn);
 
     // Note the wake lock code ensures that we're not sent duplicate
     // "locked-foreground" notifications when multiple wake locks are held.
@@ -269,10 +270,6 @@ static void RemoveScreenWakeLockListener() {
   }
 }
 
-// An undocumented CoreGraphics framework method, present in the same form
-// since at least OS X 10.5.
-extern "C" CGError CGSSetDebugOptions(int options);
-
 // Init
 //
 // Loads the nib (see bug 316076c21) and sets up the CFRunLoopSource used to
@@ -350,20 +347,6 @@ nsresult nsAppShell::Init() {
                                 @selector(nsAppShell_NSApplication_terminate:));
     }
     gAppShellMethodsSwizzled = true;
-  }
-
-  // The bug that this works around was introduced in OS X 10.10.0
-  // and fixed in OS X 10.10.2. Order these version checks so as
-  // few as possible will actually end up running.
-  if (nsCocoaFeatures::OSXVersionMinor() == 10 && nsCocoaFeatures::OSXVersionBugFix() < 2 &&
-      nsCocoaFeatures::OSXVersionMajor() == 10) {
-    // Explicitly turn off CGEvent logging.  This works around bug 1092855.
-    // If there are already CGEvents in the log, turning off logging also
-    // causes those events to be written to disk.  But at this point no
-    // CGEvents have yet been processed.  CGEvents are events (usually
-    // input events) pulled from the WindowServer.  An option of 0x80000008
-    // turns on CGEvent logging.
-    CGSSetDebugOptions(0x80000007);
   }
 
 #if !defined(RELEASE_OR_BETA) || defined(DEBUG)

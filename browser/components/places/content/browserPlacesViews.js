@@ -63,7 +63,6 @@ PlacesViewBase.prototype = {
     history.queryStringToQuery(val, query, options);
     let result = history.executeQuery(query.value, options.value);
     result.addObserver(this);
-    return val;
   },
 
   _result: null,
@@ -72,7 +71,7 @@ PlacesViewBase.prototype = {
   },
   set result(val) {
     if (this._result == val) {
-      return val;
+      return;
     }
 
     if (this._result) {
@@ -97,8 +96,6 @@ PlacesViewBase.prototype = {
       this._resultNode = null;
       delete this._domNodes;
     }
-
-    return val;
   },
 
   _options: null,
@@ -114,8 +111,6 @@ PlacesViewBase.prototype = {
       val.extraClasses = {};
     }
     this._options = val;
-
-    return val;
   },
 
   /**
@@ -254,6 +249,44 @@ PlacesViewBase.prototype = {
   buildContextMenu: function PVB_buildContextMenu(aPopup) {
     this._contextMenuShown = aPopup;
     window.updateCommands("places");
+
+    // Ensure that an existing "Show Other Bookmarks" item is removed before adding it
+    // again. This item should only be added when gBookmarksToolbar2h2020 is true, but
+    // its possible the pref could be toggled off in the same window. This results in
+    // the "Show Other Bookmarks" menu item still being visible even when the pref is
+    // set to false.
+    let existingOtherBookmarksItem = aPopup.querySelector(
+      "#show-other-bookmarks_PersonalToolbar"
+    );
+    existingOtherBookmarksItem?.remove();
+
+    // Add the View menu for the Bookmarks Toolbar and "Show Other Bookmarks" menu item
+    // if the click originated from the Bookmarks Toolbar.
+    if (gBookmarksToolbar2h2020) {
+      let existingSubmenu = aPopup.querySelector("#toggle_PersonalToolbar");
+      existingSubmenu?.remove();
+      let bookmarksToolbar = document.getElementById("PersonalToolbar");
+      if (bookmarksToolbar?.contains(aPopup.triggerNode)) {
+        let menu = BookmarkingUI.buildBookmarksToolbarSubmenu(bookmarksToolbar);
+        aPopup.appendChild(menu);
+
+        if (
+          aPopup.triggerNode.id === "OtherBookmarks" ||
+          aPopup.triggerNode.id === "PlacesChevron" ||
+          aPopup.triggerNode.id === "PlacesToolbarItems"
+        ) {
+          let otherBookmarksMenuItem = BookmarkingUI.buildShowOtherBookmarksMenuItem();
+
+          if (otherBookmarksMenuItem) {
+            aPopup.insertBefore(
+              otherBookmarksMenuItem,
+              menu.nextElementSibling
+            );
+          }
+        }
+      }
+    }
+
     return this.controller.buildContextMenu(aPopup);
   },
 
@@ -543,6 +576,9 @@ PlacesViewBase.prototype = {
     }
   },
 
+  // Opt-out of history details updates, since all the views derived from this
+  // are not showing them.
+  observeHistoryDetails: false,
   nodeHistoryDetailsChanged() {},
   nodeTagsChanged() {},
   nodeDateAddedChanged() {},
@@ -868,6 +904,8 @@ function PlacesToolbar(aPlace) {
     ["_dropIndicator", "PlacesToolbarDropIndicator"],
     ["_chevron", "PlacesChevron"],
     ["_chevronPopup", "PlacesChevronPopup"],
+    ["_otherBookmarks", "OtherBookmarks"],
+    ["_otherBookmarksPopup", "OtherBookmarksPopup"],
   ].forEach(function(elementGlobal) {
     let [name, id] = elementGlobal;
     thisView.__defineGetter__(name, function() {
@@ -883,7 +921,10 @@ function PlacesToolbar(aPlace) {
 
   this._viewElt._placesView = this;
 
-  this._addEventListeners(this._viewElt, this._cbEvents, false);
+  this._dragRoot = BookmarkingUI.toolbar.contains(this._viewElt)
+    ? BookmarkingUI.toolbar
+    : this._viewElt;
+  this._addEventListeners(this._dragRoot, this._cbEvents, false);
   this._addEventListeners(this._rootElt, ["popupshowing", "popuphidden"], true);
   this._addEventListeners(this._rootElt, ["overflow", "underflow"], true);
   this._addEventListeners(window, ["resize", "unload"], false);
@@ -933,7 +974,9 @@ PlacesToolbar.prototype = {
   ]),
 
   uninit: function PT_uninit() {
-    this._removeEventListeners(this._viewElt, this._cbEvents, false);
+    if (this._dragRoot) {
+      this._removeEventListeners(this._dragRoot, this._cbEvents, false);
+    }
     this._removeEventListeners(
       this._rootElt,
       ["popupshowing", "popuphidden"],
@@ -951,6 +994,10 @@ PlacesToolbar.prototype = {
       this._chevron._placesView.uninit();
     }
 
+    if (this._otherBookmarks._placesView) {
+      this._otherBookmarks._placesView.uninit();
+    }
+
     PlacesViewBase.prototype.uninit.apply(this, arguments);
   },
 
@@ -959,6 +1006,18 @@ PlacesToolbar.prototype = {
 
   get _isAlive() {
     return this._resultNode && this._rootElt;
+  },
+
+  _runBeforeFrameRender(callback) {
+    return new Promise((resolve, reject) => {
+      window.requestAnimationFrame(() => {
+        try {
+          resolve(callback());
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
   },
 
   async _rebuild() {
@@ -981,37 +1040,35 @@ PlacesToolbar.prototype = {
       // calculate a precise number of visible items, thus we guess a size from
       // the first non-separator node (because separators have flexible size).
       let startIndex = 0;
-      let limit = await new Promise(resolve =>
-        window.requestAnimationFrame(() => {
-          if (!this._isAlive) {
-            return resolve(cc);
-          }
+      let limit = await this._runBeforeFrameRender(() => {
+        if (!this._isAlive) {
+          return cc;
+        }
 
-          // Look for the first non-separator node.
-          let elt;
-          while (startIndex < cc) {
-            elt = this._insertNewItem(
-              this._resultNode.getChild(startIndex),
-              this._rootElt
-            );
-            ++startIndex;
-            if (elt.localName != "toolbarseparator") {
-              break;
-            }
+        // Look for the first non-separator node.
+        let elt;
+        while (startIndex < cc) {
+          elt = this._insertNewItem(
+            this._resultNode.getChild(startIndex),
+            this._rootElt
+          );
+          ++startIndex;
+          if (elt.localName != "toolbarseparator") {
+            break;
           }
-          if (!elt) {
-            return resolve(cc);
-          }
+        }
+        if (!elt) {
+          return cc;
+        }
 
-          return window.promiseDocumentFlushed(() => {
-            // We assume a button with just the icon will be more or less a square,
-            // then compensate the measurement error by considering a larger screen
-            // width. Moreover the window could be bigger than the screen.
-            let size = elt.clientHeight || 1; // Sanity fallback.
-            resolve(Math.min(cc, parseInt((window.screen.width * 1.5) / size)));
-          });
-        })
-      );
+        return window.promiseDocumentFlushed(() => {
+          // We assume a button with just the icon will be more or less a square,
+          // then compensate the measurement error by considering a larger screen
+          // width. Moreover the window could be bigger than the screen.
+          let size = elt.clientHeight || 1; // Sanity fallback.
+          return Math.min(cc, parseInt((window.screen.width * 1.5) / size));
+        });
+      });
 
       if (!this._isAlive) {
         return;
@@ -1035,6 +1092,8 @@ PlacesToolbar.prototype = {
       // Otherwise, it will be initialized when the toolbar overflows.
       this._chevronPopup.place = this.place;
     }
+
+    BookmarkingUI.maybeShowOtherBookmarksFolder();
   },
 
   _insertNewItem: function PT__insertNewItem(
@@ -1082,6 +1141,10 @@ PlacesToolbar.prototype = {
     }
 
     button._placesNode = aChild;
+    let { icon } = button._placesNode;
+    if (icon) {
+      button.setAttribute("image", icon);
+    }
     if (!this._domNodes.has(aChild)) {
       this._domNodes.set(aChild, button);
     }
@@ -1118,6 +1181,21 @@ PlacesToolbar.prototype = {
     }
 
     this._updateChevronPopupNodesVisibility();
+  },
+
+  _onOtherBookmarksPopupShowing: function PT__onOtherBookmarksPopupShowing(
+    aEvent
+  ) {
+    if (aEvent.target != this._otherBookmarksPopup) {
+      return;
+    }
+
+    if (!this._otherBookmarks._placesView) {
+      this._otherBookmarks._placesView = new PlacesMenu(
+        aEvent,
+        "place:parent=" + PlacesUtils.bookmarks.unfiledGuid
+      );
+    }
   },
 
   handleEvent: function PT_handleEvent(aEvent) {

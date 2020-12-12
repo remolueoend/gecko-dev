@@ -6,33 +6,45 @@
 #ifndef nsIWidget_h__
 #define nsIWidget_h__
 
-#include "mozilla/UniquePtr.h"
-#include "nsISupports.h"
-#include "nsColor.h"
-#include "nsRect.h"
-#include "nsString.h"
-
-#include "nsCOMPtr.h"
-#include "nsWidgetInitData.h"
-#include "nsTArray.h"
-#include "nsITheme.h"
-#include "nsITimer.h"
-#include "nsRegionFwd.h"
-#include "nsXULAppAPI.h"
-#include "mozilla/Maybe.h"
+#include <cmath>
+#include <cstdint>
+#include "ErrorList.h"
+#include "Units.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
-#include "mozilla/layers/ScrollableLayerGuid.h"
-#include "mozilla/layers/ZoomConstraints.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/gfx/Point.h"
-#include "mozilla/widget/IMEData.h"
-#include "VsyncSource.h"
-#include "nsDataHashtable.h"
-#include "nsIObserver.h"
-#include "nsIWidgetListener.h"
-#include "Units.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/gfx/Matrix.h"
+#include "mozilla/gfx/Rect.h"
+#include "mozilla/layers/LayersTypes.h"
+#include "mozilla/layers/ScrollableLayerGuid.h"
+#include "mozilla/layers/ZoomConstraints.h"
+#include "mozilla/widget/IMEData.h"
+#include "nsCOMPtr.h"
+#include "nsColor.h"
+#include "nsDataHashtable.h"
+#include "nsDebug.h"
+#include "nsID.h"
+#include "nsIObserver.h"
+#include "nsISupports.h"
+#include "nsITheme.h"
+#include "nsITimer.h"
+#include "nsIWidgetListener.h"
+#include "nsRect.h"
+#include "nsSize.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
+#include "nsWidgetInitData.h"
+#include "nsXULAppAPI.h"
+
+#ifdef MOZ_IS_GCC
+#  include "VsyncSource.h"
+#endif
 
 // forward declarations
 class nsIBidiKeyboard;
@@ -43,8 +55,15 @@ class ViewWrapper;
 class nsIScreen;
 class nsIRunnable;
 class nsIKeyEventInPluginCallback;
+class nsUint64HashKey;
 
 namespace mozilla {
+class NativeEventData;
+class WidgetGUIEvent;
+class WidgetInputEvent;
+class WidgetKeyboardEvent;
+class WidgetPluginEvent;
+struct FontRange;
 
 enum class StyleWindowShadow : uint8_t;
 
@@ -70,8 +89,7 @@ class PLayerTransactionChild;
 class WebRenderBridgeChild;
 }  // namespace layers
 namespace gfx {
-class DrawTarget;
-class SourceSurface;
+class VsyncSource;
 }  // namespace gfx
 namespace widget {
 class TextEventDispatcher;
@@ -131,6 +149,7 @@ typedef void* nsNativeWidget;
 // IME context.  Note that the result is only valid in the process.  So,
 // XP code should use nsIWidget::GetNativeIMEContext() instead of using this.
 #define NS_RAW_NATIVE_IME_CONTEXT 14
+#define NS_NATIVE_WINDOW_WEBRTC_DEVICE_ID 15
 #ifdef XP_MACOSX
 #  define NS_NATIVE_PLUGIN_PORT_QD 100
 #  define NS_NATIVE_PLUGIN_PORT_CG 101
@@ -146,9 +165,6 @@ typedef void* nsNativeWidget;
 #if defined(MOZ_WIDGET_GTK)
 // set/get nsPluginNativeWindowGtk, e10s specific
 #  define NS_NATIVE_PLUGIN_OBJECT_PTR 104
-#  ifdef MOZ_X11
-#    define NS_NATIVE_COMPOSITOR_DISPLAY 105
-#  endif  // MOZ_X11
 #  define NS_NATIVE_EGL_WINDOW 106
 #endif
 #ifdef MOZ_WIDGET_ANDROID
@@ -156,6 +172,8 @@ typedef void* nsNativeWidget;
 #  define NS_PRESENTATION_WINDOW 101
 #  define NS_PRESENTATION_SURFACE 102
 #endif
+
+#define MOZ_WIDGET_MAX_SIZE 16384
 
 // Must be kept in sync with xpcom/rust/xpcom/src/interfaces/nonidl.rs
 #define NS_IWIDGET_IID                               \
@@ -277,11 +295,18 @@ namespace widget {
  * Values are in device pixels.
  */
 struct SizeConstraints {
-  SizeConstraints() : mMaxSize(NS_MAXSIZE, NS_MAXSIZE) {}
+  SizeConstraints() : mMaxSize(MOZ_WIDGET_MAX_SIZE, MOZ_WIDGET_MAX_SIZE) {}
 
   SizeConstraints(mozilla::LayoutDeviceIntSize aMinSize,
                   mozilla::LayoutDeviceIntSize aMaxSize)
-      : mMinSize(aMinSize), mMaxSize(aMaxSize) {}
+      : mMinSize(aMinSize), mMaxSize(aMaxSize) {
+    if (mMaxSize.width > MOZ_WIDGET_MAX_SIZE) {
+      mMaxSize.width = MOZ_WIDGET_MAX_SIZE;
+    }
+    if (mMaxSize.height > MOZ_WIDGET_MAX_SIZE) {
+      mMaxSize.height = MOZ_WIDGET_MAX_SIZE;
+    }
+  }
 
   mozilla::LayoutDeviceIntSize mMinSize;
   mozilla::LayoutDeviceIntSize mMaxSize;
@@ -594,19 +619,6 @@ class nsIWidget : public nsISupports {
   mozilla::CSSToLayoutDeviceScale GetDefaultScale();
 
   /**
-   * Return the Gecko override of the system default scale, if any;
-   * returns <= 0.0 if the system scale should be used as-is.
-   * nsIWidget::GetDefaultScale() [above] takes this into account.
-   * It is exposed here so that code that wants to check for a
-   * default-scale override without having a widget on hand can
-   * easily access the same value.
-   * Note that any scale override is a browser-wide value, whereas
-   * the default GetDefaultScale value (when no override is present)
-   * may vary between widgets (or screens).
-   */
-  static double DefaultScaleOverride();
-
-  /**
    * Return the first child of this widget.  Will return null if
    * there are no children.
    */
@@ -645,6 +657,12 @@ class nsIWidget : public nsISupports {
    *
    */
   virtual void Show(bool aState) = 0;
+
+  /**
+   * Whether or not a widget must be recreated after being hidden to show
+   * again properly.
+   */
+  virtual bool NeedsRecreateToReshow() { return false; }
 
   /**
    * Make the window modal.
@@ -946,16 +964,6 @@ class nsIWidget : public nsISupports {
   }
 
   /**
-   * Get the size of the bounds of this widget that will be visible when
-   * rendered.
-   *
-   * @return the width and height of the composition size of this widget.
-   */
-  virtual LayoutDeviceIntSize GetCompositionSize() {
-    return GetBounds().Size();
-  }
-
-  /**
    * Set the background color for this widget
    *
    * @param aColor the new background color
@@ -1030,7 +1038,7 @@ class nsIWidget : public nsISupports {
     uintptr_t mWindowID;  // e10s specific, the unique plugin port id
     bool mVisible;        // e10s specific, widget visibility
     LayoutDeviceIntRect mBounds;
-    nsTArray<LayoutDeviceIntRect> mClipRegion;
+    CopyableTArray<LayoutDeviceIntRect> mClipRegion;
   };
 
   /**
@@ -1148,12 +1156,15 @@ class nsIWidget : public nsISupports {
   virtual void SetShowsToolbarButton(bool aShow) = 0;
 
   /*
-   * On Mac OS X Lion, this method shows or hides the full screen button in
-   * the titlebar that handles native full screen mode.
+   * On macOS, this method determines whether we tell cocoa that the window
+   * supports native full screen. If we do so, and another window is in
+   * native full screen, this window will also appear in native full screen.
    *
-   * Ignored on child widgets, non-Mac platforms, & pre-Lion Mac.
+   * We generally only want to do this for primary application windows.
+   *
+   * Ignored on child widgets and on non-Mac platforms.
    */
-  virtual void SetShowsFullScreenButton(bool aShow) = 0;
+  virtual void SetSupportsNativeFullscreen(bool aSupportsNativeFullscreen) = 0;
 
   enum WindowAnimationType {
     eGenericWindowAnimation,
@@ -1716,13 +1727,6 @@ class nsIWidget : public nsISupports {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
 
-  virtual nsresult SetPrefersReducedMotionOverrideForTest(bool aValue) {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-  virtual nsresult ResetPrefersReducedMotionOverrideForTest() {
-    return NS_ERROR_NOT_IMPLEMENTED;
-  }
-
   // Get rectangle of the screen where the window is placed.
   // It's used to detect popup overflow under Wayland because
   // Screenmanager does not work under it.
@@ -1730,6 +1734,15 @@ class nsIWidget : public nsISupports {
   virtual nsresult GetScreenRect(LayoutDeviceIntRect* aRect) {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
+  virtual nsRect GetPreferredPopupRect() {
+    NS_WARNING("GetPreferredPopupRect implemented only for wayland");
+    return nsRect(0, 0, 0, 0);
+  }
+  virtual void FlushPreferredPopupRect() {
+    NS_WARNING("FlushPreferredPopupRect implemented only for wayland");
+    return;
+  }
+
 #endif
 
   /*
@@ -1870,6 +1883,15 @@ class nsIWidget : public nsISupports {
    * Enable or Disable IME by windowless plugin.
    */
   virtual void EnableIMEForPlugin(bool aEnable) {}
+
+  /**
+   * MaybeDispatchInitialFocusEvent will dispatch a focus event after creation
+   * of the widget, in the event that we were not able to observe and respond to
+   * the initial focus event. This is necessary for the early skeleton UI
+   * window, which is displayed and receives its initial focus event before we
+   * can actually respond to it.
+   */
+  virtual void MaybeDispatchInitialFocusEvent() {}
 
   /*
    * Notifies the input context changes.
@@ -2030,6 +2052,11 @@ class nsIWidget : public nsISupports {
   virtual CompositorBridgeChild* GetRemoteRenderer() { return nullptr; }
 
   /**
+   * Clear WebRender resources
+   */
+  virtual void ClearCachedWebrenderResources() {}
+
+  /**
    * If this widget has its own vsync source, return it, otherwise return
    * nullptr. An example of such local source would be Wayland frame callbacks.
    */
@@ -2136,7 +2163,8 @@ class nsIWidget : public nsISupports {
    * @param aSize size of the buffer in screen pixels.
    */
   virtual void RecvScreenPixels(mozilla::ipc::Shmem&& aMem,
-                                const ScreenIntSize& aSize) = 0;
+                                const ScreenIntSize& aSize,
+                                bool aNeedsYFlip) = 0;
 
   virtual void UpdateDynamicToolbarMaxHeight(mozilla::ScreenIntCoord aHeight) {}
   virtual mozilla::ScreenIntCoord GetDynamicToolbarMaxHeight() const {
@@ -2146,13 +2174,13 @@ class nsIWidget : public nsISupports {
 
   static already_AddRefed<nsIBidiKeyboard> CreateBidiKeyboard();
 
- protected:
   /**
    * Like GetDefaultScale, but taking into account only the system settings
    * and ignoring Gecko preferences.
    */
   virtual double GetDefaultScaleInternal() { return 1.0; }
 
+ protected:
   // keep the list of children.  We also keep track of our siblings.
   // The ownership model is as follows: parent holds a strong ref to
   // the first element of the list, and each element holds a strong

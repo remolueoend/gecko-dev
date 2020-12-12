@@ -60,7 +60,7 @@
             searchbar.updateDisplay();
           }
         },
-        QueryInterface: ChromeUtils.generateQI([Ci.nsIObserver]),
+        QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
       };
 
       this._ignoreFocus = false;
@@ -79,6 +79,16 @@
       // Don't go further if in Customize mode.
       if (this.parentNode.parentNode.localName == "toolbarpaletteitem") {
         return;
+      }
+
+      // Ensure we get persisted widths back, if we've been in the palette:
+      let storedWidth = Services.xulStore.getValue(
+        document.documentURI,
+        this.parentNode.id,
+        "width"
+      );
+      if (storedWidth) {
+        this.parentNode.setAttribute("width", storedWidth);
       }
 
       this._stringBundle = this.querySelector("stringbundle");
@@ -284,6 +294,7 @@
     handleSearchCommand(aEvent, aEngine, aForceNewTab) {
       let where = "current";
       let params;
+      const newTabPref = Services.prefs.getBoolPref("browser.search.openintab");
 
       // Open ctrl/cmd clicks on one-off buttons in a new background tab.
       if (
@@ -294,13 +305,21 @@
           return;
         }
         where = whereToOpenLink(aEvent, false, true);
+        if (
+          newTabPref &&
+          !aEvent.altKey &&
+          !aEvent.getModifierState("AltGraph") &&
+          where == "current" &&
+          !gBrowser.selectedTab.isEmpty
+        ) {
+          where = "tab";
+        }
       } else if (aForceNewTab) {
         where = "tab";
         if (Services.prefs.getBoolPref("browser.tabs.loadInBackground")) {
           where += "-background";
         }
       } else {
-        let newTabPref = Services.prefs.getBoolPref("browser.search.openintab");
         if (
           (aEvent instanceof KeyboardEvent &&
             (aEvent.altKey || aEvent.getModifierState("AltGraph"))) ^
@@ -319,19 +338,19 @@
           };
         }
       }
-
       this.handleSearchCommandWhere(aEvent, aEngine, where, params);
     }
 
-    handleSearchCommandWhere(aEvent, aEngine, aWhere, aParams) {
+    handleSearchCommandWhere(aEvent, aEngine, aWhere, aParams = {}) {
       let textBox = this._textbox;
       let textValue = textBox.value;
 
       let selection = this.telemetrySearchDetails;
       let oneOffRecorded = false;
 
-      BrowserUsageTelemetry.recordSearchbarSelectedResultMethod(
+      BrowserSearchTelemetry.recordSearchSuggestionSelectionMethod(
         aEvent,
+        "searchbar",
         selection ? selection.index : -1
       );
 
@@ -361,20 +380,32 @@
           if (!aEngine) {
             aEngine = this.currentEngine;
           }
-          BrowserSearch.recordOneoffSearchInTelemetry(aEngine, source, type);
+          BrowserSearchTelemetry.recordSearch(gBrowser, aEngine, source, {
+            type,
+            isOneOff: true,
+          });
         }
+      }
+
+      if (aWhere === "tab" && !!aParams.inBackground) {
+        // Keep the focus in the search bar.
+        aParams.avoidBrowserFocus = true;
+      } else if (
+        aWhere !== "window" &&
+        aEvent.keyCode === KeyEvent.DOM_VK_RETURN
+      ) {
+        // Move the focus to the selected browser when keyup the Enter.
+        aParams.avoidBrowserFocus = true;
+        this._needBrowserFocusAtEnterKeyUp = true;
       }
 
       // This is a one-off search only if oneOffRecorded is true.
       this.doSearch(textValue, aWhere, aEngine, aParams, oneOffRecorded);
-
-      if (aWhere == "tab" && aParams && aParams.inBackground) {
-        this.focus();
-      }
     }
 
     doSearch(aData, aWhere, aEngine, aParams, aOneOff) {
       let textBox = this._textbox;
+      let engine = aEngine || this.currentEngine;
 
       // Save the current value in the form history
       if (
@@ -387,6 +418,7 @@
             op: "bump",
             fieldname: textBox.getAttribute("autocompletesearchparam"),
             value: aData,
+            source: engine.name,
           },
           {
             handleError(aError) {
@@ -398,7 +430,6 @@
         );
       }
 
-      let engine = aEngine || this.currentEngine;
       let submission = engine.getSubmission(aData, null, "searchbar");
       let telemetrySearchDetails = this.telemetrySearchDetails;
       this.telemetrySearchDetails = null;
@@ -410,8 +441,14 @@
         isOneOff: aOneOff,
         isSuggestion: !aOneOff && telemetrySearchDetails,
         selection: telemetrySearchDetails,
+        url: submission.uri,
       };
-      BrowserSearch.recordSearchInTelemetry(engine, "searchbar", details);
+      BrowserSearchTelemetry.recordSearch(
+        gBrowser,
+        engine,
+        "searchbar",
+        details
+      );
       // null parameter below specifies HTML response for search
       let params = {
         postData: submission.postData,
@@ -448,27 +485,6 @@
     _setupEventListeners() {
       this.addEventListener("click", event => {
         this._maybeSelectAll();
-      });
-
-      this.addEventListener("command", event => {
-        const target = event.originalTarget;
-        if (target.engine) {
-          this.currentEngine = target.engine;
-        } else if (target.classList.contains("addengine-item")) {
-          // Select the installed engine if the installation succeeds.
-          Services.search
-            .addEngine(
-              target.getAttribute("uri"),
-              target.getAttribute("src"),
-              false
-            )
-            .then(engine => (this.currentEngine = engine));
-        } else {
-          return;
-        }
-
-        this.focus();
-        this.select();
       });
 
       this.addEventListener(
@@ -601,6 +617,12 @@
 
         BrowserSearch.searchBar._textbox.closePopup();
 
+        // Make sure the context menu isn't opened via keyboard shortcut. Check for text selection
+        // before updating the state of any menu items.
+        if (event.button) {
+          this._maybeSelectAll();
+        }
+
         // Update disabled state of menu items
         for (let item of this._menupopup.querySelectorAll("menuitem[cmd]")) {
           let command = item.getAttribute("cmd");
@@ -617,10 +639,6 @@
 
         this._menupopup.openPopupAtScreen(event.screenX, event.screenY, true);
 
-        // Make sure the context menu isn't opened via keyboard shortcut.
-        if (event.button) {
-          this._maybeSelectAll();
-        }
         event.preventDefault();
       });
     }
@@ -664,7 +682,9 @@
       // This is implemented so that when textbox.value is set directly (e.g.,
       // by tests), the one-off query is updated.
       this.textbox.onBeforeValueSet = aValue => {
-        this.textbox.popup.oneOffButtons.query = aValue;
+        if (this.textbox.popup._oneOffButtons) {
+          this.textbox.popup.oneOffButtons.query = aValue;
+        }
         return aValue;
       };
 
@@ -799,6 +819,16 @@
           this.textbox._selectionDetails = null;
         }
         this.handleSearchCommand(event, engine);
+      };
+
+      this.textbox.onkeyup = event => {
+        if (
+          event.keyCode === KeyEvent.DOM_VK_RETURN &&
+          this._needBrowserFocusAtEnterKeyUp
+        ) {
+          this._needBrowserFocusAtEnterKeyUp = false;
+          gBrowser.selectedBrowser.focus();
+        }
       };
     }
 

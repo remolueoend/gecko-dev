@@ -6,35 +6,71 @@
 #include "nsRFPService.h"
 
 #include <algorithm>
-#include <memory>
-#include <time.h>
+#include <cfloat>
+#include <cinttypes>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <new>
+#include <type_traits>
+#include <utility>
 
+#include "MainThreadUtils.h"
+
+#include "mozilla/ArrayIterator.h"
+#include "mozilla/Assertions.h"
+#include "mozilla/Atomics.h"
+#include "mozilla/Casting.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/dom/Element.h"
+#include "mozilla/HashFunctions.h"
+#include "mozilla/HelperMacros.h"
+#include "mozilla/Likely.h"
 #include "mozilla/Logging.h"
+#include "mozilla/MacroForEach.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/Services.h"
-#include "mozilla/StaticPtr.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPrefs_privacy.h"
+#include "mozilla/StaticPtr.h"
 #include "mozilla/TextEvents.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/Element.h"
 #include "mozilla/dom/KeyboardEventBinding.h"
+#include "mozilla/fallible.h"
 
+#include "nsBaseHashtable.h"
 #include "nsCOMPtr.h"
+#include "nsComponentManagerUtils.h"
 #include "nsCoord.h"
+#include "nsDataHashtable.h"
+#include "nsDebug.h"
+#include "nsError.h"
+#include "nsHashKeys.h"
+#include "nsJSUtils.h"
+#include "nsLiteralString.h"
+#include "nsPrintfCString.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
-#include "nsXULAppAPI.h"
-#include "nsPrintfCString.h"
+#include "nsStringFlags.h"
+#include "nsTArray.h"
+#include "nsTLiteralString.h"
+#include "nsTPromiseFlatString.h"
+#include "nsTStringRepr.h"
+#include "nsXPCOM.h"
 
 #include "nsICryptoHash.h"
+#include "nsIGlobalObject.h"
 #include "nsIObserverService.h"
 #include "nsIRandomGenerator.h"
 #include "nsIXULAppInfo.h"
-#include "nsJSUtils.h"
 
+#include "nscore.h"
 #include "prenv.h"
-#include "nss.h"
+#include "prtime.h"
+#include "xpcpublic.h"
 
 #include "js/Date.h"
 
@@ -67,6 +103,41 @@ static bool sInitialized = false;
 nsDataHashtable<KeyboardHashKey, const SpoofingKeyboardCode*>*
     nsRFPService::sSpoofingKeyboardCodes = nullptr;
 static mozilla::StaticMutex sLock;
+
+KeyboardHashKey::KeyboardHashKey(const KeyboardLangs aLang,
+                                 const KeyboardRegions aRegion,
+                                 const KeyNameIndexType aKeyIdx,
+                                 const nsAString& aKey)
+    : mLang(aLang), mRegion(aRegion), mKeyIdx(aKeyIdx), mKey(aKey) {}
+
+KeyboardHashKey::KeyboardHashKey(KeyTypePointer aOther)
+    : mLang(aOther->mLang),
+      mRegion(aOther->mRegion),
+      mKeyIdx(aOther->mKeyIdx),
+      mKey(aOther->mKey) {}
+
+KeyboardHashKey::KeyboardHashKey(KeyboardHashKey&& aOther)
+    : PLDHashEntryHdr(std::move(aOther)),
+      mLang(std::move(aOther.mLang)),
+      mRegion(std::move(aOther.mRegion)),
+      mKeyIdx(std::move(aOther.mKeyIdx)),
+      mKey(std::move(aOther.mKey)) {}
+
+KeyboardHashKey::~KeyboardHashKey() = default;
+
+bool KeyboardHashKey::KeyEquals(KeyTypePointer aOther) const {
+  return mLang == aOther->mLang && mRegion == aOther->mRegion &&
+         mKeyIdx == aOther->mKeyIdx && mKey == aOther->mKey;
+}
+
+KeyboardHashKey::KeyTypePointer KeyboardHashKey::KeyToPointer(KeyType aKey) {
+  return &aKey;
+}
+
+PLDHashNumber KeyboardHashKey::HashKey(KeyTypePointer aKey) {
+  PLDHashNumber hash = mozilla::HashString(aKey->mKey);
+  return mozilla::AddToHash(hash, aKey->mRegion, aKey->mKeyIdx, aKey->mLang);
+}
 
 /* static */
 nsRFPService* nsRFPService::GetOrCreate() {
@@ -129,7 +200,7 @@ class LRUCache final {
           MOZ_LOG(gResistFingerprintingLog, LogLevel::Verbose,
                   ("LRU Cache HIT-MISS with %lli != %lli and %lli != %lli",
                    aKeyPart1, tmp_keyPart1, aKeyPart2, tmp_keyPart2));
-          return EmptyCString();
+          return ""_ns;
         }
 
         cacheEntry.accessTime = PR_Now();
@@ -139,7 +210,7 @@ class LRUCache final {
       }
     }
 
-    return EmptyCString();
+    return ""_ns;
   }
 
   void Store(long long aKeyPart1, long long aKeyPart2,
@@ -682,6 +753,14 @@ static uint32_t GetSpoofedVersion() {
   uint32_t firefoxVersion = appVersion.ToInteger(&rv);
   NS_ENSURE_SUCCESS(rv, kKnownEsrVersion);
 
+  // Some add-on tests set the Firefox version to low numbers like 1 or 42,
+  // which causes the spoofed version calculation's unsigned int subtraction
+  // below to wrap around zero to Firefox versions like 4294967287. This
+  // function should always return an ESR version, so return a good one now.
+  if (firefoxVersion < kKnownEsrVersion) {
+    return kKnownEsrVersion;
+  }
+
 #ifdef DEBUG
   // If we are running in Firefox ESR, determine whether the formula of ESR
   // version has changed.  Once changed, we must update the formula in this
@@ -699,13 +778,6 @@ static uint32_t GetSpoofedVersion() {
   // until ESR 104±1 in 2022. :) We have a debug assert above to catch if the
   // spoofed version doesn't match the actual ESR version then.
   // We infer the last and closest ESR version based on this rule.
-
-  if (firefoxVersion < 78) {
-    // 68 is the last ESR version from the old six-week release cadence. After
-    // 78 we can assume the four-week new release cadence.
-    return 68;
-  }
-
   uint32_t spoofedVersion =
       firefoxVersion - ((firefoxVersion - kKnownEsrVersion) % 13);
 
@@ -812,7 +884,7 @@ void nsRFPService::UpdateRFPPref() {
     // We will not touch the TZ value if 'privacy.resistFingerprinting' is false
     // during the time of initialization.
     if (!mInitialTZValue.IsEmpty()) {
-      nsAutoCString tzValue = NS_LITERAL_CSTRING("TZ=") + mInitialTZValue;
+      nsAutoCString tzValue = "TZ="_ns + mInitialTZValue;
       static char* tz = nullptr;
 
       // If the tz has been set before, we free it first since it will be
@@ -822,7 +894,7 @@ void nsRFPService::UpdateRFPPref() {
       }
       // PR_SetEnv() needs the input string been leaked intentionally, so
       // we copy it here.
-      tz = ToNewCString(tzValue);
+      tz = ToNewCString(tzValue, mozilla::fallible);
       if (tz != nullptr) {
         PR_SetEnv(tz);
       }
@@ -900,12 +972,12 @@ void nsRFPService::MaybeCreateSpoofingKeyCodesForEnUS() {
 
   static const SpoofingKeyboardInfo spoofingKeyboardInfoTable[] = {
 #define KEY(key_, _codeNameIdx, _keyCode, _modifier) \
-  {KEY_NAME_INDEX_USE_STRING,                        \
-   NS_LITERAL_STRING(key_),                          \
+  {NS_LITERAL_STRING_FROM_CSTRING(key_),             \
+   KEY_NAME_INDEX_USE_STRING,                        \
    {CODE_NAME_INDEX_##_codeNameIdx, _keyCode, _modifier}},
 #define CONTROL(keyNameIdx_, _codeNameIdx, _keyCode) \
-  {KEY_NAME_INDEX_##keyNameIdx_,                     \
-   EmptyString(),                                    \
+  {u""_ns,                                           \
+   KEY_NAME_INDEX_##keyNameIdx_,                     \
    {CODE_NAME_INDEX_##_codeNameIdx, _keyCode, MODIFIER_NONE}},
 #include "KeyCodeConsensus_En_US.h"
 #undef CONTROL
@@ -1056,7 +1128,7 @@ bool nsRFPService::GetSpoofedCode(const dom::Document* aDoc,
   // it's a right key.
   if (aKeyboardEvent->mLocation ==
           dom::KeyboardEvent_Binding::DOM_KEY_LOCATION_RIGHT &&
-      StringEndsWith(aOut, NS_LITERAL_STRING("Left"))) {
+      StringEndsWith(aOut, u"Left"_ns)) {
     aOut.ReplaceLiteral(aOut.Length() - 4, 4, u"Right");
   }
 

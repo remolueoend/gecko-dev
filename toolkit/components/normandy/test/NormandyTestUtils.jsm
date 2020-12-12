@@ -51,6 +51,7 @@ const NormandyTestUtils = {
             "ade1c14196ec4fe0aa0a6ba40ac433d7c8d1ec985581a8a94d43dc58991b5171",
           extensionHashAlgorithm: "sha256",
           enrollmentId: NormandyUtils.generateUuid(),
+          temporaryErrorDeadline: null,
         },
         attrs
       );
@@ -190,7 +191,7 @@ const NormandyTestUtils = {
 
         // last modified needs to be some positive integer
         let lastModified = await db.getLastModified();
-        await db.saveLastModified(lastModified + 1);
+        await db.importChanges({}, lastModified + 1);
 
         const collectionHelper = {
           async addRecipes(newRecipes) {
@@ -211,7 +212,7 @@ const NormandyTestUtils = {
               });
             }
             lastModified = (await db.getLastModified()) || 0;
-            await db.saveLastModified(lastModified + 1);
+            await db.importChanges({}, lastModified + 1);
           },
         };
 
@@ -221,7 +222,7 @@ const NormandyTestUtils = {
           db = await RecipeRunner._remoteSettingsClientForTesting.db;
           await db.clear();
           lastModified = await db.getLastModified();
-          await db.saveLastModified(lastModified + 1);
+          await db.importChanges({}, lastModified + 1);
         }
       };
     };

@@ -10,13 +10,20 @@
 #include "GLContextTypes.h"
 #include "GLConsts.h"
 #include "nsSize.h"
-#include "ipc/IPCMessageUtils.h"
+#include "mozilla/ipc/IPCTypes.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/gfx/Point.h"
 #include "../layers/ImageTypes.h"
 
+#include <map>
+
 #ifdef XP_WIN
 #  include <windows.h>
+struct ID3D11Texture2D;
+#endif
+
+#ifdef XP_MACOSX
+class MacIOSurface;
 #endif
 
 namespace mozilla {
@@ -186,10 +193,14 @@ class GLBlitHelper final {
                               OriginPos destOrigin);
 
  private:
-#ifdef XP_WIN
-  // GLBlitHelperD3D.cpp:
   bool BlitImage(layers::GPUVideoImage* srcImage, const gfx::IntSize& destSize,
                  OriginPos destOrigin) const;
+#ifdef XP_MACOSX
+  bool BlitImage(MacIOSurface* const iosurf, const gfx::IntSize& destSize,
+                 OriginPos destOrigin) const;
+#endif
+#ifdef XP_WIN
+  // GLBlitHelperD3D.cpp:
   bool BlitImage(layers::D3D11ShareHandleImage* srcImage,
                  const gfx::IntSize& destSize, OriginPos destOrigin) const;
   bool BlitImage(layers::D3D11YCbCrImage* srcImage,
@@ -197,7 +208,9 @@ class GLBlitHelper final {
 
   bool BlitDescriptor(const layers::SurfaceDescriptorD3D10& desc,
                       const gfx::IntSize& destSize, OriginPos destOrigin) const;
-
+  bool BlitDescriptor(const layers::SurfaceDescriptorDXGIYCbCr& desc,
+                      const gfx::IntSize& destSize,
+                      const OriginPos destOrigin) const;
   bool BlitAngleYCbCr(const WindowsHandle (&handleList)[3],
                       const gfx::IntRect& clipRect, const gfx::IntSize& ySize,
                       const gfx::IntSize& uvSize,

@@ -6,14 +6,21 @@
 
 #include "StorageIPC.h"
 
+#include "StorageUtils.h"
 #include "LocalStorageManager.h"
+#include "SessionStorageObserver.h"
+#include "SessionStorageManager.h"
+#include "SessionStorageCache.h"
 
+#include "mozilla/dom/LocalStorageCommon.h"
 #include "mozilla/ipc/BackgroundChild.h"
 #include "mozilla/ipc/BackgroundParent.h"
 #include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/ipc/PBackgroundParent.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/Unused.h"
+#include "nsCOMPtr.h"
+#include "nsIPrincipal.h"
 #include "nsThreadUtils.h"
 
 namespace mozilla {
@@ -26,10 +33,10 @@ typedef nsClassHashtable<nsCStringHashKey, nsTArray<LocalStorageCacheParent*>>
 
 StaticAutoPtr<LocalStorageCacheParentHashtable> gLocalStorageCacheParents;
 
-StorageDBChild* sStorageChild = nullptr;
+StorageDBChild* sStorageChild[2] = {nullptr, nullptr};
 
 // False until we shut the storage child down.
-bool sStorageChildDown = false;
+bool sStorageChildDown[2] = {false, false};
 
 }  // namespace
 
@@ -76,18 +83,18 @@ mozilla::ipc::IPCResult LocalStorageCacheChild::RecvObserve(
     const nsString& aNewValue) {
   AssertIsOnOwningThread();
 
-  nsresult rv;
-  nsCOMPtr<nsIPrincipal> principal =
-      PrincipalInfoToPrincipal(aPrincipalInfo, &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  auto principalOrErr = PrincipalInfoToPrincipal(aPrincipalInfo);
+  if (NS_WARN_IF(principalOrErr.isErr())) {
     return IPC_FAIL_NO_REASON(this);
   }
 
-  nsCOMPtr<nsIPrincipal> cachePrincipal =
-      PrincipalInfoToPrincipal(aCachePrincipalInfo, &rv);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
+  auto cachePrincipalOrErr = PrincipalInfoToPrincipal(aCachePrincipalInfo);
+  if (NS_WARN_IF(cachePrincipalOrErr.isErr())) {
     return IPC_FAIL_NO_REASON(this);
   }
+
+  nsCOMPtr<nsIPrincipal> principal = principalOrErr.unwrap();
+  nsCOMPtr<nsIPrincipal> cachePrincipal = cachePrincipalOrErr.unwrap();
 
   if (StorageUtils::PrincipalsEqual(principal, cachePrincipal)) {
     Storage::NotifyChange(/* aStorage */ nullptr, principal, aKey, aOldValue,
@@ -105,8 +112,14 @@ mozilla::ipc::IPCResult LocalStorageCacheChild::RecvObserve(
 // ----------------------------------------------------------------------------
 
 class StorageDBChild::ShutdownObserver final : public nsIObserver {
+  // Expected to be only 0 or 1.
+  const uint32_t mPrivateBrowsingId;
+
  public:
-  ShutdownObserver() { MOZ_ASSERT(NS_IsMainThread()); }
+  explicit ShutdownObserver(const uint32_t aPrivateBrowsingId)
+      : mPrivateBrowsingId(aPrivateBrowsingId) {
+    MOZ_ASSERT(NS_IsMainThread());
+  }
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
@@ -127,47 +140,55 @@ void StorageDBChild::ReleaseIPDLReference() {
   Release();
 }
 
-StorageDBChild::StorageDBChild(LocalStorageManager* aManager)
-    : mManager(aManager), mStatus(NS_OK), mIPCOpen(false) {
+StorageDBChild::StorageDBChild(LocalStorageManager* aManager,
+                               const uint32_t aPrivateBrowsingId)
+    : mManager(aManager),
+      mPrivateBrowsingId(aPrivateBrowsingId),
+      mStatus(NS_OK),
+      mIPCOpen(false) {
+  MOZ_ASSERT(aPrivateBrowsingId <= 1);
   MOZ_ASSERT(!NextGenLocalStorageEnabled());
 }
 
 StorageDBChild::~StorageDBChild() = default;
 
 // static
-StorageDBChild* StorageDBChild::Get() {
+StorageDBChild* StorageDBChild::Get(const uint32_t aPrivateBrowsingId) {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aPrivateBrowsingId <= 1);
   MOZ_ASSERT(!NextGenLocalStorageEnabled());
 
-  return sStorageChild;
+  return sStorageChild[aPrivateBrowsingId];
 }
 
 // static
-StorageDBChild* StorageDBChild::GetOrCreate() {
+StorageDBChild* StorageDBChild::GetOrCreate(const uint32_t aPrivateBrowsingId) {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(aPrivateBrowsingId <= 1);
   MOZ_ASSERT(!NextGenLocalStorageEnabled());
 
-  if (sStorageChild || sStorageChildDown) {
+  StorageDBChild*& storageChild = sStorageChild[aPrivateBrowsingId];
+  if (storageChild || sStorageChildDown[aPrivateBrowsingId]) {
     // When sStorageChildDown is at true, sStorageChild is null.
     // Checking sStorageChildDown flag here prevents reinitialization of
     // the storage child after shutdown.
-    return sStorageChild;
+    return storageChild;
   }
 
   // Use LocalStorageManager::Ensure in case we're called from
   // DOMSessionStorageManager's initializer and we haven't yet initialized the
   // local storage manager.
-  RefPtr<StorageDBChild> storageChild =
-      new StorageDBChild(LocalStorageManager::Ensure());
+  RefPtr<StorageDBChild> newStorageChild =
+      new StorageDBChild(LocalStorageManager::Ensure(), aPrivateBrowsingId);
 
-  nsresult rv = storageChild->Init();
+  nsresult rv = newStorageChild->Init();
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return nullptr;
   }
 
-  storageChild.forget(&sStorageChild);
+  newStorageChild.forget(&storageChild);
 
-  return sStorageChild;
+  return storageChild;
 }
 
 nsTHashtable<nsCStringHashKey>& StorageDBChild::OriginsHavingData() {
@@ -181,13 +202,14 @@ nsTHashtable<nsCStringHashKey>& StorageDBChild::OriginsHavingData() {
 nsresult StorageDBChild::Init() {
   MOZ_ASSERT(NS_IsMainThread());
 
-  PBackgroundChild* actor = BackgroundChild::GetOrCreateForCurrentThread();
+  ::mozilla::ipc::PBackgroundChild* actor =
+      ::mozilla::ipc::BackgroundChild::GetOrCreateForCurrentThread();
   if (NS_WARN_IF(!actor)) {
     return NS_ERROR_FAILURE;
   }
 
   nsString profilePath;
-  if (XRE_IsParentProcess()) {
+  if (XRE_IsParentProcess() && mPrivateBrowsingId == 0) {
     nsresult rv = StorageDBThread::GetProfilePath(profilePath);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
@@ -196,12 +218,13 @@ nsresult StorageDBChild::Init() {
 
   AddIPDLReference();
 
-  actor->SendPBackgroundStorageConstructor(this, profilePath);
+  actor->SendPBackgroundStorageConstructor(this, profilePath,
+                                           mPrivateBrowsingId);
 
   nsCOMPtr<nsIObserverService> observerService = services::GetObserverService();
   MOZ_ASSERT(observerService);
 
-  nsCOMPtr<nsIObserver> observer = new ShutdownObserver();
+  nsCOMPtr<nsIObserver> observer = new ShutdownObserver(mPrivateBrowsingId);
 
   MOZ_ALWAYS_SUCCEEDS(
       observerService->AddObserver(observer, "xpcom-shutdown", false));
@@ -373,7 +396,7 @@ mozilla::ipc::IPCResult StorageDBChild::RecvLoadDone(
 mozilla::ipc::IPCResult StorageDBChild::RecvLoadUsage(
     const nsCString& aOriginNoSuffix, const int64_t& aUsage) {
   RefPtr<StorageUsageBridge> scopeUsage =
-      mManager->GetOriginUsage(aOriginNoSuffix);
+      mManager->GetOriginUsage(aOriginNoSuffix, mPrivateBrowsingId);
   scopeUsage->LoadUsage(aUsage);
   return IPC_OK();
 }
@@ -400,13 +423,14 @@ StorageDBChild::ShutdownObserver::Observe(nsISupports* aSubject,
 
   Unused << observerService->RemoveObserver(this, "xpcom-shutdown");
 
-  if (sStorageChild) {
-    sStorageChildDown = true;
+  StorageDBChild*& storageChild = sStorageChild[mPrivateBrowsingId];
+  if (storageChild) {
+    sStorageChildDown[mPrivateBrowsingId] = true;
 
-    MOZ_ALWAYS_TRUE(sStorageChild->PBackgroundStorageChild::SendDeleteMe());
+    MOZ_ALWAYS_TRUE(storageChild->PBackgroundStorageChild::SendDeleteMe());
 
-    NS_RELEASE(sStorageChild);
-    sStorageChild = nullptr;
+    NS_RELEASE(storageChild);
+    storageChild = nullptr;
   }
 
   return NS_OK;
@@ -462,6 +486,75 @@ mozilla::ipc::IPCResult SessionStorageObserverChild::RecvObserve(
   return IPC_OK();
 }
 
+SessionStorageCacheChild::SessionStorageCacheChild(SessionStorageCache* aCache)
+    : mCache(aCache) {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(mCache);
+
+  MOZ_COUNT_CTOR(SessionStorageCacheChild);
+}
+
+SessionStorageCacheChild::~SessionStorageCacheChild() {
+  AssertIsOnOwningThread();
+
+  MOZ_COUNT_DTOR(SessionStorageCacheChild);
+}
+
+void SessionStorageCacheChild::SendDeleteMeInternal() {
+  AssertIsOnOwningThread();
+
+  if (mCache) {
+    mCache->ClearActor();
+    mCache = nullptr;
+
+    MOZ_ALWAYS_TRUE(PBackgroundSessionStorageCacheChild::SendDeleteMe());
+  }
+}
+
+void SessionStorageCacheChild::ActorDestroy(ActorDestroyReason aWhy) {
+  AssertIsOnOwningThread();
+
+  if (mCache) {
+    mCache->ClearActor();
+    mCache = nullptr;
+  }
+}
+
+SessionStorageManagerChild::SessionStorageManagerChild(
+    SessionStorageManager* aSSManager)
+    : mSSManager(aSSManager) {
+  AssertIsOnOwningThread();
+  MOZ_ASSERT(mSSManager);
+
+  MOZ_COUNT_CTOR(SessionStorageManagerChild);
+}
+
+SessionStorageManagerChild::~SessionStorageManagerChild() {
+  AssertIsOnOwningThread();
+
+  MOZ_COUNT_DTOR(SessionStorageManagerChild);
+}
+
+void SessionStorageManagerChild::SendDeleteMeInternal() {
+  AssertIsOnOwningThread();
+
+  if (mSSManager) {
+    mSSManager->ClearActor();
+    mSSManager = nullptr;
+
+    MOZ_ALWAYS_TRUE(PBackgroundSessionStorageManagerChild::SendDeleteMe());
+  }
+}
+
+void SessionStorageManagerChild::ActorDestroy(ActorDestroyReason aWhy) {
+  AssertIsOnOwningThread();
+
+  if (mSSManager) {
+    mSSManager->ClearActor();
+    mSSManager = nullptr;
+  }
+}
+
 LocalStorageCacheParent::LocalStorageCacheParent(
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
     const nsACString& aOriginKey, uint32_t aPrivateBrowsingId)
@@ -469,7 +562,7 @@ LocalStorageCacheParent::LocalStorageCacheParent(
       mOriginKey(aOriginKey),
       mPrivateBrowsingId(aPrivateBrowsingId),
       mActorDestroyed(false) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 }
 
 LocalStorageCacheParent::~LocalStorageCacheParent() {
@@ -477,7 +570,7 @@ LocalStorageCacheParent::~LocalStorageCacheParent() {
 }
 
 void LocalStorageCacheParent::ActorDestroy(ActorDestroyReason aWhy) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(!mActorDestroyed);
 
   mActorDestroyed = true;
@@ -500,7 +593,7 @@ void LocalStorageCacheParent::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 mozilla::ipc::IPCResult LocalStorageCacheParent::RecvDeleteMe() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(!mActorDestroyed);
 
   IProtocol* mgr = Manager();
@@ -513,7 +606,7 @@ mozilla::ipc::IPCResult LocalStorageCacheParent::RecvDeleteMe() {
 mozilla::ipc::IPCResult LocalStorageCacheParent::RecvNotify(
     const nsString& aDocumentURI, const nsString& aKey,
     const nsString& aOldValue, const nsString& aNewValue) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(gLocalStorageCacheParents);
 
   nsTArray<LocalStorageCacheParent*>* array;
@@ -548,8 +641,8 @@ class StorageDBParent::ObserverSink : public StorageObserverSink {
 
  public:
   explicit ObserverSink(StorageDBParent* aActor)
-      : mOwningEventTarget(GetCurrentThreadEventTarget()), mActor(aActor) {
-    AssertIsOnBackgroundThread();
+      : mOwningEventTarget(GetCurrentEventTarget()), mActor(aActor) {
+    ::mozilla::ipc::AssertIsOnBackgroundThread();
     MOZ_ASSERT(aActor);
   }
 
@@ -591,16 +684,19 @@ void StorageDBParent::ReleaseIPDLReference() {
 
 namespace {}  // namespace
 
-StorageDBParent::StorageDBParent(const nsString& aProfilePath)
-    : mProfilePath(aProfilePath), mIPCOpen(false) {
-  AssertIsOnBackgroundThread();
+StorageDBParent::StorageDBParent(const nsString& aProfilePath,
+                                 const uint32_t aPrivateBrowsingId)
+    : mProfilePath(aProfilePath),
+      mPrivateBrowsingId(aPrivateBrowsingId),
+      mIPCOpen(false) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   // We are always open by IPC only
   AddIPDLReference();
 }
 
 StorageDBParent::~StorageDBParent() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   if (mObserverSink) {
     mObserverSink->Stop();
@@ -609,17 +705,17 @@ StorageDBParent::~StorageDBParent() {
 }
 
 void StorageDBParent::Init() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   PBackgroundParent* actor = Manager();
   MOZ_ASSERT(actor);
 
-  if (BackgroundParent::IsOtherProcessActor(actor)) {
+  if (::mozilla::ipc::BackgroundParent::IsOtherProcessActor(actor)) {
     mObserverSink = new ObserverSink(this);
     mObserverSink->Start();
   }
 
-  StorageDBThread* storageThread = StorageDBThread::Get();
+  StorageDBThread* storageThread = StorageDBThread::Get(mPrivateBrowsingId);
   if (storageThread) {
     nsTArray<nsCString> scopes;
     storageThread->GetOriginsHavingData(&scopes);
@@ -637,7 +733,7 @@ void StorageDBParent::ActorDestroy(ActorDestroyReason aWhy) {
 }
 
 mozilla::ipc::IPCResult StorageDBParent::RecvDeleteMe() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   IProtocol* mgr = Manager();
   if (!PBackgroundStorageParent::Send__delete__(this)) {
@@ -649,7 +745,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvDeleteMe() {
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncPreload(
     const nsCString& aOriginSuffix, const nsCString& aOriginNoSuffix,
     const bool& aPriority) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -662,7 +759,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvAsyncPreload(
 
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncGetUsage(
     const nsCString& aOriginNoSuffix) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -757,7 +855,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvPreload(
     const nsCString& aOriginSuffix, const nsCString& aOriginNoSuffix,
     const uint32_t& aAlreadyLoadedCount, nsTArray<nsString>* aKeys,
     nsTArray<nsString>* aValues, nsresult* aRv) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -774,7 +873,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvPreload(
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncAddItem(
     const nsCString& aOriginSuffix, const nsCString& aOriginNoSuffix,
     const nsString& aKey, const nsString& aValue) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -791,7 +891,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvAsyncAddItem(
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncUpdateItem(
     const nsCString& aOriginSuffix, const nsCString& aOriginNoSuffix,
     const nsString& aKey, const nsString& aValue) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -808,7 +909,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvAsyncUpdateItem(
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncRemoveItem(
     const nsCString& aOriginSuffix, const nsCString& aOriginNoSuffix,
     const nsString& aKey) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -824,7 +926,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvAsyncRemoveItem(
 
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncClear(
     const nsCString& aOriginSuffix, const nsCString& aOriginNoSuffix) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -839,7 +942,7 @@ mozilla::ipc::IPCResult StorageDBParent::RecvAsyncClear(
 }
 
 mozilla::ipc::IPCResult StorageDBParent::RecvAsyncFlush() {
-  StorageDBThread* storageThread = StorageDBThread::Get();
+  StorageDBThread* storageThread = StorageDBThread::Get(mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -850,7 +953,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvAsyncFlush() {
 }
 
 mozilla::ipc::IPCResult StorageDBParent::RecvStartup() {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -859,7 +963,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvStartup() {
 }
 
 mozilla::ipc::IPCResult StorageDBParent::RecvClearAll() {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -871,7 +976,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvClearAll() {
 
 mozilla::ipc::IPCResult StorageDBParent::RecvClearMatchingOrigin(
     const nsCString& aOriginNoSuffix) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -883,7 +989,8 @@ mozilla::ipc::IPCResult StorageDBParent::RecvClearMatchingOrigin(
 
 mozilla::ipc::IPCResult StorageDBParent::RecvClearMatchingOriginAttributes(
     const OriginAttributesPattern& aPattern) {
-  StorageDBThread* storageThread = StorageDBThread::GetOrCreate(mProfilePath);
+  StorageDBThread* storageThread =
+      StorageDBThread::GetOrCreate(mProfilePath, mPrivateBrowsingId);
   if (!storageThread) {
     return IPC_FAIL_NO_REASON(this);
   }
@@ -912,8 +1019,7 @@ class LoadRunnable : public Runnable {
   LoadRunnable(StorageDBParent* aParent, TaskType aType,
                const nsACString& aOriginSuffix,
                const nsACString& aOriginNoSuffix,
-               const nsAString& aKey = EmptyString(),
-               const nsAString& aValue = EmptyString())
+               const nsAString& aKey = u""_ns, const nsAString& aValue = u""_ns)
       : Runnable("dom::LoadRunnable"),
         mParent(aParent),
         mType(aType),
@@ -1107,7 +1213,7 @@ void StorageDBParent::UsageParentBridge::Destroy() {
 }
 
 void StorageDBParent::ObserverSink::Start() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   RefPtr<Runnable> runnable =
       NewRunnableMethod("StorageDBParent::ObserverSink::AddSink", this,
@@ -1117,7 +1223,7 @@ void StorageDBParent::ObserverSink::Start() {
 }
 
 void StorageDBParent::ObserverSink::Stop() {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   mActor = nullptr;
 
@@ -1149,7 +1255,7 @@ void StorageDBParent::ObserverSink::RemoveSink() {
 void StorageDBParent::ObserverSink::Notify(
     const nsCString& aTopic, const nsString& aOriginAttributesPattern,
     const nsCString& aOriginScope) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   if (mActor) {
     mActor->Observe(aTopic, aOriginAttributesPattern, aOriginScope);
@@ -1222,6 +1328,111 @@ nsresult SessionStorageObserverParent::Observe(
   return NS_OK;
 }
 
+SessionStorageCacheParent::SessionStorageCacheParent(
+    const nsCString& aOriginAttrs, const nsCString& aOriginKey,
+    SessionStorageManagerParent* aActor)
+    : mOriginAttrs(aOriginAttrs),
+      mOriginKey(aOriginKey),
+      mManagerActor(aActor) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mManagerActor);
+}
+
+SessionStorageCacheParent::~SessionStorageCacheParent() = default;
+
+void SessionStorageCacheParent::ActorDestroy(ActorDestroyReason aWhy) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+
+  mManagerActor = nullptr;
+}
+
+mozilla::ipc::IPCResult SessionStorageCacheParent::RecvLoad(
+    nsTArray<SSSetItemInfo>* aDefaultData,
+    nsTArray<SSSetItemInfo>* aSessionData) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mManagerActor);
+
+  mLoadReceived.Flip();
+
+  RefPtr<BackgroundSessionStorageManager> manager = mManagerActor->GetManager();
+  MOZ_ASSERT(manager);
+
+  manager->CopyDataToContentProcess(mOriginAttrs, mOriginKey, *aDefaultData,
+                                    *aSessionData);
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult SessionStorageCacheParent::RecvCheckpoint(
+    nsTArray<SSWriteInfo>&& aDefaultWriteInfos,
+    nsTArray<SSWriteInfo>&& aSessionWriteInfos) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mManagerActor);
+
+  RefPtr<BackgroundSessionStorageManager> manager = mManagerActor->GetManager();
+  MOZ_ASSERT(manager);
+
+  manager->UpdateData(mOriginAttrs, mOriginKey, aDefaultWriteInfos,
+                      aSessionWriteInfos);
+
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult SessionStorageCacheParent::RecvDeleteMe() {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mManagerActor);
+
+  mManagerActor = nullptr;
+
+  IProtocol* mgr = Manager();
+  if (!PBackgroundSessionStorageCacheParent::Send__delete__(this)) {
+    return IPC_FAIL(
+        mgr, "Failed to delete PBackgroundSessionStorageCacheParent actor");
+  }
+  return IPC_OK();
+}
+
+SessionStorageManagerParent::SessionStorageManagerParent(uint64_t aTopContextId)
+    : mBackgroundManager(
+          BackgroundSessionStorageManager::GetOrCreate(aTopContextId)) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mBackgroundManager);
+}
+
+SessionStorageManagerParent::~SessionStorageManagerParent() = default;
+
+void SessionStorageManagerParent::ActorDestroy(ActorDestroyReason aWhy) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+
+  mBackgroundManager = nullptr;
+}
+
+already_AddRefed<PBackgroundSessionStorageCacheParent>
+SessionStorageManagerParent::AllocPBackgroundSessionStorageCacheParent(
+    const nsCString& aOriginAttrs, const nsCString& aOriginKey) {
+  return MakeAndAddRef<SessionStorageCacheParent>(aOriginAttrs, aOriginKey,
+                                                  this);
+}
+
+BackgroundSessionStorageManager* SessionStorageManagerParent::GetManager()
+    const {
+  return mBackgroundManager;
+}
+
+mozilla::ipc::IPCResult SessionStorageManagerParent::RecvDeleteMe() {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
+  MOZ_ASSERT(mBackgroundManager);
+
+  mBackgroundManager = nullptr;
+
+  IProtocol* mgr = Manager();
+  if (!PBackgroundSessionStorageManagerParent::Send__delete__(this)) {
+    return IPC_FAIL(
+        mgr, "Failed to delete PBackgroundSessionStorageManagerParent actor");
+  }
+  return IPC_OK();
+}
+
 /*******************************************************************************
  * Exported functions
  ******************************************************************************/
@@ -1229,7 +1440,7 @@ nsresult SessionStorageObserverParent::Observe(
 PBackgroundLocalStorageCacheParent* AllocPBackgroundLocalStorageCacheParent(
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
     const nsCString& aOriginKey, const uint32_t& aPrivateBrowsingId) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
   RefPtr<LocalStorageCacheParent> actor = new LocalStorageCacheParent(
       aPrincipalInfo, aOriginKey, aPrivateBrowsingId);
@@ -1243,7 +1454,7 @@ mozilla::ipc::IPCResult RecvPBackgroundLocalStorageCacheConstructor(
     PBackgroundLocalStorageCacheParent* aActor,
     const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
     const nsCString& aOriginKey, const uint32_t& aPrivateBrowsingId) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aActor);
 
   auto* actor = static_cast<LocalStorageCacheParent*>(aActor);
@@ -1268,7 +1479,7 @@ mozilla::ipc::IPCResult RecvPBackgroundLocalStorageCacheConstructor(
 
 bool DeallocPBackgroundLocalStorageCacheParent(
     PBackgroundLocalStorageCacheParent* aActor) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aActor);
 
   // Transfer ownership back from IPDL.
@@ -1279,15 +1490,16 @@ bool DeallocPBackgroundLocalStorageCacheParent(
 }
 
 PBackgroundStorageParent* AllocPBackgroundStorageParent(
-    const nsString& aProfilePath) {
-  AssertIsOnBackgroundThread();
+    const nsString& aProfilePath, const uint32_t& aPrivateBrowsingId) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
 
-  return new StorageDBParent(aProfilePath);
+  return new StorageDBParent(aProfilePath, aPrivateBrowsingId);
 }
 
 mozilla::ipc::IPCResult RecvPBackgroundStorageConstructor(
-    PBackgroundStorageParent* aActor, const nsString& aProfilePath) {
-  AssertIsOnBackgroundThread();
+    PBackgroundStorageParent* aActor, const nsString& aProfilePath,
+    const uint32_t& aPrivateBrowsingId) {
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aActor);
 
   auto* actor = static_cast<StorageDBParent*>(aActor);
@@ -1296,7 +1508,7 @@ mozilla::ipc::IPCResult RecvPBackgroundStorageConstructor(
 }
 
 bool DeallocPBackgroundStorageParent(PBackgroundStorageParent* aActor) {
-  AssertIsOnBackgroundThread();
+  ::mozilla::ipc::AssertIsOnBackgroundThread();
   MOZ_ASSERT(aActor);
 
   StorageDBParent* actor = static_cast<StorageDBParent*>(aActor);
@@ -1332,6 +1544,11 @@ bool DeallocPSessionStorageObserverParent(
       dont_AddRef(static_cast<SessionStorageObserverParent*>(aActor));
 
   return true;
+}
+
+already_AddRefed<PBackgroundSessionStorageManagerParent>
+AllocPBackgroundSessionStorageManagerParent(const uint64_t& aTopContextId) {
+  return MakeAndAddRef<SessionStorageManagerParent>(aTopContextId);
 }
 
 }  // namespace dom

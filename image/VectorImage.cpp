@@ -13,6 +13,7 @@
 #include "imgFrame.h"
 #include "mozilla/AutoRestore.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/MediaFeatureChange.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/SVGSVGElement.h"
 #include "mozilla/dom/SVGDocument.h"
@@ -21,6 +22,7 @@
 #include "mozilla/PendingAnimationTracker.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/SVGObserverUtils.h"  // for SVGRenderingObserver
 #include "mozilla/Tuple.h"
 #include "nsIStreamListener.h"
 #include "nsMimeTypes.h"
@@ -28,7 +30,6 @@
 #include "nsRect.h"
 #include "nsString.h"
 #include "nsStubDocumentObserver.h"
-#include "SVGObserverUtils.h"  // for SVGRenderingObserver
 #include "nsWindowSizes.h"
 #include "ImageRegion.h"
 #include "ISurfaceProvider.h"
@@ -175,11 +176,7 @@ class SVGLoadEventListener final : public nsIDOMEventListener {
     MOZ_ASSERT(mDocument, "Need an SVG document");
     MOZ_ASSERT(mImage, "Need an image");
 
-    mDocument->AddEventListener(NS_LITERAL_STRING("MozSVGAsImageDocumentLoad"),
-                                this, true, false);
-    mDocument->AddEventListener(NS_LITERAL_STRING("SVGAbort"), this, true,
-                                false);
-    mDocument->AddEventListener(NS_LITERAL_STRING("SVGError"), this, true,
+    mDocument->AddEventListener(u"MozSVGAsImageDocumentLoad"_ns, this, true,
                                 false);
   }
 
@@ -197,22 +194,18 @@ class SVGLoadEventListener final : public nsIDOMEventListener {
   NS_IMETHOD HandleEvent(Event* aEvent) override {
     MOZ_ASSERT(mDocument, "Need an SVG document. Received multiple events?");
 
-    // OnSVGDocumentLoaded/OnSVGDocumentError will release our owner's reference
+    // OnSVGDocumentLoaded will release our owner's reference
     // to us, so ensure we stick around long enough to complete our work.
     RefPtr<SVGLoadEventListener> kungFuDeathGrip(this);
 
+#ifdef DEBUG
     nsAutoString eventType;
     aEvent->GetType(eventType);
-    MOZ_ASSERT(eventType.EqualsLiteral("MozSVGAsImageDocumentLoad") ||
-                   eventType.EqualsLiteral("SVGAbort") ||
-                   eventType.EqualsLiteral("SVGError"),
+    MOZ_ASSERT(eventType.EqualsLiteral("MozSVGAsImageDocumentLoad"),
                "Received unexpected event");
+#endif
 
-    if (eventType.EqualsLiteral("MozSVGAsImageDocumentLoad")) {
-      mImage->OnSVGDocumentLoaded();
-    } else {
-      mImage->OnSVGDocumentError();
-    }
+    mImage->OnSVGDocumentLoaded();
 
     return NS_OK;
   }
@@ -220,10 +213,8 @@ class SVGLoadEventListener final : public nsIDOMEventListener {
   void Cancel() {
     MOZ_ASSERT(mDocument, "Duplicate call to Cancel");
     if (mDocument) {
-      mDocument->RemoveEventListener(
-          NS_LITERAL_STRING("MozSVGAsImageDocumentLoad"), this, true);
-      mDocument->RemoveEventListener(NS_LITERAL_STRING("SVGAbort"), this, true);
-      mDocument->RemoveEventListener(NS_LITERAL_STRING("SVGError"), this, true);
+      mDocument->RemoveEventListener(u"MozSVGAsImageDocumentLoad"_ns, this,
+                                     true);
       mDocument = nullptr;
     }
   }
@@ -256,7 +247,7 @@ class SVGDrawingCallback : public gfxDrawingCallback {
   uint32_t mImageFlags;
 };
 
-// Based loosely on nsSVGIntegrationUtils' PaintFrameCallback::operator()
+// Based loosely on SVGIntegrationUtils' PaintFrameCallback::operator()
 bool SVGDrawingCallback::operator()(gfxContext* aContext,
                                     const gfxRect& aFillRect,
                                     const SamplingFilter aSamplingFilter,
@@ -302,6 +293,9 @@ bool SVGDrawingCallback::operator()(gfxContext* aContext,
       RenderDocumentFlags::IgnoreViewportScrolling;
   if (!(mImageFlags & imgIContainer::FLAG_SYNC_DECODE)) {
     renderDocFlags |= RenderDocumentFlags::AsyncDecodeImages;
+  }
+  if (mImageFlags & imgIContainer::FLAG_HIGH_QUALITY_SCALING) {
+    renderDocFlags |= RenderDocumentFlags::UseHighQualityScaling;
   }
 
   presShell->RenderDocument(svgRect, renderDocFlags,
@@ -362,6 +356,7 @@ VectorImage::VectorImage(nsIURI* aURI /* = nullptr */)
       mHasPendingInvalidation(false) {}
 
 VectorImage::~VectorImage() {
+  ReportDocumentUseCounters();
   CancelAllListeners();
   SurfaceCache::RemoveImage(ImageKey(this));
 }
@@ -1218,10 +1213,19 @@ bool VectorImage::StartDecodingWithResult(uint32_t aFlags,
   return mIsFullyLoaded;
 }
 
-bool VectorImage::RequestDecodeWithResult(uint32_t aFlags,
-                                          uint32_t aWhichFrame) {
-  // SVG images are ready to draw when they are loaded
-  return mIsFullyLoaded;
+imgIContainer::DecodeResult VectorImage::RequestDecodeWithResult(
+    uint32_t aFlags, uint32_t aWhichFrame) {
+  // SVG images are ready to draw when they are loaded and don't have an error.
+
+  if (mError) {
+    return imgIContainer::DECODE_REQUEST_FAILED;
+  }
+
+  if (!mIsFullyLoaded) {
+    return imgIContainer::DECODE_REQUESTED;
+  }
+
+  return imgIContainer::DECODE_SURFACE_AVAILABLE;
 }
 
 NS_IMETHODIMP
@@ -1289,11 +1293,6 @@ VectorImage::RequestDiscard() {
     mProgressTracker->OnDiscard();
   }
 
-  if (Document* doc =
-          mSVGDocumentWrapper ? mSVGDocumentWrapper->GetDocument() : nullptr) {
-    doc->ReportUseCounters();
-  }
-
   return NS_OK;
 }
 
@@ -1356,6 +1355,11 @@ VectorImage::OnStartRequest(nsIRequest* aRequest) {
   mLoadEventListener = new SVGLoadEventListener(document, this);
   mParseCompleteListener = new SVGParseCompleteListener(document, this);
 
+  // Displayed documents will call InitUseCounters under SetScriptGlobalObject,
+  // but SVG image documents never get a script global object, so we initialize
+  // use counters here, right after the document has been created.
+  document->InitUseCounters();
+
   return NS_OK;
 }
 
@@ -1406,6 +1410,11 @@ void VectorImage::OnSVGDocumentLoaded() {
   // XXX Flushing is wasteful if embedding frame hasn't had initial reflow.
   mSVGDocumentWrapper->FlushLayout();
 
+  // This is the earliest point that we can get accurate use counter data
+  // for a valid SVG document.  Without the FlushLayout call, we would miss
+  // any CSS property usage that comes from SVG presentation attributes.
+  mSVGDocumentWrapper->GetDocument()->ReportDocumentUseCounters();
+
   mIsFullyLoaded = true;
   mHaveAnimations = mSVGDocumentWrapper->IsAnimated();
 
@@ -1441,6 +1450,10 @@ void VectorImage::OnSVGDocumentError() {
   CancelAllListeners();
 
   mError = true;
+
+  // We won't enter OnSVGDocumentLoaded, so report use counters now for this
+  // invalid document.
+  ReportDocumentUseCounters();
 
   if (mProgressTracker) {
     // Notify observers about the error and unblock page load.
@@ -1509,10 +1522,9 @@ void VectorImage::InvalidateObserversOnNextRefreshDriverTick() {
                         NS_DISPATCH_NORMAL);
 }
 
-void VectorImage::PropagateUseCounters(Document* aParentDocument) {
-  Document* doc = mSVGDocumentWrapper->GetDocument();
-  if (doc) {
-    doc->PropagateUseCounters(aParentDocument);
+void VectorImage::PropagateUseCounters(Document* aReferencingDocument) {
+  if (Document* doc = mSVGDocumentWrapper->GetDocument()) {
+    doc->PropagateImageUseCounters(aReferencingDocument);
   }
 }
 
@@ -1545,20 +1557,17 @@ void VectorImage::MediaFeatureValuesChangedAllDocuments(
   }
 
   if (Document* doc = mSVGDocumentWrapper->GetDocument()) {
-    if (nsPresContext* presContext = doc->GetPresContext()) {
-      presContext->MediaFeatureValuesChangedAllDocuments(aChange);
+    if (RefPtr<nsPresContext> presContext = doc->GetPresContext()) {
+      presContext->MediaFeatureValuesChanged(
+          aChange, MediaFeatureChangePropagation::All);
       // Media feature value changes don't happen in the middle of layout,
       // so we don't need to call InvalidateObserversOnNextRefreshDriverTick
       // to invalidate asynchronously.
-      //
-      // Ideally we would not invalidate images if the media feature value
-      // change did not cause any updates to the document, but since non-
-      // animated SVG images do not have their refresh driver ticked, it
-      // is the invalidation (and then the painting) which is what causes
-      // the document to be flushed. Theme and system metrics changes are
-      // rare, though, so it's not a big deal to invalidate even if it
-      // doesn't cause any change.
-      SendInvalidationNotifications();
+      if (presContext->FlushPendingMediaFeatureValuesChanged()) {
+        // NOTE(emilio): SendInvalidationNotifications flushes layout via
+        // VectorImage::CreateSurface -> FlushImageTransformInvalidation.
+        SendInvalidationNotifications();
+      }
     }
   }
 }
@@ -1569,6 +1578,16 @@ nsresult VectorImage::GetHotspotX(int32_t* aX) {
 
 nsresult VectorImage::GetHotspotY(int32_t* aY) {
   return Image::GetHotspotY(aY);
+}
+
+void VectorImage::ReportDocumentUseCounters() {
+  if (!mSVGDocumentWrapper) {
+    return;
+  }
+
+  if (Document* doc = mSVGDocumentWrapper->GetDocument()) {
+    doc->ReportDocumentUseCounters();
+  }
 }
 
 }  // namespace image

@@ -35,7 +35,9 @@ function promiseTabLoadEvent(tab, url) {
   return loaded;
 }
 
-var gInvalidFormPopup = document.getElementById("invalid-form-popup");
+var gInvalidFormPopup = gBrowser.selectedBrowser.browsingContext.currentWindowGlobal
+  .getActor("FormValidation")
+  ._getAndMaybeCreatePanel(document);
 ok(
   gInvalidFormPopup,
   "The browser should have a popup to show when a form is invalid"
@@ -56,7 +58,7 @@ function checkPopupHide() {
 }
 
 var gObserver = {
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIFormSubmitObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsIFormSubmitObserver"]),
 
   notifyInvalidSubmit(aFormElement, aInvalidElements) {},
 };
@@ -414,7 +416,7 @@ add_task(async function() {
     gInvalidFormPopup,
     "popuphidden"
   );
-  await BrowserTestUtils.loadURI(browser, "data:text/html,<div>hello!</div>");
+  BrowserTestUtils.loadURI(browser, "data:text/html,<div>hello!</div>");
   await BrowserTestUtils.browserLoaded(browser);
 
   await popupHiddenPromise;

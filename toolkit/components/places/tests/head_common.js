@@ -724,9 +724,8 @@ NavBookmarkObserver.prototype = {
   onEndUpdateBatch() {},
   onItemRemoved() {},
   onItemChanged() {},
-  onItemVisited() {},
   onItemMoved() {},
-  QueryInterface: ChromeUtils.generateQI([Ci.nsINavBookmarkObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsINavBookmarkObserver"]),
 };
 
 /**
@@ -741,9 +740,8 @@ NavHistoryObserver.prototype = {
   onTitleChanged() {},
   onDeleteURI() {},
   onClearHistory() {},
-  onPageChanged() {},
   onDeleteVisits() {},
-  QueryInterface: ChromeUtils.generateQI([Ci.nsINavHistoryObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsINavHistoryObserver"]),
 };
 
 /**
@@ -769,7 +767,7 @@ NavHistoryResultObserver.prototype = {
   nodeTitleChanged() {},
   nodeURIChanged() {},
   sortingChanged() {},
-  QueryInterface: ChromeUtils.generateQI([Ci.nsINavHistoryResultObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsINavHistoryResultObserver"]),
 };
 
 function checkBookmarkObject(info) {
@@ -986,46 +984,6 @@ function getPagesWithAnnotation(name) {
 
     return rows.map(row => row.getResultByName("url"));
   });
-}
-
-/**
- * Gets the URLs of pages that have a particular annotation.
- *
- * @param {String} name The name of the annotation to search for.
- * @return An array of GUIDs found.
- */
-function getItemsWithAnnotation(name) {
-  return PlacesUtils.promiseDBConnection().then(async db => {
-    let rows = await db.execute(
-      `
-      SELECT b.guid FROM moz_anno_attributes n
-      JOIN moz_items_annos a ON n.id = a.anno_attribute_id
-      JOIN moz_bookmarks b ON b.id = a.item_id
-      WHERE n.name = :name
-    `,
-      { name }
-    );
-
-    return rows.map(row => row.getResultByName("guid"));
-  });
-}
-
-/**
- * Sets an annotation for an item.
- *
- * @param {String} guid The GUID of the item.
- * @param {String} name The name of the annotation.
- * @param {Number|String} value The value of the annotation.
- */
-async function setItemAnnotation(guid, name, value) {
-  let id = await PlacesUtils.promiseItemId(guid);
-  PlacesUtils.annotations.setItemAnnotation(
-    id,
-    name,
-    value,
-    0,
-    PlacesUtils.annotations.EXPIRE_NEVER
-  );
 }
 
 /**

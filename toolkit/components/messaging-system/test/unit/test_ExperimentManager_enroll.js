@@ -6,6 +6,13 @@ const { ExperimentFakes } = ChromeUtils.import(
 const { NormandyTestUtils } = ChromeUtils.import(
   "resource://testing-common/NormandyTestUtils.jsm"
 );
+const { Sampling } = ChromeUtils.import(
+  "resource://gre/modules/components-utils/Sampling.jsm"
+);
+const { ClientEnvironment } = ChromeUtils.import(
+  "resource://normandy/lib/ClientEnvironment.jsm"
+);
+const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
 
 /**
  * The normal case: Enrollment of a new experiment
@@ -102,13 +109,11 @@ add_task(async function test_failure_group_conflict() {
   // These should not be allowed to exist simultaneously.
   const existingBranch = {
     slug: "treatment",
-    groups: ["red", "pink"],
-    value: { title: "hello" },
+    feature: { featureId: "pink", enabled: true },
   };
   const newBranch = {
     slug: "treatment",
-    groups: ["pink"],
-    value: { title: "hi" },
+    feature: { featureId: "pink", enabled: true },
   };
 
   // simulate adding an experiment with a conflicting group "pink"
@@ -122,17 +127,107 @@ add_task(async function test_failure_group_conflict() {
   sandbox.stub(manager, "chooseBranch").returns(newBranch);
   await Assert.rejects(
     manager.enroll(ExperimentFakes.recipe("bar", { branches: [newBranch] })),
-    /An experiment with a conflicting group already exists/,
-    "should throw if there is a group conflict"
+    /An experiment with a conflicting feature already exists/,
+    "should throw if there is a feature conflict"
   );
 
   Assert.equal(
     manager.sendFailureTelemetry.calledWith(
       "enrollFailed",
       "bar",
-      "group-conflict"
+      "feature-conflict"
     ),
     true,
-    "should send failure telemetry if a group conflict exists"
+    "should send failure telemetry if a feature conflict exists"
   );
+});
+
+add_task(async function test_sampling_check() {
+  const manager = ExperimentFakes.manager();
+  let recipe = ExperimentFakes.recipe("foo", { bucketConfig: null });
+  const sandbox = sinon.createSandbox();
+  sandbox.stub(Sampling, "bucketSample").resolves(true);
+  sandbox.replaceGetter(ClientEnvironment, "userId", () => 42);
+
+  Assert.ok(
+    !manager.isInBucketAllocation(recipe.bucketConfig),
+    "fails for no bucket config"
+  );
+
+  recipe = ExperimentFakes.recipe("foo2", {
+    bucketConfig: { randomizationUnit: "foo" },
+  });
+
+  Assert.ok(
+    !manager.isInBucketAllocation(recipe.bucketConfig),
+    "fails for unknown randomizationUnit"
+  );
+
+  recipe = ExperimentFakes.recipe("foo3");
+
+  const result = await manager.isInBucketAllocation(recipe.bucketConfig);
+
+  Assert.equal(
+    Sampling.bucketSample.callCount,
+    1,
+    "it should call bucketSample"
+  );
+  Assert.ok(result, "result should be true");
+  const { args } = Sampling.bucketSample.firstCall;
+  Assert.equal(args[0][0], 42, "called with expected randomization id");
+  Assert.equal(
+    args[0][1],
+    recipe.bucketConfig.namespace,
+    "called with expected namespace"
+  );
+  Assert.equal(
+    args[1],
+    recipe.bucketConfig.start,
+    "called with expected start"
+  );
+  Assert.equal(
+    args[2],
+    recipe.bucketConfig.count,
+    "called with expected count"
+  );
+  Assert.equal(
+    args[3],
+    recipe.bucketConfig.total,
+    "called with expected total"
+  );
+
+  sandbox.reset();
+});
+
+add_task(async function enroll_in_reference_aw_experiment() {
+  const SYNC_DATA_PREF = "messaging-system.syncdatastore.data";
+  Services.prefs.clearUserPref(SYNC_DATA_PREF);
+  let dir = await OS.File.getCurrentDirectory();
+  let src = OS.Path.join(dir, "reference_aboutwelcome_experiment_content.json");
+  let bytes = await OS.File.read(src);
+  const decoder = new TextDecoder();
+  const content = JSON.parse(decoder.decode(bytes));
+  // Create two dummy branches with the content from disk
+  const branches = ["treatment-a", "treatment-b"].map(slug => ({
+    slug,
+    ratio: 1,
+    feature: { value: content, enabled: true, featureId: "aboutwelcome" },
+  }));
+  let recipe = ExperimentFakes.recipe("reference-aw", { branches });
+  // Ensure we get enrolled
+  recipe.bucketConfig.count = recipe.bucketConfig.total;
+
+  const manager = ExperimentFakes.manager();
+  await manager.onStartup();
+  await manager.enroll(recipe);
+
+  Assert.ok(manager.store.get("reference-aw"), "Successful onboarding");
+  let prefValue = Services.prefs.getStringPref(SYNC_DATA_PREF);
+  Assert.ok(
+    prefValue,
+    "aboutwelcome experiment enrollment should be stored to prefs"
+  );
+  // In case some regression causes us to store a significant amount of data
+  // in prefs.
+  Assert.ok(prefValue.length < 3498, "Make sure we don't bloat the prefs");
 });

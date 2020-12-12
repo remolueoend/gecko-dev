@@ -7,33 +7,42 @@
 #define include_dom_media_ipc_RemoteDecoderModule_h
 #include "PlatformDecoderModule.h"
 
-#include "mozilla/StaticMutex.h"
-
 namespace mozilla {
 
-// A PDM implementation that creates a RemoteMediaDataDecoder (a
-// MediaDataDecoder) that proxies to a RemoteVideoDecoderChild.
-// A decoder child will talk to its respective decoder parent
-// (RemoteVideoDecoderParent) on the RDD process.
+enum class RemoteDecodeIn;
+
+// A decoder module that proxies decoding to either GPU or RDD process.
 class RemoteDecoderModule : public PlatformDecoderModule {
+  template <typename T, typename... Args>
+  friend already_AddRefed<T> MakeAndAddRef(Args&&...);
+
  public:
-  RemoteDecoderModule();
+  static already_AddRefed<PlatformDecoderModule> Create(
+      RemoteDecodeIn aLocation);
 
   bool SupportsMimeType(const nsACString& aMimeType,
                         DecoderDoctorDiagnostics* aDiagnostics) const override;
 
-  already_AddRefed<MediaDataDecoder> CreateVideoDecoder(
+  bool Supports(const SupportDecoderParams& aParams,
+                DecoderDoctorDiagnostics* aDiagnostics) const override;
+
+  RefPtr<CreateDecoderPromise> AsyncCreateDecoder(
       const CreateDecoderParams& aParams) override;
+
+  already_AddRefed<MediaDataDecoder> CreateVideoDecoder(
+      const CreateDecoderParams& aParams) override {
+    MOZ_CRASH("Not available");
+  }
 
   already_AddRefed<MediaDataDecoder> CreateAudioDecoder(
-      const CreateDecoderParams& aParams) override;
-
- protected:
-  void LaunchRDDProcessIfNeeded();
+      const CreateDecoderParams& aParams) override {
+    MOZ_CRASH("Not available");
+  }
 
  private:
-  RefPtr<nsIThread> mManagerThread;
-  static StaticMutex sLaunchMonitor;
+  explicit RemoteDecoderModule(RemoteDecodeIn aLocation);
+
+  const RemoteDecodeIn mLocation;
 };
 
 }  // namespace mozilla

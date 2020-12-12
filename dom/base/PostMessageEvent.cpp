@@ -7,34 +7,27 @@
 #include "PostMessageEvent.h"
 
 #include "MessageEvent.h"
-#include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/BrowsingContext.h"
 #include "mozilla/dom/BrowsingContextGroup.h"
 #include "mozilla/dom/DocGroup.h"
 #include "mozilla/dom/DocumentInlines.h"
-#include "mozilla/dom/File.h"
-#include "mozilla/dom/FileList.h"
-#include "mozilla/dom/FileListBinding.h"
 #include "mozilla/dom/MessageEventBinding.h"
 #include "mozilla/dom/MessagePort.h"
-#include "mozilla/dom/MessagePortBinding.h"
-#include "mozilla/dom/PMessagePort.h"
-#include "mozilla/dom/StructuredCloneTags.h"
-#include "mozilla/dom/UnionConversions.h"
+#include "mozilla/dom/RootedDictionary.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "nsDocShell.h"
-#include "nsGlobalWindow.h"
+#include "nsGlobalWindowInner.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsIConsoleService.h"
 #include "nsIPrincipal.h"
 #include "nsIScriptError.h"
-#include "nsNetUtil.h"
 #include "nsPresContext.h"
 #include "nsQueryObject.h"
+#include "nsServiceManagerUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 PostMessageEvent::PostMessageEvent(BrowsingContext* aSource,
                                    const nsAString& aCallerOrigin,
@@ -143,18 +136,17 @@ PostMessageEvent::Run() {
 
       if (mCallerWindowID == 0) {
         rv = errorObject->Init(
-            errorText, NS_ConvertUTF8toUTF16(mScriptLocation.value()),
-            EmptyString(), 0, 0, nsIScriptError::errorFlag, "DOM Window",
-            mIsFromPrivateWindow, mProvidedPrincipal->IsSystemPrincipal());
+            errorText, NS_ConvertUTF8toUTF16(mScriptLocation.value()), u""_ns,
+            0, 0, nsIScriptError::errorFlag, "DOM Window", mIsFromPrivateWindow,
+            mProvidedPrincipal->IsSystemPrincipal());
       } else if (callerURI) {
-        rv = errorObject->InitWithSourceURI(errorText, callerURI, EmptyString(),
-                                            0, 0, nsIScriptError::errorFlag,
+        rv = errorObject->InitWithSourceURI(errorText, callerURI, u""_ns, 0, 0,
+                                            nsIScriptError::errorFlag,
                                             "DOM Window", mCallerWindowID);
       } else {
         rv = errorObject->InitWithWindowID(
-            errorText, NS_ConvertUTF8toUTF16(mScriptLocation.value()),
-            EmptyString(), 0, 0, nsIScriptError::errorFlag, "DOM Window",
-            mCallerWindowID);
+            errorText, NS_ConvertUTF8toUTF16(mScriptLocation.value()), u""_ns,
+            0, 0, nsIScriptError::errorFlag, "DOM Window", mCallerWindowID);
       }
       NS_ENSURE_SUCCESS(rv, rv);
 
@@ -181,6 +173,11 @@ PostMessageEvent::Run() {
 
   if (targetWindow->IsSharedMemoryAllowed()) {
     cloneDataPolicy.allowSharedMemoryObjects();
+  }
+
+  if (mHolder.empty()) {
+    DispatchError(cx, targetWindow, eventTarget);
+    return NS_OK;
   }
 
   StructuredCloneHolder* holder;
@@ -213,9 +210,9 @@ PostMessageEvent::Run() {
     return NS_OK;
   }
 
-  event->InitMessageEvent(nullptr, NS_LITERAL_STRING("message"), CanBubble::eNo,
-                          Cancelable::eNo, messageData, mCallerOrigin,
-                          EmptyString(), source, ports);
+  event->InitMessageEvent(nullptr, u"message"_ns, CanBubble::eNo,
+                          Cancelable::eNo, messageData, mCallerOrigin, u""_ns,
+                          source, ports);
 
   Dispatch(targetWindow, event);
   return NS_OK;
@@ -233,8 +230,8 @@ void PostMessageEvent::DispatchError(JSContext* aCx,
     init.mSource.SetValue().SetAsWindowProxy() = mSource;
   }
 
-  RefPtr<Event> event = MessageEvent::Constructor(
-      aEventTarget, NS_LITERAL_STRING("messageerror"), init);
+  RefPtr<Event> event =
+      MessageEvent::Constructor(aEventTarget, u"messageerror"_ns, init);
   Dispatch(aTargetWindow, event);
 }
 
@@ -304,5 +301,4 @@ void PostMessageEvent::DispatchToTargetThread(ErrorResult& aError) {
   aError = mTargetWindow->Dispatch(TaskCategory::Other, event.forget());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -75,6 +75,12 @@ let getStub;
 add_task(async function setup() {
   const searchConfigSettings = await RemoteSettings(SearchUtils.SETTINGS_KEY);
   getStub = sinon.stub(searchConfigSettings, "get");
+
+  // We expect this error from remove settings as we're invalidating the
+  // signature.
+  consoleAllowList.push("Invalid content signature (abc)");
+  // We also test returning an empty configuration.
+  consoleAllowList.push("Received empty search configuration");
 });
 
 add_task(async function test_selector_basic_get() {
@@ -82,11 +88,10 @@ add_task(async function test_selector_basic_get() {
   const engineSelector = new SearchEngineSelector(listenerSpy);
   getStub.onFirstCall().returns(TEST_CONFIG);
 
-  const { engines } = await engineSelector.fetchEngineConfiguration(
-    "en-US",
-    "default",
-    "default"
-  );
+  const { engines } = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "default",
+  });
 
   Assert.deepEqual(
     engines.map(e => e.engineName),
@@ -108,11 +113,17 @@ add_task(async function test_selector_get_reentry() {
   let secondResult;
 
   const firstCallPromise = engineSelector
-    .fetchEngineConfiguration("en-US", "default", "default")
+    .fetchEngineConfiguration({
+      locale: "en-US",
+      region: "default",
+    })
     .then(result => (firstResult = result.engines));
 
   const secondCallPromise = engineSelector
-    .fetchEngineConfiguration("en-US", "default", "default")
+    .fetchEngineConfiguration({
+      locale: "en-US",
+      region: "default",
+    })
     .then(result => (secondResult = result.engines));
 
   Assert.strictEqual(
@@ -150,11 +161,10 @@ add_task(async function test_selector_config_update() {
   getStub.resetHistory();
   getStub.onFirstCall().returns(TEST_CONFIG);
 
-  const { engines } = await engineSelector.fetchEngineConfiguration(
-    "en-US",
-    "default",
-    "default"
-  );
+  const { engines } = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "default",
+  });
 
   Assert.deepEqual(
     engines.map(e => e.engineName),
@@ -184,11 +194,10 @@ add_task(async function test_selector_config_update() {
 
   Assert.ok(listenerSpy.called, "Should have called the listener");
 
-  const result = await engineSelector.fetchEngineConfiguration(
-    "en-US",
-    "default",
-    "default"
-  );
+  const result = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "default",
+  });
 
   Assert.deepEqual(
     result.engines.map(e => e.engineName),
@@ -201,13 +210,19 @@ add_task(async function test_selector_db_modification() {
   const engineSelector = new SearchEngineSelector();
   // Fill the database with some values that we can use to test that it is cleared.
   const db = await RemoteSettings(SearchUtils.SETTINGS_KEY).db;
-  await db.clear();
-  await db.create({
-    default: "yes",
-    engineName: "askjeeves",
-    appliesTo: [{ included: { everywhere: true } }],
-  });
-  await db.saveLastModified(42);
+  await db.importChanges(
+    {},
+    42,
+    [
+      {
+        id: "85e1f268-9ca5-4b52-a4ac-922df5c07264",
+        default: "yes",
+        engineName: "askjeeves",
+        appliesTo: [{ included: { everywhere: true } }],
+      },
+    ],
+    { clear: true }
+  );
 
   // Stub the get() so that the first call simulates a signature error, and
   // the second simulates success reading from the dump.
@@ -217,11 +232,10 @@ add_task(async function test_selector_db_modification() {
     .rejects(new RemoteSettingsClient.InvalidSignatureError("abc"));
   getStub.onSecondCall().returns(TEST_CONFIG);
 
-  let result = await engineSelector.fetchEngineConfiguration(
-    "en-US",
-    "default",
-    "default"
-  );
+  let result = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "default",
+  });
 
   Assert.ok(
     getStub.calledTwice,
@@ -242,23 +256,34 @@ add_task(async function test_selector_db_modification_never_succeeds() {
   const engineSelector = new SearchEngineSelector();
   // Fill the database with some values that we can use to test that it is cleared.
   const db = RemoteSettings(SearchUtils.SETTINGS_KEY).db;
-  await db.clear();
-  await db.create({
-    default: "yes",
-    engineName: "askjeeves",
-    appliesTo: [{ included: { everywhere: true } }],
-  });
-  await db.saveLastModified(42);
+  await db.importChanges(
+    {},
+    42,
+    [
+      {
+        id: "b70edfdd-1c3f-4b7b-ab55-38cb048636c0",
+        default: "yes",
+        engineName: "askjeeves",
+        appliesTo: [{ included: { everywhere: true } }],
+      },
+    ],
+    {
+      clear: true,
+    }
+  );
 
   // Now simulate the condition where for some reason we never get a
   // valid result.
   getStub.reset();
   getStub.rejects(new RemoteSettingsClient.InvalidSignatureError("abc"));
 
-  let result = await engineSelector.fetchEngineConfiguration(
-    "en-US",
-    "default",
-    "default"
+  await Assert.rejects(
+    engineSelector.fetchEngineConfiguration({
+      locale: "en-US",
+      region: "default",
+    }),
+    ex => ex.result == Cr.NS_ERROR_UNEXPECTED,
+    "Should have rejected loading the engine configuration"
   );
 
   Assert.ok(
@@ -268,6 +293,51 @@ add_task(async function test_selector_db_modification_never_succeeds() {
 
   const databaseEntries = await db.list();
   Assert.equal(databaseEntries.length, 0, "Should have cleared the database.");
+});
 
-  Assert.deepEqual(result.engines, [], "Should have returned an empty result.");
+add_task(async function test_empty_results() {
+  // Check that returning an empty result re-tries.
+  const engineSelector = new SearchEngineSelector();
+  // Fill the database with some values that we can use to test that it is cleared.
+  const db = await RemoteSettings(SearchUtils.SETTINGS_KEY).db;
+  await db.importChanges(
+    {},
+    42,
+    [
+      {
+        id: "df5655ca-e045-4f8c-a7ee-047eeb654722",
+        default: "yes",
+        engineName: "askjeeves",
+        appliesTo: [{ included: { everywhere: true } }],
+      },
+    ],
+    {
+      clear: true,
+    }
+  );
+
+  // Stub the get() so that the first call simulates an empty database, and
+  // the second simulates success reading from the dump.
+  getStub.resetHistory();
+  getStub.onFirstCall().returns([]);
+  getStub.onSecondCall().returns(TEST_CONFIG);
+
+  let result = await engineSelector.fetchEngineConfiguration({
+    locale: "en-US",
+    region: "default",
+  });
+
+  Assert.ok(
+    getStub.calledTwice,
+    "Should have called the get() function twice."
+  );
+
+  const databaseEntries = await db.list();
+  Assert.equal(databaseEntries.length, 0, "Should have cleared the database.");
+
+  Assert.deepEqual(
+    result.engines.map(e => e.engineName),
+    ["lycos", "altavista", "aol", "excite"],
+    "Should have returned the correct data."
+  );
 });

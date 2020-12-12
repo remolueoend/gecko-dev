@@ -2,11 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const { OS } = ChromeUtils.import("resource://gre/modules/osfile.jsm");
+const { ComponentUtils } = ChromeUtils.import(
+  "resource://gre/modules/ComponentUtils.jsm"
+);
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
+
+const TOPIC_PDFJS_HANDLER_CHANGED = "pdfjs:handlerChanged";
 
 ChromeUtils.defineModuleGetter(
   this,
@@ -40,16 +44,19 @@ function HandlerService() {
 HandlerService.prototype = {
   classID: Components.ID("{220cc253-b60f-41f6-b9cf-fdcb325f970f}"),
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsISupportsWeakReference,
-    Ci.nsIHandlerService,
-    Ci.nsIObserver,
+    "nsISupportsWeakReference",
+    "nsIHandlerService",
+    "nsIObserver",
   ]),
 
   __store: null,
   get _store() {
     if (!this.__store) {
       this.__store = new JSONFile({
-        path: OS.Path.join(OS.Constants.Path.profileDir, "handlers.json"),
+        path: PathUtils.join(
+          Services.dirsvc.get("ProfD", Ci.nsIFile).path,
+          "handlers.json"
+        ),
         dataPostProcessor: this._dataPostProcessor.bind(this),
       });
     }
@@ -307,7 +314,10 @@ HandlerService.prototype = {
   asyncInit() {
     if (!this.__store) {
       this.__store = new JSONFile({
-        path: OS.Path.join(OS.Constants.Path.profileDir, "handlers.json"),
+        path: PathUtils.join(
+          Services.dirsvc.get("ProfD", Ci.nsIFile).path,
+          "handlers.json"
+        ),
         dataPostProcessor: this._dataPostProcessor.bind(this),
       });
       this.__store
@@ -342,7 +352,7 @@ HandlerService.prototype = {
       //
       let handler = new Proxy(
         {
-          QueryInterface: ChromeUtils.generateQI([Ci.nsIHandlerInfo]),
+          QueryInterface: ChromeUtils.generateQI(["nsIHandlerInfo"]),
           type,
           get _handlerInfo() {
             delete this._handlerInfo;
@@ -443,6 +453,12 @@ HandlerService.prototype = {
     delete storedHandlerInfo.stubEntry;
 
     this._store.saveSoon();
+
+    // Now notify PDF.js. This is hacky, but a lot better than expecting all
+    // the consumers to do it...
+    if (handlerInfo.type == "application/pdf") {
+      Services.obs.notifyObservers(null, TOPIC_PDFJS_HANDLER_CHANGED);
+    }
   },
 
   // nsIHandlerService
@@ -656,4 +672,4 @@ HandlerService.prototype = {
   },
 };
 
-this.NSGetFactory = XPCOMUtils.generateNSGetFactory([HandlerService]);
+this.NSGetFactory = ComponentUtils.generateNSGetFactory([HandlerService]);

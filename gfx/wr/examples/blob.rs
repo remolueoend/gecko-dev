@@ -16,9 +16,10 @@ use rayon::{ThreadPool, ThreadPoolBuilder};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use webrender::api::{self, DisplayListBuilder, DocumentId, PipelineId, PrimitiveFlags, RenderApi, Transaction};
+use webrender::api::{self, DisplayListBuilder, DocumentId, PipelineId, PrimitiveFlags};
 use webrender::api::{ColorF, CommonItemProperties, SpaceAndClipInfo, ImageDescriptorFlags};
 use webrender::api::units::*;
+use webrender::render_api::*;
 use webrender::euclid::size2;
 
 // This example shows how to implement a very basic BlobImageHandler that can only render
@@ -133,6 +134,10 @@ impl CheckerboardRenderer {
 }
 
 impl api::BlobImageHandler for CheckerboardRenderer {
+    fn create_similar(&self) -> Box<dyn api::BlobImageHandler> {
+        Box::new(CheckerboardRenderer::new(Arc::clone(&self.workers)))
+    }
+
     fn add(&mut self, key: api::BlobImageKey, cmds: Arc<api::BlobImageData>,
            _visible_rect: &DeviceIntRect, _: api::TileSize) {
         self.image_cmds
@@ -197,7 +202,7 @@ struct App {}
 impl Example for App {
     fn render(
         &mut self,
-        api: &RenderApi,
+        api: &mut RenderApi,
         builder: &mut DisplayListBuilder,
         txn: &mut Transaction,
         _device_size: DeviceIntSize,

@@ -6,6 +6,7 @@
 
 #include "mozilla/layers/StackingContextHelper.h"
 
+#include "mozilla/PresShell.h"
 #include "UnitTransforms.h"
 #include "nsDisplayList.h"
 
@@ -33,19 +34,25 @@ StackingContextHelper::StackingContextHelper(
   mOrigin = aParentSC.mOrigin + aBounds.TopLeft();
   // Compute scale for fallback rendering. We don't try to guess a scale for 3d
   // transformed items
-  gfx::Matrix transform2d;
-  if (aParams.mBoundTransform &&
-      aParams.mBoundTransform->CanDraw2D(&transform2d) &&
-      aParams.reference_frame_kind != wr::WrReferenceFrameKind::Perspective &&
-      aParams.transform_style != wr::TransformStyle::Preserve3D) {
-    mInheritedTransform = transform2d * aParentSC.mInheritedTransform;
 
-    int32_t apd = aContainerFrame->PresContext()->AppUnitsPerDevPixel();
-    nsRect r = LayoutDevicePixel::ToAppUnits(aBounds, apd);
-    mScale = FrameLayerBuilder::ChooseScale(
-        aContainerFrame, aContainerItem, r, aParentSC.mScale.width,
-        aParentSC.mScale.height, mInheritedTransform,
-        /* aCanDraw2D = */ true);
+  if (aParams.mBoundTransform) {
+    gfx::Matrix transform2d;
+    bool canDraw2D = aParams.mBoundTransform->CanDraw2D(&transform2d);
+    if (canDraw2D &&
+        aParams.reference_frame_kind != wr::WrReferenceFrameKind::Perspective &&
+        !aContainerFrame->Combines3DTransformWithAncestors()) {
+      mInheritedTransform = transform2d * aParentSC.mInheritedTransform;
+
+      int32_t apd = aContainerFrame->PresContext()->AppUnitsPerDevPixel();
+      nsRect r = LayoutDevicePixel::ToAppUnits(aBounds, apd);
+      mScale = FrameLayerBuilder::ChooseScale(
+          aContainerFrame, aContainerItem, r, aParentSC.mScale.width,
+          aParentSC.mScale.height, mInheritedTransform,
+          /* aCanDraw2D = */ true);
+    } else {
+      mScale = gfx::Size(1.0f, 1.0f);
+      mInheritedTransform = gfx::Matrix::Scaling(1.f, 1.f);
+    }
 
     if (aParams.mAnimated) {
       mSnappingSurfaceTransform =
@@ -54,6 +61,20 @@ StackingContextHelper::StackingContextHelper(
       mSnappingSurfaceTransform =
           transform2d * aParentSC.mSnappingSurfaceTransform;
     }
+
+  } else if (aParams.reference_frame_kind == wr::WrReferenceFrameKind::Zoom &&
+             aContainerItem &&
+             aContainerItem->GetType() == DisplayItemType::TYPE_ASYNC_ZOOM &&
+             aContainerItem->Frame()) {
+    double resolution = aContainerItem->Frame()->PresShell()->GetResolution();
+    gfx::Matrix transform = gfx::Matrix::Scaling(resolution, resolution);
+
+    mInheritedTransform = transform * aParentSC.mInheritedTransform;
+    mScale = resolution * aParentSC.mScale;
+
+    MOZ_ASSERT(!aParams.mAnimated);
+    mSnappingSurfaceTransform = transform * aParentSC.mSnappingSurfaceTransform;
+
   } else {
     mInheritedTransform = aParentSC.mInheritedTransform;
     mScale = aParentSC.mScale;
@@ -117,7 +138,7 @@ Maybe<gfx::Matrix4x4> StackingContextHelper::GetDeferredTransformMatrix()
     gfx::Matrix4x4 result =
         (*mDeferredTransformItem)->GetTransform().GetMatrix();
     if (mDeferredAncestorTransform) {
-      result = *mDeferredAncestorTransform * result;
+      result = result * *mDeferredAncestorTransform;
     }
     return Some(result);
   } else {

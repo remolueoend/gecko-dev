@@ -9,6 +9,7 @@
 #include <knownfolders.h>
 #include <winioctl.h>
 
+#include "GeckoProfiler.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
 #include "nsWindow.h"
@@ -21,6 +22,7 @@
 #include "mozilla/dom/MouseEventBinding.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
+#include "mozilla/gfx/Logging.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/SchedulerGroup.h"
@@ -50,11 +52,10 @@
 #include "nsLookAndFeel.h"
 #include "nsUnicharUtils.h"
 #include "nsWindowsHelpers.h"
+#include "WinContentSystemParameters.h"
 
-#ifdef NS_ENABLE_TSF
-#  include <textstor.h>
-#  include "TSFTextStore.h"
-#endif  // #ifdef NS_ENABLE_TSF
+#include <textstor.h>
+#include "TSFTextStore.h"
 
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -463,6 +464,9 @@ void WinUtils::Initialize() {
 LRESULT WINAPI WinUtils::NonClientDpiScalingDefWindowProcW(HWND hWnd, UINT msg,
                                                            WPARAM wParam,
                                                            LPARAM lParam) {
+  // NOTE: this function was copied out into the body of the pre-XUL skeleton
+  // UI window proc (PreXULSkeletonUI.cpp). If this function changes at any
+  // point, we should probably factor this out and use it from both locations.
   if (msg == WM_NCCREATE && sEnableNonClientDpiScaling) {
     sEnableNonClientDpiScaling(hWnd);
   }
@@ -539,6 +543,9 @@ void WinUtils::Log(const char* fmt, ...) {
 
 // static
 float WinUtils::SystemDPI() {
+  if (XRE_IsContentProcess()) {
+    return WinContentSystemParameters::GetSingleton()->SystemDPI();
+  }
   // The result of GetDeviceCaps won't change dynamically, as it predates
   // per-monitor DPI and support for on-the-fly resolution changes.
   // Therefore, we only need to look it up once.
@@ -601,6 +608,9 @@ static bool SlowIsPerMonitorDPIAware() {
 
 /* static */
 bool WinUtils::IsPerMonitorDPIAware() {
+  if (XRE_IsContentProcess()) {
+    return WinContentSystemParameters::GetSingleton()->IsPerMonitorDPIAware();
+  }
   static bool perMonitorDPIAware = SlowIsPerMonitorDPIAware();
   return perMonitorDPIAware;
 }
@@ -665,6 +675,40 @@ int WinUtils::GetSystemMetricsForDpi(int nIndex, UINT dpi) {
   }
 }
 
+/* static */
+gfx::MarginDouble WinUtils::GetUnwriteableMarginsForDeviceInInches(HDC aHdc) {
+  if (!aHdc) {
+    return gfx::MarginDouble();
+  }
+
+  int pixelsPerInchY = ::GetDeviceCaps(aHdc, LOGPIXELSY);
+  int marginTop = ::GetDeviceCaps(aHdc, PHYSICALOFFSETY);
+  int printableAreaHeight = ::GetDeviceCaps(aHdc, VERTRES);
+  int physicalHeight = ::GetDeviceCaps(aHdc, PHYSICALHEIGHT);
+
+  double marginTopInch = double(marginTop) / pixelsPerInchY;
+
+  double printableAreaHeightInch = double(printableAreaHeight) / pixelsPerInchY;
+  double physicalHeightInch = double(physicalHeight) / pixelsPerInchY;
+  double marginBottomInch =
+      physicalHeightInch - printableAreaHeightInch - marginTopInch;
+
+  int pixelsPerInchX = ::GetDeviceCaps(aHdc, LOGPIXELSX);
+  int marginLeft = ::GetDeviceCaps(aHdc, PHYSICALOFFSETX);
+  int printableAreaWidth = ::GetDeviceCaps(aHdc, HORZRES);
+  int physicalWidth = ::GetDeviceCaps(aHdc, PHYSICALWIDTH);
+
+  double marginLeftInch = double(marginLeft) / pixelsPerInchX;
+
+  double printableAreaWidthInch = double(printableAreaWidth) / pixelsPerInchX;
+  double physicalWidthInch = double(physicalWidth) / pixelsPerInchX;
+  double marginRightInch =
+      physicalWidthInch - printableAreaWidthInch - marginLeftInch;
+
+  return gfx::MarginDouble(marginTopInch, marginRightInch, marginBottomInch,
+                           marginLeftInch);
+}
+
 #ifdef ACCESSIBILITY
 /* static */
 a11y::Accessible* WinUtils::GetRootAccessibleForHWND(HWND aHwnd) {
@@ -680,7 +724,6 @@ a11y::Accessible* WinUtils::GetRootAccessibleForHWND(HWND aHwnd) {
 /* static */
 bool WinUtils::PeekMessage(LPMSG aMsg, HWND aWnd, UINT aFirstMessage,
                            UINT aLastMessage, UINT aOption) {
-#ifdef NS_ENABLE_TSF
   RefPtr<ITfMessagePump> msgPump = TSFTextStore::GetMessagePump();
   if (msgPump) {
     BOOL ret = FALSE;
@@ -689,14 +732,12 @@ bool WinUtils::PeekMessage(LPMSG aMsg, HWND aWnd, UINT aFirstMessage,
     NS_ENSURE_TRUE(SUCCEEDED(hr), false);
     return ret;
   }
-#endif  // #ifdef NS_ENABLE_TSF
   return ::PeekMessageW(aMsg, aWnd, aFirstMessage, aLastMessage, aOption);
 }
 
 /* static */
 bool WinUtils::GetMessage(LPMSG aMsg, HWND aWnd, UINT aFirstMessage,
                           UINT aLastMessage) {
-#ifdef NS_ENABLE_TSF
   RefPtr<ITfMessagePump> msgPump = TSFTextStore::GetMessagePump();
   if (msgPump) {
     BOOL ret = FALSE;
@@ -705,7 +746,6 @@ bool WinUtils::GetMessage(LPMSG aMsg, HWND aWnd, UINT aFirstMessage,
     NS_ENSURE_TRUE(SUCCEEDED(hr), false);
     return ret;
   }
-#endif  // #ifdef NS_ENABLE_TSF
   return ::GetMessageW(aMsg, aWnd, aFirstMessage, aLastMessage);
 }
 
@@ -736,8 +776,12 @@ void WinUtils::WaitForMessage(DWORD aTimeoutMs) {
     if (elapsed >= aTimeoutMs) {
       break;
     }
-    DWORD result = ::MsgWaitForMultipleObjectsEx(0, NULL, aTimeoutMs - elapsed,
-                                                 MOZ_QS_ALLEVENT, waitFlags);
+    DWORD result;
+    {
+      AUTO_PROFILER_THREAD_SLEEP;
+      result = ::MsgWaitForMultipleObjectsEx(0, NULL, aTimeoutMs - elapsed,
+                                             MOZ_QS_ALLEVENT, waitFlags);
+    }
     NS_WARNING_ASSERTION(result != WAIT_FAILED, "Wait failed");
     if (result == WAIT_TIMEOUT) {
       break;
@@ -1145,7 +1189,7 @@ nsresult AsyncFaviconDataReady::OnFaviconDataNotAvailable(void) {
   nsCOMPtr<nsIChannel> channel;
   rv = NS_NewChannel(getter_AddRefs(channel), mozIconURI,
                      nsContentUtils::GetSystemPrincipal(),
-                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL,
+                     nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_SEC_CONTEXT_IS_NULL,
                      nsIContentPolicy::TYPE_INTERNAL_IMAGE);
 
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1308,8 +1352,8 @@ NS_IMETHODIMP AsyncEncodeAndWriteIcon::Run() {
       return rv;
     }
   }
-  nsresult rv = gfxUtils::EncodeSourceSurface(
-      surface, ImageType::ICO, EmptyString(), gfxUtils::eBinaryEncode, file);
+  nsresult rv = gfxUtils::EncodeSourceSurface(surface, ImageType::ICO, u""_ns,
+                                              gfxUtils::eBinaryEncode, file);
   fclose(file);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -2051,14 +2095,14 @@ bool WinUtils::UnexpandEnvVars(nsAString& aPath) {
 WinUtils::WhitelistVec WinUtils::BuildWhitelist() {
   WhitelistVec result;
 
-  Unused << result.emplaceBack(std::make_pair(
-      nsString(NS_LITERAL_STRING("%ProgramFiles%")), nsDependentString()));
+  Unused << result.emplaceBack(
+      std::make_pair(nsString(u"%ProgramFiles%"_ns), nsDependentString()));
 
   // When no substitution is required, set the void flag
   result.back().second.SetIsVoid(true);
 
-  Unused << result.emplaceBack(std::make_pair(
-      nsString(NS_LITERAL_STRING("%SystemRoot%")), nsDependentString()));
+  Unused << result.emplaceBack(
+      std::make_pair(nsString(u"%SystemRoot%"_ns), nsDependentString()));
   result.back().second.SetIsVoid(true);
 
   wchar_t tmpPath[MAX_PATH + 1] = {};
@@ -2071,7 +2115,7 @@ WinUtils::WhitelistVec WinUtils::BuildWhitelist() {
 
     nsAutoString cleanTmpPath(tmpPath);
     if (UnexpandEnvVars(cleanTmpPath)) {
-      NS_NAMED_LITERAL_STRING(tempVar, "%TEMP%");
+      constexpr auto tempVar = u"%TEMP%"_ns;
       Unused << result.emplaceBack(std::make_pair(
           nsString(cleanTmpPath), nsDependentString(tempVar, 0)));
     }
@@ -2207,8 +2251,7 @@ bool WinUtils::PreparePathForTelemetry(nsAString& aPath,
   for (uint32_t i = 0; i < whitelistedPaths.length(); ++i) {
     const nsString& testPath = whitelistedPaths[i].first;
     const nsDependentString& substitution = whitelistedPaths[i].second;
-    if (StringBeginsWith(aPath, testPath,
-                         nsCaseInsensitiveStringComparator())) {
+    if (StringBeginsWith(aPath, testPath, nsCaseInsensitiveStringComparator)) {
       if (!substitution.IsVoid()) {
         aPath.Replace(0, testPath.Length(), substitution);
       }

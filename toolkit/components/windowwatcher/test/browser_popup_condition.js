@@ -19,9 +19,7 @@ add_task(async function test_popup_conditions() {
     //   * left or screenX
     //   * top or screenY
     //   * width or innerWidth
-    //   * outerWidth
     //   * height or innerHeight
-    //   * outerHeight
     { features: "location,menubar,resizable,scrollbars,status", popup: false },
     { features: "toolbar,menubar,resizable,scrollbars,status", popup: false },
     {
@@ -85,10 +83,10 @@ add_task(async function test_popup_conditions() {
       popup: true,
     },
 
-    // If outerWidth is specified, popup.
+    // outerWidth has no effect.
     {
       features: "location,menubar,scrollbars,status,outerWidth=100",
-      popup: true,
+      popup: false,
     },
 
     // left or screenX alone doesn't make it a popup.
@@ -111,7 +109,7 @@ add_task(async function test_popup_conditions() {
       popup: false,
     },
 
-    // height or innerHeight or outerHeight alone doesn't make it a popup.
+    // height or innerHeight alone doesn't make it a popup.
     {
       features: "location,menubar,scrollbars,status,height=100",
       popup: false,
@@ -120,6 +118,7 @@ add_task(async function test_popup_conditions() {
       features: "location,menubar,scrollbars,status,innerHeight=100",
       popup: false,
     },
+    // outerHeight has no effect.
     {
       features: "location,menubar,scrollbars,status,outerHeight=100",
       popup: false,
@@ -206,7 +205,7 @@ add_task(async function test_popup_conditions() {
           },
           async function(browser) {
             const newWinPromise = BrowserTestUtils.waitForNewWindow();
-            await BrowserTestUtils.loadURI(gBrowser, SCRIPT_PAGE);
+            BrowserTestUtils.loadURI(gBrowser, SCRIPT_PAGE);
 
             const win = await newWinPromise;
             const parentChromeFlags = getParentChromeFlags(win);
@@ -243,7 +242,7 @@ add_task(async function test_popup_conditions() {
               gBrowser,
               OPEN_PAGE
             );
-            await BrowserTestUtils.loadURI(gBrowser, SCRIPT_PAGE);
+            BrowserTestUtils.loadURI(gBrowser, SCRIPT_PAGE);
 
             let tab = await newTabPromise;
             BrowserTestUtils.removeTab(tab);
@@ -263,7 +262,7 @@ add_task(async function test_popup_conditions() {
               false,
               OPEN_PAGE
             );
-            await BrowserTestUtils.loadURI(gBrowser, SCRIPT_PAGE);
+            BrowserTestUtils.loadURI(gBrowser, SCRIPT_PAGE);
 
             await pagePromise;
           }

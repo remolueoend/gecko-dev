@@ -23,7 +23,7 @@
 #include "nsString.h"
 
 class nsIAsyncInputStream;
-class nsIThread;
+class nsISerialEventTarget;
 
 namespace mozilla {
 namespace net {
@@ -72,7 +72,7 @@ class BackgroundFileSaver : public nsIBackgroundFileSaver {
   /**
    * Thread to which the actual input/output is delegated.
    */
-  nsCOMPtr<nsIThread> mWorkerThread;
+  nsCOMPtr<nsISerialEventTarget> mBackgroundET;
 
   /**
    * Stream that receives data from derived classes.  The received data will be
@@ -228,7 +228,7 @@ class BackgroundFileSaver : public nsIBackgroundFileSaver {
    * Used to calculate the file hash. This keeps state across file renames and
    * is lazily initialized in ProcessStateChange.
    */
-  UniquePK11Context mDigestContext;
+  Maybe<Digest> mDigest;
 
   //////////////////////////////////////////////////////////////////////////////
   //// Private methods
@@ -376,15 +376,15 @@ class DigestOutputStream : public nsIOutputStream {
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIOUTPUTSTREAM
   // Constructor. Neither parameter may be null. The caller owns both.
-  DigestOutputStream(nsIOutputStream* outputStream, PK11Context* aContext);
+  DigestOutputStream(nsIOutputStream* aStream, Digest& aDigest);
 
  private:
   virtual ~DigestOutputStream() = default;
 
   // Calls to write are passed to this stream.
   nsCOMPtr<nsIOutputStream> mOutputStream;
-  // Digest context used to compute the hash, owned by the caller.
-  PK11Context* mDigestContext;
+  // Digest used to compute the hash, owned by the caller.
+  Digest& mDigest;
 
   // Don't accidentally copy construct.
   DigestOutputStream(const DigestOutputStream& d) = delete;

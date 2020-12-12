@@ -14,6 +14,7 @@
 #include "mozilla/CheckedInt.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/dom/Document.h"
 
 #include "nsMappedAttributeElement.h"
 #include "nsString.h"
@@ -312,6 +313,7 @@ nsresult AttrArray::DoSetMappedAttrStyleSheet(nsHTMLStyleSheet* aSheet) {
   RefPtr<nsMappedAttributes> mapped =
       GetModifiableMapped(nullptr, nullptr, false);
 
+  mapped->DropStyleSheetReference();
   mapped->SetStyleSheet(aSheet);
 
   return MakeMappedUnique(mapped);

@@ -564,9 +564,11 @@ class ContextMenuChild extends JSWindowActorChild {
       mozDocumentURIIfNotForErrorPages: docLocation,
       characterSet: charSet,
       baseURI,
+      cookieJarSettings,
     } = doc;
     docLocation = docLocation && docLocation.spec;
-    let frameOuterWindowID = WebNavigationFrames.getFrameId(doc.defaultView);
+    let frameID = WebNavigationFrames.getFrameId(doc.defaultView);
+    let frameBrowsingContextID = doc.defaultView.docShell.browsingContext.id;
     let loginFillInfo = LoginManagerChild.forWindow(
       doc.defaultView
     ).getFieldContext(aEvent.composedTarget);
@@ -628,7 +630,7 @@ class ContextMenuChild extends JSWindowActorChild {
     let referrerInfo = Cc["@mozilla.org/referrer-info;1"].createInstance(
       Ci.nsIReferrerInfo
     );
-    referrerInfo.initWithNode(aEvent.composedTarget);
+    referrerInfo.initWithElement(aEvent.composedTarget);
     referrerInfo = E10SUtils.serializeReferrerInfo(referrerInfo);
 
     // In the case "onLink" we may have to send link referrerInfo to use in
@@ -638,7 +640,7 @@ class ContextMenuChild extends JSWindowActorChild {
       linkReferrerInfo = Cc["@mozilla.org/referrer-info;1"].createInstance(
         Ci.nsIReferrerInfo
       );
-      linkReferrerInfo.initWithNode(context.link);
+      linkReferrerInfo.initWithElement(context.link);
     }
 
     let target = context.target;
@@ -682,7 +684,8 @@ class ContextMenuChild extends JSWindowActorChild {
       userContextId,
       customMenuItems,
       contentDisposition,
-      frameOuterWindowID,
+      frameID,
+      frameBrowsingContextID,
       disableSetDesktopBackground,
       parentAllowsMixedContent,
     };
@@ -710,6 +713,10 @@ class ContextMenuChild extends JSWindowActorChild {
     data.context.principal = context.principal;
     data.storagePrincipal = doc.effectiveStoragePrincipal;
     data.context.storagePrincipal = context.storagePrincipal;
+
+    data.cookieJarSettings = E10SUtils.serializeCookieJarSettings(
+      cookieJarSettings
+    );
 
     // In the event that the content is running in the parent process, we don't
     // actually want the contextmenu events to reach the parent - we'll dispatch
@@ -873,7 +880,6 @@ class ContextMenuChild extends JSWindowActorChild {
     context.onCTPPlugin = false;
     context.onDRMMedia = false;
     context.onPiPVideo = false;
-    context.onMediaStreamVideo = false;
     context.onEditable = false;
     context.onImage = false;
     context.onKeywordField = false;
@@ -898,9 +904,15 @@ class ContextMenuChild extends JSWindowActorChild {
       context.target.ownerDocument.effectiveStoragePrincipal;
     context.csp = E10SUtils.serializeCSP(context.target.ownerDocument.csp);
 
-    context.frameOuterWindowID = WebNavigationFrames.getFrameId(
+    context.frameID = WebNavigationFrames.getFrameId(
       context.target.ownerGlobal
     );
+
+    context.frameOuterWindowID =
+      context.target.ownerGlobal.docShell.outerWindowID;
+
+    context.frameBrowsingContextID =
+      context.target.ownerGlobal.browsingContext.id;
 
     // Check if we are in the PDF Viewer.
     context.inPDFViewer =
@@ -1037,8 +1049,6 @@ class ContextMenuChild extends JSWindowActorChild {
       if (context.target.isCloningElementVisually) {
         context.onPiPVideo = true;
       }
-
-      context.onMediaStreamVideo = !!context.target.srcObject;
 
       // Firefox always creates a HTMLVideoElement when loading an ogg file
       // directly. If the media is actually audio, be smarter and provide a
@@ -1221,5 +1231,21 @@ class ContextMenuChild extends JSWindowActorChild {
         context.shouldInitInlineSpellCheckerUIWithChildren = true;
       }
     }
+  }
+
+  _destructionObservers = new Set();
+  registerDestructionObserver(obj) {
+    this._destructionObservers.add(obj);
+  }
+
+  unregisterDestructionObserver(obj) {
+    this._destructionObservers.delete(obj);
+  }
+
+  didDestroy() {
+    for (let obs of this._destructionObservers) {
+      obs.actorDestroyed(this);
+    }
+    this._destructionObservers = null;
   }
 }

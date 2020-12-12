@@ -13,6 +13,8 @@
 #include "prenv.h"
 
 #include "jsfriendapi.h"
+#include "js/friend/WindowProxy.h"  // js::ToWindowIfWindowProxy
+#include "js/Object.h"              // JS::GetCompartment
 
 #include "nsPluginHost.h"
 #include "nsNPAPIPlugin.h"
@@ -39,9 +41,11 @@
 #include "nsWildCard.h"
 #include "nsContentUtils.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/JSExecutionContext.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "nsIXPConnect.h"
+#include "nsMemory.h"
 
 #include <prinrval.h>
 
@@ -90,6 +94,7 @@ using mozilla::plugins::PluginModuleContentParent;
 using namespace mozilla;
 using namespace mozilla::plugins::parent;
 using mozilla::dom::Document;
+using mozilla::dom::JSExecutionContext;
 
 // We should make this const...
 static NPNetscapeFuncs sBrowserFuncs = {
@@ -972,14 +977,13 @@ bool _evaluate(NPP npp, NPObject* npobj, NPString* script, NPVariant* result) {
   }
   // nsNPObjWrapper::GetNewOrUsed returns an object in the current compartment
   // of the JSContext (it might be a CCW).
-  MOZ_RELEASE_ASSERT(
-      js::GetObjectCompartment(obj) == js::GetContextCompartment(cx),
-      "nsNPObjWrapper::GetNewOrUsed must wrap its return value");
+  MOZ_RELEASE_ASSERT(JS::GetCompartment(obj) == js::GetContextCompartment(cx),
+                     "nsNPObjWrapper::GetNewOrUsed must wrap its return value");
   obj = JS::CurrentGlobalOrNull(cx);
   MOZ_ASSERT(obj);
   nsresult rv = NS_OK;
   {
-    nsJSUtils::ExecutionContext exec(cx, obj);
+    JSExecutionContext exec(cx, obj);
     exec.SetScopeChain(scopeChain);
     exec.Compile(options, utf16script);
     rv = exec.ExecScript(&rval);

@@ -26,10 +26,17 @@ def with_span(fn):
 
 
 class FluentParser(object):
+    """This class is used to parse Fluent source content.
+
+    ``with_spans`` enables source information in the form of
+    :class:`.ast.Span` objects for each :class:`.ast.SyntaxNode`.
+    """
     def __init__(self, with_spans=True):
         self.with_spans = with_spans
 
     def parse(self, source):
+        """Create a :class:`.ast.Resource` from a Fluent source.
+        """
         ps = FluentParserStream(source)
         ps.skip_blank_block()
 
@@ -73,13 +80,13 @@ class FluentParser(object):
         return res
 
     def parse_entry(self, source):
-        """Parse the first Message or Term in source.
+        """Parse the first :class:`.ast.Entry` in source.
 
-        Skip all encountered comments and start parsing at the first Mesage
-        or Term start. Return Junk if the parsing is not successful.
+        Skip all encountered comments and start parsing at the first :class:`.ast.Message`
+        or :class:`.ast.Term` start. Return :class:`.ast.Junk` if the parsing is not successful.
 
         Preceding comments are ignored unless they contain syntax errors
-        themselves, in which case Junk for the invalid comment is returned.
+        themselves, in which case :class:`.ast.Junk` for the invalid comment is returned.
         """
         ps = FluentParserStream(source)
         ps.skip_blank_block()
@@ -508,11 +515,20 @@ class FluentParser(object):
                 else:
                     raise ParseError('E0018')
 
-            if (
+            elif (
                 isinstance(selector, ast.TermReference)
-                and selector.attribute is None
             ):
-                raise ParseError('E0017')
+                if selector.attribute is None:
+                    raise ParseError('E0017')
+            elif not (
+                isinstance(selector, (
+                    ast.StringLiteral,
+                    ast.NumberLiteral,
+                    ast.VariableReference,
+                    ast.FunctionReference,
+                ))
+            ):
+                raise ParseError('E0029')
 
             ps.next()
             ps.next()
@@ -555,17 +571,21 @@ class FluentParser(object):
                 ps.next()
                 attribute = self.get_identifier(ps)
             arguments = None
-            if ps.current_char == '(':
+            ps.peek_blank()
+            if ps.current_peek == '(':
+                ps.skip_to_peek()
                 arguments = self.get_call_arguments(ps)
             return ast.TermReference(id, attribute, arguments)
 
         if ps.is_identifier_start():
             id = self.get_identifier(ps)
+            ps.peek_blank()
 
-            if ps.current_char == '(':
+            if ps.current_peek == '(':
                 # It's a Function. Ensure it's all upper-case.
                 if not re.match('^[A-Z][A-Z0-9_-]*$', id.name):
                     raise ParseError('E0008')
+                ps.skip_to_peek()
                 args = self.get_call_arguments(ps)
                 return ast.FunctionReference(id, args)
 

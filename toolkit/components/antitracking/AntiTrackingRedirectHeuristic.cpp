@@ -15,10 +15,12 @@
 #include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/net/UrlClassifierCommon.h"
 #include "mozilla/StaticPrefs_network.h"
+#include "mozilla/Telemetry.h"
 #include "nsContentUtils.h"
 #include "nsIChannel.h"
 #include "nsIClassifiedChannel.h"
 #include "nsICookieService.h"
+#include "nsIHttpChannel.h"
 #include "nsIRedirectHistoryEntry.h"
 #include "nsIScriptError.h"
 #include "nsIURI.h"
@@ -279,7 +281,7 @@ void AntiTrackingRedirectHeuristic(nsIChannel* aOldChannel, nsIURI* aOldURI,
   AutoTArray<nsString, 2> params = {NS_ConvertUTF8toUTF16(newOrigin),
                                     NS_ConvertUTF8toUTF16(oldOrigin)};
   rv = nsContentUtils::FormatLocalizedString(
-      nsContentUtils::eNECKO_PROPERTIES, "CookieAllowedForTrackerByHeuristic",
+      nsContentUtils::eNECKO_PROPERTIES, "CookieAllowedForOriginByHeuristic",
       params, errorText);
   if (NS_SUCCEEDED(rv)) {
     nsContentUtils::ReportToConsoleByWindowID(
@@ -294,6 +296,11 @@ void AntiTrackingRedirectHeuristic(nsIChannel* aOldChannel, nsIURI* aOldURI,
     LOG(("Can't obtain the principal from the redirected"));
     return;
   }
+
+  Telemetry::AccumulateCategorical(
+      Telemetry::LABELS_STORAGE_ACCESS_GRANTED_COUNT::StorageGranted);
+  Telemetry::AccumulateCategorical(
+      Telemetry::LABELS_STORAGE_ACCESS_GRANTED_COUNT::Redirect);
 
   // We don't care about this promise because the operation is actually sync.
   RefPtr<ContentBlocking::ParentAccessGrantPromise> promise =

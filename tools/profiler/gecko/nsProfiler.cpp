@@ -20,6 +20,8 @@
 #include "mozilla/Services.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/TypedArray.h"
+#include "mozilla/Preferences.h"
+#include "nsComponentManagerUtils.h"
 #include "nsIFileStreams.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -59,6 +61,7 @@ nsProfiler::~nsProfiler() {
   if (mSymbolTableThread) {
     mSymbolTableThread->Shutdown();
   }
+  ResetGathering();
 }
 
 nsresult nsProfiler::Init() {
@@ -84,7 +87,10 @@ nsProfiler::Observe(nsISupports* aSubject, const char* aTopic,
     if (loadContext && loadContext->UsePrivateBrowsing() &&
         !mLockedForPrivateBrowsing) {
       mLockedForPrivateBrowsing = true;
-      profiler_stop();
+      // Allow profiling tests that trigger private browsing.
+      if (!xpc::IsInAutomation()) {
+        profiler_stop();
+      }
     }
   } else if (strcmp(aTopic, "last-pb-context-exited") == 0) {
     mLockedForPrivateBrowsing = false;
@@ -143,10 +149,6 @@ nsProfiler::StartProfiler(uint32_t aEntries, double aInterval,
 
 NS_IMETHODIMP
 nsProfiler::StopProfiler() {
-  // If we have a Promise in flight, we should reject it.
-  if (mPromiseHolder.isSome()) {
-    mPromiseHolder->RejectIfExists(NS_ERROR_DOM_ABORT_ERR, __func__);
-  }
   ResetGathering();
 
   profiler_stop();
@@ -161,20 +163,32 @@ nsProfiler::IsPaused(bool* aIsPaused) {
 }
 
 NS_IMETHODIMP
-nsProfiler::PauseSampling() {
+nsProfiler::Pause() {
   profiler_pause();
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsProfiler::ResumeSampling() {
+nsProfiler::Resume() {
   profiler_resume();
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsProfiler::AddMarker(const char* aMarker) {
-  PROFILER_ADD_MARKER(aMarker, OTHER);
+nsProfiler::IsSamplingPaused(bool* aIsSamplingPaused) {
+  *aIsSamplingPaused = profiler_is_sampling_paused();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsProfiler::PauseSampling() {
+  profiler_pause_sampling();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsProfiler::ResumeSampling() {
+  profiler_resume_sampling();
   return NS_OK;
 }
 
@@ -273,8 +287,8 @@ struct StringWriteFunc : public JSONWriteFunc {
   nsAString& mBuffer;  // This struct must not outlive this buffer
   explicit StringWriteFunc(nsAString& buffer) : mBuffer(buffer) {}
 
-  void Write(const char* aStr) override {
-    mBuffer.Append(NS_ConvertUTF8toUTF16(aStr));
+  void Write(const Span<const char>& aStr) override {
+    mBuffer.Append(NS_ConvertUTF8toUTF16(aStr.data(), aStr.size()));
   }
 };
 }  // namespace
@@ -617,7 +631,7 @@ nsProfiler::DumpProfileToFileAsync(const nsACString& aFilename,
 NS_IMETHODIMP
 nsProfiler::GetSymbolTable(const nsACString& aDebugPath,
                            const nsACString& aBreakpadID, JSContext* aCx,
-                           nsISupports** aPromise) {
+                           Promise** aPromise) {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (NS_WARN_IF(!aCx)) {
@@ -747,6 +761,35 @@ nsProfiler::GetBufferInfo(uint32_t* aCurrentPosition, uint32_t* aTotalSize,
   return NS_OK;
 }
 
+/* static */ void nsProfiler::GatheringTimerCallback(nsITimer* aTimer,
+                                                     void* aClosure) {
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  nsCOMPtr<nsIProfiler> profiler(
+      do_GetService("@mozilla.org/tools/profiler;1"));
+  if (!profiler) {
+    // No (more) profiler service.
+    return;
+  }
+  nsProfiler* self = static_cast<nsProfiler*>(profiler.get());
+  if (self != aClosure) {
+    // Different service object!?
+    return;
+  }
+  if (aTimer != self->mGatheringTimer) {
+    // This timer was cancelled after this callback was queued.
+    return;
+  }
+  self->mGatheringTimer = nullptr;
+  if (!profiler_is_active() || !self->mGathering) {
+    // Not gathering anymore.
+    return;
+  }
+  NS_WARNING("Profiler failed to gather profiles from all sub-processes");
+  // We have really reached a timeout while gathering, finish now.
+  // TODO: Add information about missing processes.
+  self->FinishGathering();
+}
+
 void nsProfiler::GatheredOOPProfile(const nsACString& aProfile) {
   MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
@@ -765,7 +808,8 @@ void nsProfiler::GatheredOOPProfile(const nsACString& aProfile) {
                      "Should always have a writer if mGathering is true");
 
   if (!aProfile.IsEmpty()) {
-    mWriter->Splice(PromiseFlatCString(aProfile).get());
+    // TODO: Remove PromiseFlatCString, see bug 1657033.
+    mWriter->Splice(PromiseFlatCString(aProfile));
   }
 
   mPendingProfiles--;
@@ -774,6 +818,21 @@ void nsProfiler::GatheredOOPProfile(const nsACString& aProfile) {
     // We've got all of the async profiles now. Let's
     // finish off the profile and resolve the Promise.
     FinishGathering();
+  }
+
+  // Not finished yet, restart the timer to let any remaining child enough time
+  // to do their profile-streaming.
+  if (mGatheringTimer) {
+    uint32_t delayMs = 0;
+    const nsresult r = mGatheringTimer->GetDelay(&delayMs);
+    mGatheringTimer->Cancel();
+    mGatheringTimer = nullptr;
+    if (NS_SUCCEEDED(r) && delayMs != 0) {
+      Unused << NS_NewTimerWithFuncCallback(
+          getter_AddRefs(mGatheringTimer), GatheringTimerCallback, this,
+          delayMs, nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY, "",
+          GetMainThreadSerialEventTarget());
+    }
   }
 }
 
@@ -794,6 +853,11 @@ RefPtr<nsProfiler::GatheringPromise> nsProfiler::StartGathering(
 
   mGathering = true;
 
+  if (mGatheringTimer) {
+    mGatheringTimer->Cancel();
+    mGatheringTimer = nullptr;
+  }
+
   // Request profiles from the other processes. This will trigger asynchronous
   // calls to ProfileGatherer::GatheredOOPProfile as the profiles arrive.
   //
@@ -804,6 +868,8 @@ RefPtr<nsProfiler::GatheringPromise> nsProfiler::StartGathering(
       ProfilerParent::GatherProfiles();
 
   mWriter.emplace();
+
+  TimeStamp streamingStart = TimeStamp::NowUnfuzzed();
 
   UniquePtr<ProfilerCodeAddressService> service =
       profiler_code_address_service_for_presymbolication();
@@ -826,7 +892,7 @@ RefPtr<nsProfiler::GatheringPromise> nsProfiler::StartGathering(
   Vector<nsCString> exitProfiles = profiler_move_exit_profiles();
   for (auto& exitProfile : exitProfiles) {
     if (!exitProfile.IsEmpty()) {
-      mWriter->Splice(exitProfile.get());
+      mWriter->Splice(exitProfile);
     }
   }
 
@@ -839,20 +905,56 @@ RefPtr<nsProfiler::GatheringPromise> nsProfiler::StartGathering(
   // FinishGathering() will close the array and the root object.
 
   mPendingProfiles = profiles.Length();
-  RefPtr<nsProfiler> self = this;
-  for (auto profile : profiles) {
-    profile->Then(
-        GetMainThreadSerialEventTarget(), __func__,
-        [self](mozilla::ipc::Shmem&& aResult) {
-          const nsDependentCSubstring profileString(aResult.get<char>(),
-                                                    aResult.Size<char>() - 1);
-          self->GatheredOOPProfile(profileString);
-        },
-        [self](ipc::ResponseRejectReason&& aReason) {
-          self->GatheredOOPProfile(NS_LITERAL_CSTRING(""));
-        });
-  }
-  if (!mPendingProfiles) {
+  if (mPendingProfiles != 0) {
+    // There *are* pending profiles, let's add handlers for their promises.
+
+    // We want a reasonable timeout value while waiting for child profiles.
+    // We know how long the parent process took to serialize its profile:
+    const uint32_t parentTimeMs = static_cast<uint32_t>(
+        (TimeStamp::NowUnfuzzed() - streamingStart).ToMilliseconds());
+    // We will multiply this by the number of children, to cover the worst case
+    // where all processes take the same time, but because they are working in
+    // parallel on a potential single CPU, they all finish around the same later
+    // time.
+    // And multiply again by 2, for the extra processing and comms, and other
+    // work that may happen.
+    const uint32_t parentToChildrenFactor = mPendingProfiles * 2;
+    // And we add a number seconds by default. In some lopsided cases, the
+    // parent-to-child serializing ratio could be much greater than expected,
+    // so the user could force it to be a bigger number if needed.
+    uint32_t childTimeoutS = Preferences::GetUint(
+        "devtools.performance.recording.child.timeout_s", 0u);
+    if (childTimeoutS == 0) {
+      // If absent or 0, use hard-coded default.
+      childTimeoutS = 1;
+    }
+    // And this gives us a timeout value. The timer will be restarted after we
+    // receive each response.
+    // TODO: Instead of a timeout to cover the whole request-to-response time,
+    // there should be more of a continuous dialog between processes, to only
+    // give up if some processes are really unresponsive. See bug 1673513.
+    const uint32_t streamingTimeoutMs =
+        parentTimeMs * parentToChildrenFactor + childTimeoutS * 1000;
+    Unused << NS_NewTimerWithFuncCallback(
+        getter_AddRefs(mGatheringTimer), GatheringTimerCallback, this,
+        streamingTimeoutMs, nsITimer::TYPE_ONE_SHOT_LOW_PRIORITY, "",
+        GetMainThreadSerialEventTarget());
+
+    for (auto profile : profiles) {
+      profile->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [self = RefPtr<nsProfiler>(this)](mozilla::ipc::Shmem&& aResult) {
+            const nsDependentCSubstring profileString(aResult.get<char>(),
+                                                      aResult.Size<char>() - 1);
+            self->GatheredOOPProfile(profileString);
+          },
+          [self =
+               RefPtr<nsProfiler>(this)](ipc::ResponseRejectReason&& aReason) {
+            self->GatheredOOPProfile(""_ns);
+          });
+    }
+  } else {
+    // There are no pending profiles, we're already done.
     FinishGathering();
   }
 
@@ -873,7 +975,7 @@ RefPtr<nsProfiler::SymbolTablePromise> nsProfiler::GetSymbolTableMozPromise(
     }
   }
 
-  mSymbolTableThread->Dispatch(NS_NewRunnableFunction(
+  nsresult rv = mSymbolTableThread->Dispatch(NS_NewRunnableFunction(
       "nsProfiler::GetSymbolTableMozPromise runnable on ProfSymbolTable thread",
       [promiseHolder = std::move(promiseHolder),
        debugPath = nsCString(aDebugPath),
@@ -883,19 +985,18 @@ RefPtr<nsProfiler::SymbolTablePromise> nsProfiler::GetSymbolTableMozPromise(
         SymbolTable symbolTable;
         bool succeeded = profiler_get_symbol_table(
             debugPath.get(), breakpadID.get(), &symbolTable);
-        SchedulerGroup::Dispatch(
-            TaskCategory::Other,
-            NS_NewRunnableFunction(
-                "nsProfiler::GetSymbolTableMozPromise result on main thread",
-                [promiseHolder = std::move(promiseHolder),
-                 symbolTable = std::move(symbolTable), succeeded]() mutable {
-                  if (succeeded) {
-                    promiseHolder.Resolve(std::move(symbolTable), __func__);
-                  } else {
-                    promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
-                  }
-                }));
+        if (succeeded) {
+          promiseHolder.Resolve(std::move(symbolTable), __func__);
+        } else {
+          promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
+        }
       }));
+
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    // Get-symbol task was not dispatched and therefore won't fulfill the
+    // promise, we must reject the promise now.
+    promiseHolder.Reject(NS_ERROR_FAILURE, __func__);
+  }
 
   return promise;
 }
@@ -911,7 +1012,7 @@ void nsProfiler::FinishGathering() {
   // Close the root object of the generated JSON.
   mWriter->End();
 
-  UniquePtr<char[]> buf = mWriter->WriteFunc()->CopyData();
+  UniquePtr<char[]> buf = mWriter->ChunkedWriteFunc().CopyData();
   size_t len = strlen(buf.get());
   nsCString result;
   result.Adopt(buf.release(), len);
@@ -921,8 +1022,17 @@ void nsProfiler::FinishGathering() {
 }
 
 void nsProfiler::ResetGathering() {
-  mPromiseHolder.reset();
+  // If we have an unfulfilled Promise in flight, we should reject it before
+  // destroying the promise holder.
+  if (mPromiseHolder.isSome()) {
+    mPromiseHolder->RejectIfExists(NS_ERROR_DOM_ABORT_ERR, __func__);
+    mPromiseHolder.reset();
+  }
   mPendingProfiles = 0;
   mGathering = false;
+  if (mGatheringTimer) {
+    mGatheringTimer->Cancel();
+    mGatheringTimer = nullptr;
+  }
   mWriter.reset();
 }

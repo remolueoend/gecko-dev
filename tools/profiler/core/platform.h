@@ -31,15 +31,16 @@
 
 #include "PlatformMacros.h"
 
-#include "GeckoProfiler.h"
-
 #include "mozilla/Logging.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Vector.h"
 #include "nsString.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
-#include <stdint.h>
+
+class ProfilerCodeAddressService;
 
 namespace mozilla {
 struct SymbolTable;
@@ -95,9 +96,8 @@ void profiler_get_profile_json_into_lazily_allocated_buffer(
 // Flags to conveniently track various JS instrumentations.
 enum class JSInstrumentationFlags {
   StackSampling = 0x1,
-  TrackOptimizations = 0x2,
-  TraceLogging = 0x4,
-  Allocations = 0x8
+  TraceLogging = 0x2,
+  Allocations = 0x4,
 };
 
 // Record an exit profile from a child process.

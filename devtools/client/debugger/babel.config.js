@@ -16,6 +16,7 @@ module.exports = {
         "./packages/*/src",
         /[/\\]node_modules[/\\]devtools-/,
         /[/\\]node_modules[/\\]react-aria-components[/\\]/,
+        "../../shared",
       ],
       presets: [
         "@babel/preset-react",
@@ -64,6 +65,15 @@ module.exports = {
           ],
         },
       },
+    },
+    {
+      test: ["../shared/components"],
+      plugins: [
+        "@babel/plugin-proposal-class-properties",
+        "@babel/plugin-proposal-optional-chaining",
+        "@babel/plugin-proposal-nullish-coalescing-operator",
+        "transform-amd-to-commonjs",
+      ],
     },
   ],
 };

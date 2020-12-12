@@ -69,6 +69,14 @@ DevToolsServerConnection.prototype = {
     return this._prefix;
   },
 
+  /**
+   * For a DevToolsServerConnection used in content processes,
+   * returns the prefix of the connection it originates from, from the parent process.
+   */
+  get parentPrefix() {
+    this.prefix.replace(/child\d+\//, "");
+  },
+
   _transport: null,
   get transport() {
     return this._transport;
@@ -113,13 +121,10 @@ DevToolsServerConnection.prototype = {
   /**
    * Remove a previously-added pool of actors to the connection.
    *
-   * @param ActorPool actorPool
-   *        The ActorPool instance you want to remove.
-   * @param boolean noCleanup [optional]
-   *        True if you don't want to destroy each actor from the pool, false
-   *        otherwise.
+   * @param Pool actorPool
+   *        The Pool instance you want to remove.
    */
-  removeActorPool(actorPool, noCleanup) {
+  removeActorPool(actorPool) {
     // When a connection is closed, it removes each of its actor pools. When an
     // actor pool is removed, it calls the destroy method on each of its
     // actors. Some actors, such as ThreadActor, manage their own actor pools.
@@ -142,10 +147,7 @@ DevToolsServerConnection.prototype = {
     }
     const index = this._extraPools.lastIndexOf(actorPool);
     if (index > -1) {
-      const pool = this._extraPools.splice(index, 1);
-      if (!noCleanup) {
-        pool.forEach(p => p.destroy());
-      }
+      this._extraPools.splice(index, 1);
     }
   },
 
@@ -180,7 +182,7 @@ DevToolsServerConnection.prototype = {
   getActor(actorID) {
     const pool = this.poolFor(actorID);
     if (pool) {
-      return pool.get(actorID);
+      return pool.getActorByID(actorID);
     }
 
     if (actorID === "root") {
@@ -203,12 +205,9 @@ DevToolsServerConnection.prototype = {
       }
 
       if (typeof actor !== "object") {
-        // ActorPools should now contain only actor instances (i.e. objects)
+        // Pools should now contain only actor instances (i.e. objects)
         throw new Error(
-          "Unexpected actor constructor/function in ActorPool " +
-            "for actorID=" +
-            actorID +
-            "."
+          `Unexpected actor constructor/function in Pool for actorID "${actorID}".`
         );
       }
 
@@ -269,7 +268,7 @@ DevToolsServerConnection.prototype = {
           );
         }
 
-        const prefix = `error occurred while processing '${type}'`;
+        const prefix = `error occurred while queuing response for '${type}'`;
         this.transport.send(this._unknownError(from, prefix, error));
       });
 
@@ -379,8 +378,17 @@ DevToolsServerConnection.prototype = {
         this.currentPacket = packet;
         ret = actor.requestTypes[packet.type].bind(actor)(packet, this);
       } catch (error) {
+        // Support legacy errors from old actors such as thread actor which
+        // throw { error, message } objects.
+        let errorMessage = error;
+        if (error?.error && error?.message) {
+          errorMessage = `"(${error.error}) ${error.message}"`;
+        }
+
         const prefix = `error occurred while processing '${packet.type}'`;
-        this.transport.send(this._unknownError(actor.actorID, prefix, error));
+        this.transport.send(
+          this._unknownError(actor.actorID, prefix, errorMessage)
+        );
       } finally {
         this.currentPacket = undefined;
       }
@@ -474,7 +482,16 @@ DevToolsServerConnection.prototype = {
 
     this.emit("closed", status, this.prefix);
 
-    this._extraPools.forEach(p => p.destroy());
+    // Use filter in order to create a copy of the extraPools array,
+    // which might be modified by removeActorPool calls.
+    // The isTopLevel check ensures that the pools retrieved here will not be
+    // destroyed by another Pool::destroy. Non top-level pools will be destroyed
+    // by the recursive Pool::destroy mechanism.
+    // See test_connection_closes_all_pools.js for practical examples of Pool
+    // hierarchies.
+    const topLevelPools = this._extraPools.filter(p => p.isTopPool());
+    topLevelPools.forEach(p => p.destroy());
+
     this._extraPools = null;
 
     this.rootActor = null;
@@ -483,31 +500,24 @@ DevToolsServerConnection.prototype = {
   },
 
   dumpPool(pool, output = [], dumpedPools) {
-    let label;
-    let actorIds = [];
-    let children = [];
+    const actorIds = [];
+    const children = [];
 
     if (dumpedPools.has(pool)) {
       return;
     }
     dumpedPools.add(pool);
-    // TRUE if the pool is an ActorPool
-    if (pool._actors) {
-      actorIds = Object.keys(pool._actors);
-      children = Object.values(pool._actors);
-      label = pool.label || "";
-    }
 
     // TRUE if the pool is a Pool
-    else if (pool.__poolMap) {
-      for (const actor of pool.poolChildren()) {
-        children.push(actor);
-        actorIds.push(actor.actorID);
-      }
-      label = pool.label || pool.actorID;
-    } else {
+    if (!pool.__poolMap) {
       return;
     }
+
+    for (const actor of pool.poolChildren()) {
+      children.push(actor);
+      actorIds.push(actor.actorID);
+    }
+    const label = pool.label || pool.actorID;
 
     output.push([label, actorIds]);
     dump(`- ${label}: ${JSON.stringify(actorIds)}\n`);

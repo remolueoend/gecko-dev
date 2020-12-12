@@ -7,9 +7,6 @@ const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
-const { ASRouterActions: ra } = ChromeUtils.import(
-  "resource://activity-stream/common/Actions.jsm"
-);
 
 XPCOMUtils.defineLazyGlobalGetters(this, ["fetch"]);
 
@@ -41,7 +38,6 @@ const SUMO_BASE_URL = Services.urlFormatter.formatURLPref(
 );
 const ADDONS_API_URL =
   "https://services.addons.mozilla.org/api/v3/addons/addon";
-const ANIMATIONS_ENABLED_PREF = "toolkit.cosmeticAnimations.enabled";
 
 const DELAY_BEFORE_EXPAND_MS = 1000;
 const CATEGORY_ICONS = {
@@ -69,7 +65,7 @@ let PageActionMap = new WeakMap();
  * We need one PageAction for each window
  */
 class PageAction {
-  constructor(win, dispatchToASRouter) {
+  constructor(win, dispatchCFRAction) {
     this.window = win;
 
     this.urlbar = win.gURLBar; // The global URLBar object
@@ -83,7 +79,7 @@ class PageAction {
 
     // This should NOT be use directly to dispatch message-defined actions attached to buttons.
     // Please use dispatchUserAction instead.
-    this._dispatchToASRouter = dispatchToASRouter;
+    this._dispatchCFRAction = dispatchCFRAction;
 
     this._popupStateChange = this._popupStateChange.bind(this);
     this._collapse = this._collapse.bind(this);
@@ -287,28 +283,37 @@ class PageAction {
   }
 
   dispatchUserAction(action) {
-    this._dispatchToASRouter(
+    this._dispatchCFRAction(
       { type: "USER_ACTION", data: action },
-      { browser: this.window.gBrowser.selectedBrowser }
+      this.window.gBrowser.selectedBrowser
     );
   }
 
   _dispatchImpression(message) {
-    this._dispatchToASRouter({ type: "IMPRESSION", data: message });
+    this._dispatchCFRAction({ type: "IMPRESSION", data: message });
   }
 
   _sendTelemetry(ping) {
-    this._dispatchToASRouter({
+    this._dispatchCFRAction({
       type: "DOORHANGER_TELEMETRY",
       data: { action: "cfr_user_event", source: "CFR", ...ping },
     });
   }
 
   _blockMessage(messageID) {
-    this._dispatchToASRouter({
+    this._dispatchCFRAction({
       type: "BLOCK_MESSAGE_BY_ID",
       data: { id: messageID },
     });
+  }
+
+  maybeLoadCustomElement(win) {
+    if (!win.customElements.get("remote-text")) {
+      Services.scriptloader.loadSubScript(
+        "resource://activity-stream/data/custom-elements/paragraph.js",
+        win
+      );
+    }
   }
 
   /**
@@ -479,7 +484,7 @@ class PageAction {
 
     animationContainer.toggleAttribute(
       "animate",
-      Services.prefs.getBoolPref(ANIMATIONS_ENABLED_PREF, true)
+      !this.window.matchMedia("(prefers-reduced-motion: reduce)").matches
     );
     animationContainer.removeAttribute("paused");
 
@@ -512,8 +517,10 @@ class PageAction {
   }
 
   async _renderMilestonePopup(message, browser) {
+    this.maybeLoadCustomElement(this.window);
+
     let { content, id } = message;
-    let { primary } = content.buttons;
+    let { primary, secondary } = content.buttons;
 
     let dateFormat = new Services.intl.DateTimeFormat(
       this.window.gBrowser.ownerGlobal.navigator.language,
@@ -536,21 +543,18 @@ class PageAction {
         reachedMilestone = milestone;
       }
     }
-    if (typeof message.content.heading_text === "string") {
-      // This is a test environment.
-      panelTitle = message.content.heading_text;
-      headerLabel.value = panelTitle;
-    } else {
-      RemoteL10n.l10n.setAttributes(
-        headerLabel,
-        content.heading_text.string_id,
-        {
+    if (headerLabel.firstChild) {
+      headerLabel.firstChild.remove();
+    }
+    headerLabel.appendChild(
+      RemoteL10n.createElement(this.window.document, "span", {
+        content: message.content.heading_text,
+        attributes: {
           blockedCount: reachedMilestone,
           date: monthName,
-        }
-      );
-      await RemoteL10n.l10n.translateElements([headerLabel]);
-    }
+        },
+      })
+    );
 
     // Use the message layout as a CSS selector to hide different parts of the
     // notification template markup
@@ -581,11 +585,30 @@ class PageAction {
       );
     };
 
+    let secondaryBtnString = await this.getStrings(secondary[0].label);
+    let secondaryActionsCallback = () => {
+      this.dispatchUserAction(secondary[0].action);
+      this._sendTelemetry({
+        message_id: id,
+        bucket_id: content.bucket_id,
+        event: "DISMISS",
+      });
+      RecommendationMap.delete(browser);
+    };
+
     let mainAction = {
       label: primaryBtnString,
       accessKey: primaryBtnString.attributes.accesskey,
       callback: primaryActionCallback,
     };
+
+    let secondaryActions = [
+      {
+        label: secondaryBtnString,
+        accessKey: secondaryBtnString.attributes.accesskey,
+        callback: secondaryActionsCallback,
+      },
+    ];
 
     let style = this.window.document.createElement("style");
     style.textContent = `
@@ -617,10 +640,11 @@ class PageAction {
       panelTitle,
       "cfr",
       mainAction,
-      null,
+      secondaryActions,
       {
         hideClose: true,
         eventCallback: manageClass,
+        persistWhileVisible: true,
       }
     );
     Services.prefs.setIntPref(
@@ -635,6 +659,8 @@ class PageAction {
 
   // eslint-disable-next-line max-statements
   async _renderPopup(message, browser) {
+    this.maybeLoadCustomElement(this.window);
+
     const { id, content, modelVersion } = message;
 
     const headerLabel = this.window.document.getElementById(
@@ -654,7 +680,7 @@ class PageAction {
     );
     const { primary, secondary } = content.buttons;
     let primaryActionCallback;
-    let options = {};
+    let options = { persistent: !!content.persistent_doorhanger };
     let panelTitle;
 
     headerLabel.value = await this.getStrings(content.heading_text);
@@ -687,7 +713,14 @@ class PageAction {
         const author = this.window.document.getElementById(
           "cfr-notification-author"
         );
-        author.textContent = await this.getStrings(content.text);
+        if (author.firstChild) {
+          author.firstChild.remove();
+        }
+        author.appendChild(
+          RemoteL10n.createElement(this.window.document, "span", {
+            content: content.text,
+          })
+        );
         primaryActionCallback = () => {
           this._blockMessage(id);
           this.dispatchUserAction(primary.action);
@@ -717,6 +750,7 @@ class PageAction {
           popupIconURL: getIcon(),
           popupIconClass: content.icon_class,
           learnMoreURL,
+          ...options,
         };
         break;
       case "message_and_animation":
@@ -752,10 +786,13 @@ class PageAction {
           for (let step of content.descriptionDetails.steps) {
             // This li is a generic xul element with custom styling
             const li = this.window.document.createXULElement("li");
-            RemoteL10n.l10n.setAttributes(li, step.string_id);
+            li.appendChild(
+              RemoteL10n.createElement(this.window.document, "span", {
+                content: step,
+              })
+            );
             stepsContainer.appendChild(li);
           }
-          await RemoteL10n.l10n.translateElements([...stepsContainer.children]);
         }
 
         await this._renderPinTabAnimation();
@@ -763,9 +800,16 @@ class PageAction {
       default:
         panelTitle = await this.getStrings(content.addon.title);
         await this._setAddonAuthorAndRating(this.window.document, content);
+        if (footerText.firstChild) {
+          footerText.firstChild.remove();
+        }
         // Main body content of the dropdown
-        footerText.textContent = await this.getStrings(content.text);
-        options = { popupIconURL: content.addon.icon };
+        footerText.appendChild(
+          RemoteL10n.createElement(this.window.document, "span", {
+            content: content.text,
+          })
+        );
+        options = { popupIconURL: content.addon.icon, ...options };
 
         footerLink.value = await this.getStrings({
           string_id: "cfr-doorhanger-extension-learn-more-link",
@@ -871,11 +915,11 @@ class PageAction {
   _executeNotifierAction(browser, message) {
     switch (message.content.layout) {
       case "chiclet_open_url":
-        this._dispatchToASRouter(
+        this._dispatchCFRAction(
           {
             type: "USER_ACTION",
             data: {
-              type: ra.OPEN_URL,
+              type: "OPEN_URL",
               data: {
                 args: message.content.action.url,
                 where: message.content.action.where,
@@ -1027,69 +1071,34 @@ const CFRPageActions = {
   },
 
   /**
-   * Show Milestone notification.
-   * @param browser                 The browser for the recommendation
-   * @param recommendation          The recommendation to show
-   * @param dispatchToASRouter      A function to dispatch resulting actions to
-   * @return                        Did adding the recommendation succeed?
-   */
-  async showMilestone(browser, message, dispatchToASRouter, options = {}) {
-    let win = null;
-    const { id, content, personalizedModelVersion } = message;
-
-    // If we are forcing via the Admin page, the browser comes in a different format
-    if (options.force) {
-      win = browser.browser.ownerGlobal;
-      RecommendationMap.set(browser.browser, {
-        id,
-        content,
-        retain: true,
-        modelVersion: personalizedModelVersion,
-      });
-    } else {
-      win = browser.ownerGlobal;
-      RecommendationMap.set(browser, {
-        id,
-        content,
-        retain: true,
-        modelVersion: personalizedModelVersion,
-      });
-    }
-
-    if (!PageActionMap.has(win)) {
-      PageActionMap.set(win, new PageAction(win, dispatchToASRouter));
-    }
-
-    await PageActionMap.get(win).showMilestonePopup();
-    PageActionMap.get(win).addImpression(message);
-
-    return true;
-  },
-
-  /**
    * Force a recommendation to be shown. Should only happen via the Admin page.
    * @param browser                 The browser for the recommendation
    * @param recommendation  The recommendation to show
-   * @param dispatchToASRouter      A function to dispatch resulting actions to
+   * @param dispatchCFRAction      A function to dispatch resulting actions to
    * @return                        Did adding the recommendation succeed?
    */
-  async forceRecommendation(browser, recommendation, dispatchToASRouter) {
+  async forceRecommendation(browser, recommendation, dispatchCFRAction) {
     // If we are forcing via the Admin page, the browser comes in a different format
-    const win = browser.browser.ownerGlobal;
+    const win = browser.ownerGlobal;
     const { id, content, personalizedModelVersion } = recommendation;
-    RecommendationMap.set(browser.browser, {
+    RecommendationMap.set(browser, {
       id,
       content,
       retain: true,
       modelVersion: personalizedModelVersion,
     });
     if (!PageActionMap.has(win)) {
-      PageActionMap.set(win, new PageAction(win, dispatchToASRouter));
+      PageActionMap.set(win, new PageAction(win, dispatchCFRAction));
     }
 
     if (content.skip_address_bar_notifier) {
-      await PageActionMap.get(win).showPopup();
-      PageActionMap.get(win).addImpression(recommendation);
+      if (recommendation.template === "milestone_message") {
+        await PageActionMap.get(win).showMilestonePopup();
+        PageActionMap.get(win).addImpression(recommendation);
+      } else {
+        await PageActionMap.get(win).showPopup();
+        PageActionMap.get(win).addImpression(recommendation);
+      }
     } else {
       await PageActionMap.get(win).showAddressBarNotifier(recommendation, true);
     }
@@ -1101,10 +1110,10 @@ const CFRPageActions = {
    * @param browser                 The browser for the recommendation
    * @param host                    The host for the recommendation
    * @param recommendation  The recommendation to show
-   * @param dispatchToASRouter      A function to dispatch resulting actions to
+   * @param dispatchCFRAction      A function to dispatch resulting actions to
    * @return                        Did adding the recommendation succeed?
    */
-  async addRecommendation(browser, host, recommendation, dispatchToASRouter) {
+  async addRecommendation(browser, host, recommendation, dispatchCFRAction) {
     const win = browser.ownerGlobal;
     if (PrivateBrowsingUtils.isWindowPrivate(win)) {
       return false;
@@ -1129,13 +1138,20 @@ const CFRPageActions = {
       modelVersion: personalizedModelVersion,
     });
     if (!PageActionMap.has(win)) {
-      PageActionMap.set(win, new PageAction(win, dispatchToASRouter));
+      PageActionMap.set(win, new PageAction(win, dispatchCFRAction));
     }
 
     if (content.skip_address_bar_notifier) {
-      await PageActionMap.get(win).showPopup();
-      PageActionMap.get(win).addImpression(recommendation);
+      if (recommendation.template === "milestone_message") {
+        await PageActionMap.get(win).showMilestonePopup();
+        PageActionMap.get(win).addImpression(recommendation);
+      } else {
+        // Tracking protection messages
+        await PageActionMap.get(win).showPopup();
+        PageActionMap.get(win).addImpression(recommendation);
+      }
     } else {
+      // Doorhanger messages
       await PageActionMap.get(win).showAddressBarNotifier(recommendation, true);
     }
     return true;

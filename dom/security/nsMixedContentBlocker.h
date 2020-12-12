@@ -34,6 +34,11 @@ enum MixedContentTypes {
 using mozilla::OriginAttributes;
 
 class nsILoadInfo;  // forward declaration
+namespace mozilla {
+namespace net {
+class nsProtocolProxyService;  // forward declaration
+}
+}  // namespace mozilla
 
 class nsMixedContentBlocker : public nsIContentPolicy,
                               public nsIChannelEventSink {
@@ -62,14 +67,14 @@ class nsMixedContentBlocker : public nsIContentPolicy,
    * @param aHadInsecureImageRedirect
    *        boolean flag indicating that an insecure redirect through http
    *        occured when this image was initially loaded and cached.
+   * @param aReportError
+   *        boolean flag indicating if a rejection should automaticly be
+   *        logged into the Console.
    * Remaining parameters are from nsIContentPolicy::ShouldLoad().
    */
   static nsresult ShouldLoad(bool aHadInsecureImageRedirect,
-                             uint32_t aContentType, nsIURI* aContentLocation,
-                             nsIURI* aRequestingLocation,
-                             nsISupports* aRequestingContext,
-                             const nsACString& aMimeGuess,
-                             nsIPrincipal* aRequestPrincipal,
+                             nsIURI* aContentLocation, nsILoadInfo* aLoadInfo,
+                             const nsACString& aMimeGuess, bool aReportError,
                              int16_t* aDecision);
   static void AccumulateMixedContentHSTS(
       nsIURI* aURI, bool aActive, const OriginAttributes& aOriginAttributes);
@@ -77,11 +82,11 @@ class nsMixedContentBlocker : public nsIContentPolicy,
   static bool URISafeToBeLoadedInSecureContext(nsIURI* aURI);
 
   static void OnPrefChange(const char* aPref, void* aClosure);
-  static void GetSecureContextWhiteList(nsACString& aList);
+  static void GetSecureContextAllowList(nsACString& aList);
   static void Shutdown();
 
-  static bool sSecurecontextWhitelistCached;
-  static nsCString* sSecurecontextWhitelist;
+  static bool sSecurecontextAllowlistCached;
+  static nsCString* sSecurecontextAllowlist;
 };
 
 #endif /* nsMixedContentBlocker_h___ */

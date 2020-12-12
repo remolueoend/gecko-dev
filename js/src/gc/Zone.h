@@ -20,8 +20,7 @@
 #include "gc/ZoneAllocator.h"
 #include "js/GCHashTable.h"
 #include "vm/AtomsTable.h"
-#include "vm/JSScript.h"
-#include "vm/TypeInference.h"
+#include "vm/JSFunction.h"
 
 namespace js {
 
@@ -59,9 +58,13 @@ using FinalizationRecordVector = GCVector<HeapPtrObject, 1, ZoneAllocPolicy>;
 
 }  // namespace gc
 
+// If two different nursery strings are wrapped into the same zone, and have
+// the same contents, then deduplication may make them duplicates.
+// `DuplicatesPossible` will allow this and map both wrappers to the same (now
+// tenured) source string.
 using StringWrapperMap =
     NurseryAwareHashMap<JSString*, JSString*, DefaultHasher<JSString*>,
-                        ZoneAllocPolicy>;
+                        ZoneAllocPolicy, DuplicatesPossible>;
 
 class MOZ_NON_TEMPORARY_CLASS ExternalStringCache {
   static const size_t NumEntries = 4;
@@ -121,7 +124,7 @@ class WeakRefMap
   using GCHashMap::GCHashMap;
   using Base = GCHashMap<HeapPtrObject, WeakRefHeapPtrVector,
                          MovableCellHasher<HeapPtrObject>, ZoneAllocPolicy>;
-  void sweep();
+  void sweep(gc::StoreBuffer* sbToLock);
 };
 
 }  // namespace js
@@ -190,13 +193,17 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
  public:
   js::gc::ArenaLists arenas;
 
-  js::TypeZone types;
-
   // Per-zone data for use by an embedder.
   js::ZoneData<void*> data;
 
   js::ZoneData<uint32_t> tenuredStrings;
   js::ZoneData<uint32_t> tenuredBigInts;
+
+  js::ZoneOrIonCompileData<uint64_t> nurseryAllocatedStrings;
+
+  // Number of marked/finalzied JSString/JSFatInlineString during major GC.
+  js::ZoneOrGCTaskData<size_t> markedStrings;
+  js::ZoneOrGCTaskData<size_t> finalizedStrings;
 
   js::ZoneData<bool> allocNurseryStrings;
   js::ZoneData<bool> allocNurseryBigInts;
@@ -277,8 +284,7 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
   // Bitmap of atoms marked by this zone.
   js::ZoneOrGCTaskData<js::SparseBitmap> markedAtoms_;
 
-  // Set of atoms recently used by this Zone. Purged on GC unless
-  // keepAtomsCount is non-zero.
+  // Set of atoms recently used by this Zone. Purged on GC.
   js::ZoneOrGCTaskData<js::AtomSet> atomCache_;
 
   // Cache storing allocated external strings. Purged on GC.
@@ -286,21 +292,6 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
 
   // Cache for Function.prototype.toString. Purged on GC.
   js::ZoneOrGCTaskData<js::FunctionToStringCache> functionToStringCache_;
-
-  // Count of AutoKeepAtoms instances for this zone. When any instances exist,
-  // atoms in the runtime will be marked from this zone's atom mark bitmap,
-  // rather than when traced in the normal way. Threads parsing off the main
-  // thread do not increment this value, but the presence of any such threads
-  // also inhibits collection of atoms. We don't scan the stacks of exclusive
-  // threads, so we need to avoid collecting their objects in another way. The
-  // only GC thing pointers they have are to their exclusive compartment
-  // (which is not collected) or to the atoms compartment. Therefore, we avoid
-  // collecting the atoms zone when exclusive threads are running.
-  js::ZoneOrGCTaskData<unsigned> keepAtomsCount;
-
-  // Whether purging atoms was deferred due to keepAtoms being set. If this
-  // happen then the cache will be purged when keepAtoms drops to zero.
-  js::ZoneOrGCTaskData<bool> purgeAtomsDeferred;
 
   // Shared Shape property tree.
   js::ZoneData<js::PropertyTree> propertyTree_;
@@ -409,7 +400,7 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
       ShouldDiscardJitScripts discardJitScripts = KeepJitScripts);
 
   void addSizeOfIncludingThis(
-      mozilla::MallocSizeOf mallocSizeOf, JS::CodeSizes* code, size_t* typePool,
+      mozilla::MallocSizeOf mallocSizeOf, JS::CodeSizes* code,
       size_t* regexpZone, size_t* jitZone, size_t* baselineStubsOptimized,
       size_t* uniqueIdMap, size_t* shapeCaches, size_t* atomsMarkBitmaps,
       size_t* compartmentObjects, size_t* crossCompartmentWrappersTables,
@@ -430,8 +421,6 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
                                       std::forward<Args>(args)...);
   }
 
-  void beginSweepTypes();
-
   bool hasMarkedRealms();
 
   void scheduleGC() {
@@ -444,16 +433,10 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
   void setPreservingCode(bool preserving) { gcPreserveCode_ = preserving; }
   bool isPreservingCode() const { return gcPreserveCode_; }
 
-  // Whether this zone can currently be collected. This doesn't take account
-  // of AutoKeepAtoms for the atoms zone.
+  // Whether this zone can currently be collected.
   bool canCollect();
 
-  void changeGCState(GCState prev, GCState next) {
-    MOZ_ASSERT(RuntimeHeapIsBusy());
-    MOZ_ASSERT(gcState() == prev);
-    MOZ_ASSERT(canCollect());
-    gcState_ = next;
-  }
+  void changeGCState(GCState prev, GCState next);
 
   bool isCollecting() const {
     MOZ_ASSERT(js::CurrentThreadCanAccessRuntime(runtimeFromMainThread()));
@@ -550,13 +533,20 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
     weakCaches().insertBack(cachep);
   }
 
-  void delegatePreWriteBarrier(JSObject* obj, JSObject* delegate) {
+  void beforeClearDelegate(JSObject* wrapper, JSObject* delegate) {
     if (needsIncrementalBarrier()) {
-      delegatePreWriteBarrierInternal(obj, delegate);
+      beforeClearDelegateInternal(wrapper, delegate);
     }
   }
 
-  void delegatePreWriteBarrierInternal(JSObject* obj, JSObject* delegate);
+  void afterAddDelegate(JSObject* wrapper) {
+    if (needsIncrementalBarrier()) {
+      afterAddDelegateInternal(wrapper);
+    }
+  }
+
+  void beforeClearDelegateInternal(JSObject* wrapper, JSObject* delegate);
+  void afterAddDelegateInternal(JSObject* wrapper);
   js::gc::WeakKeyTable& gcWeakKeys() { return gcWeakKeys_.ref(); }
   js::gc::WeakKeyTable& gcNurseryWeakKeys() { return gcNurseryWeakKeys_.ref(); }
 
@@ -592,16 +582,10 @@ class Zone : public js::ZoneAllocator, public js::gc::GraphNodeBase<JS::Zone> {
 
   bool addTypeDescrObject(JSContext* cx, HandleObject obj);
 
-  void keepAtoms() { keepAtomsCount++; }
-  void releaseAtoms();
-  bool hasKeptAtoms() const { return keepAtomsCount; }
-
   js::SparseBitmap& markedAtoms() { return markedAtoms_.ref(); }
 
   js::AtomSet& atomCache() { return atomCache_.ref(); }
 
-  void traceAtomCache(JSTracer* trc);
-  void purgeAtomCacheOrDefer();
   void purgeAtomCache();
 
   js::ExternalStringCache& externalStringCache() {

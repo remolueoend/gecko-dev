@@ -73,11 +73,11 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/CycleCollectedJSContext.h"
 #include "mozilla/CycleCollectedJSRuntime.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/DefineEnum.h"
-#include "mozilla/GuardObjects.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
@@ -95,6 +95,7 @@
 #include "xpcpublic.h"
 #include "js/HashTable.h"
 #include "js/GCHashTable.h"
+#include "js/Object.h"  // JS::GetClass, JS::GetCompartment, JS::GetPrivate
 #include "js/TracingAPI.h"
 #include "js/WeakMapPtr.h"
 #include "PLDHashTable.h"
@@ -187,7 +188,7 @@ static inline bool IS_WN_CLASS(const JSClass* clazz) {
 }
 
 static inline bool IS_WN_REFLECTOR(JSObject* obj) {
-  return IS_WN_CLASS(js::GetObjectClass(obj));
+  return IS_WN_CLASS(JS::GetClass(obj));
 }
 
 /***************************************************************************
@@ -394,6 +395,7 @@ class XPCJSContext final : public mozilla::CycleCollectedJSContext,
     IDX_COLUMNNUMBER,
     IDX_STACK,
     IDX_MESSAGE,
+    IDX_ERRORS,
     IDX_LASTINDEX,
     IDX_THEN,
     IDX_ISINSTANCE,
@@ -447,6 +449,7 @@ class XPCJSContext final : public mozilla::CycleCollectedJSContext,
   // Accumulates total time we actually waited for telemetry
   mozilla::TimeDuration mSlowScriptActualWait;
   bool mTimeoutAccumulated;
+  bool mExecutedChromeScript;
 
   bool mHasScriptActivity;
 
@@ -566,10 +569,27 @@ class XPCJSRuntime final : public mozilla::CycleCollectedJSRuntime {
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf);
 
-  JSObject* UnprivilegedJunkScope() { return mUnprivilegedJunkScope; }
+  /**
+   * The unprivileged junk scope is an unprivileged sandbox global used for
+   * convenience by certain operations which need an unprivileged global but
+   * don't have one immediately handy. It should generally be avoided when
+   * possible.
+   *
+   * The scope is created lazily when it is needed, and held weakly so that it
+   * is destroyed when there are no longer any remaining external references to
+   * it. This means that under low memory conditions, when the scope does not
+   * already exist, we may not be able to create one. In these circumstances,
+   * the infallible version of this API will abort, and the fallible version
+   * will return null. Callers should therefore prefer the fallible version when
+   * on a codepath which can already return failure, but may use the infallible
+   * one otherwise.
+   */
+  JSObject* UnprivilegedJunkScope();
+  JSObject* UnprivilegedJunkScope(const mozilla::fallible_t&);
+
+  bool IsUnprivilegedJunkScope(JSObject*);
   JSObject* LoaderGlobal();
 
-  void InitSingletonScopes();
   void DeleteSingletonScopes();
 
   void SystemIsBeingShutDown();
@@ -620,7 +640,7 @@ class XPCJSRuntime final : public mozilla::CycleCollectedJSRuntime {
   nsTArray<xpcGCCallback> extraGCCallbacks;
   JS::GCSliceCallback mPrevGCSliceCallback;
   JS::DoCycleCollectionCallback mPrevDoCycleCollectionCallback;
-  JS::PersistentRootedObject mUnprivilegedJunkScope;
+  mozilla::WeakPtr<SandboxPrivate> mUnprivilegedJunkScope;
   JS::PersistentRootedObject mLoaderGlobal;
   RefPtr<AsyncFreeSnowWhite> mAsyncSnowWhiteFreer;
 
@@ -1179,8 +1199,13 @@ class XPCNativeSet final {
 };
 
 /***********************************************/
-// XPCWrappedNativeProto hold the additional shared wrapper data
-// for XPCWrappedNative whose native objects expose nsIClassInfo.
+// XPCWrappedNativeProtos hold the additional shared wrapper data for
+// XPCWrappedNative whose native objects expose nsIClassInfo.
+// The XPCWrappedNativeProto is owned by its mJSProtoObject, until that object
+// is finalized. After that, it is owned by XPCJSRuntime's
+// mDyingWrappedNativeProtoMap. See
+// XPCWrappedNativeProto::JSProtoObjectFinalized and
+// XPCJSRuntime::FinalizeCallback.
 
 class XPCWrappedNativeProto final {
  public:
@@ -1391,7 +1416,7 @@ class XPCWrappedNative final : public nsIXPConnectWrappedNative {
 
   static XPCWrappedNative* Get(JSObject* obj) {
     MOZ_ASSERT(IS_WN_REFLECTOR(obj));
-    return (XPCWrappedNative*)js::GetObjectPrivate(obj);
+    return (XPCWrappedNative*)JS::GetPrivate(obj);
   }
 
  private:
@@ -1484,7 +1509,7 @@ class XPCWrappedNative final : public nsIXPConnectWrappedNative {
 
   // Returns a string that should be freed with js_free, or nullptr on
   // failure.
-  char* ToString(JSContext* cx, XPCWrappedNativeTearOff* to = nullptr) const;
+  char* ToString(XPCWrappedNativeTearOff* to = nullptr) const;
 
   static nsIXPCScriptable* GatherProtoScriptable(nsIClassInfo* classInfo);
 
@@ -1663,7 +1688,7 @@ class nsXPCWrappedJS final : protected nsAutoXPTCStub,
 
  private:
   JS::Compartment* Compartment() const {
-    return js::GetObjectCompartment(mJSObj.unbarrieredGet());
+    return JS::GetCompartment(mJSObj.unbarrieredGet());
   }
 
   // These methods are defined in XPCWrappedJSClass.cpp to preserve VCS blame.
@@ -1929,10 +1954,8 @@ class MOZ_RAII AutoScriptEvaluate {
    * Saves the JSContext as well as initializing our state
    * @param cx The JSContext, this can be null, we don't do anything then
    */
-  explicit AutoScriptEvaluate(JSContext* cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : mJSContext(cx), mEvaluated(false) {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-  }
+  explicit AutoScriptEvaluate(JSContext* cx)
+      : mJSContext(cx), mEvaluated(false) {}
 
   /**
    * Does the pre script evaluation.
@@ -1952,7 +1975,6 @@ class MOZ_RAII AutoScriptEvaluate {
   mozilla::Maybe<JS::AutoSaveExceptionState> mState;
   bool mEvaluated;
   mozilla::Maybe<JSAutoRealm> mAutoRealm;
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
   // No copying or assignment allowed
   AutoScriptEvaluate(const AutoScriptEvaluate&) = delete;
@@ -1962,8 +1984,7 @@ class MOZ_RAII AutoScriptEvaluate {
 /***************************************************************************/
 class MOZ_RAII AutoResolveName {
  public:
-  AutoResolveName(XPCCallContext& ccx,
-                  JS::HandleId name MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+  AutoResolveName(XPCCallContext& ccx, JS::HandleId name)
       : mContext(ccx.GetContext()),
         mOld(ccx, mContext->SetResolveName(name))
 #ifdef DEBUG
@@ -1971,7 +1992,6 @@ class MOZ_RAII AutoResolveName {
         mCheck(ccx, name)
 #endif
   {
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
   }
 
   ~AutoResolveName() {
@@ -1985,7 +2005,6 @@ class MOZ_RAII AutoResolveName {
 #ifdef DEBUG
   JS::RootedId mCheck;
 #endif
-  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /***************************************************************************/
@@ -2070,15 +2089,6 @@ using AutoMarkingWrappedNativeTearOffPtr =
     TypedAutoMarkingPtr<XPCWrappedNativeTearOff>;
 using AutoMarkingWrappedNativeProtoPtr =
     TypedAutoMarkingPtr<XPCWrappedNativeProto>;
-
-/***************************************************************************/
-namespace xpc {
-// Allocates a string that grants all access ("AllAccess")
-char* CloneAllAccess();
-
-// Returns access if wideName is in list
-char* CheckAccessList(const char16_t* wideName, const char* const list[]);
-} /* namespace xpc */
 
 /***************************************************************************/
 // in xpcvariant.cpp...
@@ -2180,9 +2190,7 @@ class XPCTraceableVariant : public XPCVariant, public XPCRootSetElem {
 /***************************************************************************/
 // Utilities
 
-inline void* xpc_GetJSPrivate(JSObject* obj) {
-  return js::GetObjectPrivate(obj);
-}
+inline void* xpc_GetJSPrivate(JSObject* obj) { return JS::GetPrivate(obj); }
 
 inline JSContext* xpc_GetSafeJSContext() {
   return XPCJSContext::Get()->Context();
@@ -2252,6 +2260,9 @@ struct GlobalProperties {
   bool indexedDB : 1;
   bool isSecureContext : 1;
   bool rtcIdentityProvider : 1;
+#ifdef MOZ_GLEAN
+  bool glean : 1;
+#endif
 
  private:
   bool Define(JSContext* cx, JS::HandleObject obj);
@@ -2587,7 +2598,7 @@ class CompartmentPrivate {
   }
 
   static CompartmentPrivate* Get(JSObject* object) {
-    JS::Compartment* compartment = js::GetObjectCompartment(object);
+    JS::Compartment* compartment = JS::GetCompartment(object);
     return Get(compartment);
   }
 
@@ -2618,13 +2629,6 @@ class CompartmentPrivate {
   // This compartment corresponds to a WebExtension content script, and
   // receives various bits of special compatibility behavior.
   bool isWebExtensionContentScript;
-
-  // If CPOWs are disabled for browser code via the
-  // dom.ipc.cpows.forbid-unsafe-from-browser preferences, then only
-  // add-ons can use CPOWs. This flag allows a non-addon scope
-  // to opt into CPOWs. It's necessary for the implementation of
-  // RemoteAddonsParent.jsm.
-  bool allowCPOWs;
 
   // True if this compartment is a UA widget compartment.
   bool isUAWidgetCompartment;
@@ -2708,14 +2712,6 @@ class RealmPrivate {
   // The scriptability of this realm.
   Scriptability scriptability;
 
-  // This is only ever set during mochitest runs when enablePrivilege is called.
-  // It allows the SpecialPowers scope to waive the normal chrome security
-  // wrappers and expose properties directly to content. This lets us avoid a
-  // bunch of overhead and complexity in our SpecialPowers automation glue.
-  //
-  // Using it in production is inherently unsafe.
-  bool forcePermissiveCOWs = false;
-
   // Whether we've emitted a warning about a property that was filtered out
   // by a security wrapper. See XrayWrapper.cpp.
   bool wrapperDenialWarnings[WrapperDenialTypeCount];
@@ -2727,9 +2723,9 @@ class RealmPrivate {
       if (jsLocationURI) {
         // We cannot call into JS-implemented nsIURI objects, because
         // we are iterating over the JS heap at this point.
-        location = NS_LITERAL_CSTRING("<JS-implemented nsIURI location>");
+        location = "<JS-implemented nsIURI location>"_ns;
       } else if (NS_FAILED(locationURI->GetSpec(location))) {
-        location = NS_LITERAL_CSTRING("<unknown location>");
+        location = "<unknown location>"_ns;
       }
     }
     return location;

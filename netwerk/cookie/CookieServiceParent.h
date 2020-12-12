@@ -8,6 +8,7 @@
 
 #include "mozilla/net/PCookieServiceParent.h"
 
+class nsIArray;
 class nsICookie;
 namespace mozilla {
 class OriginAttributes;
@@ -47,14 +48,13 @@ class CookieServiceParent : public PCookieServiceParent {
 
   mozilla::ipc::IPCResult RecvSetCookies(
       const nsCString& aBaseDomain, const OriginAttributes& aOriginAttributes,
-      const URIParams& aHost, bool aFromHttp,
-      const nsTArray<CookieStruct>& aCookies);
+      nsIURI* aHost, bool aFromHttp, const nsTArray<CookieStruct>& aCookies);
 
   mozilla::ipc::IPCResult RecvPrepareCookieList(
-      const URIParams& aHost, const bool& aIsForeign,
+      nsIURI* aHost, const bool& aIsForeign,
       const bool& aIsThirdPartyTrackingResource,
       const bool& aIsThirdPartySocialTrackingResource,
-      const bool& aFirstPartyStorageAccessGranted,
+      const bool& aStorageAccessPermissionGranted,
       const uint32_t& aRejectedReason, const bool& aIsSafeTopLevelNav,
       const bool& aIsSameSiteForeign, const OriginAttributes& aAttrs);
 

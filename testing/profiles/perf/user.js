@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 // Base preferences file used by performance harnesses
 /* globals user_pref */
 user_pref("app.normandy.api_url", "https://127.0.0.1/selfsupport-dummy/");
@@ -52,7 +56,6 @@ user_pref("extensions.systemAddon.update.url", "http://127.0.0.1/dummy-system-ad
 user_pref("extensions.update.background.url", "http://127.0.0.1/extensions-dummy/updateBackgroundURL");
 user_pref("extensions.update.notifyUser", false);
 user_pref("extensions.update.url", "http://127.0.0.1/extensions-dummy/updateURL");
-user_pref("extensions.webservice.discoverURL", "http://127.0.0.1/extensions-dummy/discoveryURL");
 user_pref("identity.fxaccounts.auth.uri", "https://127.0.0.1/fxa-dummy/");
 user_pref("identity.fxaccounts.migrateToDevEdition", false);
 // Avoid idle-daily notifications, to avoid expensive operations that may
@@ -83,6 +86,6 @@ user_pref("privacy.trackingprotection.pbmode.enabled", false);
 user_pref("security.enable_java", false);
 user_pref("security.fileuri.strict_origin_policy", false);
 user_pref("toolkit.telemetry.server", "https://127.0.0.1/telemetry-dummy/");
+user_pref("telemetry.fog.test.localhost_port", -1);
 user_pref("startup.homepage_welcome_url", "");
 user_pref("startup.homepage_welcome_url.additional", "");
-user_pref("trailhead.firstrun.branches", "join");

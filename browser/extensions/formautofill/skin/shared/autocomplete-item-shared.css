@@ -28,7 +28,7 @@ xul|richlistitem[originaltype="autofill-insecureWarning"] {
   --label-text-color: #262626;
   --comment-text-color: #646464;
   --warning-text-color: #646464;
-  --btn-text-color: -moz-FieldText;
+  --btn-text-color: FieldText;
 
   --default-font-size: 12;
   --label-affix-font-size: 10;
@@ -94,13 +94,16 @@ xul|richlistitem[originaltype="autofill-insecureWarning"] {
   width: 16px;
   height: 16px;
   background-image: var(--primary-icon);
-  background-size: 16px 16px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
   -moz-context-properties: fill;
   fill: #4D4D4D;
 }
 
 .autofill-item-box > .profile-label-col > .profile-label {
   font-size: calc(var(--label-font-size) / var(--default-font-size) * 1em);
+  unicode-bidi: plaintext;
 }
 
 .autofill-item-box > .profile-label-col > .profile-label-affix {
@@ -116,6 +119,7 @@ xul|richlistitem[originaltype="autofill-insecureWarning"] {
 
 .autofill-item-box > .profile-comment-col > .profile-comment {
   font-size: calc(var(--comment-font-size) / var(--default-font-size) * 1em);
+  unicode-bidi: plaintext;
 }
 
 .autofill-item-box[size="small"] {
@@ -178,7 +182,7 @@ xul|richlistitem[originaltype="autofill-insecureWarning"] {
   content: "";
   width: 16px;
   height: 16px;
-  background-image: url(chrome://browser/skin/connection-mixed-active-loaded.svg);
+  background-image: url(chrome://global/skin/icons/connection-mixed-active-loaded.svg);
   -moz-context-properties: fill;
   fill: GrayText;
 }

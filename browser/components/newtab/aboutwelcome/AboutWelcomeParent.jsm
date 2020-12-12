@@ -12,17 +12,25 @@ const { XPCOMUtils } = ChromeUtils.import(
 );
 
 XPCOMUtils.defineLazyModuleGetters(this, {
-  MigrationUtils: "resource:///modules/MigrationUtils.jsm",
+  AddonManager: "resource://gre/modules/AddonManager.jsm",
+  AddonRepository: "resource://gre/modules/addons/AddonRepository.jsm",
   FxAccounts: "resource://gre/modules/FxAccounts.jsm",
+  MigrationUtils: "resource:///modules/MigrationUtils.jsm",
+  OS: "resource://gre/modules/osfile.jsm",
+  SpecialMessageActions:
+    "resource://messaging-system/lib/SpecialMessageActions.jsm",
   AboutWelcomeTelemetry:
     "resource://activity-stream/aboutwelcome/lib/AboutWelcomeTelemetry.jsm",
+  AttributionCode: "resource:///modules/AttributionCode.jsm",
+  PromiseUtils: "resource://gre/modules/PromiseUtils.jsm",
+  Region: "resource://gre/modules/Region.jsm",
 });
 
 XPCOMUtils.defineLazyGetter(this, "log", () => {
-  const { AboutWelcomeLog } = ChromeUtils.import(
-    "resource://activity-stream/aboutwelcome/lib/AboutWelcomeLog.jsm"
+  const { Logger } = ChromeUtils.import(
+    "resource://messaging-system/lib/Logger.jsm"
   );
-  return new AboutWelcomeLog("AboutWelcomeParent.jsm");
+  return new Logger("AboutWelcomeParent");
 });
 
 XPCOMUtils.defineLazyGetter(
@@ -39,6 +47,53 @@ const AWTerminate = {
   APP_SHUT_DOWN: "app-shut-down",
   ADDRESS_BAR_NAVIGATED: "address-bar-navigated",
 };
+const LIGHT_WEIGHT_THEMES = {
+  DARK: "firefox-compact-dark@mozilla.org",
+  LIGHT: "firefox-compact-light@mozilla.org",
+  AUTOMATIC: "default-theme@mozilla.org",
+  ALPENGLOW: "firefox-alpenglow@mozilla.org",
+};
+
+async function getImportableSites() {
+  const sites = [];
+
+  // Just handle these chromium-based browsers for now
+  for (const browserId of ["chrome", "chromium-edge", "chromium"]) {
+    // Skip if there's no profile data.
+    const migrator = await MigrationUtils.getMigrator(browserId);
+    if (!migrator) {
+      continue;
+    }
+
+    // Check each profile for top sites
+    const dataPath = await migrator.wrappedJSObject._getChromeUserDataPathIfExists();
+    for (const profile of await migrator.getSourceProfiles()) {
+      let path = OS.Path.join(dataPath, profile.id, "Top Sites");
+      // Skip if top sites data is missing
+      if (!(await OS.File.exists(path))) {
+        Cu.reportError(`Missing file at ${path}`);
+        continue;
+      }
+
+      try {
+        for (const row of await MigrationUtils.getRowsFromDBWithoutLocks(
+          path,
+          `Importable ${browserId} top sites`,
+          `SELECT url
+           FROM top_sites
+           ORDER BY url_rank`
+        )) {
+          sites.push(row.getString(0));
+        }
+      } catch (ex) {
+        Cu.reportError(
+          `Failed to get importable top sites from ${browserId} ${ex}`
+        );
+      }
+    }
+  }
+  return sites;
+}
 
 class AboutWelcomeObserver {
   constructor() {
@@ -88,6 +143,42 @@ class AboutWelcomeObserver {
   }
 }
 
+class RegionHomeObserver {
+  observe(aSubject, aTopic, aData) {
+    switch (aTopic) {
+      case Region.REGION_TOPIC:
+        if (aData === Region.REGION_UPDATED) {
+          Services.obs.removeObserver(this, Region.REGION_TOPIC);
+          this.regionHomeDeferred.resolve(Region.home);
+          this.regionHomeDeferred = null;
+        }
+        break;
+    }
+  }
+
+  promiseRegionHome() {
+    // Add observer and create promise that should be resolved
+    // with region or rejected inside didDestroy if user exits
+    // before region is available
+    if (!this.regionHomeDeferred) {
+      Services.obs.addObserver(this, Region.REGION_TOPIC);
+      this.regionHomeDeferred = PromiseUtils.defer();
+    }
+    return this.regionHomeDeferred.promise;
+  }
+
+  stop() {
+    if (this.regionHomeDeferred) {
+      Services.obs.removeObserver(this, Region.REGION_TOPIC);
+      // Reject unresolved deferred promise on exit
+      this.regionHomeDeferred.reject(
+        new Error("Unresolved region home promise")
+      );
+      this.regionHomeDeferred = null;
+    }
+  }
+}
+
 class AboutWelcomeParent extends JSWindowActorParent {
   constructor() {
     super();
@@ -98,6 +189,7 @@ class AboutWelcomeParent extends JSWindowActorParent {
     if (this.AboutWelcomeObserver) {
       this.AboutWelcomeObserver.stop();
     }
+    this.RegionHomeObserver?.stop();
 
     Telemetry.sendTelemetry({
       event: "SESSION_END",
@@ -105,7 +197,7 @@ class AboutWelcomeParent extends JSWindowActorParent {
         reason: this.AboutWelcomeObserver.terminateReason,
         page: "about:welcome",
       },
-      message_id: "ABOUT_WELCOME_SESSION_END",
+      message_id: this.AWMessageId,
       id: "ABOUT_WELCOME",
     });
   }
@@ -118,29 +210,26 @@ class AboutWelcomeParent extends JSWindowActorParent {
    * @param {Browser} browser
    * @param {Window} window
    */
-  onContentMessage(type, data, browser, window) {
+  async onContentMessage(type, data, browser, window) {
     log.debug(`Received content event: ${type}`);
     switch (type) {
       case "AWPage:SET_WELCOME_MESSAGE_SEEN":
+        this.AWMessageId = data;
         try {
           Services.prefs.setBoolPref(DID_SEE_ABOUT_WELCOME_PREF, true);
         } catch (e) {
           log.debug(`Fails to set ${DID_SEE_ABOUT_WELCOME_PREF}.`);
         }
         break;
-      case "AWPage:OPEN_AWESOME_BAR":
-        window.gURLBar.search("");
-        break;
-      case "AWPage:OPEN_PRIVATE_BROWSER_WINDOW":
-        window.OpenBrowserWindow({ private: true });
-        break;
-      case "AWPage:SHOW_MIGRATION_WIZARD":
-        MigrationUtils.showMigrationWizard(window, [
-          MigrationUtils.MIGRATION_ENTRYPOINT_NEWTAB,
-        ]);
+      case "AWPage:SPECIAL_ACTION":
+        SpecialMessageActions.handleAction(data, browser);
         break;
       case "AWPage:FXA_METRICS_FLOW_URI":
         return FxAccounts.config.promiseMetricsFlowURI("aboutwelcome");
+      case "AWPage:GET_ATTRIBUTION_DATA":
+        return AttributionCode.getAttrDataAsync();
+      case "AWPage:IMPORTABLE_SITES":
+        return getImportableSites();
       case "AWPage:TELEMETRY_EVENT":
         Telemetry.sendTelemetry(data);
         break;
@@ -148,6 +237,51 @@ class AboutWelcomeParent extends JSWindowActorParent {
         this.AboutWelcomeObserver.terminateReason =
           AWTerminate.ADDRESS_BAR_NAVIGATED;
         break;
+      case "AWPage:GET_ADDON_FROM_REPOSITORY":
+        const [addonInfo] = await AddonRepository.getAddonsByIDs([data]);
+        if (addonInfo.sourceURI.scheme !== "https") {
+          return null;
+        }
+        return {
+          name: addonInfo.name,
+          url: addonInfo.sourceURI.spec,
+          iconURL: addonInfo.icons["64"] || addonInfo.icons["32"],
+        };
+      case "AWPage:SELECT_THEME":
+        return AddonManager.getAddonByID(
+          LIGHT_WEIGHT_THEMES[data]
+        ).then(addon => addon.enable());
+      case "AWPage:GET_SELECTED_THEME":
+        let themes = await AddonManager.getAddonsByTypes(["theme"]);
+        let activeTheme = themes.find(addon => addon.isActive);
+
+        // convert this to the short form name that the front end code
+        // expects
+        let themeShortName = Object.keys(LIGHT_WEIGHT_THEMES).find(
+          key => LIGHT_WEIGHT_THEMES[key] === activeTheme?.id
+        );
+        return themeShortName?.toLowerCase();
+      case "AWPage:GET_REGION":
+        if (Region.home !== null) {
+          return Region.home;
+        }
+        if (!this.RegionHomeObserver) {
+          this.RegionHomeObserver = new RegionHomeObserver(this);
+        }
+        return this.RegionHomeObserver.promiseRegionHome();
+      case "AWPage:WAIT_FOR_MIGRATION_CLOSE":
+        return new Promise(resolve =>
+          Services.ww.registerNotification(function observer(subject, topic) {
+            if (
+              topic === "domwindowclosed" &&
+              subject.document.documentURI ===
+                "chrome://browser/content/migration/migration.xhtml"
+            ) {
+              Services.ww.unregisterNotification(observer);
+              resolve();
+            }
+          })
+        );
       default:
         log.debug(`Unexpected event ${type} was not handled.`);
     }

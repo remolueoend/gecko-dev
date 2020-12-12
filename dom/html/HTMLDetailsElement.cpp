@@ -10,8 +10,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Details)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLDetailsElement::~HTMLDetailsElement() = default;
 
@@ -49,8 +48,8 @@ nsresult HTMLDetailsElement::BeforeSetAttr(int32_t aNameSpaceID, nsAtom* aName,
       }
       // According to the html spec, a 'toggle' event is a simple event which
       // does not bubble.
-      mToggleEventDispatcher = new AsyncEventDispatcher(
-          this, NS_LITERAL_STRING("toggle"), CanBubble::eNo);
+      mToggleEventDispatcher =
+          new AsyncEventDispatcher(this, u"toggle"_ns, CanBubble::eNo);
       mToggleEventDispatcher->PostDOMEvent();
     }
   }
@@ -70,5 +69,4 @@ JSObject* HTMLDetailsElement::WrapNode(JSContext* aCx,
   return HTMLDetailsElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

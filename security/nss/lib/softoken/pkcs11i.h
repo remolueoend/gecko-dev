@@ -71,17 +71,6 @@
                    * before we start freeing them */
 #define MAX_KEY_LEN 256 /* maximum symmetric key length in bytes */
 
-/* From ssl3con.c: Constant-time helper macro that copies the MSB of x to all
- *  * other bits. */
-#define CT_DUPLICATE_MSB_TO_ALL(x) ((unsigned int)((int)(x) >> (sizeof(int) * 8 - 1)))
-
-/* Constant-time helper macro that selects l or r depending on all-1 or all-0
- *  * mask m */
-#define CT_SEL(m, l, r) (((m) & (l)) | (~(m) & (r)))
-/* Constant-time helper macro that returns all-1s if x is not 0; and all-0s
- *  * otherwise. */
-#define CT_NOT_ZERO(x) (CT_DUPLICATE_MSB_TO_ALL(((x) | (0 - x))))
-
 /*
  * LOG2_BUCKETS_PER_SESSION_LOCK must be a prime number.
  * With SESSION_HASH_SIZE=1024, LOG2 can be 9, 5, 1, or 0.
@@ -694,14 +683,18 @@ extern CK_RV nsc_CommonInitialize(CK_VOID_PTR pReserved, PRBool isFIPS);
 extern CK_RV nsc_CommonFinalize(CK_VOID_PTR pReserved, PRBool isFIPS);
 extern PRBool sftk_ForkReset(CK_VOID_PTR pReserved, CK_RV *crv);
 extern CK_RV nsc_CommonGetSlotList(CK_BBOOL tokPresent,
-                                   CK_SLOT_ID_PTR pSlotList, CK_ULONG_PTR pulCount, int moduleIndex);
+                                   CK_SLOT_ID_PTR pSlotList,
+                                   CK_ULONG_PTR pulCount,
+                                   unsigned int moduleIndex);
 
 /* slot initialization, reinit, shutdown and destruction */
 extern CK_RV SFTK_SlotInit(char *configdir, char *updatedir, char *updateID,
-                           sftk_token_parameters *params, int moduleIndex);
+                           sftk_token_parameters *params,
+                           unsigned int moduleIndex);
 extern CK_RV SFTK_SlotReInit(SFTKSlot *slot, char *configdir,
                              char *updatedir, char *updateID,
-                             sftk_token_parameters *params, int moduleIndex);
+                             sftk_token_parameters *params,
+                             unsigned int moduleIndex);
 extern CK_RV SFTK_DestroySlotData(SFTKSlot *slot);
 extern CK_RV SFTK_ShutdownSlot(SFTKSlot *slot);
 extern CK_RV sftk_CloseAllSessions(SFTKSlot *slot, PRBool logout);
@@ -824,7 +817,8 @@ extern CK_RV sftk_ike1_prf(CK_SESSION_HANDLE hSession,
                            unsigned int keySize);
 extern CK_RV sftk_ike1_appendix_b_prf(CK_SESSION_HANDLE hSession,
                                       const SFTKAttribute *inKey,
-                                      const CK_MECHANISM_TYPE *params, SFTKObject *outKey,
+                                      const CK_NSS_IKE1_APP_B_PRF_DERIVE_PARAMS *params,
+                                      SFTKObject *outKey,
                                       unsigned int keySize);
 extern CK_RV sftk_ike_prf_plus(CK_SESSION_HANDLE hSession,
                                const SFTKAttribute *inKey,
@@ -834,7 +828,7 @@ extern CK_RV sftk_aes_xcbc_new_keys(CK_SESSION_HANDLE hSession,
                                     CK_OBJECT_HANDLE hKey, CK_OBJECT_HANDLE_PTR phKey,
                                     unsigned char *k2, unsigned char *k3);
 extern CK_RV sftk_xcbc_mac_pad(unsigned char *padBuf, unsigned int bufLen,
-                               int blockSize, const unsigned char *k2,
+                               unsigned int blockSize, const unsigned char *k2,
                                const unsigned char *k3);
 extern SECStatus sftk_fips_IKE_PowerUpSelfTests(void);
 
@@ -906,7 +900,7 @@ HASH_HashType sftk_HMACMechanismToHash(CK_MECHANISM_TYPE mech);
 CK_RV sftk_MAC_Create(CK_MECHANISM_TYPE mech, SFTKObject *key, sftk_MACCtx **ret_ctx);
 CK_RV sftk_MAC_Init(sftk_MACCtx *ctx, CK_MECHANISM_TYPE mech, SFTKObject *key);
 CK_RV sftk_MAC_InitRaw(sftk_MACCtx *ctx, CK_MECHANISM_TYPE mech, const unsigned char *key, unsigned int key_len, PRBool isFIPS);
-CK_RV sftk_MAC_Update(sftk_MACCtx *ctx, CK_BYTE_PTR data, unsigned int data_len);
+CK_RV sftk_MAC_Update(sftk_MACCtx *ctx, const CK_BYTE *data, unsigned int data_len);
 CK_RV sftk_MAC_Finish(sftk_MACCtx *ctx, CK_BYTE_PTR result, unsigned int *result_len, unsigned int max_result_len);
 CK_RV sftk_MAC_Reset(sftk_MACCtx *ctx);
 void sftk_MAC_Destroy(sftk_MACCtx *ctx, PRBool free_it);
@@ -918,7 +912,23 @@ CK_RV sftk_CheckCBCPadding(CK_BYTE_PTR pBuf, unsigned int bufLen,
 
 /* NIST 800-108 (kbkdf.c) implementations */
 extern CK_RV kbkdf_Dispatch(CK_MECHANISM_TYPE mech, CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, SFTKObject *base_key, SFTKObject *ret_key, CK_ULONG keySize);
+extern SECStatus sftk_fips_SP800_108_PowerUpSelfTests(void);
+
+/* export the HKDF function for use in PowerupSelfTests */
+CK_RV sftk_HKDF(CK_HKDF_PARAMS_PTR params, CK_SESSION_HANDLE hSession,
+                SFTKObject *sourceKey, const unsigned char *sourceKeyBytes,
+                int sourceKeyLen, SFTKObject *key,
+                unsigned char *outKeyBytes, int keySize,
+                PRBool canBeData, PRBool isFIPS);
+
 char **NSC_ModuleDBFunc(unsigned long function, char *parameters, void *args);
+
+/* dh verify functions */
+/* verify that dhPrime matches one of our known primes, and if so return
+ * it's subprime value */
+const SECItem *sftk_VerifyDH_Prime(SECItem *dhPrime);
+/* check if dhSubPrime claims dhPrime is a safe prime. */
+SECStatus sftk_IsSafePrime(SECItem *dhPrime, SECItem *dhSubPrime, PRBool *isSafe);
 
 SEC_END_PROTOS
 

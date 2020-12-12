@@ -11,13 +11,13 @@
 #include "mozilla/HashFunctions.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/Variant.h"
+#include "mozilla/Span.h"  // for Span
 
 #include <algorithm>
 #include <type_traits>
 
 #include "gc/Rooting.h"
-#include "jit/JSJitFrameIter.h"
+#include "js/friend/ErrorMessages.h"  // js::GetErrorMessage, JSMSG_*
 #include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
 #include "js/UniquePtr.h"
@@ -83,11 +83,6 @@ enum MaybeCheckAliasing { CHECK_ALIASING = true, DONT_CHECK_ALIASING = false };
 enum MaybeCheckTDZ { CheckTDZ = true, DontCheckTDZ = false };
 
 }  // namespace js
-
-namespace mozilla {
-template <>
-struct IsPod<js::MaybeCheckTDZ> : std::true_type {};
-}  // namespace mozilla
 
 /*****************************************************************************/
 
@@ -219,6 +214,9 @@ class AbstractFramePtr {
   inline bool isFunctionFrame() const;
   inline bool isGeneratorFrame() const;
 
+  inline bool saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                 ArrayObject* dest) const;
+
   inline unsigned numActualArgs() const;
   inline unsigned numFormalArgs() const;
 
@@ -322,8 +320,6 @@ class InterpreterFrame {
   jsbytecode* prevpc_;
   Value* prevsp_;
 
-  void* unused;
-
   /*
    * For an eval-in-frame DEBUGGER_EVAL frame, the frame in whose scope
    * we're evaluating code. Iteration treats this as our previous frame.
@@ -362,9 +358,9 @@ class InterpreterFrame {
                      JSFunction& callee, JSScript* script, Value* argv,
                      uint32_t nactual, MaybeConstruct constructing);
 
-  /* Used for global and eval frames. */
+  /* Used for eval, module or global frames. */
   void initExecuteFrame(JSContext* cx, HandleScript script,
-                        AbstractFramePtr prev, const Value& newTargetValue,
+                        AbstractFramePtr prev, HandleValue newTargetValue,
                         HandleObject envChain);
 
  public:
@@ -582,12 +578,15 @@ class InterpreterFrame {
   /*
    * Callee
    *
-   * Only function frames have a callee. An eval frame in a function has the
-   * same callee as its containing function frame.
+   * Only function frames have a true callee. An eval frame in a function has
+   * the same callee as its containing function frame. An async module has to
+   * create a wrapper callee to allow passing the script to generators for
+   * pausing and resuming.
    */
 
   JSFunction& callee() const {
-    MOZ_ASSERT(isFunctionFrame());
+    MOZ_ASSERT(isFunctionFrame() || isModuleFrame());
+    MOZ_ASSERT_IF(isModuleFrame(), script()->isAsync());
     return calleev().toObject().as<JSFunction>();
   }
 
@@ -649,9 +648,17 @@ class InterpreterFrame {
     markReturnValue();
   }
 
+  // Copy values from this frame into a private Array, owned by the
+  // GeneratorObject, for suspending.
+  MOZ_MUST_USE inline bool saveGeneratorSlots(JSContext* cx, unsigned nslots,
+                                              ArrayObject* dest) const;
+
+  // Copy values from the Array into this stack frame, for resuming.
+  inline void restoreGeneratorSlots(ArrayObject* src);
+
   void resumeGeneratorFrame(JSObject* envChain) {
     MOZ_ASSERT(script()->isGenerator() || script()->isAsync());
-    MOZ_ASSERT(isFunctionFrame());
+    MOZ_ASSERT_IF(!script()->isModule(), isFunctionFrame());
     flags_ |= HAS_INITIAL_ENV;
     envChain_ = envChain;
   }
@@ -755,7 +762,11 @@ class InterpreterRegs {
     pc = fp_->prevpc();
     unsigned spForNewTarget =
         fp_->isResumedGenerator() ? 0 : fp_->isConstructing();
-    sp = fp_->prevsp() - fp_->numActualArgs() - 1 - spForNewTarget;
+    // This code is called when resuming from async and generator code.
+    // In the case of modules, we don't have arguments, so we can't use
+    // numActualArgs, which asserts 'hasArgs'.
+    unsigned nActualArgs = fp_->isModuleFrame() ? 0 : fp_->numActualArgs();
+    sp = fp_->prevsp() - nActualArgs - 1 - spForNewTarget;
     fp_ = fp_->prev();
     MOZ_ASSERT(fp_);
   }
@@ -810,9 +821,9 @@ class InterpreterStack {
 
   ~InterpreterStack() { MOZ_ASSERT(frameCount_ == 0); }
 
-  // For execution of eval or global code.
+  // For execution of eval, module or global code.
   InterpreterFrame* pushExecuteFrame(JSContext* cx, HandleScript script,
-                                     const Value& newTargetValue,
+                                     HandleValue newTargetValue,
                                      HandleObject envChain,
                                      AbstractFramePtr evalInFrame);
 
@@ -894,10 +905,11 @@ class GenericArgsBase
 template <MaybeConstruct Construct, size_t N>
 class FixedArgsBase
     : public std::conditional_t<Construct, AnyConstructArgs, AnyInvokeArgs> {
-  static_assert(N <= ARGS_LENGTH_MAX, "o/~ too many args o/~");
+  // Add +1 here to avoid noisy warning on gcc when N=0 (0 <= unsigned).
+  static_assert(N + 1 <= ARGS_LENGTH_MAX + 1, "o/~ too many args o/~");
 
  protected:
-  JS::AutoValueArray<2 + N + uint32_t(Construct)> v_;
+  JS::RootedValueArray<2 + N + uint32_t(Construct)> v_;
 
   explicit FixedArgsBase(JSContext* cx) : v_(cx) {
     *static_cast<JS::CallArgs*>(this) = CallArgsFromVp(N, v_.begin());

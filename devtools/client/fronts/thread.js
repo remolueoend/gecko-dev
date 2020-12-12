@@ -44,10 +44,8 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
     this._state = "paused";
     this._beforePaused = this._beforePaused.bind(this);
     this._beforeResumed = this._beforeResumed.bind(this);
-    this._beforeDetached = this._beforeDetached.bind(this);
     this.before("paused", this._beforePaused);
     this.before("resumed", this._beforeResumed);
-    this.before("detached", this._beforeDetached);
     this.targetFront.on("will-navigate", this._onWillNavigate.bind(this));
     // Attribute name from which to retrieve the actorID out of the target actor's form
     this.formAttributeName = "threadActor";
@@ -90,7 +88,7 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
    *        step, or finish) per the remote debugging protocol specification.
    *        Use null to specify no limit.
    */
-  async _doResume(resumeLimit) {
+  async _doResume(resumeLimit, frameActorID) {
     this._assertPaused("resume");
 
     // Put the client in a tentative "resuming" state so we can prevent
@@ -98,7 +96,7 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
     this._previousState = this._state;
     this._state = "resuming";
     try {
-      await super.resume(resumeLimit);
+      await super.resume(resumeLimit, frameActorID);
     } catch (e) {
       if (this._state == "resuming") {
         // There was an error resuming, update the state to the new one
@@ -133,22 +131,29 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
   /**
    * Step over a function call.
    */
-  stepOver() {
-    return this._doResume({ type: "next" });
+  stepOver(frameActorID) {
+    return this._doResume({ type: "next" }, frameActorID);
   }
 
   /**
    * Step into a function call.
    */
-  stepIn() {
-    return this._doResume({ type: "step" });
+  stepIn(frameActorID) {
+    return this._doResume({ type: "step" }, frameActorID);
   }
 
   /**
    * Step out of a function call.
    */
-  stepOut() {
-    return this._doResume({ type: "finish" });
+  stepOut(frameActorID) {
+    return this._doResume({ type: "finish" }, frameActorID);
+  }
+
+  /**
+   * Restart selected frame.
+   */
+  restart(frameActorID) {
+    return this._doResume({ type: "restart" }, frameActorID);
   }
 
   /**
@@ -178,7 +183,7 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
   async getSources() {
     let sources = [];
     try {
-      ({ sources } = await super.sources());
+      sources = await super.sources();
     } catch (e) {
       // we may have closed the connection
       console.log(`getSources failed. Connection may have closed: ${e}`);
@@ -193,16 +198,6 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
     const onPaused = this.once("paused");
     await super.attach(options);
     await onPaused;
-  }
-
-  /**
-   * Detach from the thread actor.
-   */
-  async detach() {
-    const onDetached = this.once("detached");
-    await super.detach();
-    await onDetached;
-    await this.destroy();
   }
 
   /**
@@ -247,14 +242,6 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
     this._clearObjectFronts("_pauseGrips");
   }
 
-  /**
-   * Invalidate thread-lifetime grip clients and clear the list of current grip
-   * clients.
-   */
-  _clearThreadGrips() {
-    this._clearObjectFronts("_threadGrips");
-  }
-
   _beforePaused(packet) {
     this._state = "paused";
     this._onThreadState(packet);
@@ -263,13 +250,6 @@ class ThreadFront extends FrontClassWithSpec(threadSpec) {
   _beforeResumed() {
     this._state = "attached";
     this._onThreadState(null);
-    this.unmanageChildren(FrameFront);
-  }
-
-  _beforeDetached(packet) {
-    this._state = "detached";
-    this._onThreadState(packet);
-    this._clearThreadGrips();
     this.unmanageChildren(FrameFront);
   }
 

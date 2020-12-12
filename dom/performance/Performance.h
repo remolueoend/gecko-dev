@@ -11,6 +11,7 @@
 #include "mozilla/DOMEventTargetHelper.h"
 #include "nsCOMPtr.h"
 #include "nsDOMNavigationTiming.h"
+#include "nsTObserverArray.h"
 
 class nsITimedChannel;
 
@@ -22,6 +23,7 @@ namespace dom {
 
 class PerformanceEntry;
 class PerformanceNavigation;
+class PerformancePaintTiming;
 class PerformanceObserver;
 class PerformanceService;
 class PerformanceStorage;
@@ -85,6 +87,8 @@ class Performance : public DOMEventTargetHelper {
 
   virtual PerformanceNavigation* Navigation() = 0;
 
+  virtual void SetFCPTimingEntry(PerformancePaintTiming* aEntry) = 0;
+
   IMPL_EVENT_HANDLER(resourcetimingbufferfull)
 
   virtual void GetMozMemory(JSContext* aCx,
@@ -96,7 +100,9 @@ class Performance : public DOMEventTargetHelper {
 
   virtual TimeStamp CreationTimeStamp() const = 0;
 
-  uint64_t IsSystemPrincipal() { return mSystemPrincipal; }
+  bool IsSystemPrincipal() const { return mSystemPrincipal; }
+
+  DOMHighResTimeStamp TimeStampToDOMHighResForRendering(TimeStamp) const;
 
   virtual uint64_t GetRandomTimelineSeed() = 0;
 
@@ -109,10 +115,14 @@ class Performance : public DOMEventTargetHelper {
 
   virtual void QueueNavigationTimingEntry() = 0;
 
+  virtual void UpdateNavigationTimingEntry() = 0;
+
   virtual bool CrossOriginIsolated() const = 0;
 
+  void QueueNotificationObserversTask();
+
  protected:
-  explicit Performance(bool aSystemPrincipal);
+  Performance(nsIGlobalObject* aGlobal, bool aSystemPrincipal);
   Performance(nsPIDOMWindowInner* aWindow, bool aSystemPrincipal);
 
   virtual ~Performance();
@@ -145,7 +155,7 @@ class Performance : public DOMEventTargetHelper {
   void RunNotificationObserversTask();
   void QueueEntry(PerformanceEntry* aEntry);
 
-  nsTObserverArray<PerformanceObserver*> mObservers;
+  nsTObserverArray<RefPtr<PerformanceObserver>> mObservers;
 
  protected:
   static const uint64_t kDefaultResourceTimingBufferSize = 250;

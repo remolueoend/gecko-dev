@@ -8,6 +8,7 @@
 #include "Accessible-inl.h"
 #include "AccessibleOrProxy.h"
 #include "DocAccessibleParent.h"
+#include "DocAccessible-inl.h"
 #include "ProxyAccessibleWrap.h"
 #include "SessionAccessibility.h"
 #include "mozilla/PresShell.h"
@@ -69,7 +70,12 @@ AccessibleWrap* RootAccessibleWrap::FindAccessibleById(
     if (!child) {
       break;
     }
-    acc = FindAccessibleById(child, aID);
+    // A child document's id is not in its parent document's hash table.
+    if (child->VirtualViewID() == aID) {
+      acc = child;
+    } else {
+      acc = FindAccessibleById(child, aID);
+    }
   }
 
   return acc;

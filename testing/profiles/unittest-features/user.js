@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 // Base preferences file for enabling unittest features.
 // Not enabling these features cause many unittests that
 // expect these prefs to be set to fail.
@@ -8,8 +12,6 @@
 /* globals user_pref */
 // Enable w3c touch events for testing
 user_pref("dom.w3c_touch_events.enabled", 1);
-// Enable CSS 'contain' for testing
-user_pref("layout.css.contain.enabled", true);
 // Enable CSS Grid 'subgrid' feature for testing
 user_pref("layout.css.grid-template-subgrid-value.enabled", true);
 // Enable CSS initial-letter for testing
@@ -19,10 +21,6 @@ user_pref("media.mediasource.mp4.enabled", true);
 user_pref("media.mediasource.webm.enabled", true);
 user_pref("media.av1.enabled", true);
 user_pref("media.eme.enabled", true);
-// Enable some form preferences for testing
-user_pref("dom.experimental_forms", true);
-user_pref("dom.forms.color", true);
-user_pref("dom.forms.datetime", true);
 user_pref("dom.forms.datetime.others", true);
 // Enable Gamepad
 user_pref("dom.gamepad.enabled", true);

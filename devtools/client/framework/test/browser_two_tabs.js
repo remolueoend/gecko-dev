@@ -39,7 +39,7 @@ add_task(async () => {
 });
 
 async function checkGetTab(client, tab1, tab2, targetFront1, targetFront2) {
-  let front = await client.mainRoot.getTab({ tab: tab1 });
+  let front = await getTabTarget(client, { tab: tab1 });
   is(targetFront1, front, "getTab returns the same target form for first tab");
   const filter = {};
   // Filter either by tabId or outerWindowID,
@@ -47,22 +47,22 @@ async function checkGetTab(client, tab1, tab2, targetFront1, targetFront2) {
   if (tab1.linkedBrowser.frameLoader.remoteTab) {
     filter.tabId = tab1.linkedBrowser.frameLoader.remoteTab.tabId;
   } else {
-    const windowUtils = tab1.linkedBrowser.contentWindow.windowUtils;
-    filter.outerWindowID = windowUtils.outerWindowID;
+    const { docShell } = tab1.linkedBrowser.contentWindow;
+    filter.outerWindowID = docShell.outerWindowID;
   }
-  front = await client.mainRoot.getTab(filter);
+  front = await getTabTarget(client, filter);
   is(
     targetFront1,
     front,
     "getTab returns the same target form when filtering by tabId/outerWindowID"
   );
-  front = await client.mainRoot.getTab({ tab: tab2 });
+  front = await getTabTarget(client, { tab: tab2 });
   is(targetFront2, front, "getTab returns the same target form for second tab");
 }
 
 async function checkGetTabFailures(client) {
   try {
-    await client.mainRoot.getTab({ tabId: -999 });
+    await getTabTarget(client, { tabId: -999 });
     ok(false, "getTab unexpectedly succeed with a wrong tabId");
   } catch (error) {
     is(
@@ -73,7 +73,7 @@ async function checkGetTabFailures(client) {
   }
 
   try {
-    await client.mainRoot.getTab({ outerWindowID: -999 });
+    await getTabTarget(client, { outerWindowID: -999 });
     ok(false, "getTab unexpectedly succeed with a wrong outerWindowID");
   } catch (error) {
     is(
@@ -104,4 +104,9 @@ async function checkFirstTargetActor(targetFront1) {
     "startedListeners" in response,
     "Actor from the first tab should still respond."
   );
+}
+
+async function getTabTarget(client, filter) {
+  const descriptor = await client.mainRoot.getTab(filter);
+  return descriptor.getTarget();
 }

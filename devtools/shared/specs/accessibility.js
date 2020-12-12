@@ -196,6 +196,16 @@ const accessibleWalkerSpec = generateActorSpec({
     pick: {},
     pickAndFocus: {},
     cancelPick: {},
+    showTabbingOrder: {
+      request: {
+        elm: Arg(0, "domnode"),
+        index: Arg(1, "number"),
+      },
+      response: {
+        tabbingOrderInfo: RetVal("json"),
+      },
+    },
+    hideTabbingOrder() {},
   },
 });
 
@@ -222,19 +232,13 @@ const accessibilitySpec = generateActorSpec({
     shutdown: {
       type: "shutdown",
     },
-    // TODO: Deprecated. Remove after Fx75.
-    "can-be-disabled-change": {
-      type: "canBeDisabledChange",
-      canBeDisabled: Arg(0, "boolean"),
-    },
-    // TODO: Deprecated. Remove after Fx75.
-    "can-be-enabled-change": {
-      type: "canBeEnabledChange",
-      canBeEnabled: Arg(0, "boolean"),
-    },
   },
 
   methods: {
+    getTraits: {
+      request: {},
+      response: { traits: RetVal("json") },
+    },
     bootstrap: {
       request: {},
       response: {
@@ -252,16 +256,6 @@ const accessibilitySpec = generateActorSpec({
       response: {
         simulator: RetVal("nullable:simulator"),
       },
-    },
-    // TODO: Deprecated. Remove after Fx75.
-    enable: {
-      request: {},
-      response: {},
-    },
-    // TODO: Deprecated. Remove after Fx75.
-    disable: {
-      request: {},
-      response: {},
     },
   },
 });

@@ -8,17 +8,19 @@
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/dom/SVGLengthBinding.h"
-#include "mozilla/dom/SVGUseElementBinding.h"
-#include "nsGkAtoms.h"
-#include "mozilla/dom/SVGSVGElement.h"
+#include "mozilla/ScopeExit.h"
+#include "mozilla/SVGObserverUtils.h"
+#include "mozilla/SVGUseFrame.h"
+#include "mozilla/URLExtraData.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/SVGLengthBinding.h"
+#include "mozilla/dom/SVGSVGElement.h"
+#include "mozilla/dom/SVGUseElementBinding.h"
+#include "nsGkAtoms.h"
 #include "nsContentUtils.h"
 #include "nsIURI.h"
-#include "mozilla/URLExtraData.h"
-#include "SVGObserverUtils.h"
-#include "nsSVGUseFrame.h"
+#include "SVGGeometryProperty.h"
 
 NS_IMPL_NS_NEW_SVG_ELEMENT(Use)
 
@@ -82,18 +84,19 @@ SVGUseElement::~SVGUseElement() {
                         "Dying without unbinding?");
 }
 
+namespace SVGT = SVGGeometryProperty::Tags;
+
 //----------------------------------------------------------------------
 // nsINode methods
+
+bool SVGUseElement::IsNodeOfType(uint32_t aFlags) const {
+  return !(aFlags & ~eUSE_TARGET);
+}
 
 void SVGUseElement::ProcessAttributeChange(int32_t aNamespaceID,
                                            nsAtom* aAttribute) {
   if (aNamespaceID == kNameSpaceID_None) {
-    if (aAttribute == nsGkAtoms::x || aAttribute == nsGkAtoms::y) {
-      if (auto* frame = GetFrame()) {
-        frame->PositionAttributeChanged();
-      }
-    } else if (aAttribute == nsGkAtoms::width ||
-               aAttribute == nsGkAtoms::height) {
+    if (aAttribute == nsGkAtoms::width || aAttribute == nsGkAtoms::height) {
       const bool hadValidDimensions = HasValidDimensions();
       const bool isUsed = OurWidthAndHeightAreUsed();
       if (isUsed) {
@@ -313,13 +316,7 @@ void SVGUseElement::UpdateShadowTree() {
   });
 
   // make sure target is valid type for <use>
-  // QIable nsSVGGraphicsElement would eliminate enumerating all elements
-  if (!targetElement ||
-      !targetElement->IsAnyOfSVGElements(
-          nsGkAtoms::svg, nsGkAtoms::symbol, nsGkAtoms::g, nsGkAtoms::path,
-          nsGkAtoms::text, nsGkAtoms::rect, nsGkAtoms::circle,
-          nsGkAtoms::ellipse, nsGkAtoms::line, nsGkAtoms::polyline,
-          nsGkAtoms::polygon, nsGkAtoms::image, nsGkAtoms::use)) {
+  if (!targetElement || !targetElement->IsNodeOfType(nsINode::eUSE_TARGET)) {
     return;
   }
 
@@ -358,9 +355,7 @@ void SVGUseElement::UpdateShadowTree() {
 
   // Bug 1415044 the specs do not say which referrer information we should use.
   // This may change if there's any spec comes out.
-  nsCOMPtr<nsIReferrerInfo> referrerInfo = new mozilla::dom::ReferrerInfo();
-  referrerInfo->InitWithNode(this);
-
+  auto referrerInfo = MakeRefPtr<ReferrerInfo>(*this);
   mContentURLData = new URLExtraData(baseURI.forget(), referrerInfo.forget(),
                                      do_AddRef(NodePrincipal()));
 
@@ -374,6 +369,15 @@ nsIURI* SVGUseElement::GetSourceDocURI() {
   }
 
   return targetElement->OwnerDoc()->GetDocumentURI();
+}
+
+const Encoding* SVGUseElement::GetSourceDocCharacterSet() {
+  nsIContent* targetElement = mReferencedElementTracker.get();
+  if (!targetElement) {
+    return nullptr;
+  }
+
+  return targetElement->OwnerDoc()->GetDocumentCharacterSet();
 }
 
 static nsINode* GetClonedChild(const SVGUseElement& aUseElement) {
@@ -482,7 +486,9 @@ gfxMatrix SVGUseElement::PrependLocalTransformsTo(
 
   // our 'x' and 'y' attributes:
   float x, y;
-  const_cast<SVGUseElement*>(this)->GetAnimatedLengthValues(&x, &y, nullptr);
+  if (!SVGGeometryProperty::ResolveAll<SVGT::X, SVGT::Y>(this, &x, &y)) {
+    const_cast<SVGUseElement*>(this)->GetAnimatedLengthValues(&x, &y, nullptr);
+  }
 
   gfxMatrix childToUser = gfxMatrix::Translation(x, y);
 
@@ -520,15 +526,15 @@ SVGElement::StringAttributesInfo SVGUseElement::GetStringInfo() {
                               ArrayLength(sStringInfo));
 }
 
-nsSVGUseFrame* SVGUseElement::GetFrame() const {
+SVGUseFrame* SVGUseElement::GetFrame() const {
   nsIFrame* frame = GetPrimaryFrame();
-  // We might be a plain nsSVGContainerFrame if we didn't pass the conditional
+  // We might be a plain SVGContainerFrame if we didn't pass the conditional
   // processing checks.
   if (!frame || !frame->IsSVGUseFrame()) {
     MOZ_ASSERT_IF(frame, frame->Type() == LayoutFrameType::None);
     return nullptr;
   }
-  return static_cast<nsSVGUseFrame*>(frame);
+  return static_cast<SVGUseFrame*>(frame);
 }
 
 //----------------------------------------------------------------------
@@ -545,8 +551,21 @@ SVGUseElement::IsAttributeMapped(const nsAtom* name) const {
                                                     sTextContentElementsMap,
                                                     sViewportsMap};
 
-  return FindAttributeDependence(name, map) ||
+  return name == nsGkAtoms::x || name == nsGkAtoms::y ||
+         FindAttributeDependence(name, map) ||
          SVGUseElementBase::IsAttributeMapped(name);
+}
+
+nsCSSPropertyID SVGUseElement::GetCSSPropertyIdForAttrEnum(uint8_t aAttrEnum) {
+  switch (aAttrEnum) {
+    case ATTR_X:
+      return eCSSProperty_x;
+    case ATTR_Y:
+      return eCSSProperty_y;
+    default:
+      // Currently we don't map width or height to style
+      return eCSSProperty_UNKNOWN;
+  }
 }
 
 }  // namespace dom

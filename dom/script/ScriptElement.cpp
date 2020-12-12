@@ -8,6 +8,7 @@
 #include "ScriptLoader.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/Element.h"
 #include "nsContentUtils.h"
 #include "nsPresContext.h"
@@ -40,9 +41,8 @@ ScriptElement::ScriptAvailable(nsresult aResult, nsIScriptElement* aElement,
 nsresult ScriptElement::FireErrorEvent() {
   nsCOMPtr<nsIContent> cont = do_QueryInterface((nsIScriptElement*)this);
 
-  return nsContentUtils::DispatchTrustedEvent(cont->OwnerDoc(), cont,
-                                              NS_LITERAL_STRING("error"),
-                                              CanBubble::eNo, Cancelable::eNo);
+  return nsContentUtils::DispatchTrustedEvent(
+      cont->OwnerDoc(), cont, u"error"_ns, CanBubble::eNo, Cancelable::eNo);
 }
 
 NS_IMETHODIMP

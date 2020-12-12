@@ -6,10 +6,10 @@
 #include "GamepadEventChannelParent.h"
 #include "GamepadPlatformService.h"
 #include "mozilla/dom/GamepadMonitoring.h"
+#include "mozilla/ipc/BackgroundParent.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using namespace mozilla::ipc;
 
@@ -24,59 +24,51 @@ class SendGamepadUpdateRunnable final : public Runnable {
  public:
   SendGamepadUpdateRunnable(GamepadEventChannelParent* aParent,
                             GamepadChangeEvent aEvent)
-      : Runnable("dom::SendGamepadUpdateRunnable"), mEvent(aEvent) {
-    MOZ_ASSERT(aParent);
-    mParent = aParent;
+      : Runnable("dom::SendGamepadUpdateRunnable"),
+        mParent(aParent),
+        mEvent(aEvent) {
+    MOZ_ASSERT(mParent);
   }
   NS_IMETHOD Run() override {
     AssertIsOnBackgroundThread();
-    if (mParent->HasGamepadListener()) {
-      Unused << mParent->SendGamepadUpdate(mEvent);
-    }
+    Unused << mParent->SendGamepadUpdate(mEvent);
     return NS_OK;
   }
 };
 
 }  // namespace
 
-GamepadEventChannelParent::GamepadEventChannelParent()
-    : mHasGamepadListener(false) {
-  RefPtr<GamepadPlatformService> service =
-      GamepadPlatformService::GetParentService();
-  MOZ_ASSERT(service);
-
-  mBackgroundEventTarget = GetCurrentThreadEventTarget();
-  service->AddChannelParent(this);
+already_AddRefed<GamepadEventChannelParent>
+GamepadEventChannelParent::Create() {
+  return RefPtr<GamepadEventChannelParent>(new GamepadEventChannelParent())
+      .forget();
 }
 
-mozilla::ipc::IPCResult GamepadEventChannelParent::RecvGamepadListenerAdded() {
+GamepadEventChannelParent::GamepadEventChannelParent() {
   AssertIsOnBackgroundThread();
-  MOZ_ASSERT(!mHasGamepadListener);
-  mHasGamepadListener = true;
-  StartGamepadMonitoring();
-  return IPC_OK();
+
+  mBackgroundEventTarget = GetCurrentEventTarget();
+
+  GamepadPlatformService::AddChannelParent(
+      RefPtr<GamepadEventChannelParent>(this));
 }
 
-mozilla::ipc::IPCResult
-GamepadEventChannelParent::RecvGamepadListenerRemoved() {
+void GamepadEventChannelParent::ActorDestroy(ActorDestroyReason aWhy) {
   AssertIsOnBackgroundThread();
-  MOZ_ASSERT(mHasGamepadListener);
-  mHasGamepadListener = false;
-  RefPtr<GamepadPlatformService> service =
-      GamepadPlatformService::GetParentService();
-  MOZ_ASSERT(service);
-  service->RemoveChannelParent(this);
-  Unused << Send__delete__(this);
-  return IPC_OK();
+
+  GamepadPlatformService::RemoveChannelParent(this);
 }
 
 mozilla::ipc::IPCResult GamepadEventChannelParent::RecvVibrateHaptic(
-    const uint32_t& aControllerIdx, const uint32_t& aHapticIndex,
-    const double& aIntensity, const double& aDuration,
-    const uint32_t& aPromiseID) {
+    const Tainted<GamepadHandle>& aHandle,
+    const Tainted<uint32_t>& aHapticIndex, const Tainted<double>& aIntensity,
+    const Tainted<double>& aDuration, const Tainted<uint32_t>& aPromiseID) {
   // TODO: Bug 680289, implement for standard gamepads
 
-  if (SendReplyGamepadPromise(aPromiseID)) {
+  // TODO: simplify tainted validation, see 1610570
+  if (SendReplyGamepadPromise(MOZ_NO_VALIDATE(
+          aPromiseID,
+          "This value is unused aside from being passed back to the child."))) {
     return IPC_OK();
   }
 
@@ -84,42 +76,26 @@ mozilla::ipc::IPCResult GamepadEventChannelParent::RecvVibrateHaptic(
 }
 
 mozilla::ipc::IPCResult GamepadEventChannelParent::RecvStopVibrateHaptic(
-    const uint32_t& aControllerIdx) {
+    const Tainted<GamepadHandle>& aHandle) {
   // TODO: Bug 680289, implement for standard gamepads
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult GamepadEventChannelParent::RecvLightIndicatorColor(
-    const uint32_t& aControllerIdx, const uint32_t& aLightColorIndex,
-    const uint8_t& aRed, const uint8_t& aGreen, const uint8_t& aBlue,
-    const uint32_t& aPromiseID) {
-  // It may be called because IPDL child side crashed, we'll
-  // not receive RecvGamepadListenerRemoved in that case
-  if (mHasGamepadListener) {
-    SetGamepadLightIndicatorColor(aControllerIdx, aLightColorIndex, aRed,
-                                  aGreen, aBlue);
-  }
+    const Tainted<GamepadHandle>& aHandle,
+    const Tainted<uint32_t>& aLightColorIndex, const Tainted<uint8_t>& aRed,
+    const Tainted<uint8_t>& aGreen, const Tainted<uint8_t>& aBlue,
+    const Tainted<uint32_t>& aPromiseID) {
+  SetGamepadLightIndicatorColor(aHandle, aLightColorIndex, aRed, aGreen, aBlue);
 
-  if (SendReplyGamepadPromise(aPromiseID)) {
+  // TODO: simplify tainted validation, see 1610570
+  if (SendReplyGamepadPromise(MOZ_NO_VALIDATE(
+          aPromiseID,
+          "This value is unused aside from being passed back to the child."))) {
     return IPC_OK();
   }
 
   return IPC_FAIL(this, "SendReplyGamepadPromise fail.");
-}
-
-void GamepadEventChannelParent::ActorDestroy(ActorDestroyReason aWhy) {
-  AssertIsOnBackgroundThread();
-
-  // It may be called because IPDL child side crashed, we'll
-  // not receive RecvGamepadListenerRemoved in that case
-  if (mHasGamepadListener) {
-    mHasGamepadListener = false;
-    RefPtr<GamepadPlatformService> service =
-        GamepadPlatformService::GetParentService();
-    MOZ_ASSERT(service);
-    service->RemoveChannelParent(this);
-  }
-  MaybeStopGamepadMonitoring();
 }
 
 void GamepadEventChannelParent::DispatchUpdateEvent(
@@ -128,5 +104,4 @@ void GamepadEventChannelParent::DispatchUpdateEvent(
                                    NS_DISPATCH_NORMAL);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

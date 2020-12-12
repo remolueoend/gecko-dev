@@ -24,7 +24,9 @@ import {
 import type { OrientationType } from "../reducers/types";
 import type { Source } from "../types";
 
-import { KeyShortcuts } from "devtools-modules";
+// $FlowIgnore
+const KeyShortcuts = require("devtools/client/shared/key-shortcuts");
+
 import Services from "devtools-services";
 const shortcuts = new KeyShortcuts({ window });
 
@@ -40,9 +42,6 @@ const verticalLayoutBreakpoint = window.matchMedia(
 import "./variables.css";
 import "./App.css";
 
-// $FlowIgnore
-import "devtools-launchpad/src/components/Root.css";
-
 import type { ActiveSearchType } from "../selectors";
 
 import "./shared/menu.css";
@@ -56,9 +55,10 @@ import WelcomeBox from "./WelcomeBox";
 import EditorTabs from "./Editor/Tabs";
 import EditorFooter from "./Editor/Footer";
 import QuickOpenModal from "./QuickOpenModal";
-import WhyPaused from "./SecondaryPanes/WhyPaused";
 
-type OwnProps = {||};
+type OwnProps = {|
+  toolboxDoc: Object,
+|};
 type Props = {
   selectedSource: ?Source,
   orientation: OrientationType,
@@ -66,6 +66,7 @@ type Props = {
   endPanelCollapsed: boolean,
   activeSearch: ?ActiveSearchType,
   quickOpenEnabled: boolean,
+  toolboxDoc: Object,
   setActiveSearch: typeof actions.setActiveSearch,
   closeActiveSearch: typeof actions.closeActiveSearch,
   closeProjectSearch: typeof actions.closeProjectSearch,
@@ -98,17 +99,21 @@ class App extends Component<Props, State> {
     };
   }
 
-  getChildContext = () => {
-    return { shortcuts, l10n: L10N };
-  };
+  getChildContext() {
+    return {
+      toolboxDoc: this.props.toolboxDoc,
+      shortcuts,
+      l10n: L10N,
+    };
+  }
 
   componentDidMount() {
     horizontalLayoutBreakpoint.addListener(this.onLayoutChange);
     verticalLayoutBreakpoint.addListener(this.onLayoutChange);
     this.setOrientation();
 
-    shortcuts.on(L10N.getStr("symbolSearch.search.key2"), (_, e) =>
-      this.toggleQuickOpenModal(_, e, "@")
+    shortcuts.on(L10N.getStr("symbolSearch.search.key2"), e =>
+      this.toggleQuickOpenModal(e, "@")
     );
 
     const searchKeys = [
@@ -117,8 +122,8 @@ class App extends Component<Props, State> {
     ];
     searchKeys.forEach(key => shortcuts.on(key, this.toggleQuickOpenModal));
 
-    shortcuts.on(L10N.getStr("gotoLineModal.key3"), (_, e) =>
-      this.toggleQuickOpenModal(_, e, ":")
+    shortcuts.on(L10N.getStr("gotoLineModal.key3"), e =>
+      this.toggleQuickOpenModal(e, ":")
     );
 
     shortcuts.on("Escape", this.onEscape);
@@ -144,7 +149,7 @@ class App extends Component<Props, State> {
     shortcuts.off("Escape", this.onEscape);
   }
 
-  onEscape = (_: mixed, e: KeyboardEvent) => {
+  onEscape = (e: KeyboardEvent) => {
     const {
       activeSearch,
       closeActiveSearch,
@@ -177,11 +182,7 @@ class App extends Component<Props, State> {
     return this.props.orientation === "horizontal";
   }
 
-  toggleQuickOpenModal = (
-    _: mixed,
-    e: SyntheticEvent<HTMLElement>,
-    query?: string
-  ) => {
+  toggleQuickOpenModal = (e: SyntheticEvent<HTMLElement>, query?: string) => {
     const { quickOpenEnabled, openQuickOpen, closeQuickOpen } = this.props;
 
     e.preventDefault();
@@ -228,7 +229,6 @@ class App extends Component<Props, State> {
             horizontal={horizontal}
           />
           <Editor startPanelSize={startPanelSize} endPanelSize={endPanelSize} />
-          {this.props.endPanelCollapsed ? <WhyPaused /> : null}
           {!this.props.selectedSource ? (
             <WelcomeBox
               horizontal={horizontal}
@@ -331,6 +331,7 @@ class App extends Component<Props, State> {
 }
 
 App.childContextTypes = {
+  toolboxDoc: PropTypes.object,
   shortcuts: PropTypes.object,
   l10n: PropTypes.object,
 };

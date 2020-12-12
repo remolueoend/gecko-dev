@@ -13,9 +13,7 @@
 import type {
   BreakpointLocation,
   BreakpointOptions,
-  FrameId,
   ActorId,
-  Script,
   PendingLocation,
   SourceId,
   Range,
@@ -89,6 +87,7 @@ export type FrameFront = {
   this: any,
   asyncCause: null | string,
   state: "on-stack" | "suspended" | "dead",
+  type: "call" | "eval" | "global" | "module" | "wasmcall" | "debugger",
 };
 
 /**
@@ -101,8 +100,8 @@ export type SourcePayload = {
   actor: ActorId,
   url: URL | null,
   isBlackBoxed: boolean,
+  sourceMapBaseURL: URL | null,
   sourceMapURL: URL | null,
-  introductionUrl: URL | null,
   introductionType: string | null,
   extensionName: string | null,
 };
@@ -189,7 +188,7 @@ export type Target = {
   off: (string, Function) => void,
   on: (string, Function) => void,
   emit: (string, any) => void,
-  getFront: string => Promise<ConsoleFront>,
+  getFront: string => Promise<*>,
   form: { consoleActor: any },
   root: any,
   navigateTo: ({ url: URL }) => Promise<*>,
@@ -203,30 +202,19 @@ export type Target = {
   isBrowsingContext: boolean,
   isContentProcess: boolean,
   isWorkerTarget: boolean,
+  targetType: string,
+  isTopLevel: boolean,
   traits: Object,
   chrome: boolean,
   url: URL,
   isParentProcess: boolean,
   isServiceWorker: boolean,
   targetForm: Object,
+  reconfigure: Object,
 
   // Property installed by the debugger itself.
   debuggerServiceWorkerStatus: string,
-};
-
-type ConsoleFront = {
-  evaluateJSAsync: (
-    script: Script,
-    func: Function,
-    params?: { frameActor: ?FrameId }
-  ) => Promise<{ result: ExpressionResult }>,
-  autocomplete: (
-    input: string,
-    cursor: number,
-    func: Function,
-    frameId: ?string
-  ) => void,
-  emit: (string, any) => void,
+  attachAndInitThread: TargetList => Promise<*>,
 };
 
 /**
@@ -272,7 +260,7 @@ type ProcessDescriptor = Object;
 export type TargetList = {
   watchTargets: (Array<string>, Function, Function) => void,
   unwatchTargets: (Array<string>, Function, Function) => void,
-  getAllTargets: string => Array<Target>,
+  getAllTargets: (Array<string>) => Array<Target>,
   targetFront: Target,
   TYPES: {
     FRAME: string,
@@ -301,6 +289,7 @@ export type Grip = {|
   class: string,
   displayClass: string,
   displayName?: string,
+  isError?: boolean,
   parameterNames?: string[],
   userDisplayName?: string,
   name: string,
@@ -392,6 +381,7 @@ export type ThreadFront = {
   stepIn: Function => Promise<*>,
   stepOver: Function => Promise<*>,
   stepOut: Function => Promise<*>,
+  restart: Function => Promise<*>,
   breakOnNext: () => Promise<*>,
   // FIXME: unclear if SourceId or ActorId here
   source: ({ actor: SourceId }) => SourceClient,
@@ -418,7 +408,7 @@ export type ThreadFront = {
   skipBreakpoints: boolean => Promise<{| skip: boolean |}>,
   detach: () => Promise<void>,
   fetchAncestorFramePositions: Function => Promise<*>,
-  get: string => FrameFront,
+  getActorByID: string => FrameFront,
   dumpThread: Function => void,
 };
 
@@ -431,4 +421,5 @@ export type Panel = {|
   highlightDomElement: (grip: Object) => void,
   unHighlightDomElement: (grip: Object) => void,
   getToolboxStore: () => any,
+  panelWin: Object,
 |};

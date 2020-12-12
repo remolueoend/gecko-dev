@@ -10,7 +10,6 @@
 #include "nsString.h"
 #include "nsError.h"
 
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/FormData.h"
 
@@ -51,7 +50,7 @@ class FetchUtil final {
 
   static nsresult SetRequestReferrer(nsIPrincipal* aPrincipal, Document* aDoc,
                                      nsIHttpChannel* aChannel,
-                                     InternalRequest* aRequest);
+                                     InternalRequest& aRequest);
 
   /**
    * Check that the given object is a Response and, if so, stream to the given

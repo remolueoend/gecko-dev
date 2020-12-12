@@ -10,6 +10,7 @@
 #include "MemMapSnapshot.h"
 #include "ScriptPreloader-inl.h"
 
+#include "mozilla/dom/BlobImpl.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ContentProcessMessageManager.h"
 #include "mozilla/dom/IPCBlobUtils.h"
@@ -23,8 +24,7 @@ namespace mozilla {
 
 using namespace ipc;
 
-namespace dom {
-namespace ipc {
+namespace dom::ipc {
 
 // Align to size of uintptr_t here, to be safe. It's probably not strictly
 // necessary, though.
@@ -129,8 +129,8 @@ void SharedMap::Update(const FileDescriptor& aMapFile, size_t aMapSize,
                                               fallible);
   }
 
-  RefPtr<SharedMapChangeEvent> event = SharedMapChangeEvent::Constructor(
-      this, NS_LITERAL_STRING("change"), init);
+  RefPtr<SharedMapChangeEvent> event =
+      SharedMapChangeEvent::Constructor(this, u"change"_ns, init);
   event->SetTrusted(true);
 
   DispatchEvent(*event);
@@ -246,7 +246,7 @@ WritableSharedMap::WritableSharedMap() : SharedMap() {
 
 SharedMap* WritableSharedMap::GetReadOnly() {
   if (!mReadOnly) {
-    nsTArray<RefPtr<BlobImpl>> blobs(mBlobImpls);
+    nsTArray<RefPtr<BlobImpl>> blobs(mBlobImpls.Clone());
     mReadOnly =
         new SharedMap(ContentProcessMessageManager::Get()->GetParentObject(),
                       CloneMapFile(), MapSize(), std::move(blobs));
@@ -369,7 +369,7 @@ void WritableSharedMap::BroadcastChanges() {
   }
 
   if (mReadOnly) {
-    nsTArray<RefPtr<BlobImpl>> blobImpls(mBlobImpls);
+    nsTArray<RefPtr<BlobImpl>> blobImpls(mBlobImpls.Clone());
     mReadOnly->Update(CloneMapFile(), mMap.size(), std::move(blobImpls),
                       std::move(mChangedKeys));
   }
@@ -459,6 +459,5 @@ NS_INTERFACE_MAP_END_INHERITING(SharedMap)
 NS_IMPL_ADDREF_INHERITED(WritableSharedMap, SharedMap)
 NS_IMPL_RELEASE_INHERITED(WritableSharedMap, SharedMap)
 
-}  // namespace ipc
-}  // namespace dom
+}  // namespace dom::ipc
 }  // namespace mozilla

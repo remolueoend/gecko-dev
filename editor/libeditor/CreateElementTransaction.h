@@ -9,7 +9,6 @@
 #include "mozilla/EditorDOMPoint.h"
 #include "mozilla/EditTransactionBase.h"
 #include "mozilla/RefPtr.h"
-#include "mozilla/dom/Element.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsISupportsImpl.h"
 
@@ -19,6 +18,9 @@ class nsAtom;
  * A transaction that creates a new node in the content tree.
  */
 namespace mozilla {
+namespace dom {
+class Element;
+}
 
 class EditorBase;
 
@@ -50,6 +52,7 @@ class CreateElementTransaction final : public EditTransactionBase {
                                            EditTransactionBase)
 
   NS_DECL_EDITTRANSACTIONBASE
+  NS_DECL_EDITTRANSACTIONBASE_GETASMETHODS_OVERRIDE(CreateElementTransaction)
 
   MOZ_CAN_RUN_SCRIPT NS_IMETHOD RedoTransaction() override;
 

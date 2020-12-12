@@ -6,9 +6,11 @@
 
 #include "js/ForOfIterator.h"  // JS::ForOfIterator
 #include "js/JSON.h"           // JS_ParseJSON
+#include "nsContentUtils.h"
 #include "nsIScriptError.h"
 #include "DOMLocalization.h"
 #include "mozilla/intl/LocaleService.h"
+#include "mozilla/dom/Element.h"
 #include "mozilla/dom/L10nOverlays.h"
 
 using namespace mozilla;
@@ -32,8 +34,21 @@ NS_IMPL_RELEASE_INHERITED(DOMLocalization, Localization)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMLocalization)
 NS_INTERFACE_MAP_END_INHERITING(Localization)
 
-DOMLocalization::DOMLocalization(nsIGlobalObject* aGlobal)
-    : Localization(aGlobal) {
+/* static */
+already_AddRefed<DOMLocalization> DOMLocalization::Create(
+    nsIGlobalObject* aGlobal, const bool aSync,
+    const BundleGenerator& aBundleGenerator) {
+  RefPtr<DOMLocalization> domLoc =
+      new DOMLocalization(aGlobal, aSync, aBundleGenerator);
+
+  domLoc->Init();
+
+  return domLoc.forget();
+}
+
+DOMLocalization::DOMLocalization(nsIGlobalObject* aGlobal, const bool aSync,
+                                 const BundleGenerator& aBundleGenerator)
+    : Localization(aGlobal, aSync, aBundleGenerator) {
   mMutations = new L10nMutations(this);
 }
 
@@ -47,12 +62,14 @@ already_AddRefed<DOMLocalization> DOMLocalization::Constructor(
     return nullptr;
   }
 
-  RefPtr<DOMLocalization> domLoc = new DOMLocalization(global);
-  domLoc->Init(aResourceIds, aSync, aBundleGenerator, aRv);
+  RefPtr<DOMLocalization> domLoc =
+      DOMLocalization::Create(global, aSync, aBundleGenerator);
 
-  if (NS_WARN_IF(aRv.Failed())) {
-    return nullptr;
+  if (aResourceIds.Length()) {
+    domLoc->AddResourceIds(aResourceIds);
   }
+
+  domLoc->Activate(true);
 
   return domLoc.forget();
 }
@@ -62,7 +79,9 @@ JSObject* DOMLocalization::WrapObject(JSContext* aCx,
   return DOMLocalization_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-DOMLocalization::~DOMLocalization() { DisconnectMutations(); }
+void DOMLocalization::Destroy() { DisconnectMutations(); }
+
+DOMLocalization::~DOMLocalization() { Destroy(); }
 
 /**
  * DOMLocalization API
@@ -130,17 +149,17 @@ void DOMLocalization::SetAttributes(
   }
 }
 
-void DOMLocalization::GetAttributes(JSContext* aCx, Element& aElement,
-                                    L10nKey& aResult, ErrorResult& aRv) {
+void DOMLocalization::GetAttributes(Element& aElement, L10nIdArgs& aResult,
+                                    ErrorResult& aRv) {
   nsAutoString l10nId;
   nsAutoString l10nArgs;
 
   if (aElement.GetAttr(kNameSpaceID_None, nsGkAtoms::datal10nid, l10nId)) {
-    aResult.mId = NS_ConvertUTF16toUTF8(l10nId);
+    CopyUTF16toUTF8(l10nId, aResult.mId);
   }
 
   if (aElement.GetAttr(kNameSpaceID_None, nsGkAtoms::datal10nargs, l10nArgs)) {
-    ConvertStringToL10nArgs(aCx, l10nArgs, aResult.mArgs.SetValue(), aRv);
+    ConvertStringToL10nArgs(l10nArgs, aResult.mArgs.SetValue(), aRv);
   }
 }
 
@@ -217,8 +236,9 @@ class ElementTranslationHandler : public PromiseNativeHandler {
       }
     }
 
-    mDOMLocalization->ApplyTranslations(mElements, l10nData, mProto, rv);
-    if (NS_WARN_IF(rv.Failed())) {
+    bool allTranslated =
+        mDOMLocalization->ApplyTranslations(mElements, l10nData, mProto, rv);
+    if (NS_WARN_IF(rv.Failed()) || !allTranslated) {
       mReturnValuePromise->MaybeRejectWithUndefined();
       return;
     }
@@ -272,8 +292,8 @@ already_AddRefed<Promise> DOMLocalization::TranslateElements(
     const Sequence<OwningNonNull<Element>>& aElements,
     nsXULPrototypeDocument* aProto, ErrorResult& aRv) {
   JS::RootingContext* rcx = RootingCx();
-  Sequence<L10nKey> l10nKeys;
-  SequenceRooter<L10nKey> rooter(rcx, &l10nKeys);
+  Sequence<OwningUTF8StringOrL10nIdArgs> l10nKeys;
+  SequenceRooter<OwningUTF8StringOrL10nIdArgs> rooter(rcx, &l10nKeys);
   RefPtr<ElementTranslationHandler> nativeHandler =
       new ElementTranslationHandler(this, aProto);
   nsTArray<nsCOMPtr<Element>>& domElements = nativeHandler->Elements();
@@ -291,13 +311,13 @@ already_AddRefed<Promise> DOMLocalization::TranslateElements(
       continue;
     }
 
-    L10nKey* key = l10nKeys.AppendElement(fallible);
+    OwningUTF8StringOrL10nIdArgs* key = l10nKeys.AppendElement(fallible);
     if (!key) {
       aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
       return nullptr;
     }
 
-    GetAttributes(cx, *domElement, *key, aRv);
+    GetAttributes(*domElement, key->SetAsL10nIdArgs(), aRv);
     if (NS_WARN_IF(aRv.Failed())) {
       return nullptr;
     }
@@ -318,8 +338,9 @@ already_AddRefed<Promise> DOMLocalization::TranslateElements(
 
     FormatMessagesSync(cx, l10nKeys, l10nMessages, aRv);
 
-    ApplyTranslations(domElements, l10nMessages, aProto, aRv);
-    if (NS_WARN_IF(aRv.Failed())) {
+    bool allTranslated =
+        ApplyTranslations(domElements, l10nMessages, aProto, aRv);
+    if (NS_WARN_IF(aRv.Failed()) || !allTranslated) {
       promise->MaybeRejectWithUndefined();
       return MaybeWrapPromise(promise);
     }
@@ -442,32 +463,43 @@ void DOMLocalization::SetRootInfo(Element* aElement) {
   aElement->SetAttr(kNameSpaceID_None, dirAtom, dir, true);
 }
 
-void DOMLocalization::ApplyTranslations(
+bool DOMLocalization::ApplyTranslations(
     nsTArray<nsCOMPtr<Element>>& aElements,
     nsTArray<Nullable<L10nMessage>>& aTranslations,
     nsXULPrototypeDocument* aProto, ErrorResult& aRv) {
   if (aElements.Length() != aTranslations.Length()) {
     aRv.Throw(NS_ERROR_FAILURE);
-    return;
+    return false;
   }
 
   PauseObserving(aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     aRv.Throw(NS_ERROR_FAILURE);
-    return;
+    return false;
   }
+
+  bool hasMissingTranslation = false;
 
   nsTArray<L10nOverlaysError> errors;
   for (size_t i = 0; i < aTranslations.Length(); ++i) {
     Element* elem = aElements[i];
     if (aTranslations[i].IsNull()) {
+      hasMissingTranslation = true;
+      continue;
+    }
+    // If we have a proto, we expect all elements are connected up.
+    // If they're not, they may have been removed by earlier translations.
+    // We will have added an error in L10nOverlays in this case.
+    // This is an error in fluent use, but shouldn't be crashing. There's
+    // also no point translating the element - skip it:
+    if (aProto && !elem->IsInComposedDoc()) {
       continue;
     }
     L10nOverlays::TranslateElement(*elem, aTranslations[i].Value(), errors,
                                    aRv);
     if (NS_WARN_IF(aRv.Failed())) {
-      aRv.Throw(NS_ERROR_FAILURE);
-      return;
+      hasMissingTranslation = true;
+      continue;
     }
     if (aProto) {
       // We only need to rebuild deep if the translation has a value.
@@ -477,20 +509,22 @@ void DOMLocalization::ApplyTranslations(
     }
   }
 
+  ReportL10nOverlaysErrors(errors);
+
   ResumeObserving(aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     aRv.Throw(NS_ERROR_FAILURE);
-    return;
+    return false;
   }
 
-  ReportL10nOverlaysErrors(errors);
+  return !hasMissingTranslation;
 }
 
 /* Protected */
 
 void DOMLocalization::OnChange() {
   Localization::OnChange();
-  if (mLocalization) {
+  if (mLocalization && !mResourceIds.IsEmpty()) {
     ErrorResult rv;
     RefPtr<Promise> promise = TranslateRoots(rv);
   }
@@ -518,41 +552,55 @@ void DOMLocalization::ReportL10nOverlaysErrors(
 
   for (auto& error : aErrors) {
     if (error.mCode.WasPassed()) {
-      msg = NS_LITERAL_STRING("[fluent-dom] ");
+      msg = u"[fluent-dom] "_ns;
       switch (error.mCode.Value()) {
         case L10nOverlays_Binding::ERROR_FORBIDDEN_TYPE:
-          msg += NS_LITERAL_STRING("An element of forbidden type \"") +
+          msg += u"An element of forbidden type \""_ns +
                  error.mTranslatedElementName.Value() +
-                 NS_LITERAL_STRING(
-                     "\" was found in the translation. Only safe text-level "
+                 nsLiteralString(
+                     u"\" was found in the translation. Only safe text-level "
                      "elements and elements with data-l10n-name are allowed.");
           break;
         case L10nOverlays_Binding::ERROR_NAMED_ELEMENT_MISSING:
-          msg += NS_LITERAL_STRING("An element named \"") +
-                 error.mL10nName.Value() +
-                 NS_LITERAL_STRING("\" wasn't found in the source.");
+          msg += u"An element named \""_ns + error.mL10nName.Value() +
+                 u"\" wasn't found in the source."_ns;
           break;
         case L10nOverlays_Binding::ERROR_NAMED_ELEMENT_TYPE_MISMATCH:
-          msg += NS_LITERAL_STRING("An element named \"") +
-                 error.mL10nName.Value() +
-                 NS_LITERAL_STRING(
-                     "\" was found in the translation but its type ") +
+          msg += u"An element named \""_ns + error.mL10nName.Value() +
+                 nsLiteralString(
+                     u"\" was found in the translation but its type ") +
                  error.mTranslatedElementName.Value() +
-                 NS_LITERAL_STRING(
-                     " didn't match the element found in the source ") +
-                 error.mSourceElementName.Value() + NS_LITERAL_STRING(".");
+                 nsLiteralString(
+                     u" didn't match the element found in the source ") +
+                 error.mSourceElementName.Value() + u"."_ns;
+          break;
+        case L10nOverlays_Binding::ERROR_TRANSLATED_ELEMENT_DISCONNECTED:
+          msg += u"The element using message \""_ns + error.mL10nName.Value() +
+                 nsLiteralString(
+                     u"\" was removed from the DOM when translating its \"") +
+                 error.mTranslatedElementName.Value() + u"\" parent."_ns;
+          break;
+        case L10nOverlays_Binding::ERROR_TRANSLATED_ELEMENT_DISALLOWED_DOM:
+          msg += nsLiteralString(
+                     u"While translating an element with fluent ID \"") +
+                 error.mL10nName.Value() + u"\" a child element of type \""_ns +
+                 error.mTranslatedElementName.Value() +
+                 nsLiteralString(
+                     u"\" was removed. Either the fluent message "
+                     "does not contain markup, or it does not contain markup "
+                     "of this type.");
           break;
         case L10nOverlays_Binding::ERROR_UNKNOWN:
         default:
-          msg += NS_LITERAL_STRING(
-              "Unknown error happened while translation of an element.");
+          msg += nsLiteralString(
+              u"Unknown error happened while translating an element.");
           break;
       }
       nsPIDOMWindowInner* innerWindow = GetParentObject()->AsInnerWindow();
       Document* doc = innerWindow ? innerWindow->GetExtantDoc() : nullptr;
       if (doc) {
         nsContentUtils::ReportToConsoleNonLocalized(
-            msg, nsIScriptError::warningFlag, NS_LITERAL_CSTRING("DOM"), doc);
+            msg, nsIScriptError::warningFlag, "DOM"_ns, doc);
       } else {
         NS_WARNING("Failed to report l10n DOM Overlay errors to console.");
       }
@@ -560,8 +608,7 @@ void DOMLocalization::ReportL10nOverlaysErrors(
   }
 }
 
-void DOMLocalization::ConvertStringToL10nArgs(JSContext* aCx,
-                                              const nsString& aInput,
+void DOMLocalization::ConvertStringToL10nArgs(const nsString& aInput,
                                               intl::L10nArgs& aRetVal,
                                               ErrorResult& aRv) {
   // This method uses a temporary dictionary to automate
@@ -570,8 +617,7 @@ void DOMLocalization::ConvertStringToL10nArgs(JSContext* aCx,
   // Once we get Record::Init(const nsAString& aJSON), we'll switch to
   // that.
   L10nArgsHelperDict helperDict;
-  if (!helperDict.Init(NS_LITERAL_STRING("{\"args\": ") + aInput +
-                       NS_LITERAL_STRING("}"))) {
+  if (!helperDict.Init(u"{\"args\": "_ns + aInput + u"}"_ns)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return;
   }

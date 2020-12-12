@@ -16,7 +16,6 @@
 #include "ThreadSafeRefcountingWithMainThreadDestruction.h"
 #include "mozilla/layers/ISurfaceAllocator.h"  // for ISurfaceAllocator
 #include "mozilla/layers/LayersTypes.h"        // for LayersBackend
-#include "mozilla/layers/TextureForwarder.h"
 
 namespace mozilla {
 namespace dom {
@@ -26,9 +25,6 @@ class Navigator;
 class VRDisplay;
 class FrameRequestCallback;
 }  // namespace dom
-namespace layers {
-class SyncObjectClient;
-}
 namespace gfx {
 class VRLayerChild;
 class VRDisplayClient;
@@ -82,14 +78,14 @@ class VRManagerChild : public PVRManagerChild {
 
   static bool IsCreated();
   static bool IsPresenting();
+  static TimeStamp GetIdleDeadlineHint(TimeStamp aDefault);
 
-  PVRLayerChild* CreateVRLayer(uint32_t aDisplayID, nsIEventTarget* aTarget,
-                               uint32_t aGroup);
+  PVRLayerChild* CreateVRLayer(uint32_t aDisplayID,
+                               nsISerialEventTarget* aTarget, uint32_t aGroup);
 
   static void IdentifyTextureHost(
       const layers::TextureFactoryIdentifier& aIdentifier);
   layers::LayersBackend GetBackendType() const;
-  layers::SyncObjectClient* GetSyncObject() { return mSyncObject; }
 
   nsresult ScheduleFrameRequestCallback(dom::FrameRequestCallback& aCallback,
                                         int32_t* aHandle);
@@ -158,8 +154,6 @@ class VRManagerChild : public PVRManagerChild {
   bool mDisplaysInitialized;
   nsTArray<uint64_t> mNavigatorCallbacks;
 
-  MessageLoop* mMessageLoop;
-
   struct XRFrameRequest {
     XRFrameRequest(mozilla::dom::FrameRequestCallback& aCallback,
                    int32_t aHandle)
@@ -193,7 +187,6 @@ class VRManagerChild : public PVRManagerChild {
   bool mWaitingForEnumeration;
 
   layers::LayersBackend mBackend;
-  RefPtr<layers::SyncObjectClient> mSyncObject;
   nsRefPtrHashtable<nsUint32HashKey, dom::Promise> mGamepadPromiseList;
   RefPtr<dom::Promise> mRunPuppetPromise;
   nsTArray<RefPtr<dom::Promise>> mResetPuppetPromises;

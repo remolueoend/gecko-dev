@@ -3,7 +3,7 @@
 
 /*
  * Detects and reports unhandled rejections during test runs. Test harnesses
- * will fail tests in this case, unless the test whitelists itself.
+ * will fail tests in this case, unless the test explicitly allows rejections.
  */
 
 "use strict";
@@ -90,6 +90,23 @@ var PromiseTestUtils = {
   },
 
   /**
+   * Called only by the test infrastructure, collect all the
+   * JavaScript Developer Errors that have been thrown and
+   * treat them as uncaught promise rejections.
+   */
+  collectJSDevErrors() {
+    let recentJSDevError = ChromeUtils.recentJSDevError;
+    if (!recentJSDevError) {
+      // Either `recentJSDevError` is not implemented in this version or there is no recent JS dev error.
+      return;
+    }
+    ChromeUtils.clearRecentJSDevError();
+    Promise.reject(
+      `${recentJSDevError.message}\n${recentJSDevError.stack}\ndetected at\n`
+    );
+  },
+
+  /**
    * Called only by the test infrastructure, spins the event loop until the
    * messages for pending DOM Promise rejections have been processed.
    */
@@ -125,7 +142,7 @@ var PromiseTestUtils = {
   },
 
   /**
-   * Called by tests that have been whitelisted, disables the observers in this
+   * Called by tests with uncaught rejections to disable the observers in this
    * module. For new tests where uncaught rejections are expected, you should
    * use the more granular expectUncaughtRejection function instead.
    */
@@ -143,7 +160,7 @@ var PromiseTestUtils = {
         // Ignore the special promise for ensureDOMPromiseRejectionsProcessed.
         return;
       }
-      message = reason.message || "" + reason;
+      message = reason?.message || "" + reason;
     } catch (ex) {}
 
     // We should convert the rejection stack to a string immediately. This is
@@ -213,14 +230,14 @@ var PromiseTestUtils = {
   },
 
   /**
-   * Whitelists an entire class of Promise rejections. Usage of this function
+   * Allows an entire class of Promise rejections. Usage of this function
    * should be kept to a minimum because it has a broad scope and doesn't
    * prevent new unhandled rejections of this class from being added.
    *
    * @param regExp
    *        This should match the error message of the rejection.
    */
-  whitelistRejectionsGlobally(regExp) {
+  allowMatchingRejectionsGlobally(regExp) {
     this._globalRejectionIgnoreFns.push(rejection =>
       regExp.test(rejection.message)
     );
@@ -228,7 +245,7 @@ var PromiseTestUtils = {
 
   /**
    * Fails the test if there are any uncaught rejections at this time that have
-   * not been whitelisted using expectUncaughtRejection.
+   * not been explicitly allowed using expectUncaughtRejection.
    *
    * Depending on the configuration of the test suite, this function might only
    * report the details of the first uncaught rejection that was generated.
@@ -251,7 +268,7 @@ var PromiseTestUtils = {
         continue;
       }
 
-      // Check the global whitelisting functions.
+      // Check the global ignore functions.
       if (this._globalRejectionIgnoreFns.some(fn => fn(rejection))) {
         continue;
       }

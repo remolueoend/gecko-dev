@@ -4,6 +4,8 @@
 ---
 job-defaults:
     description: "fix-stacks toolchain build"
+    attributes:
+        local-toolchain: true
     worker-type: b-linux
     worker:
         max-run-time: 1800
@@ -11,7 +13,6 @@ job-defaults:
         script: build-fix-stacks.sh
     run-on-projects:
         - trunk
-        - try
     fetches:
         fetch:
             - fix-stacks
@@ -26,7 +27,7 @@ linux64-fix-stacks:
         toolchain:
             - linux64-binutils
             - linux64-clang-9
-            - linux64-rust
+            - linux64-rust-1.47
 
 macosx64-fix-stacks:
     treeherder:
@@ -42,9 +43,9 @@ macosx64-fix-stacks:
         tooltool-downloads: internal
     fetches:
         toolchain:
-            - linux64-cctools-port
+            - linux64-cctools-port-clang-9
             - linux64-clang-9
-            - linux64-rust-macos
+            - linux64-rust-macos-1.47
 
 win32-fix-stacks:
     treeherder:
@@ -62,4 +63,4 @@ win32-fix-stacks:
         toolchain:
             - linux64-clang-9
             - linux64-liblowercase
-            - linux64-rust-windows
+            - linux64-rust-windows-1.47

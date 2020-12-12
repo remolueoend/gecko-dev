@@ -6,6 +6,8 @@
 #ifndef GFX_UTILS_H
 #define GFX_UTILS_H
 
+#include "gfxMatrix.h"
+#include "gfxRect.h"
 #include "gfxTypes.h"
 #include "ImageTypes.h"
 #include "imgIContainer.h"
@@ -295,10 +297,6 @@ class gfxUtils {
                                  const char* aMimeType,
                                  const nsAString& aEncoderOptions,
                                  nsIInputStream** outStream);
-
-  static nsresult ThreadSafeGetFeatureStatus(
-      const nsCOMPtr<nsIGfxInfo>& gfxInfo, int32_t feature,
-      nsACString& failureId, int32_t* status);
 
   static void RemoveShaderCacheFromDiskIfNecessary();
 

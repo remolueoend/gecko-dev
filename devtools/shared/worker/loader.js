@@ -354,13 +354,25 @@ var loader = {
   lazyServiceGetter: function() {
     throw new Error("Can't import XPCOM service from worker thread!");
   },
-  lazyRequireGetter: function(obj, property, module, destructure) {
-    Object.defineProperty(obj, property, {
-      get: () =>
-        destructure
-          ? worker.require(module)[property]
-          : worker.require(module || property),
-    });
+  lazyRequireGetter: function(obj, properties, module, destructure) {
+    if (Array.isArray(properties) && !destructure) {
+      throw new Error(
+        "Pass destructure=true to call lazyRequireGetter with an array of properties"
+      );
+    }
+
+    if (!Array.isArray(properties)) {
+      properties = [properties];
+    }
+
+    for (const property of properties) {
+      Object.defineProperty(obj, property, {
+        get: () =>
+          destructure
+            ? worker.require(module)[property]
+            : worker.require(module || property),
+      });
+    }
   },
 };
 
@@ -430,9 +442,13 @@ var {
       Ci.nsIJSInspector
     );
 
+    const { URL } = Cu.Sandbox(principal, {
+      wantGlobalProperties: ["URL"],
+    });
+
     return {
       Debugger,
-      URL: this.URL,
+      URL: URL,
       createSandbox,
       dump: this.dump,
       rpc,

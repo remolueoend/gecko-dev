@@ -30,6 +30,12 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/UpdateUtils.jsm"
 );
 
+ChromeUtils.defineModuleGetter(
+  this,
+  "Region",
+  "resource://gre/modules/Region.jsm"
+);
+
 function nsURLFormatterService() {
   XPCOMUtils.defineLazyGetter(this, "ABI", function UFS_ABI() {
     let ABI = "default";
@@ -42,13 +48,11 @@ function nsURLFormatterService() {
 
   XPCOMUtils.defineLazyGetter(this, "OSVersion", function UFS_OSVersion() {
     let OSVersion = "default";
-    let sysInfo = Cc["@mozilla.org/system-info;1"].getService(
-      Ci.nsIPropertyBag2
-    );
+    let { sysinfo } = Services;
     try {
       OSVersion =
-        sysInfo.getProperty("name") + " " + sysInfo.getProperty("version");
-      OSVersion += " (" + sysInfo.getProperty("secondaryLibrary") + ")";
+        sysinfo.getProperty("name") + " " + sysinfo.getProperty("version");
+      OSVersion += ` (${sysinfo.getProperty("secondaryLibrary")})`;
     } catch (e) {}
 
     return encodeURIComponent(OSVersion);
@@ -72,7 +76,7 @@ function nsURLFormatterService() {
 
 nsURLFormatterService.prototype = {
   classID: Components.ID("{e6156350-2be8-11db-a98b-0800200c9a66}"),
-  QueryInterface: ChromeUtils.generateQI([Ci.nsIURLFormatter]),
+  QueryInterface: ChromeUtils.generateQI(["nsIURLFormatter"]),
 
   _defaults: {
     LOCALE: () => Services.locale.appLocaleAsBCP47,
@@ -80,7 +84,7 @@ nsURLFormatterService.prototype = {
       try {
         // When the geoip lookup failed to identify the region, we fallback to
         // the 'ZZ' region code to mean 'unknown'.
-        return Services.prefs.getCharPref("browser.search.region") || "ZZ";
+        return Region.home || "ZZ";
       } catch (e) {
         return "ZZ";
       }

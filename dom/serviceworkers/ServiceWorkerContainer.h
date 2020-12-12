@@ -8,6 +8,7 @@
 #define mozilla_dom_serviceworkercontainer_h__
 
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/ServiceWorkerUtils.h"
 
 class nsIGlobalWindow;
@@ -83,6 +84,7 @@ class ServiceWorkerContainer final : public DOMEventTargetHelper {
 
   already_AddRefed<Promise> Register(const nsAString& aScriptURL,
                                      const RegistrationOptions& aOptions,
+                                     const CallerType aCallerType,
                                      ErrorResult& aRv);
 
   already_AddRefed<ServiceWorker> GetController();

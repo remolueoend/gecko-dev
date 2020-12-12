@@ -14,7 +14,7 @@ const { L10N } = require("devtools/client/netmonitor/src/utils/l10n");
 const {
   decodeUnicodeBase64,
   fetchNetworkUpdatePacket,
-  isJSON,
+  parseJSON,
 } = require("devtools/client/netmonitor/src/utils/request-utils");
 const {
   Filters,
@@ -36,6 +36,9 @@ const SourcePreview = createFactory(
 const HtmlPreview = createFactory(
   require("devtools/client/netmonitor/src/components/previews/HtmlPreview")
 );
+const MessagesView = createFactory(
+  require("devtools/client/netmonitor/src/components/messages/MessagesView")
+);
 const Accordion = createFactory(
   require("devtools/client/shared/components/Accordion")
 );
@@ -44,7 +47,7 @@ const SearchBox = createFactory(
 );
 
 loader.lazyGetter(this, "MODE", function() {
-  return require("devtools/client/shared/components/reps/reps").MODE;
+  return require("devtools/client/shared/components/reps/index").MODE;
 });
 
 const { div } = dom;
@@ -68,6 +71,7 @@ class ResponsePanel extends Component {
       openLink: PropTypes.func,
       targetSearchResult: PropTypes.object,
       connector: PropTypes.object.isRequired,
+      showMessagesView: PropTypes.bool,
     };
   }
 
@@ -132,26 +136,12 @@ class ResponsePanel extends Component {
       return result;
     }
 
-    let { json, error } = isJSON(response);
+    const { json, error, jsonpCallback } = parseJSON(response);
 
     if (/\bjson/.test(mimeType) || json) {
-      // Extract the actual json substring in case this might be a "JSONP".
-      // This regex basically parses a function call and captures the
-      // function name and arguments in two separate groups.
-      const jsonpRegex = /^\s*([\w$]+)\s*\(\s*([^]*)\s*\)\s*;?\s*$/;
-      const [, jsonpCallback, jsonp] = response.match(jsonpRegex) || [];
       const result = {};
-
       // Make sure this is a valid JSON object first. If so, nicely display
       // the parsing results in a tree view.
-      if (jsonpCallback && jsonp) {
-        error = null;
-        try {
-          json = JSON.parse(jsonp);
-        } catch (err) {
-          error = err;
-        }
-      }
 
       // Valid JSON
       if (json) {
@@ -173,9 +163,18 @@ class ResponsePanel extends Component {
   }
 
   render() {
-    const { request, targetSearchResult } = this.props;
+    const {
+      connector,
+      showMessagesView,
+      request,
+      targetSearchResult,
+    } = this.props;
     const { responseContent, url } = request;
     const { filterText } = this.state;
+
+    if (showMessagesView) {
+      return MessagesView({ connector });
+    }
 
     if (
       !responseContent ||

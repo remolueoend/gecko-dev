@@ -12,6 +12,7 @@
 #include "nsIOService.h"
 #include "nsIURL.h"
 #include "nsIJARURI.h"
+#include "nsIURIMutator.h"
 #include "nsNetUtil.h"
 #include "nsCOMPtr.h"
 #include "nsEscape.h"
@@ -26,6 +27,8 @@
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/Components.h"
 #include "mozilla/NullPrincipal.h"
+#include "mozilla/ServoStyleConsts.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/Unused.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/DocumentInlines.h"
@@ -33,8 +36,7 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "ReferrerInfo.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 Location::Location(nsPIDOMWindowInner* aWindow,
                    BrowsingContext* aBrowsingContext)
@@ -634,5 +636,4 @@ JSObject* Location::WrapObject(JSContext* aCx,
   return Location_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -18,6 +18,7 @@ class CacheQuotaClient final : public quota::Client {
   static CacheQuotaClient* sInstance;
 
  public:
+  using GroupAndOrigin = quota::GroupAndOrigin;
   using PersistenceType = quota::PersistenceType;
   using UsageInfo = quota::UsageInfo;
 
@@ -26,34 +27,35 @@ class CacheQuotaClient final : public quota::Client {
   static CacheQuotaClient* Get();
 
   virtual Type GetType() override;
-  virtual nsresult InitOrigin(PersistenceType aPersistenceType,
-                              const nsACString& aGroup,
-                              const nsACString& aOrigin,
-                              const AtomicBool& aCanceled,
-                              UsageInfo* aUsageInfo,
-                              bool aForGetUsage) override;
 
-  virtual nsresult GetUsageForOrigin(PersistenceType aPersistenceType,
-                                     const nsACString& aGroup,
-                                     const nsACString& aOrigin,
-                                     const AtomicBool& aCanceled,
-                                     UsageInfo* aUsageInfo) override;
+  virtual Result<UsageInfo, nsresult> InitOrigin(
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      const AtomicBool& aCanceled) override;
+
+  virtual nsresult InitOriginWithoutTracking(
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      const AtomicBool& aCanceled) override;
+
+  virtual Result<UsageInfo, nsresult> GetUsageForOrigin(
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      const AtomicBool& aCanceled) override;
 
   virtual void OnOriginClearCompleted(PersistenceType aPersistenceType,
                                       const nsACString& aOrigin) override;
 
   virtual void ReleaseIOThreadObjects() override;
 
-  virtual void AbortOperations(const nsACString& aOrigin) override;
+  void AbortOperationsForLocks(
+      const DirectoryLockIdTable& aDirectoryLockIds) override;
 
   virtual void AbortOperationsForProcess(
       ContentParentId aContentParentId) override;
 
+  virtual void AbortAllOperations() override;
+
   virtual void StartIdleMaintenance() override;
 
   virtual void StopIdleMaintenance() override;
-
-  virtual void ShutdownWorkThreads() override;
 
   nsresult UpgradeStorageFrom2_0To2_1(nsIFile* aDirectory) override;
 
@@ -131,12 +133,15 @@ class CacheQuotaClient final : public quota::Client {
  private:
   ~CacheQuotaClient();
 
-  nsresult GetUsageForOriginInternal(PersistenceType aPersistenceType,
-                                     const nsACString& aGroup,
-                                     const nsACString& aOrigin,
-                                     const AtomicBool& aCanceled,
-                                     UsageInfo* aUsageInfo,
-                                     const bool aInitializing);
+  void InitiateShutdown() override;
+  bool IsShutdownCompleted() const override;
+  nsCString GetShutdownStatus() const override;
+  void ForceKillActors() override;
+  void FinalizeShutdown() override;
+
+  Result<UsageInfo, nsresult> GetUsageForOriginInternal(
+      PersistenceType aPersistenceType, const GroupAndOrigin& aGroupAndOrigin,
+      const AtomicBool& aCanceled, bool aInitializing);
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(CacheQuotaClient, override)
 

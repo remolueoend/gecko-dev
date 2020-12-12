@@ -1,55 +1,159 @@
+/* clang-format off */
 /* -*- Mode: Objective-C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim:expandtab:shiftwidth=2:tabstop=2:
- */
+/* clang-format on */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #import "mozAccessible.h"
 
-@interface mozColumnContainer : NSObject {
+@interface mozColumnContainer : MOXAccessibleBase {
   uint32_t mIndex;
   mozAccessible* mParent;
   NSMutableArray* mChildren;
 }
 
-- (id)initWithIndex:(uint32_t)aIndex andParent:(id<mozAccessible>)aParent;
-- (NSString*)accessibilityRole;
-- (NSString*)accessibilityRoleDescription;
-- (mozAccessible*)accessibilityParent;
-- (NSArray*)accessibilityChildren;
-- (BOOL)accessibilityIsIgnored;
-- (void)invalidateChildren;
+// override
+- (id)initWithIndex:(uint32_t)aIndex andParent:(mozAccessible*)aParent;
+
+// override
+- (NSString*)moxRole;
+
+// override
+- (NSString*)moxRoleDescription;
+
+// override
+- (mozAccessible*)moxParent;
+
+// override
+- (NSArray*)moxUnignoredChildren;
+
+// override
 - (void)dealloc;
+
+// override
 - (void)expire;
+
+// override
 - (BOOL)isExpired;
-- (BOOL)accessibilityNotifiesWhenDestroyed;
+
+- (void)invalidateChildren;
+
 @end
 
 @interface mozTablePartAccessible : mozAccessible
-- (id)accessibilityAttributeValue:(NSString*)attribute;
+
+// override
+- (NSString*)moxTitle;
+
+// override
+- (NSString*)moxRole;
+
 - (BOOL)isLayoutTablePart;
-- (NSString*)role;
+
 @end
 
 @interface mozTableAccessible : mozTablePartAccessible {
   NSMutableArray* mColContainers;
 }
-- (NSArray*)children;
-- (NSArray*)additionalAccessibilityAttributeNames;
-- (id)accessibilityAttributeValue:(NSString*)attribute;
+
 - (void)invalidateColumns;
+
+// override
 - (void)handleAccessibleEvent:(uint32_t)eventType;
+
+// override
 - (void)dealloc;
+
+// override
+- (NSNumber*)moxRowCount;
+
+// override
+- (NSNumber*)moxColumnCount;
+
+// override
+- (NSArray*)moxRows;
+
+// override
+- (NSArray*)moxColumns;
+
+// override
+- (NSArray*)moxUnignoredChildren;
+
+// override
+- (NSArray*)moxColumnHeaderUIElements;
+
+// override
+- (id)moxCellForColumnAndRow:(NSArray*)columnAndRow;
+
 @end
 
 @interface mozTableRowAccessible : mozTablePartAccessible
-- (NSArray*)additionalAccessibilityAttributeNames;
+
+// override
 - (void)handleAccessibleEvent:(uint32_t)eventType;
-- (id)accessibilityAttributeValue:(NSString*)attribute;
+
+// override
+- (NSNumber*)moxIndex;
+
 @end
 
 @interface mozTableCellAccessible : mozTablePartAccessible
-- (NSArray*)additionalAccessibilityAttributeNames;
-- (id)accessibilityAttributeValue:(NSString*)attribute;
+
+// override
+- (NSValue*)moxRowIndexRange;
+
+// override
+- (NSValue*)moxColumnIndexRange;
+
+// override
+- (NSArray*)moxRowHeaderUIElements;
+
+// override
+- (NSArray*)moxColumnHeaderUIElements;
+
+@end
+
+@interface mozOutlineAccessible : mozAccessible
+
+// override
+- (NSArray*)moxRows;
+
+// override
+- (NSArray*)moxColumns;
+
+// override
+- (NSArray*)moxSelectedRows;
+
+// override
+- (NSString*)moxOrientation;
+
+@end
+
+@interface mozOutlineRowAccessible : mozTableRowAccessible
+
+// override
+- (BOOL)isLayoutTablePart;
+
+// override
+- (NSNumber*)moxDisclosing;
+
+// override
+- (NSNumber*)moxExpanded;
+
+// override
+- (id)moxDisclosedByRow;
+
+// override
+- (NSNumber*)moxDisclosureLevel;
+
+// override
+- (NSArray*)moxDisclosedRows;
+
+// override
+- (NSNumber*)moxIndex;
+
+// override
+- (NSString*)moxLabel;
+
 @end

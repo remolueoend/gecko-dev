@@ -39,9 +39,16 @@ function URLFetcher(url, timeout) {
   xhr.channel.loadFlags |= Ci.nsIChannel.LOAD_BYPASS_URL_CLASSIFIER;
   // Prevent HTTPS-Only Mode from upgrading the request.
   xhr.channel.loadInfo.httpsOnlyStatus |= Ci.nsILoadInfo.HTTPS_ONLY_EXEMPT;
+  // Allow deprecated HTTP request from SystemPrincipal
+  xhr.channel.loadInfo.allowDeprecatedSystemRequests = true;
 
   // We don't want to follow _any_ redirects
   xhr.channel.QueryInterface(Ci.nsIHttpChannel).redirectionLimit = 0;
+
+  // bug 1666072 - firefox.com returns a HSTS header triggering a https upgrade
+  // but the upgrade triggers an internal redirect causing an incorrect locked
+  // portal notification. We exclude CP detection from STS.
+  xhr.channel.QueryInterface(Ci.nsIHttpChannel).allowSTS = false;
 
   // The Cache-Control header is only interpreted by proxies and the
   // final destination. It does not help if a resource is already
@@ -147,8 +154,8 @@ function LoginObserver(captivePortalDetector) {
   // Public interface of LoginObserver
   let observer = {
     QueryInterface: ChromeUtils.generateQI([
-      Ci.nsIHttpActivityObserver,
-      Ci.nsITimerCallback,
+      "nsIHttpActivityObserver",
+      "nsITimerCallback",
     ]),
 
     attach: function attach() {
@@ -281,7 +288,7 @@ function CaptivePortalDetector() {
 
 CaptivePortalDetector.prototype = {
   classID: kCAPTIVEPORTALDETECTOR_CID,
-  QueryInterface: ChromeUtils.generateQI([Ci.nsICaptivePortalDetector]),
+  QueryInterface: ChromeUtils.generateQI(["nsICaptivePortalDetector"]),
 
   // nsICaptivePortalDetector
   checkCaptivePortal: function checkCaptivePortal(aInterfaceName, aCallback) {

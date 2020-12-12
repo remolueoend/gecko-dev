@@ -14,10 +14,9 @@ const { InvalidArgumentError } = ChromeUtils.import(
   "chrome://marionette/content/error.js"
 );
 
-const SVGNS = "http://www.w3.org/2000/svg";
-const XBLNS = "http://www.mozilla.org/xbl";
-const XHTMLNS = "http://www.w3.org/1999/xhtml";
-const XULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
+const SVG_NS = "http://www.w3.org/2000/svg";
+const XHTML_NS = "http://www.w3.org/1999/xhtml";
+const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
 class Element {
   constructor(tagName, attrs = {}) {
@@ -49,11 +48,15 @@ class DOMElement extends Element {
     super(tagName, attrs);
 
     if (typeof this.namespaceURI == "undefined") {
-      this.namespaceURI = XHTMLNS;
+      this.namespaceURI = XHTML_NS;
     }
     if (typeof this.ownerDocument == "undefined") {
       this.ownerDocument = { designMode: "off" };
     }
+    if (typeof this.ownerDocument.documentElement == "undefined") {
+      this.ownerDocument.documentElement = { namespaceURI: XHTML_NS };
+    }
+
     if (typeof this.type == "undefined") {
       this.type = "text";
     }
@@ -83,28 +86,32 @@ class DOMElement extends Element {
 class SVGElement extends Element {
   constructor(tagName, attrs = {}) {
     super(tagName, attrs);
-    this.namespaceURI = SVGNS;
+    this.namespaceURI = SVG_NS;
   }
 }
 
 class XULElement extends Element {
   constructor(tagName, attrs = {}) {
     super(tagName, attrs);
-    this.namespaceURI = XULNS;
-  }
-}
+    this.namespaceURI = XUL_NS;
 
-class XBLElement extends XULElement {
-  constructor(tagName, attrs = {}) {
-    super(tagName, attrs);
-    this.namespaceURI = XBLNS;
+    if (typeof this.ownerDocument == "undefined") {
+      this.ownerDocument = {};
+    }
+    if (typeof this.ownerDocument.documentElement == "undefined") {
+      this.ownerDocument.documentElement = { namespaceURI: XUL_NS };
+    }
   }
 }
 
 const domEl = new DOMElement("p");
 const svgEl = new SVGElement("rect");
 const xulEl = new XULElement("browser");
-const xblEl = new XBLElement("framebox");
+const domElInXULDocument = new DOMElement("input", {
+  ownerDocument: {
+    documentElement: { namespaceURI: XUL_NS },
+  },
+});
 
 class WindowProxy {
   get parent() {
@@ -179,6 +186,7 @@ add_test(function test_isElement() {
 
 add_test(function test_isDOMElement() {
   ok(element.isDOMElement(domEl));
+  ok(element.isDOMElement(domElInXULDocument));
   ok(element.isDOMElement(svgEl));
   ok(!element.isDOMElement(xulEl));
   ok(!element.isDOMElement(domWin));
@@ -192,7 +200,7 @@ add_test(function test_isDOMElement() {
 
 add_test(function test_isXULElement() {
   ok(element.isXULElement(xulEl));
-  ok(element.isXULElement(xblEl));
+  ok(!element.isXULElement(domElInXULDocument));
   ok(!element.isXULElement(domEl));
   ok(!element.isXULElement(svgEl));
   ok(!element.isDOMElement(domWin));
@@ -208,6 +216,7 @@ add_test(function test_isDOMWindow() {
   ok(element.isDOMWindow(domWin));
   ok(element.isDOMWindow(domFrame));
   ok(!element.isDOMWindow(domEl));
+  ok(!element.isDOMWindow(domElInXULDocument));
   ok(!element.isDOMWindow(svgEl));
   ok(!element.isDOMWindow(xulEl));
   for (let typ of [true, 42, {}, [], undefined, null]) {
@@ -428,8 +437,9 @@ add_test(function test_WebElement_from() {
   ok(WebElement.from(domWin) instanceof ContentWebWindow);
   ok(WebElement.from(domFrame) instanceof ContentWebFrame);
   ok(WebElement.from(xulEl) instanceof ChromeWebElement);
+  ok(WebElement.from(domElInXULDocument) instanceof ChromeWebElement);
 
-  Assert.throws(() => WebElement.from({}), InvalidArgumentError);
+  Assert.throws(() => WebElement.from({}), /InvalidArgumentError/);
 
   run_next_test();
 });
@@ -480,8 +490,8 @@ add_test(function test_WebElement_fromJSON_ChromeWebElement() {
 });
 
 add_test(function test_WebElement_fromJSON_malformed() {
-  Assert.throws(() => WebElement.fromJSON({}), InvalidArgumentError);
-  Assert.throws(() => WebElement.fromJSON(null), InvalidArgumentError);
+  Assert.throws(() => WebElement.fromJSON({}), /InvalidArgumentError/);
+  Assert.throws(() => WebElement.fromJSON(null), /InvalidArgumentError/);
   run_next_test();
 });
 
@@ -494,7 +504,10 @@ add_test(function test_WebElement_fromUUID() {
   ok(domWebEl instanceof ContentWebElement);
   equal(domWebEl.uuid, "bar");
 
-  Assert.throws(() => WebElement.fromUUID("baz", "bah"), InvalidArgumentError);
+  Assert.throws(
+    () => WebElement.fromUUID("baz", "bah"),
+    /InvalidArgumentError/
+  );
 
   run_next_test();
 });
@@ -536,7 +549,7 @@ add_test(function test_ContentWebElement_fromJSON() {
   ok(el instanceof ContentWebElement);
   equal(el.uuid, "foo");
 
-  Assert.throws(() => ContentWebElement.fromJSON({}), InvalidArgumentError);
+  Assert.throws(() => ContentWebElement.fromJSON({}), /InvalidArgumentError/);
 
   run_next_test();
 });

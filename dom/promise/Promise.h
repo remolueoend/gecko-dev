@@ -7,23 +7,31 @@
 #ifndef mozilla_dom_Promise_h
 #define mozilla_dom_Promise_h
 
+#include <functional>
 #include <type_traits>
 #include <utility>
-
-#include "js/Promise.h"
+#include "ErrorList.h"
+#include "js/RootingAPI.h"
 #include "js/TypeDecls.h"
-#include "jspubtd.h"
-#include "mozilla/Attributes.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/ErrorResult.h"
-#include "mozilla/TimeStamp.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/Result.h"
 #include "mozilla/WeakPtr.h"
-#include "mozilla/dom/BindingDeclarations.h"
-#include "mozilla/dom/PromiseBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsWrapperCache.h"
+#include "nsError.h"
+#include "nsISupports.h"
+#include "nsString.h"
 
+class nsCycleCollectionTraversalCallback;
 class nsIGlobalObject;
+
+namespace JS {
+class Value;
+}
 
 namespace mozilla {
 
@@ -35,23 +43,14 @@ class PromiseInit;
 class PromiseNativeHandler;
 class PromiseDebugging;
 
-#define NS_PROMISE_IID                               \
-  {                                                  \
-    0x1b8d6215, 0x3e67, 0x43ba, {                    \
-      0x8a, 0xf9, 0x31, 0x5e, 0x8f, 0xce, 0x75, 0x65 \
-    }                                                \
-  }
-
-class Promise : public nsISupports, public SupportsWeakPtr<Promise> {
+class Promise : public SupportsWeakPtr {
   friend class PromiseTask;
   friend class PromiseWorkerProxy;
   friend class PromiseWorkerProxyRunnable;
 
  public:
-  NS_DECLARE_STATIC_IID_ACCESSOR(NS_PROMISE_IID)
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS_FINAL
-  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Promise)
-  MOZ_DECLARE_WEAKREFERENCE_TYPENAME(Promise)
+  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(Promise)
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(Promise)
 
   enum PropagateUserInteraction {
     eDontPropagateUserInteraction,
@@ -182,12 +181,7 @@ class Promise : public nsISupports, public SupportsWeakPtr<Promise> {
 
   // Mark a settled promise as already handled so that rejections will not
   // be reported as unhandled.
-  void SetSettledPromiseIsHandled() {
-    AutoEntryScript aes(mGlobal, "Set settled promise handled");
-    JSContext* cx = aes.cx();
-    JS::RootedObject promiseObj(cx, mPromiseObj);
-    JS::SetSettledPromiseIsHandled(cx, promiseObj);
-  }
+  void SetSettledPromiseIsHandled();
 
   // WebIDL
 
@@ -324,6 +318,7 @@ class Promise : public nsISupports, public SupportsWeakPtr<Promise> {
   void MaybeSomething(T&& aArgument, MaybeFunc aFunc) {
     MOZ_ASSERT(PromiseObj());  // It was preserved!
 
+    AutoAllowLegacyScriptExecution exemption;
     AutoEntryScript aes(mGlobal, "Promise resolution or rejection");
     JSContext* cx = aes.cx();
 
@@ -344,8 +339,6 @@ class Promise : public nsISupports, public SupportsWeakPtr<Promise> {
 
   JS::Heap<JSObject*> mPromiseObj;
 };
-
-NS_DEFINE_STATIC_IID_ACCESSOR(Promise, NS_PROMISE_IID)
 
 }  // namespace dom
 }  // namespace mozilla

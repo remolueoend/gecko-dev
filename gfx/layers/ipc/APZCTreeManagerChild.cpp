@@ -6,10 +6,11 @@
 
 #include "mozilla/layers/APZCTreeManagerChild.h"
 
-#include "InputData.h"                               // for InputData
-#include "mozilla/dom/BrowserParent.h"               // for BrowserParent
-#include "mozilla/layers/APZCCallbackHelper.h"       // for APZCCallbackHelper
-#include "mozilla/layers/APZInputBridgeChild.h"      // for APZInputBridgeChild
+#include "InputData.h"                              // for InputData
+#include "mozilla/dom/BrowserParent.h"              // for BrowserParent
+#include "mozilla/layers/APZCCallbackHelper.h"      // for APZCCallbackHelper
+#include "mozilla/layers/APZInputBridgeChild.h"     // for APZInputBridgeChild
+#include "mozilla/layers/GeckoContentController.h"  // for GeckoContentController
 #include "mozilla/layers/RemoteCompositorSession.h"  // for RemoteCompositorSession
 
 namespace mozilla {
@@ -104,6 +105,12 @@ APZInputBridge* APZCTreeManagerChild::InputBridge() {
   return mInputBridge.get();
 }
 
+void APZCTreeManagerChild::AddInputBlockCallback(
+    uint64_t aInputBlockId, InputBlockCallback&& aCallback) {
+  MOZ_RELEASE_ASSERT(false,
+                     "Remoting of input block callbacks is not implemented");
+}
+
 void APZCTreeManagerChild::AddIPDLReference() {
   MOZ_ASSERT(mIPCOpen == false);
   mIPCOpen = true;
@@ -142,7 +149,8 @@ mozilla::ipc::IPCResult APZCTreeManagerChild::RecvHandleTap(
 
 mozilla::ipc::IPCResult APZCTreeManagerChild::RecvNotifyPinchGesture(
     const PinchGestureType& aType, const ScrollableLayerGuid& aGuid,
-    const LayoutDeviceCoord& aSpanChange, const Modifiers& aModifiers) {
+    const LayoutDevicePoint& aFocusPoint, const LayoutDeviceCoord& aSpanChange,
+    const Modifiers& aModifiers) {
   // This will only get sent from the GPU process to the parent process, so
   // this function should never get called in the content process.
   MOZ_ASSERT(XRE_IsParentProcess());
@@ -151,7 +159,8 @@ mozilla::ipc::IPCResult APZCTreeManagerChild::RecvNotifyPinchGesture(
   // We want to handle it in this process regardless of what the target guid
   // of the pinch is. This may change in the future.
   if (mCompositorSession && mCompositorSession->GetWidget()) {
-    APZCCallbackHelper::NotifyPinchGesture(aType, aSpanChange, aModifiers,
+    APZCCallbackHelper::NotifyPinchGesture(aType, aFocusPoint, aSpanChange,
+                                           aModifiers,
                                            mCompositorSession->GetWidget());
   }
   return IPC_OK();

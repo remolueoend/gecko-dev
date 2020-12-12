@@ -52,7 +52,7 @@ OSKeyStore::OSKeyStore() : mKs(nullptr), mKsIsNSSKeyStore(false) {
 }
 
 static nsresult GenerateRandom(std::vector<uint8_t>& r) {
-  if (r.size() < 1) {
+  if (r.empty()) {
     return NS_ERROR_INVALID_ARG;
   }
   UniquePK11SlotInfo slot(PK11_GetInternalSlot());
@@ -72,8 +72,7 @@ static nsresult GenerateRandom(std::vector<uint8_t>& r) {
 nsresult OSKeyStore::SecretAvailable(const nsACString& aLabel,
                                      /* out */ bool* aAvailable) {
   NS_ENSURE_STATE(mKs);
-  nsAutoCString label = mLabelPrefix + aLabel;
-  *aAvailable = mKs->SecretAvailable(label);
+  *aAvailable = mKs->SecretAvailable(aLabel);
   return NS_OK;
 }
 
@@ -90,19 +89,18 @@ nsresult OSKeyStore::GenerateSecret(const nsACString& aLabel,
   secretString.Assign(BitwiseCast<char*, uint8_t*>(secret.data()),
                       secret.size());
 
-  nsAutoCString base64;
+  nsCString base64;
   rv = Base64Encode(secretString, base64);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  nsAutoCString label = mLabelPrefix + aLabel;
-  rv = mKs->StoreSecret(secretString, label);
+  rv = mKs->StoreSecret(secretString, aLabel);
   if (NS_FAILED(rv)) {
     return rv;
   }
 
-  aRecoveryPhrase = base64;
+  aRecoveryPhrase = std::move(base64);
   return NS_OK;
 }
 
@@ -117,8 +115,7 @@ nsresult OSKeyStore::RecoverSecret(const nsACString& aLabel,
   if (secret.Length() != mKs->GetKeyByteLength()) {
     return NS_ERROR_INVALID_ARG;
   }
-  nsAutoCString label = mLabelPrefix + aLabel;
-  rv = mKs->StoreSecret(secret, label);
+  rv = mKs->StoreSecret(secret, aLabel);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -128,8 +125,7 @@ nsresult OSKeyStore::RecoverSecret(const nsACString& aLabel,
 
 nsresult OSKeyStore::DeleteSecret(const nsACString& aLabel) {
   NS_ENSURE_STATE(mKs);
-  nsAutoCString label = mLabelPrefix + aLabel;
-  return mKs->DeleteSecret(label);
+  return mKs->DeleteSecret(aLabel);
 }
 
 enum Cipher { Encrypt = true, Decrypt = false };
@@ -139,10 +135,10 @@ nsresult OSKeyStore::EncryptBytes(const nsACString& aLabel,
                                   /*out*/ nsACString& aEncryptedBase64Text) {
   NS_ENSURE_STATE(mKs);
 
-  nsAutoCString label = mLabelPrefix + aLabel;
   aEncryptedBase64Text.Truncate();
   std::vector<uint8_t> outBytes;
-  nsresult rv = mKs->EncryptDecrypt(label, aInBytes, outBytes, Cipher::Encrypt);
+  nsresult rv =
+      mKs->EncryptDecrypt(aLabel, aInBytes, outBytes, Cipher::Encrypt);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -150,12 +146,12 @@ nsresult OSKeyStore::EncryptBytes(const nsACString& aLabel,
   ciphertext.Assign(BitwiseCast<char*, uint8_t*>(outBytes.data()),
                     outBytes.size());
 
-  nsAutoCString base64ciphertext;
+  nsCString base64ciphertext;
   rv = Base64Encode(ciphertext, base64ciphertext);
   if (NS_FAILED(rv)) {
     return rv;
   }
-  aEncryptedBase64Text.Assign(base64ciphertext);
+  aEncryptedBase64Text = std::move(base64ciphertext);
   return NS_OK;
 }
 
@@ -174,11 +170,10 @@ nsresult OSKeyStore::DecryptBytes(const nsACString& aLabel,
   if (NS_FAILED(rv)) {
     return rv;
   }
-  nsAutoCString label = mLabelPrefix + aLabel;
   uint8_t* tmp = BitwiseCast<uint8_t*, const char*>(ciphertext.BeginReading());
   const std::vector<uint8_t> ciphertextBytes(tmp, tmp + ciphertext.Length());
   std::vector<uint8_t> plaintextBytes;
-  rv = mKs->EncryptDecrypt(label, ciphertextBytes, plaintextBytes,
+  rv = mKs->EncryptDecrypt(aLabel, ciphertextBytes, plaintextBytes,
                            Cipher::Decrypt);
   if (NS_FAILED(rv)) {
     return rv;

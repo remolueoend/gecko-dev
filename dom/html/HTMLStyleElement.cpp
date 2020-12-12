@@ -15,8 +15,7 @@
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Style)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLStyleElement::HTMLStyleElement(
     already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
@@ -30,17 +29,16 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLStyleElement)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(HTMLStyleElement,
                                                   nsGenericHTMLElement)
-  tmp->nsStyleLinkElement::Traverse(cb);
+  tmp->LinkStyle::Traverse(cb);
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(HTMLStyleElement,
                                                 nsGenericHTMLElement)
-  tmp->nsStyleLinkElement::Unlink();
+  tmp->LinkStyle::Unlink();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED(HTMLStyleElement,
                                              nsGenericHTMLElement,
-                                             nsIStyleSheetLinkingElement,
                                              nsIMutationObserver)
 
 NS_IMPL_ELEMENT_CLONE(HTMLStyleElement)
@@ -163,7 +161,11 @@ void HTMLStyleElement::SetTextContentInternal(const nsAString& aTextContent,
   Unused << UpdateStyleSheetInternal(nullptr, nullptr);
 }
 
-Maybe<nsStyleLinkElement::SheetInfo> HTMLStyleElement::GetStyleSheetInfo() {
+void HTMLStyleElement::SetDevtoolsAsTriggeringPrincipal() {
+  mTriggeringPrincipal = CreateDevtoolsPrincipal();
+}
+
+Maybe<LinkStyle::SheetInfo> HTMLStyleElement::GetStyleSheetInfo() {
   if (!IsCSSMimeTypeAttributeForStyleElement(*this)) {
     return Nothing();
   }
@@ -172,22 +174,19 @@ Maybe<nsStyleLinkElement::SheetInfo> HTMLStyleElement::GetStyleSheetInfo() {
   nsAutoString media;
   GetTitleAndMediaForElement(*this, title, media);
 
-  nsCOMPtr<nsIReferrerInfo> referrerInfo = new ReferrerInfo();
-  referrerInfo->InitWithNode(this);
-
   return Some(SheetInfo{
       *OwnerDoc(),
       this,
       nullptr,
       do_AddRef(mTriggeringPrincipal),
-      referrerInfo.forget(),
+      MakeAndAddRef<ReferrerInfo>(*this),
       CORS_NONE,
       title,
       media,
-      /* integrity = */ EmptyString(),
+      /* integrity = */ u""_ns,
       /* nsStyleUtil::CSPAllowsInlineStyle takes care of nonce checking for
          inline styles. Bug 1607011 */
-      /* nonce = */ EmptyString(),
+      /* nonce = */ u""_ns,
       HasAlternateRel::No,
       IsInline::Yes,
       IsExplicitlyEnabled::No,
@@ -199,5 +198,4 @@ JSObject* HTMLStyleElement::WrapNode(JSContext* aCx,
   return HTMLStyleElement_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

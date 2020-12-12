@@ -12,24 +12,18 @@ const { XPCOMUtils } = ChromeUtils.import(
 
 XPCOMUtils.defineLazyGlobalGetters(this, ["XMLHttpRequest"]);
 
-ChromeUtils.defineModuleGetter(
-  this,
-  "FormHistory",
-  "resource://gre/modules/FormHistory.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "PrivateBrowsingUtils",
-  "resource://gre/modules/PrivateBrowsingUtils.jsm"
-);
-ChromeUtils.defineModuleGetter(
-  this,
-  "SearchSuggestionController",
-  "resource://gre/modules/SearchSuggestionController.jsm"
-);
+XPCOMUtils.defineLazyModuleGetters(this, {
+  BrowserSearchTelemetry: "resource:///modules/BrowserSearchTelemetry.jsm",
+  FormHistory: "resource://gre/modules/FormHistory.jsm",
+  PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.jsm",
+  SearchSuggestionController:
+    "resource://gre/modules/SearchSuggestionController.jsm",
+});
 
 const MAX_LOCAL_SUGGESTIONS = 3;
 const MAX_SUGGESTIONS = 6;
+const SEARCH_ENGINE_PLACEHOLDER_ICON =
+  "chrome://browser/skin/search-engine-placeholder.png";
 
 // Set of all ContentSearch actors, used to broadcast messages to all of them.
 let gContentSearchActors = new Set();
@@ -116,9 +110,6 @@ let ContentSearch = {
       Services.obs.addObserver(this, "browser-search-service");
       Services.obs.addObserver(this, "shutdown-leaks-before-check");
       Services.prefs.addObserver("browser.search.hiddenOneOffs", this);
-      this._stringBundle = Services.strings.createBundle(
-        "chrome://global/locale/autocomplete.properties"
-      );
 
       this.initialized = true;
     }
@@ -251,8 +242,9 @@ let ContentSearch = {
       };
       win.openTrustedLinkIn(submission.uri.spec, where, params);
     }
-    win.BrowserSearch.recordSearchInTelemetry(engine, data.healthReportKey, {
+    BrowserSearchTelemetry.recordSearch(browser, engine, data.healthReportKey, {
       selection: data.selection,
+      url: submission.uri,
     });
   },
 
@@ -272,6 +264,15 @@ let ContentSearch = {
     // process our event queue serially, there's never a pending request.
     this._currentSuggestion = { controller, browser };
     let suggestions = await controller.fetch(searchString, priv, engine);
+
+    // Simplify results since we do not support rich results in this component.
+    suggestions.local = suggestions.local.map(e => e.value);
+    // We shouldn't show tail suggestions in their full-text form.
+    let nonTailEntries = suggestions.remote.filter(
+      e => !e.matchPrefix && !e.tail
+    );
+    suggestions.remote = nonTailEntries.map(e => e.value);
+
     this._currentSuggestion = null;
 
     // suggestions will be null if the request was cancelled
@@ -295,7 +296,7 @@ let ContentSearch = {
     return result;
   },
 
-  async addFormHistoryEntry(browser, entry = "") {
+  async addFormHistoryEntry(browser, entry = null) {
     let isPrivate = false;
     try {
       // isBrowserPrivate assumes that the passed-in browser has all the normal
@@ -305,7 +306,7 @@ let ContentSearch = {
     } catch (err) {
       return false;
     }
-    if (isPrivate || entry === "") {
+    if (isPrivate || !entry) {
       return false;
     }
     let browserData = this._suggestionDataForBrowser(browser, true);
@@ -313,7 +314,8 @@ let ContentSearch = {
       {
         op: "bump",
         fieldname: browserData.controller.formHistoryParam,
-        value: entry,
+        value: entry.value,
+        source: entry.engineName,
       },
       {
         handleCompletion: () => {},
@@ -335,14 +337,11 @@ let ContentSearch = {
     let pref = Services.prefs.getStringPref("browser.search.hiddenOneOffs");
     let hiddenList = pref ? pref.split(",") : [];
     for (let engine of await Services.search.getVisibleEngines()) {
-      let uri = engine.getIconURLBySize(16, 16);
-      let iconData = await this._maybeConvertURIToArrayBuffer(uri);
-
       state.engines.push({
         name: engine.name,
-        iconData,
+        iconData: await this._getEngineIconURL(engine),
         hidden: hiddenList.includes(engine.name),
-        identifier: engine.identifier,
+        isAppProvided: engine.isAppProvided,
       });
     }
 
@@ -519,22 +518,21 @@ let ContentSearch = {
   async _currentEngineObj(usePrivate) {
     let engine =
       Services.search[usePrivate ? "defaultPrivateEngine" : "defaultEngine"];
-    let favicon = engine.getIconURLBySize(16, 16);
-    let placeholder = this._stringBundle.formatStringFromName(
-      "searchWithEngine",
-      [engine.name]
-    );
     let obj = {
       name: engine.name,
-      placeholder,
-      iconData: await this._maybeConvertURIToArrayBuffer(favicon),
+      iconData: await this._getEngineIconURL(engine),
+      isAppProvided: engine.isAppProvided,
     };
     return obj;
   },
 
-  _maybeConvertURIToArrayBuffer(uri) {
-    if (!uri) {
-      return Promise.resolve(null);
+  /**
+   * Converts the engine's icon into an appropriate URL for display at
+   */
+  async _getEngineIconURL(engine) {
+    let url = engine.getIconURLBySize(16, 16);
+    if (!url) {
+      return SEARCH_ENGINE_PLACEHOLDER_ICON;
     }
 
     // The uri received here can be of two types
@@ -544,25 +542,25 @@ let ContentSearch = {
     // If the URI is not a data: URI, there's no point in converting
     // it to an arraybuffer (which is used to optimize passing the data
     // accross processes): we can just pass the original URI, which is cheaper.
-    if (!uri.startsWith("data:")) {
-      return Promise.resolve(uri);
+    if (!url.startsWith("data:")) {
+      return url;
     }
 
     return new Promise(resolve => {
       let xhr = new XMLHttpRequest();
-      xhr.open("GET", uri, true);
+      xhr.open("GET", url, true);
       xhr.responseType = "arraybuffer";
       xhr.onload = () => {
         resolve(xhr.response);
       };
       xhr.onerror = xhr.onabort = xhr.ontimeout = () => {
-        resolve(null);
+        resolve(SEARCH_ENGINE_PLACEHOLDER_ICON);
       };
       try {
         // This throws if the URI is erroneously encoded.
         xhr.send();
       } catch (err) {
-        resolve(null);
+        resolve(SEARCH_ENGINE_PLACEHOLDER_ICON);
       }
     });
   },

@@ -11,6 +11,7 @@
 #include "nsThreadUtils.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/EndianUtils.h"
+#include "mozilla/Logging.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/Unused.h"
@@ -237,7 +238,8 @@ nsresult VariableLengthPrefixSet::GetFixedLengthPrefixes(
       }
 
       for (uint32_t i = 0; i < count; i++) {
-        aCompletes->AppendElement(
+        // SetCapacity was just called, these cannot fail.
+        (void)aCompletes->AppendElement(
             Substring(*completes, i * COMPLETE_SIZE, COMPLETE_SIZE), fallible);
       }
     }
@@ -457,9 +459,9 @@ VariableLengthPrefixSet::CollectReports(nsIHandleReportCallback* aHandleReport,
   size_t amount = SizeOfIncludingThis(UrlClassifierMallocSizeOf);
 
   return aHandleReport->Callback(
-      EmptyCString(), mMemoryReportPath, KIND_HEAP, UNITS_BYTES, amount,
-      NS_LITERAL_CSTRING("Memory used by the variable-length prefix set for a "
-                         "URL classifier."),
+      ""_ns, mMemoryReportPath, KIND_HEAP, UNITS_BYTES, amount,
+      nsLiteralCString("Memory used by the variable-length prefix set for a "
+                       "URL classifier."),
       aData);
 }
 
@@ -469,6 +471,7 @@ size_t VariableLengthPrefixSet::SizeOfIncludingThis(
 
   size_t n = 0;
   n += aMallocSizeOf(this);
+
   n += mFixedPrefixSet->SizeOfIncludingThis(moz_malloc_size_of) -
        aMallocSizeOf(mFixedPrefixSet);
 

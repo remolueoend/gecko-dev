@@ -66,11 +66,6 @@ var bookmarksObserver = {
     this._itemChangedValue = value;
     this._itemChangedOldValue = oldValue;
   },
-  onItemVisited(id, visitID, time) {
-    this._itemVisitedId = id;
-    this._itemVisitedVistId = visitID;
-    this._itemVisitedTime = time;
-  },
   onItemMoved(id, oldParent, oldIndex, newParent, newIndex, itemType) {
     this._itemMovedId = id;
     this._itemMovedOldParent = oldParent;
@@ -78,7 +73,7 @@ var bookmarksObserver = {
     this._itemMovedNewParent = newParent;
     this._itemMovedNewIndex = newIndex;
   },
-  QueryInterface: ChromeUtils.generateQI([Ci.nsINavBookmarkObserver]),
+  QueryInterface: ChromeUtils.generateQI(["nsINavBookmarkObserver"]),
 };
 
 // Get bookmarks menu folder id.

@@ -60,7 +60,7 @@ class SHA1Stream {
     va_list list;
     va_start(list, aFormat);
     nsAutoCString str;
-    str.AppendPrintf(aFormat, list);
+    str.AppendVprintf(aFormat, list);
     va_end(list);
     mSHA1.update(str.get(), str.Length());
     mozilla::Unused << fwrite(str.get(), 1, str.Length(), mFile);
@@ -205,7 +205,7 @@ void LateWriteObserver::Observe(
 
   // We append the sha1 of the contents to the file name. This provides a simple
   // client side deduplication.
-  nsAutoString finalName(NS_LITERAL_STRING("Telemetry.LateWriteFinal-"));
+  nsAutoString finalName(u"Telemetry.LateWriteFinal-"_ns);
   for (int i = 0; i < 20; ++i) {
     finalName.AppendPrintf("%02x", sha1[i]);
   }

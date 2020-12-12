@@ -7,6 +7,7 @@
 #include "ServiceWorkerManagerParent.h"
 #include "ServiceWorkerManagerService.h"
 #include "ServiceWorkerUpdaterParent.h"
+#include "ServiceWorkerUtils.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ServiceWorkerRegistrar.h"
 #include "mozilla/ipc/BackgroundParent.h"
@@ -131,7 +132,7 @@ class CheckPrincipalWithCallbackRunnable final : public Runnable {
         mContentParent(aParent),
         mPrincipalInfo(aPrincipalInfo),
         mCallback(aCallback),
-        mBackgroundEventTarget(GetCurrentThreadEventTarget()) {
+        mBackgroundEventTarget(GetCurrentEventTarget()) {
     AssertIsInMainProcess();
     AssertIsOnBackgroundThread();
 

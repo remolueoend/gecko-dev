@@ -7,10 +7,11 @@
 #include "ProfiledThreadData.h"
 
 #include "ProfileBuffer.h"
-#include "ProfileJSONWriter.h"
 
 #include "js/TraceLoggerAPI.h"
-#include "mozilla/dom/ContentChild.h"
+#include "mozilla/ProfileJSONWriter.h"
+#include "mozilla/Span.h"
+#include "nsXULAppAPI.h"
 
 #if defined(GP_OS_darwin)
 #  include <pthread.h>
@@ -26,13 +27,11 @@ ProfiledThreadData::~ProfiledThreadData() {
   MOZ_COUNT_DTOR(ProfiledThreadData);
 }
 
-void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
-                                    JSContext* aCx,
-                                    SpliceableJSONWriter& aWriter,
-                                    const nsACString& aProcessName,
-                                    const mozilla::TimeStamp& aProcessStartTime,
-                                    double aSinceTime, bool JSTracerEnabled,
-                                    ProfilerCodeAddressService* aService) {
+void ProfiledThreadData::StreamJSON(
+    const ProfileBuffer& aBuffer, JSContext* aCx, SpliceableJSONWriter& aWriter,
+    const nsACString& aProcessName, const nsACString& aETLDplus1,
+    const mozilla::TimeStamp& aProcessStartTime, double aSinceTime,
+    bool JSTracerEnabled, ProfilerCodeAddressService* aService) {
   if (mJITFrameInfoForPreviousJSContexts &&
       mJITFrameInfoForPreviousJSContexts->HasExpired(
           aBuffer.BufferRangeStart())) {
@@ -54,12 +53,15 @@ void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
   UniqueStacks uniqueStacks(std::move(jitFrameInfo));
   uniqueStacks.mCodeAddressService = aService;
 
+  MOZ_ASSERT(uniqueStacks.mUniqueStrings);
+  aWriter.SetUniqueStrings(*uniqueStacks.mUniqueStrings);
+
   aWriter.Start();
   {
     StreamSamplesAndMarkers(mThreadInfo->Name(), mThreadInfo->ThreadId(),
-                            aBuffer, aWriter, aProcessName, aProcessStartTime,
-                            mThreadInfo->RegisterTime(), mUnregisterTime,
-                            aSinceTime, uniqueStacks);
+                            aBuffer, aWriter, aProcessName, aETLDplus1,
+                            aProcessStartTime, mThreadInfo->RegisterTime(),
+                            mUnregisterTime, aSinceTime, uniqueStacks);
 
     aWriter.StartObjectProperty("stackTable");
     {
@@ -97,7 +99,10 @@ void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
     aWriter.EndObject();
 
     aWriter.StartArrayProperty("stringTable");
-    { uniqueStacks.mUniqueStrings->SpliceStringTableElements(aWriter); }
+    {
+      std::move(*uniqueStacks.mUniqueStrings)
+          .SpliceStringTableElements(aWriter);
+    }
     aWriter.EndArray();
   }
 
@@ -106,6 +111,8 @@ void ProfiledThreadData::StreamJSON(const ProfileBuffer& aBuffer,
   }
 
   aWriter.End();
+
+  aWriter.ResetUniqueStrings();
 }
 
 void ProfiledThreadData::StreamTraceLoggerJSON(
@@ -198,28 +205,31 @@ void ProfiledThreadData::StreamTraceLoggerJSON(
   aWriter.EndObject();
 }
 
-void StreamSamplesAndMarkers(const char* aName, int aThreadId,
-                             const ProfileBuffer& aBuffer,
-                             SpliceableJSONWriter& aWriter,
-                             const nsACString& aProcessName,
-                             const mozilla::TimeStamp& aProcessStartTime,
-                             const mozilla::TimeStamp& aRegisterTime,
-                             const mozilla::TimeStamp& aUnregisterTime,
-                             double aSinceTime, UniqueStacks& aUniqueStacks) {
-  aWriter.StringProperty("processType", XRE_GetProcessTypeString());
+int StreamSamplesAndMarkers(const char* aName, int aThreadId,
+                            const ProfileBuffer& aBuffer,
+                            SpliceableJSONWriter& aWriter,
+                            const nsACString& aProcessName,
+                            const nsACString& aETLDplus1,
+                            const mozilla::TimeStamp& aProcessStartTime,
+                            const mozilla::TimeStamp& aRegisterTime,
+                            const mozilla::TimeStamp& aUnregisterTime,
+                            double aSinceTime, UniqueStacks& aUniqueStacks) {
+  int processedThreadId = 0;
 
-  aWriter.StringProperty("name", aName);
+  aWriter.StringProperty("processType",
+                         mozilla::MakeStringSpan(XRE_GetProcessTypeString()));
+
+  aWriter.StringProperty("name", mozilla::MakeStringSpan(aName));
 
   // Use given process name (if any), unless we're the parent process.
   if (XRE_IsParentProcess()) {
     aWriter.StringProperty("processName", "Parent Process");
   } else if (!aProcessName.IsEmpty()) {
-    aWriter.StringProperty("processName", aProcessName.Data());
+    aWriter.StringProperty("processName", aProcessName);
   }
-
-  aWriter.IntProperty("tid", static_cast<int64_t>(aThreadId));
-  aWriter.IntProperty("pid",
-                      static_cast<int64_t>(profiler_current_process_id()));
+  if (!aETLDplus1.IsEmpty()) {
+    aWriter.StringProperty("eTLD+1", aETLDplus1);
+  }
 
   if (aRegisterTime) {
     aWriter.DoubleProperty(
@@ -247,8 +257,8 @@ void StreamSamplesAndMarkers(const char* aName, int aThreadId,
 
     aWriter.StartArrayProperty("data");
     {
-      aBuffer.StreamSamplesToJSON(aWriter, aThreadId, aSinceTime,
-                                  aUniqueStacks);
+      processedThreadId = aBuffer.StreamSamplesToJSON(
+          aWriter, aThreadId, aSinceTime, aUniqueStacks);
     }
     aWriter.EndArray();
   }
@@ -259,7 +269,9 @@ void StreamSamplesAndMarkers(const char* aName, int aThreadId,
     {
       JSONSchemaWriter schema(aWriter);
       schema.WriteField("name");
-      schema.WriteField("time");
+      schema.WriteField("startTime");
+      schema.WriteField("endTime");
+      schema.WriteField("phase");
       schema.WriteField("category");
       schema.WriteField("data");
     }
@@ -272,6 +284,14 @@ void StreamSamplesAndMarkers(const char* aName, int aThreadId,
     aWriter.EndArray();
   }
   aWriter.EndObject();
+
+  aWriter.IntProperty("pid",
+                      static_cast<int64_t>(profiler_current_process_id()));
+  aWriter.IntProperty(
+      "tid",
+      static_cast<int64_t>(aThreadId != 0 ? aThreadId : processedThreadId));
+
+  return processedThreadId;
 }
 
 void ProfiledThreadData::NotifyAboutToLoseJSContext(

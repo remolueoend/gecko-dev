@@ -14,6 +14,7 @@
 import type {
   ActorId,
   Breakpoint,
+  DisplaySource,
   Expression,
   Frame,
   FrameId,
@@ -26,9 +27,15 @@ import type {
   URL,
   WasmSourceContent,
   Why,
+  Thread,
 } from "../types";
 import * as asyncValue from "./async-value";
+
+import { initialState } from "../reducers/index";
+
 import type { SourceBase } from "../reducers/sources";
+import type { State } from "../reducers/types";
+import type { FulfilledValue } from "./async-value";
 
 function makeMockSource(url: URL = "url", id: SourceId = "source"): SourceBase {
   return {
@@ -37,12 +44,20 @@ function makeMockSource(url: URL = "url", id: SourceId = "source"): SourceBase {
     isBlackBoxed: false,
     isPrettyPrinted: false,
     relativeUrl: url,
-    introductionUrl: null,
-    introductionType: undefined,
     isWasm: false,
     extensionName: null,
     isExtension: false,
     isOriginal: id.includes("originalSource"),
+  };
+}
+
+function makeMockDisplaySource(
+  url: URL = "url",
+  id: SourceId = "source"
+): DisplaySource {
+  return {
+    ...makeMockSource(url, id),
+    displayURL: url,
   };
 }
 
@@ -84,6 +99,17 @@ function makeMockSourceAndContent(
   };
 }
 
+function makeFullfilledMockSourceContent(
+  text: string = "",
+  contentType?: string = "text/javascript"
+): FulfilledValue<TextSourceContent> {
+  return asyncValue.fulfilled({
+    type: "text",
+    value: text,
+    contentType,
+  });
+}
+
 function makeMockWasmSource(): SourceBase {
   return {
     id: "wasm-source-id",
@@ -91,8 +117,6 @@ function makeMockWasmSource(): SourceBase {
     isBlackBoxed: false,
     isPrettyPrinted: false,
     relativeUrl: "url",
-    introductionUrl: null,
-    introductionType: undefined,
     isWasm: true,
     extensionName: null,
     isExtension: false,
@@ -181,6 +205,7 @@ function makeMockFrame(
     index,
     asyncCause: null,
     state: "on-stack",
+    type: "call",
   };
 }
 
@@ -217,7 +242,25 @@ const mockthreadcx = {
   isPaused: false,
 };
 
+function makeMockThread(fields: $Shape<Thread>) {
+  return {
+    actor: "test",
+    url: "example.com",
+    type: "worker",
+    name: "test",
+    ...fields,
+  };
+}
+
+function makeMockState(state: $Shape<State>) {
+  return {
+    ...initialState(),
+    ...state,
+  };
+}
+
 export {
+  makeMockDisplaySource,
   makeMockSource,
   makeMockSourceWithContent,
   makeMockSourceAndContent,
@@ -233,4 +276,7 @@ export {
   makeMockExpression,
   mockcx,
   mockthreadcx,
+  makeMockState,
+  makeMockThread,
+  makeFullfilledMockSourceContent,
 };

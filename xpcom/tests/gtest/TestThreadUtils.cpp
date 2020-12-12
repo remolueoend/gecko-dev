@@ -8,6 +8,7 @@
 #include "nsThreadUtils.h"
 #include "mozilla/IdleTaskRunner.h"
 #include "mozilla/RefCounted.h"
+#include "mozilla/SpinEventLoopUntil.h"
 #include "mozilla/UniquePtr.h"
 
 #include "gtest/gtest.h"
@@ -477,6 +478,21 @@ TEST(ThreadUtils, NewNamedCancelableRunnableFunction)
     EXPECT_EQ(foo->refCount(), 1u);
     EXPECT_FALSE(ran);
   }
+
+  // Test no-op after cancelation.
+  {
+    auto foo = MakeRefPtr<TestRefCounted>();
+    bool ran = false;
+
+    RefPtr<CancelableRunnable> func =
+        NS_NewCancelableRunnableFunction("unused", [foo, &ran] { ran = true; });
+
+    EXPECT_EQ(foo->refCount(), 2u);
+    func->Cancel();
+    func->Run();
+
+    EXPECT_FALSE(ran);
+  }
 }
 
 static void TestNewRunnableMethod(bool aNamed) {
@@ -494,6 +510,15 @@ static void TestNewRunnableMethod(bool aNamed) {
 
     // Read only string. Dereferencing in runnable method to check this works.
     char* message = (char*)"Test message";
+
+    {
+      auto bar = MakeRefPtr<nsBar>();
+
+      NS_DispatchToMainThread(
+          aNamed ? NewRunnableMethod("unused", std::move(bar), &nsBar::DoBar1)
+                 : NewRunnableMethod("nsBar::DoBar1", std::move(bar),
+                                     &nsBar::DoBar1));
+    }
 
     NS_DispatchToMainThread(
         aNamed ? NewRunnableMethod("unused", bar, &nsBar::DoBar1)
@@ -830,9 +855,9 @@ TEST(ThreadUtils, IdleTaskRunner)
     return cnt4 == 1;
   }));
 
-  // The repeating timer with no "exit" condition requires an explicit
-  // Cancel() call.
+  // The repeating timers require an explicit Cancel() call.
   runner1->Cancel();
+  runner2->Cancel();
 }
 
 // {9e70a320-be02-11d1-8031-006008159b5a}

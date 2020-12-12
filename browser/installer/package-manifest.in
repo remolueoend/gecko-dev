@@ -60,6 +60,13 @@
 @RESPATH@/update.locale
 @RESPATH@/updater.ini
 #endif
+#ifdef MOZ_DEFAULT_BROWSER_AGENT
+@RESPATH@/defaultagent.ini
+@RESPATH@/defaultagent_localized.ini
+#endif
+#if defined(MOZ_UPDATE_AGENT) || defined(MOZ_DEFAULT_BROWSER_AGENT)
+@RESPATH@/locale.ini
+#endif
 
 [xpcom]
 @RESPATH@/dependentlibs.list
@@ -107,6 +114,9 @@
 #endif
 #ifdef MOZ_WASM_SANDBOXING_GRAPHITE
 @BINPATH@/@DLL_PREFIX@graphitewasm@DLL_SUFFIX@
+#endif
+#ifdef MOZ_WASM_SANDBOXING_OGG
+@BINPATH@/@DLL_PREFIX@oggwasm@DLL_SUFFIX@
 #endif
 
 ; We don't have a complete view of which dlls to expect when doing an artifact
@@ -166,9 +176,6 @@
 
 ; JavaScript components
 @RESPATH@/browser/components/BrowserComponents.manifest
-@RESPATH@/components/EnterprisePolicies.js
-@RESPATH@/components/EnterprisePoliciesContent.js
-@RESPATH@/components/EnterprisePolicies.manifest
 @RESPATH@/components/toolkitsearch.manifest
 @RESPATH@/components/extensions.manifest
 #ifdef MOZ_UPDATER
@@ -243,8 +250,8 @@
 @RESPATH@/browser/chrome.manifest
 @RESPATH@/browser/chrome/browser@JAREXT@
 @RESPATH@/browser/chrome/browser.manifest
-@RESPATH@/browser/chrome/pdfjs.manifest
-@RESPATH@/browser/chrome/pdfjs/*
+@RESPATH@/chrome/pdfjs.manifest
+@RESPATH@/chrome/pdfjs/*
 @RESPATH@/chrome/toolkit@JAREXT@
 @RESPATH@/chrome/toolkit.manifest
 @RESPATH@/chrome/recording.manifest

@@ -117,6 +117,8 @@ class HTMLInputElement final : public TextControlElement,
   using nsGenericHTMLFormElementWithState::GetForm;
   using nsGenericHTMLFormElementWithState::GetFormAction;
   using nsIConstraintValidation::GetValidationMessage;
+  using ValueSetterOption = TextControlState::ValueSetterOption;
+  using ValueSetterOptions = TextControlState::ValueSetterOptions;
 
   enum class FromClone { no, yes };
 
@@ -141,7 +143,7 @@ class HTMLInputElement final : public TextControlElement,
 #endif
 
   // Element
-  virtual bool IsInteractiveHTMLContent(bool aIgnoreTabindex) const override;
+  virtual bool IsInteractiveHTMLContent() const override;
 
   // EventTarget
   virtual void AsyncEventRunning(AsyncEventDispatcher* aEvent) override;
@@ -193,6 +195,8 @@ class HTMLInputElement final : public TextControlElement,
 
   MOZ_CAN_RUN_SCRIPT_BOUNDARY
   virtual void DoneCreatingElement() override;
+
+  virtual void DestroyContent() override;
 
   virtual EventStates IntrinsicState() const override;
 
@@ -668,7 +672,7 @@ class HTMLInputElement final : public TextControlElement,
 
   already_AddRefed<nsINodeList> GetLabels();
 
-  void Select();
+  MOZ_CAN_RUN_SCRIPT void Select();
 
   Nullable<uint32_t> GetSelectionStart(ErrorResult& aRv);
   MOZ_CAN_RUN_SCRIPT void SetSelectionStart(const Nullable<uint32_t>& aValue,
@@ -808,10 +812,8 @@ class HTMLInputElement final : public TextControlElement,
 
   bool MozIsTextField(bool aExcludePassword);
 
-  /**
-   * GetEditor() and HasEditor() for webidl bindings.
-   */
-  MOZ_CAN_RUN_SCRIPT nsIEditor* GetEditor();
+  MOZ_CAN_RUN_SCRIPT nsIEditor* GetEditorForBindings();
+  // For WebIDL bindings.
   bool HasEditor();
 
   bool IsInputEventTarget() const { return IsSingleLineTextControl(false); }
@@ -847,6 +849,14 @@ class HTMLInputElement final : public TextControlElement,
   bool IsRequired() const { return State().HasState(NS_EVENT_STATE_REQUIRED); }
 
   bool HasBeenTypePassword() { return mHasBeenTypePassword; }
+
+  /**
+   * Returns whether the current value is the empty string.  This only makes
+   * sense for some input types; does NOT make sense for file inputs.
+   *
+   * @return whether the current value is the empty string.
+   */
+  bool IsValueEmpty() const;
 
  protected:
   MOZ_CAN_RUN_SCRIPT_BOUNDARY virtual ~HTMLInputElement();
@@ -906,15 +916,14 @@ class HTMLInputElement final : public TextControlElement,
    * @param aValue      String to set.
    * @param aOldValue   Previous value before setting aValue.
                         If previous value is unknown, aOldValue can be nullptr.
-   * @param aFlags      See TextControlState::SetValueFlags.
+   * @param aOptions    See TextControlState::ValueSetterOption.
    */
-  MOZ_CAN_RUN_SCRIPT
-  nsresult SetValueInternal(const nsAString& aValue, const nsAString* aOldValue,
-                            uint32_t aFlags);
-
-  MOZ_CAN_RUN_SCRIPT
-  nsresult SetValueInternal(const nsAString& aValue, uint32_t aFlags) {
-    return SetValueInternal(aValue, nullptr, aFlags);
+  MOZ_CAN_RUN_SCRIPT nsresult
+  SetValueInternal(const nsAString& aValue, const nsAString* aOldValue,
+                   const ValueSetterOptions& aOptions);
+  MOZ_CAN_RUN_SCRIPT nsresult SetValueInternal(
+      const nsAString& aValue, const ValueSetterOptions& aOptions) {
+    return SetValueInternal(aValue, nullptr, aOptions);
   }
 
   // Generic getter for the value that doesn't do experimental control type
@@ -924,14 +933,6 @@ class HTMLInputElement final : public TextControlElement,
   // A getter for callers that know we're not dealing with a file input, so they
   // don't have to think about the caller type.
   void GetNonFileValueInternal(nsAString& aValue) const;
-
-  /**
-   * Returns whether the current value is the empty string.  This only makes
-   * sense for some input types; does NOT make sense for file inputs.
-   *
-   * @return whether the current value is the empty string.
-   */
-  bool IsValueEmpty() const;
 
   /**
    * Returns whether the current placeholder value should be shown.
@@ -962,10 +963,12 @@ class HTMLInputElement final : public TextControlElement,
 
   virtual void AfterClearForm(bool aUnbindOrDelete) override;
 
+  virtual void ResultForDialogSubmit(nsAString& aResult) override;
+
   /**
-   * Dispatch a select event. Returns true if the event was not cancelled.
+   * Dispatch a select event.
    */
-  bool DispatchSelectEvent(nsPresContext* aPresContext);
+  void DispatchSelectEvent(nsPresContext* aPresContext);
 
   void SelectAll(nsPresContext* aPresContext);
   bool IsImage() const {
@@ -1366,7 +1369,7 @@ class HTMLInputElement final : public TextControlElement,
 
   /*
    * Returns if the current type is one of the date/time input types: date,
-   * time and month. TODO: week and datetime-local.
+   * time, month, week and datetime-local.
    */
   static bool IsDateTimeInputType(uint8_t aType);
 
@@ -1394,15 +1397,6 @@ class HTMLInputElement final : public TextControlElement,
   enum FilePickerType { FILE_PICKER_FILE, FILE_PICKER_DIRECTORY };
   nsresult InitFilePicker(FilePickerType aType);
   nsresult InitColorPicker();
-
-  /**
-   * Use this function before trying to open a picker.
-   * It checks if the page is allowed to open a new pop-up.
-   * If it returns true, you should not create the picker.
-   *
-   * @return true if popup should be blocked, false otherwise
-   */
-  bool IsPopupBlocked() const;
 
   GetFilesHelper* GetOrCreateGetFilesHelper(bool aRecursiveFlag,
                                             ErrorResult& aRv);
@@ -1587,28 +1581,14 @@ class HTMLInputElement final : public TextControlElement,
   }
 
   /**
-   * Checks if aDateTimeInputType should be supported based on
-   * "dom.forms.datetime", and "dom.experimental_forms".
+   * Checks if aDateTimeInputType should be supported.
    */
   static bool IsDateTimeTypeSupported(uint8_t aDateTimeInputType);
 
-  /**
-   * Checks preference "dom.experimental_forms" to determine if experimental
-   * implementation of input element should be enabled.
-   */
-  static bool IsExperimentalFormsEnabled();
-
-  /**
-   * Checks preference "dom.forms.datetime.others" to determine if input week,
-   * month and datetime-local should be supported.
-   */
-  static bool IsInputDateTimeOthersEnabled();
-
-  /**
-   * Checks preference "dom.forms.color" to determine if date/time related
-   * types should be supported.
-   */
-  static bool IsInputColorEnabled();
+  static bool CreatesDateTimeWidget(uint8_t aType) {
+    return aType == NS_FORM_INPUT_TIME || aType == NS_FORM_INPUT_DATE;
+  }
+  bool CreatesDateTimeWidget() const { return CreatesDateTimeWidget(mType); }
 
   struct nsFilePickerFilter {
     nsFilePickerFilter() : mFilterMask(0) {}

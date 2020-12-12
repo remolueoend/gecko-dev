@@ -120,9 +120,9 @@ class Message : public Pickle {
                           Constructor constructor, Sync sync,
                           Interrupt interrupt, Reply reply)
         : mFlags(level | (priority << 2) |
-                 (compression == COMPRESSION_ENABLED
-                      ? COMPRESS_BIT
-                      : compression == COMPRESSION_ALL ? COMPRESSALL_BIT : 0) |
+                 (compression == COMPRESSION_ENABLED ? COMPRESS_BIT
+                  : compression == COMPRESSION_ALL   ? COMPRESSALL_BIT
+                                                     : 0) |
                  (constructor == CONSTRUCTOR ? CONSTRUCTOR_BIT : 0) |
                  (sync == SYNC ? SYNC_BIT : 0) |
                  (interrupt == INTERRUPT ? INTERRUPT_BIT : 0) |
@@ -137,10 +137,9 @@ class Message : public Pickle {
     }
 
     MessageCompression Compression() const {
-      return ((mFlags & COMPRESS_BIT)
-                  ? COMPRESSION_ENABLED
-                  : (mFlags & COMPRESSALL_BIT) ? COMPRESSION_ALL
-                                               : COMPRESSION_NONE);
+      return ((mFlags & COMPRESS_BIT)      ? COMPRESSION_ENABLED
+              : (mFlags & COMPRESSALL_BIT) ? COMPRESSION_ALL
+                                           : COMPRESSION_NONE);
     }
 
     bool IsConstructor() const { return (mFlags & CONSTRUCTOR_BIT) != 0; }
@@ -287,6 +286,9 @@ class Message : public Pickle {
     (obj->*func)(*msg);
     return true;
   }
+
+  // We should not be sending messages that are smaller than our header size.
+  void AssertAsLargeAsHeader() const;
 
   // Used for async messages with no parameters.
   static void Log(const Message* msg, std::wstring* l) {}

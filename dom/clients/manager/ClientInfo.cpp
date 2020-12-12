@@ -9,8 +9,7 @@
 #include "mozilla/dom/ClientIPCTypes.h"
 #include "mozilla/ipc/BackgroundUtils.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 using mozilla::ipc::PrincipalInfo;
 using mozilla::ipc::PrincipalInfoToPrincipal;
@@ -18,10 +17,11 @@ using mozilla::ipc::PrincipalInfoToPrincipal;
 ClientInfo::ClientInfo(const nsID& aId, ClientType aType,
                        const mozilla::ipc::PrincipalInfo& aPrincipalInfo,
                        const TimeStamp& aCreationTime)
-    : mData(MakeUnique<IPCClientInfo>(
-          aId, mozilla::Nothing(), aType, aPrincipalInfo, aCreationTime,
-          EmptyCString(), mozilla::dom::FrameType::None, mozilla::Nothing(),
-          mozilla::Nothing())) {}
+    : mData(MakeUnique<IPCClientInfo>(aId, mozilla::Nothing(), aType,
+                                      aPrincipalInfo, aCreationTime, ""_ns,
+                                      mozilla::dom::FrameType::None,
+                                      mozilla::Nothing(), mozilla::Nothing())) {
+}
 
 ClientInfo::ClientInfo(const IPCClientInfo& aData)
     : mData(MakeUnique<IPCClientInfo>(aData)) {}
@@ -106,10 +106,9 @@ bool ClientInfo::IsPrivateBrowsing() const {
   }
 }
 
-nsCOMPtr<nsIPrincipal> ClientInfo::GetPrincipal() const {
+Result<nsCOMPtr<nsIPrincipal>, nsresult> ClientInfo::GetPrincipal() const {
   MOZ_ASSERT(NS_IsMainThread());
-  nsCOMPtr<nsIPrincipal> ref = PrincipalInfoToPrincipal(PrincipalInfo());
-  return ref;
+  return PrincipalInfoToPrincipal(PrincipalInfo());
 }
 
 const Maybe<mozilla::ipc::CSPInfo>& ClientInfo::GetCspInfo() const {
@@ -129,5 +128,4 @@ void ClientInfo::SetPreloadCspInfo(
   mData->preloadCspInfo() = Some(aPreloadCSPInfo);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

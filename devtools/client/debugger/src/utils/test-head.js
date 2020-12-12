@@ -14,7 +14,6 @@ import sourceMaps from "devtools-source-map";
 import reducers from "../reducers";
 import actions from "../actions";
 import * as selectors from "../selectors";
-import { getHistory } from "../test/utils/history";
 import { parserWorker, evaluationsParser } from "../test/tests-setup";
 import configureStore from "../actions/utils/create-store";
 import sourceQueue from "../utils/source-queue";
@@ -54,7 +53,6 @@ function createStore(
 ): TestStore {
   const store: any = configureStore({
     log: false,
-    history: getHistory(),
     makeThunkArgs: args => {
       return {
         ...args,
@@ -106,8 +104,6 @@ function makeFrame({ id, sourceId, thread }: Object, opts: Object = {}) {
 function createSourceObject(
   filename: string,
   props: {
-    introductionType?: string,
-    introductionUrl?: string,
     isBlackBoxed?: boolean,
   } = {}
 ): Source {
@@ -116,8 +112,6 @@ function createSourceObject(
     url: makeSourceURL(filename),
     isBlackBoxed: !!props.isBlackBoxed,
     isPrettyPrinted: false,
-    introductionUrl: props.introductionUrl || null,
-    introductionType: props.introductionType || null,
     isExtension: false,
     isOriginal: filename.includes("originalSource"),
   }: any);
@@ -137,9 +131,9 @@ function makeSourceURL(filename: string) {
 }
 
 type MakeSourceProps = {
+  sourceMapBaseURL?: string,
   sourceMapURL?: string,
   introductionType?: string,
-  introductionUrl?: string,
   isBlackBoxed?: boolean,
 };
 function createMakeSource(): (
@@ -159,9 +153,9 @@ function createMakeSource(): (
       source: {
         actor: `${name}-${index}-actor`,
         url: `http://localhost:8000/examples/${name}`,
+        sourceMapBaseURL: props.sourceMapBaseURL || null,
         sourceMapURL: props.sourceMapURL || null,
         introductionType: props.introductionType || null,
-        introductionUrl: props.introductionUrl || null,
         isBlackBoxed: !!props.isBlackBoxed,
         extensionName: null,
       },
@@ -303,6 +297,5 @@ export {
   makeSymbolDeclaration,
   waitForState,
   watchForState,
-  getHistory,
   waitATick,
 };

@@ -208,7 +208,10 @@ void ProcessPendingGetURLAppleEvents() {
 
   nsCOMPtr<nsIFile> workingDir;
   rv = NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR, getter_AddRefs(workingDir));
-  if (NS_FAILED(rv)) return NO;
+  if (NS_FAILED(rv)) {
+    // Couldn't find a working dir. Uh oh. Good job cmdline::Init can cope.
+    workingDir = nullptr;
+  }
 
   const char* argv[3] = {nullptr, "-file", filePath.get()};
   rv = cmdLine->Init(3, argv, workingDir, nsICommandLine::STATE_REMOTE_EXPLICIT);
@@ -299,7 +302,13 @@ void ProcessPendingGetURLAppleEvents() {
   if (abortQuit) return NSTerminateCancel;
 
   nsCOMPtr<nsIAppStartup> appService = do_GetService("@mozilla.org/toolkit/app-startup;1");
-  if (appService) appService->Quit(nsIAppStartup::eForceQuit);
+  if (appService) {
+    bool userAllowedQuit = true;
+    appService->Quit(nsIAppStartup::eForceQuit, 0, &userAllowedQuit);
+    if (!userAllowedQuit) {
+      return NSTerminateCancel;
+    }
+  }
 
   return NSTerminateNow;
 }
@@ -377,8 +386,10 @@ void ProcessPendingGetURLAppleEvents() {
   nsCOMPtr<nsIFile> workingDir;
   nsresult rv = NS_GetSpecialDirectory(NS_OS_CURRENT_WORKING_DIR, getter_AddRefs(workingDir));
   if (NS_FAILED(rv)) {
-    return NO;
+    // Couldn't find a working dir. Uh oh. Good job cmdline::Init can cope.
+    workingDir = nullptr;
   }
+
   const char* argv[3] = {nullptr, "-url", urlString};
   rv = cmdLine->Init(3, argv, workingDir, nsICommandLine::STATE_REMOTE_EXPLICIT);
   if (NS_FAILED(rv)) {

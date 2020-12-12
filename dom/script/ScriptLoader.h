@@ -7,28 +7,36 @@
 #ifndef mozilla_dom_ScriptLoader_h
 #define mozilla_dom_ScriptLoader_h
 
+#include "js/TypeDecls.h"
 #include "nsCOMPtr.h"
 #include "nsRefPtrHashtable.h"
-#include "mozilla/Encoding.h"
 #include "nsIScriptElement.h"
 #include "nsCOMArray.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsTArray.h"
-#include "mozilla/dom/Document.h"
-#include "nsIIncrementalStreamLoader.h"
+#include "nsINode.h"
+#include "nsIObserver.h"
+#include "nsIScriptLoaderObserver.h"
 #include "nsURIHashKey.h"
 #include "mozilla/CORSMode.h"
+#include "mozilla/dom/LoadedScript.h"
 #include "mozilla/dom/ScriptLoadRequest.h"
-#include "mozilla/dom/SRIMetadata.h"
-#include "mozilla/dom/SRICheck.h"
 #include "mozilla/MaybeOneOf.h"
 #include "mozilla/MozPromise.h"
-#include "mozilla/Utf8.h"  // mozilla::Utf8Unit
-#include "mozilla/Vector.h"
+#include "ScriptKind.h"
 
+class nsCycleCollectionTraversalCallback;
+class nsIChannel;
+class nsIConsoleReportCollector;
+class nsIContent;
+class nsIIncrementalStreamLoader;
+class nsIPrincipal;
+class nsIScriptGlobalObject;
 class nsIURI;
 
 namespace JS {
+
+class CompileOptions;
 
 template <typename UnitT>
 class SourceText;
@@ -36,14 +44,44 @@ class SourceText;
 }  // namespace JS
 
 namespace mozilla {
+
+class LazyLogModule;
+union Utf8Unit;
+
 namespace dom {
 
 class AutoJSAPI;
+class DocGroup;
+class Document;
 class LoadedScript;
 class ModuleLoadRequest;
 class ModuleScript;
+class SRICheckDataVerifier;
+class SRIMetadata;
 class ScriptLoadHandler;
+class ScriptLoader;
 class ScriptRequestProcessor;
+
+enum class ReferrerPolicy : uint8_t;
+
+class AsyncCompileShutdownObserver final : public nsIObserver {
+  ~AsyncCompileShutdownObserver() { Unregister(); }
+
+ public:
+  explicit AsyncCompileShutdownObserver(ScriptLoader* aLoader)
+      : mScriptLoader(aLoader) {}
+
+  void OnShutdown();
+  void Unregister();
+
+  NS_DECL_ISUPPORTS
+  NS_DECL_NSIOBSERVER
+
+ private:
+  // Defined during registration in ScriptLoader constructor, and
+  // cleared during destructor, ScriptLoader::Destroy() or Shutdown.
+  ScriptLoader* mScriptLoader;
+};
 
 //////////////////////////////////////////////////////////////
 // Script loader implementation
@@ -147,6 +185,16 @@ class ScriptLoader final : public nsISupports {
       ProcessPendingRequestsAsync();
     }
     mEnabled = aEnabled;
+  }
+
+  /**
+   *  Check whether to speculatively OMT parse scripts as soon as
+   *  they are fetched, even if not a parser blocking request.
+   *  Controlled by
+   *  dom.script_loader.external_scripts.speculative_omt_parse_enabled
+   */
+  bool SpeculativeOMTParsingEnabled() const {
+    return mSpeculativeOMTParsingEnabled;
   }
 
   /**
@@ -268,24 +316,7 @@ class ScriptLoader final : public nsISupports {
    * Starts deferring deferred scripts and puts them in the mDeferredRequests
    * queue instead.
    */
-  void BeginDeferringScripts() {
-    mDeferEnabled = true;
-    if (mDeferCheckpointReached) {
-      // We already completed a parse and were just waiting for some async
-      // scripts to load (and were already blocking the load event waiting for
-      // that to happen), when document.open() happened and now we're doing a
-      // new parse.  We shouldn't block the load event again, but _should_ reset
-      // mDeferCheckpointReached to false.  It'll get set to true again when the
-      // DeferCheckpointReached call that corresponds to this
-      // BeginDeferringScripts call happens (on document.close()), since we just
-      // set mDeferEnabled to true.
-      mDeferCheckpointReached = false;
-    } else {
-      if (mDocument) {
-        mDocument->BlockOnload();
-      }
-    }
-  }
+  void BeginDeferringScripts();
 
   /**
    * Notifies the script loader that parsing is done.  If aTerminated is true,
@@ -340,12 +371,13 @@ class ScriptLoader final : public nsISupports {
   nsresult ProcessOffThreadRequest(ScriptLoadRequest* aRequest);
 
   bool AddPendingChildLoader(ScriptLoader* aChild) {
-    return mPendingChildLoaders.AppendElement(aChild) != nullptr;
+    // XXX(Bug 1631371) Check if this should use a fallible operation as it
+    // pretended earlier. Else, change the return type to void.
+    mPendingChildLoaders.AppendElement(aChild);
+    return true;
   }
 
-  mozilla::dom::DocGroup* GetDocGroup() const {
-    return mDocument->GetDocGroup();
-  }
+  mozilla::dom::DocGroup* GetDocGroup() const;
 
   /**
    * Register the fact that we saw the load event, and that we need to save the
@@ -359,7 +391,7 @@ class ScriptLoader final : public nsISupports {
    * any references to the JSScript or to the Request which might be used for
    * caching the encoded bytecode.
    */
-  void Destroy() { GiveUpBytecodeEncoding(); }
+  void Destroy();
 
   /**
    * Implement the HostResolveImportedModule abstract operation.
@@ -379,9 +411,60 @@ class ScriptLoader final : public nsISupports {
                                     JS::MutableHandle<JSObject*> aModuleOut);
 
   void StartDynamicImport(ModuleLoadRequest* aRequest);
-  void FinishDynamicImport(ModuleLoadRequest* aRequest, nsresult aResult);
+
+  /**
+   * Shorthand Wrapper for JSAPI FinishDynamicImport function for the reject
+   * case where we do not have `aEvaluationPromise`. As there is no evaluation
+   * Promise, JS::FinishDynamicImport will always reject.
+   *
+   * @param aRequest
+   *        The module load request for the dynamic module.
+   * @param aResult
+   *        The result of running ModuleEvaluate -- If this is successful, then
+   *        we can await the associated EvaluationPromise.
+   */
+  void FinishDynamicImportAndReject(ModuleLoadRequest* aRequest,
+                                    nsresult aResult);
+
+  /**
+   * Wrapper for JSAPI FinishDynamicImport function. Takes an optional argument
+   * `aEvaluationPromise` which, if null, exits early.
+   *
+   * This is the non-tla version, which works with modules which return
+   * completion records.
+   *
+   * @param aCX
+   *        The JSContext for the module.
+   * @param aRequest
+   *        The module load request for the dynamic module.
+   * @param aResult
+   *        The result of running ModuleEvaluate
+   */
+  void FinishDynamicImport_NoTLA(JSContext* aCx, ModuleLoadRequest* aRequest,
+                                 nsresult aResult);
+
+  /**
+   * Wrapper for JSAPI FinishDynamicImport function. Takes an optional argument
+   * `aEvaluationPromise` which, if null, exits early.
+   *
+   * This is the Top Level Await version, which works with modules which return
+   * promises.
+   *
+   * @param aCX
+   *        The JSContext for the module.
+   * @param aRequest
+   *        The module load request for the dynamic module.
+   * @param aResult
+   *        The result of running ModuleEvaluate -- If this is successful, then
+   *        we can await the associated EvaluationPromise.
+   * @param aEvaluationPromise
+   *        The evaluation promise returned from evaluating the module. If this
+   *        is null, JS::FinishDynamicImport will reject the dynamic import
+   *        module promise.
+   */
   void FinishDynamicImport(JSContext* aCx, ModuleLoadRequest* aRequest,
-                           nsresult aResult);
+                           nsresult aResult,
+                           JS::Handle<JSObject*> aEvaluationPromise);
 
   /*
    * Get the currently active script. This is used as the initiating script when
@@ -390,6 +473,11 @@ class ScriptLoader final : public nsISupports {
   static LoadedScript* GetActiveScript(JSContext* aCx);
 
   Document* GetDocument() const { return mDocument; }
+
+  /**
+   *   Called by shutdown observer.
+   */
+  void Shutdown();
 
  private:
   virtual ~ScriptLoader();
@@ -420,7 +508,8 @@ class ScriptLoader final : public nsISupports {
   bool ProcessInlineScript(nsIScriptElement* aElement, ScriptKind aScriptKind);
 
   ScriptLoadRequest* LookupPreloadRequest(nsIScriptElement* aElement,
-                                          ScriptKind aScriptKind);
+                                          ScriptKind aScriptKind,
+                                          const SRIMetadata& aSRIMetadata);
 
   void GetSRIMetadata(const nsAString& aIntegrityAttr,
                       SRIMetadata* aMetadataOut);
@@ -550,6 +639,8 @@ class ScriptLoader final : public nsISupports {
   void AddAsyncRequest(ScriptLoadRequest* aRequest);
   bool MaybeRemovedDeferRequests();
 
+  bool ShouldCompileOffThread(ScriptLoadRequest* aRequest);
+
   void MaybeMoveToLoadedList(ScriptLoadRequest* aRequest);
 
   using MaybeSourceText =
@@ -594,6 +685,12 @@ class ScriptLoader final : public nsISupports {
                                          ModuleLoadRequest* aRequest);
 
   void RunScriptWhenSafe(ScriptLoadRequest* aRequest);
+
+  /**
+   *  Wait for any unused off thread compilations to finish and then
+   *  cancel them.
+   */
+  void CancelScriptLoadRequests();
 
   Document* mDocument;  // [WEAK]
   nsCOMArray<nsIScriptLoaderObserver> mObservers;
@@ -643,6 +740,7 @@ class ScriptLoader final : public nsISupports {
   uint32_t mNumberOfProcessors;
   bool mEnabled;
   bool mDeferEnabled;
+  bool mSpeculativeOMTParsingEnabled;
   bool mDeferCheckpointReached;
   bool mBlockingDOMContentLoaded;
   bool mLoadEventFired;
@@ -655,6 +753,9 @@ class ScriptLoader final : public nsISupports {
 
   nsCOMPtr<nsIConsoleReportCollector> mReporter;
 
+  // ShutdownObserver for off thread compilations
+  RefPtr<AsyncCompileShutdownObserver> mShutdownObserver;
+
   // Logging
  public:
   static LazyLogModule gCspPRLog;
@@ -663,19 +764,9 @@ class ScriptLoader final : public nsISupports {
 
 class nsAutoScriptLoaderDisabler {
  public:
-  explicit nsAutoScriptLoaderDisabler(Document* aDoc) {
-    mLoader = aDoc->ScriptLoader();
-    mWasEnabled = mLoader->GetEnabled();
-    if (mWasEnabled) {
-      mLoader->SetEnabled(false);
-    }
-  }
+  explicit nsAutoScriptLoaderDisabler(Document* aDoc);
 
-  ~nsAutoScriptLoaderDisabler() {
-    if (mWasEnabled) {
-      mLoader->SetEnabled(true);
-    }
-  }
+  ~nsAutoScriptLoaderDisabler();
 
   bool mWasEnabled;
   RefPtr<ScriptLoader> mLoader;

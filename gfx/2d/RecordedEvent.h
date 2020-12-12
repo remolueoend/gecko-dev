@@ -7,7 +7,6 @@
 #ifndef MOZILLA_GFX_RECORDEDEVENT_H_
 #define MOZILLA_GFX_RECORDEDEVENT_H_
 
-#include "2D.h"
 #include <ostream>
 #include <sstream>
 #include <cstring>
@@ -15,6 +14,9 @@
 #include <vector>
 
 #include "RecordingTypes.h"
+#include "mozilla/gfx/Point.h"
+#include "mozilla/gfx/Types.h"
+#include "mozilla/ipc/ByteBuf.h"
 
 namespace mozilla {
 namespace gfx {
@@ -60,6 +62,20 @@ struct RecordedFontDetails {
   uint64_t fontDataKey;
   uint32_t size;
   uint32_t index;
+};
+
+struct RecordedDependentSurface {
+  NS_INLINE_DECL_REFCOUNTING(RecordedDependentSurface);
+
+  RecordedDependentSurface(const IntSize& aSize,
+                           mozilla::ipc::ByteBuf&& aRecording)
+      : mSize(aSize), mRecording(std::move(aRecording)) {}
+
+  IntSize mSize;
+  mozilla::ipc::ByteBuf mRecording;
+
+ private:
+  ~RecordedDependentSurface() = default;
 };
 
 // Used by the Azure drawing debugger (player2d)

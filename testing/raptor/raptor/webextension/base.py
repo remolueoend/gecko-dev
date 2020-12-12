@@ -38,14 +38,7 @@ class WebExtension(Perftest):
         self.using_condprof = self.config.get("using_condprof", True)
 
         # set up the results handler
-        self.results_handler = RaptorResultsHandler(
-            gecko_profile=self.config.get("gecko_profile"),
-            power_test=self.config.get("power_test"),
-            cpu_test=self.config.get("cpu_test"),
-            memory_test=self.config.get("memory_test"),
-            no_conditioned_profile=self.config["no_conditioned_profile"],
-            extra_prefs=self.config.get("extra_prefs"),
-        )
+        self.results_handler = RaptorResultsHandler(**self.config)
         browser_name, browser_version = self.get_browser_meta()
         self.results_handler.add_browser_meta(self.config["app"], browser_version)
 
@@ -62,7 +55,6 @@ class WebExtension(Perftest):
             self.serve_benchmark_source(test)
 
         gen_test_config(
-            self.config["app"],
             test["name"],
             self.control_server.port,
             self.post_startup_delay,
@@ -74,7 +66,7 @@ class WebExtension(Perftest):
 
         self.install_raptor_webext()
 
-    def wait_for_test_finish(self, test, timeout):
+    def wait_for_test_finish(self, test, timeout, process_exists_callback=None):
         # this is a 'back-stop' i.e. if for some reason Raptor doesn't finish for some
         # serious problem; i.e. the test was unable to send a 'page-timeout' to the control
         # server, etc. Therefore since this is a 'back-stop' we want to be generous here;
@@ -99,8 +91,16 @@ class WebExtension(Perftest):
         # we also need to give time for results processing, not just page/browser cycles!
         timeout += 60
 
-        elapsed_time = 0
+        # stop 5 seconds early
+        end_time = time.time() + timeout - 5
+
         while not self.control_server._finished:
+            # Ignore check if the control server shutdown the app
+            if not self.control_server._is_shutting_down:
+                # If the application is no longer running immediately bail out
+                if callable(process_exists_callback) and not process_exists_callback():
+                    raise RuntimeError("Process has been unexpectedly closed")
+
             if self.config["enable_control_server_wait"]:
                 response = self.control_server_wait_get()
                 if response == "webext_shutdownBrowser":
@@ -110,28 +110,31 @@ class WebExtension(Perftest):
                         self.cpu_profiler.generate_android_cpu_profile(test["name"])
 
                     self.control_server_wait_continue()
+
+            # Sleep for a moment to not check the process too often
             time.sleep(1)
+
             # we only want to force browser-shutdown on timeout if not in debug mode;
             # in debug-mode we leave the browser running (require manual shutdown)
-            if not self.debug_mode:
-                elapsed_time += 1
-                if elapsed_time > (timeout) - 5:  # stop 5 seconds early
-                    self.control_server.wait_for_quit()
+            if not self.debug_mode and end_time < time.time():
+                self.control_server.wait_for_quit()
 
-                    if not self.control_server.is_webextension_loaded:
-                        raise RuntimeError("Connection to Raptor webextension failed!")
+                if not self.control_server.is_webextension_loaded:
+                    raise RuntimeError("Connection to Raptor webextension failed!")
 
-                    raise RuntimeError(
-                        "Test failed to finish. "
-                        "Application timed out after {} seconds".format(timeout)
-                    )
+                raise RuntimeError(
+                    "Test failed to finish. "
+                    "Application timed out after {} seconds".format(timeout)
+                )
 
         if self.control_server._runtime_error:
-            raise RuntimeError("Failed to run {}: {}\nStack:\n{}".format(
-                test["name"],
-                self.control_server._runtime_error["error"],
-                self.control_server._runtime_error["stack"],
-            ))
+            raise RuntimeError(
+                "Failed to run {}: {}\nStack:\n{}".format(
+                    test["name"],
+                    self.control_server._runtime_error["error"],
+                    self.control_server._runtime_error["stack"],
+                )
+            )
 
     def run_test_teardown(self, test):
         super(WebExtension, self).run_test_teardown(test)
@@ -142,10 +145,13 @@ class WebExtension(Perftest):
             confidence_values = self.playback.confidence()
             if confidence_values:
                 mozproxy_replay = {
-                    u'type': u'mozproxy-replay',
-                    u'test': test["name"],
-                    u'unit': u'a.u.',
-                    u'values': confidence_values
+                    u"summarize-values": False,
+                    u"suite-suffix-type": False,
+                    u"type": u"mozproxy",
+                    u"test": test["name"],
+                    u"unit": u"a.u.",
+                    u"values": confidence_values,
+                    u"shouldAlert": False,  # Bug 1655841 temporary disable confidence metrics
                 }
                 self.control_server.submit_supporting_data(mozproxy_replay)
             else:
@@ -169,10 +175,7 @@ class WebExtension(Perftest):
             self.control_server.user_profile = self.profile
 
     def start_control_server(self):
-        self.control_server = RaptorControlServer(
-            self.results_handler,
-            self.debug_mode
-        )
+        self.control_server = RaptorControlServer(self.results_handler, self.debug_mode)
         self.control_server.user_profile = self.profile
         self.control_server.start()
 

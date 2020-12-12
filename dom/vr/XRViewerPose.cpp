@@ -5,6 +5,7 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/XRViewerPose.h"
+#include "mozilla/dom/XRView.h"
 
 namespace mozilla {
 namespace dom {
@@ -26,15 +27,19 @@ NS_IMPL_ISUPPORTS_CYCLE_COLLECTION_INHERITED_0(XRViewerPose, XRPose)
 XRViewerPose::XRViewerPose(nsISupports* aParent, XRRigidTransform* aTransform,
                            bool aEmulatedPosition,
                            const nsTArray<RefPtr<XRView>>& aViews)
-    : XRPose(aParent, aTransform, aEmulatedPosition), mViews(aViews) {}
+    : XRPose(aParent, aTransform, aEmulatedPosition), mViews(aViews.Clone()) {}
 
 JSObject* XRViewerPose::WrapObject(JSContext* aCx,
                                    JS::Handle<JSObject*> aGivenProto) {
   return XRViewerPose_Binding::Wrap(aCx, this, aGivenProto);
 }
 
+RefPtr<XRView>& XRViewerPose::GetEye(int32_t aIndex) {
+  return mViews.ElementAt(aIndex);
+}
+
 void XRViewerPose::GetViews(nsTArray<RefPtr<XRView>>& aResult) {
-  aResult = mViews;
+  aResult = mViews.Clone();
 }
 
 }  // namespace dom

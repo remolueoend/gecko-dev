@@ -29,12 +29,6 @@ types.addDictType("object.completion", {
   throw: "nullable:json",
 });
 
-types.addDictType("object.definitionSite", {
-  source: "source",
-  line: "number",
-  column: "number",
-});
-
 types.addDictType("object.prototypeproperties", {
   prototype: "object.descriptor",
   ownProperties: "nullable:json",
@@ -61,10 +55,6 @@ types.addDictType("object.apply", {
 types.addDictType("object.bindings", {
   arguments: "array:json",
   variables: "json",
-});
-
-types.addDictType("object.scope", {
-  scope: "environment",
 });
 
 types.addDictType("object.enumProperties.Options", {
@@ -102,6 +92,14 @@ types.addDictType("object.originalSourceLocation", {
   functionDisplayName: "string",
 });
 
+types.addDictType("object.promiseState", {
+  state: "string",
+  value: "nullable:object.descriptor",
+  reason: "nullable:object.descriptor",
+  creationTimestamp: "number",
+  timeToSettle: "nullable:number",
+});
+
 types.addDictType("object.proxySlots", {
   proxyTarget: "object.descriptor",
   proxyHandler: "object.descriptor",
@@ -121,10 +119,6 @@ const objectSpec = generateActorSpec({
         pretty: Arg(0, "boolean"),
       },
       response: RetVal("object.decompile"),
-    },
-    definitionSite: {
-      request: {},
-      response: RetVal("object.definitionSite"),
     },
     dependentPromises: {
       request: {},
@@ -202,6 +196,10 @@ const objectSpec = generateActorSpec({
         rejectionStack: RetVal("array:object.originalSourceLocation"),
       },
     },
+    promiseState: {
+      request: {},
+      response: RetVal("object.promiseState"),
+    },
     proxySlots: {
       request: {},
       response: RetVal("object.proxySlots"),
@@ -225,10 +223,6 @@ const objectSpec = generateActorSpec({
       oneway: true,
     },
     release: { release: true },
-    scope: {
-      request: {},
-      response: RetVal("object.scope"),
-    },
     // Needed for the PauseScopedObjectActor which extends the ObjectActor.
     threadGrip: {
       request: {},

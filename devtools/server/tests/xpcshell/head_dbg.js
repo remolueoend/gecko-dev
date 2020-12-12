@@ -638,9 +638,10 @@ function stepIn(threadFront) {
  * @param ThreadFront threadFront
  * @returns Promise
  */
-function stepOver(threadFront) {
+async function stepOver(threadFront, frameActor) {
   dumpn("Stepping over.");
-  return threadFront.stepOver().then(() => waitForPause(threadFront));
+  await threadFront.stepOver(frameActor);
+  return waitForPause(threadFront);
 }
 
 /**
@@ -651,9 +652,24 @@ function stepOver(threadFront) {
  * @param ThreadFront threadFront
  * @returns Promise
  */
-function stepOut(threadFront) {
+async function stepOut(threadFront, frameActor) {
   dumpn("Stepping out.");
-  return threadFront.stepOut().then(() => waitForPause(threadFront));
+  await threadFront.stepOut(frameActor);
+  return waitForPause(threadFront);
+}
+
+/**
+ * Restart specific frame and wait for the pause after the restart
+ * has been taken.
+ *
+ * @param DevToolsClient client
+ * @param ThreadFront threadFront
+ * @returns Promise
+ */
+async function restartFrame(threadFront, frameActor) {
+  dumpn("Restarting frame.");
+  await threadFront.restart(frameActor);
+  return waitForPause(threadFront);
 }
 
 /**

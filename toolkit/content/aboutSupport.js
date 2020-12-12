@@ -26,6 +26,13 @@ ChromeUtils.defineModuleGetter(
   "resource://gre/modules/PlacesDBUtils.jsm"
 );
 
+function showThirdPartyModules() {
+  return (
+    AppConstants.platform == "win" &&
+    Services.prefs.getBoolPref("browser.enableAboutThirdParty")
+  );
+}
+
 window.addEventListener("load", function onload(event) {
   try {
     window.removeEventListener("load", onload);
@@ -36,12 +43,28 @@ window.addEventListener("load", function onload(event) {
     });
     populateActionBox();
     setupEventListeners();
+    if (showThirdPartyModules()) {
+      $("third-party-modules").hidden = false;
+      $("third-party-modules-table").hidden = false;
+    }
   } catch (e) {
     Cu.reportError(
       "stack of load error for about:support: " + e + ": " + e.stack
     );
   }
 });
+
+function prefsTable(data) {
+  return sortedArrayFromObject(data).map(function([name, value]) {
+    return $.new("tr", [
+      $.new("td", name, "pref-name"),
+      // Very long preference values can cause users problems when they
+      // copy and paste them into some text editors.  Long values generally
+      // aren't useful anyway, so truncate them to a reasonable length.
+      $.new("td", String(value).substr(0, 120), "pref-value"),
+    ]);
+  });
+}
 
 // Fluent uses lisp-case IDs so this converts
 // the SentenceCase info IDs to lisp-case.
@@ -64,6 +87,9 @@ var snapshotFormatters = {
     $("application-box").textContent = data.name;
     $("useragent-box").textContent = data.userAgent;
     $("os-box").textContent = data.osVersion;
+    if (AppConstants.platform == "macosx") {
+      $("rosetta-box").textContent = data.rosetta;
+    }
     $("binary-box").textContent = Services.dirsvc.get(
       "XREExeF",
       Ci.nsIFile
@@ -75,6 +101,7 @@ var snapshotFormatters = {
     }
     $("version-box").textContent = version;
     $("buildid-box").textContent = data.buildID;
+    $("distributionid-box").textContent = data.distributionID;
     if (data.updateChannel) {
       $("updatechannel-box").textContent = data.updateChannel;
     }
@@ -106,20 +133,20 @@ var snapshotFormatters = {
       );
     } catch (e) {}
 
-    let statusTextId = "multi-process-status-unknown";
+    const STATUS_STRINGS = {
+      experimentControl: "fission-status-experiment-control",
+      experimentTreatment: "fission-status-experiment-treatment",
+      disabledByE10sEnv: "fission-status-disabled-by-e10s-env",
+      enabledByEnv: "fission-status-enabled-by-env",
+      disabledBySafeMode: "fission-status-disabled-by-safe-mode",
+      enabledByDefault: "fission-status-enabled-by-default",
+      disabledByDefault: "fission-status-disabled-by-default",
+      enabledByUserPref: "fission-status-enabled-by-user-pref",
+      disabledByUserPref: "fission-status-disabled-by-user-pref",
+      disabledByE10sOther: "fission-status-disabled-by-e10s-other",
+    };
 
-    // Whitelist of known values with string descriptions:
-    switch (data.autoStartStatus) {
-      case 0:
-      case 1:
-      case 2:
-      case 4:
-      case 6:
-      case 7:
-      case 8:
-        statusTextId = "multi-process-status-" + data.autoStartStatus;
-        break;
-    }
+    let statusTextId = STATUS_STRINGS[data.fissionDecisionStatus];
 
     document.l10n.setAttributes(
       $("multiprocess-box-process-count"),
@@ -129,7 +156,15 @@ var snapshotFormatters = {
         totalWindows: data.numTotalWindows,
       }
     );
-    document.l10n.setAttributes($("multiprocess-box-status"), statusTextId);
+    document.l10n.setAttributes(
+      $("fission-box-process-count"),
+      "fission-windows",
+      {
+        fissionWindows: data.numFissionWindows,
+        totalWindows: data.numTotalWindows,
+      }
+    );
+    document.l10n.setAttributes($("fission-box-status"), statusTextId);
 
     if (Services.policies) {
       let policiesStrId = "";
@@ -251,15 +286,16 @@ var snapshotFormatters = {
     );
   },
 
-  extensions(data) {
+  addons(data) {
     $.append(
-      $("extensions-tbody"),
-      data.map(function(extension) {
+      $("addons-tbody"),
+      data.map(function(addon) {
         return $.new("tr", [
-          $.new("td", extension.name),
-          $.new("td", extension.version),
-          $.new("td", extension.isActive),
-          $.new("td", extension.id),
+          $.new("td", addon.name),
+          $.new("td", addon.type),
+          $.new("td", addon.version),
+          $.new("td", addon.isActive),
+          $.new("td", addon.id),
         ]);
       })
     );
@@ -325,30 +361,70 @@ var snapshotFormatters = {
     }
   },
 
-  modifiedPreferences(data) {
+  async experimentalFeatures(data) {
+    if (!data) {
+      return;
+    }
+    let titleL10nIds = data.map(([titleL10nId]) => titleL10nId);
+    let titleL10nObjects = await document.l10n.formatMessages(titleL10nIds);
+    if (titleL10nObjects.length != data.length) {
+      throw Error("Missing localized title strings in experimental features");
+    }
+    for (let i = 0; i < titleL10nObjects.length; i++) {
+      let localizedTitle = titleL10nObjects[i].attributes.find(
+        a => a.name == "label"
+      ).value;
+      data[i] = [localizedTitle, data[i][1], data[i][2]];
+    }
+
     $.append(
-      $("prefs-tbody"),
-      sortedArrayFromObject(data).map(function([name, value]) {
+      $("experimental-features-tbody"),
+      data.map(function([title, pref, value]) {
         return $.new("tr", [
-          $.new("td", name, "pref-name"),
-          // Very long preference values can cause users problems when they
-          // copy and paste them into some text editors.  Long values generally
-          // aren't useful anyway, so truncate them to a reasonable length.
-          $.new("td", String(value).substr(0, 120), "pref-value"),
+          $.new("td", `${title} (${pref})`, "pref-name"),
+          $.new("td", value, "pref-value"),
         ]);
       })
     );
   },
 
-  lockedPreferences(data) {
+  environmentVariables(data) {
+    if (!data) {
+      return;
+    }
     $.append(
-      $("locked-prefs-tbody"),
-      sortedArrayFromObject(data).map(function([name, value]) {
+      $("environment-variables-tbody"),
+      Object.entries(data).map(([name, value]) => {
         return $.new("tr", [
           $.new("td", name, "pref-name"),
-          $.new("td", String(value).substr(0, 120), "pref-value"),
+          $.new("td", value, "pref-value"),
         ]);
       })
+    );
+  },
+
+  modifiedPreferences(data) {
+    $.append($("prefs-tbody"), prefsTable(data));
+  },
+
+  lockedPreferences(data) {
+    $.append($("locked-prefs-tbody"), prefsTable(data));
+  },
+
+  printingPreferences(data) {
+    if (AppConstants.platform == "android") {
+      return;
+    }
+    const tbody = $("support-printing-prefs-tbody");
+    $.append(tbody, prefsTable(data));
+    $("support-printing-clear-settings-button").addEventListener(
+      "click",
+      function() {
+        for (let name in data) {
+          Services.prefs.clearUserPref(name);
+        }
+        tbody.textContent = "";
+      }
     );
   },
 
@@ -649,7 +725,7 @@ var snapshotFormatters = {
         if (value === undefined || value === "") {
           continue;
         }
-        trs.push(buildRow(key, value));
+        trs.push(buildRow(key, [new Text(value)]));
       }
 
       if (!trs.length) {
@@ -678,39 +754,30 @@ var snapshotFormatters = {
     let featureLog = data.featureLog;
     delete data.featureLog;
 
-    let features = [];
-    for (let feature of featureLog.features) {
-      // Only add interesting decisions - ones that were not automatic based on
-      // all.js/StaticPrefs defaults.
-      if (feature.log.length > 1 || feature.log[0].status != "available") {
-        features.push(feature);
-      }
-    }
-
-    if (features.length) {
-      for (let feature of features) {
+    if (featureLog.features.length) {
+      for (let feature of featureLog.features) {
         let trs = [];
         for (let entry of feature.log) {
-          if (entry.type == "default" && entry.status == "available") {
-            continue;
-          }
-
           let contents;
-          if (entry.message.length && entry.message[0] == "#") {
+          if (!entry.hasOwnProperty("message")) {
+            // This is a default entry.
+            contents = entry.status + " by " + entry.type;
+          } else if (entry.message.length && entry.message[0] == "#") {
             // This is a failure ID. See nsIGfxInfo.idl.
             let m = /#BLOCKLIST_FEATURE_FAILURE_BUG_(\d+)/.exec(entry.message);
             if (m) {
               let bugSpan = $.new("span");
-              document.l10n.setAttributes(bugSpan, "blocklisted-bug");
 
               let bugHref = $.new("a");
               bugHref.href =
                 "https://bugzilla.mozilla.org/show_bug.cgi?id=" + m[1];
-              document.l10n.setAttributes(bugHref, "bug-link", {
+              bugHref.setAttribute("data-l10n-name", "bug-link");
+              bugSpan.append(bugHref);
+              document.l10n.setAttributes(bugSpan, "support-blocklisted-bug", {
                 bugNumber: m[1],
               });
 
-              contents = [bugSpan, bugHref];
+              contents = [bugSpan];
             } else {
               let unknownFailure = $.new("span");
               document.l10n.setAttributes(unknownFailure, "unknown-failure", {
@@ -924,10 +991,39 @@ var snapshotFormatters = {
       }
     }
 
+    function roundtripAudioLatency() {
+      insertBasicInfo("roundtrip-latency", "...");
+      window.windowUtils
+        .defaultDevicesRoundTripLatency()
+        .then(latency => {
+          var latencyString = `${(latency[0] * 1000).toFixed(2)}ms (${(
+            latency[1] * 1000
+          ).toFixed(2)})`;
+          data.defaultDevicesRoundTripLatency = latencyString;
+          document.querySelector(
+            'th[data-l10n-id="roundtrip-latency"]'
+          ).nextSibling.textContent = latencyString;
+        })
+        .catch(e => {});
+    }
+
     // Basic information
     insertBasicInfo("audio-backend", data.currentAudioBackend);
     insertBasicInfo("max-audio-channels", data.currentMaxAudioChannels);
     insertBasicInfo("sample-rate", data.currentPreferredSampleRate);
+
+    if (AppConstants.platform == "macosx") {
+      var micStatus = {};
+      let permission = Cc["@mozilla.org/ospermissionrequest;1"].getService(
+        Ci.nsIOSPermissionRequest
+      );
+      permission.getAudioCapturePermissionState(micStatus);
+      if (micStatus.value == permission.PERMISSION_STATE_AUTHORIZED) {
+        roundtripAudioLatency();
+      }
+    } else {
+      roundtripAudioLatency();
+    }
 
     // Output devices information
     insertDeviceInfo("output", data.audioOutputDevices);
@@ -937,10 +1033,6 @@ var snapshotFormatters = {
 
     // Media Capabilitites
     insertEnumerateDatabase();
-  },
-
-  javaScript(data) {
-    $("javascript-incremental-gc").textContent = data.incrementalGCEnabled;
   },
 
   remoteAgent(data) {
@@ -1079,6 +1171,180 @@ var snapshotFormatters = {
     $("intl-osprefs-regionalprefs").textContent = JSON.stringify(
       data.osPrefs.regionalPrefsLocales
     );
+  },
+
+  thirdPartyModules(aData) {
+    if (!showThirdPartyModules()) {
+      return;
+    }
+
+    if (!aData || !aData.length) {
+      $("third-party-modules-no-data").hidden = false;
+      return;
+    }
+
+    const createElementWithLabel = (tag, label) =>
+      label
+        ? $.new(tag, label)
+        : $.new(tag, "", "", {
+            "data-l10n-id": "support-third-party-modules-no-value",
+          });
+
+    const iconUp = "chrome://global/skin/icons/arrow-up-12.svg";
+    const iconDown = "chrome://global/skin/icons/arrow-dropdown-12.svg";
+    const iconFolder = "chrome://global/skin/icons/findFile.svg";
+    const iconUnsigned =
+      "chrome://global/skin/icons/connection-mixed-active-loaded.svg";
+    const outerTHead = $("third-party-modules-thead");
+    const outerTBody = $("third-party-modules-tbody");
+
+    outerTBody.addEventListener("click", event => {
+      const btnOpenDir = event.target.closest("button");
+      if (!btnOpenDir || !btnOpenDir.fileObj) {
+        return;
+      }
+      btnOpenDir.fileObj.reveal();
+    });
+
+    for (const module of aData) {
+      const btnOpenDir = $.new(
+        "button",
+        [
+          $.new("img", "", "third-party-svg-common", {
+            src: iconFolder,
+            "data-l10n-id": "support-third-party-modules-folder-icon",
+          }),
+        ],
+        "third-party-button third-party-button-open-dir",
+        {
+          "data-l10n-id": "support-third-party-modules-button-open",
+        }
+      );
+      btnOpenDir.fileObj = module.dllFile;
+
+      const innerTBody = $.new("tbody", [], null);
+      for (const event of module.events) {
+        innerTBody.appendChild(
+          $.new("tr", [
+            $.new("td", event.processIdAndType),
+            createElementWithLabel("td", event.threadName),
+            $.new("td", event.baseAddress),
+            $.new("td", event.processUptimeMS),
+            // loadDurationMS can be empty (not zero) when a module is loaded
+            // very early in the process.  processUptimeMS always has a value.
+            createElementWithLabel("td", event.loadDurationMS),
+          ])
+        );
+      }
+
+      const detailRow = $.new(
+        "tr",
+        [
+          $.new(
+            "td",
+            [
+              $.new("table", [
+                $.new("thead", [
+                  $.new("th", "", "", {
+                    "data-l10n-id": "support-third-party-modules-process",
+                  }),
+                  $.new("th", "", "", {
+                    "data-l10n-id": "support-third-party-modules-thread",
+                  }),
+                  $.new("th", "", "", {
+                    "data-l10n-id": "support-third-party-modules-base",
+                  }),
+                  $.new("th", "", "", {
+                    "data-l10n-id": "support-third-party-modules-uptime",
+                  }),
+                  $.new("th", "", "", {
+                    "data-l10n-id": "support-third-party-modules-duration",
+                  }),
+                ]),
+                innerTBody,
+              ]),
+            ],
+            "",
+            { colspan: outerTHead.children.length + 1 }
+          ),
+        ],
+        "",
+        { hidden: true }
+      );
+
+      const imgUpDown = $.new("img", "", "third-party-svg-common", {
+        src: iconDown,
+        "data-l10n-id": "support-third-party-modules-down-icon",
+      });
+      const btnExpandCollapse = $.new(
+        "button",
+        [imgUpDown],
+        "third-party-button",
+        {
+          "data-l10n-id": "support-third-party-modules-expand",
+        }
+      );
+      btnExpandCollapse.addEventListener("click", () => {
+        if (detailRow.hidden) {
+          detailRow.hidden = false;
+          imgUpDown.src = iconUp;
+          document.l10n.setAttributes(
+            imgUpDown,
+            "support-third-party-modules-up-icon"
+          );
+          document.l10n.setAttributes(
+            btnExpandCollapse,
+            "support-third-party-modules-collapse"
+          );
+        } else {
+          detailRow.hidden = true;
+          imgUpDown.src = iconDown;
+          document.l10n.setAttributes(
+            imgUpDown,
+            "support-third-party-modules-down-icon"
+          );
+          document.l10n.setAttributes(
+            btnExpandCollapse,
+            "support-third-party-modules-expand"
+          );
+        }
+      });
+
+      const vendorInfoCell = $.new("td", [
+        createElementWithLabel("span", module.signedBy || module.companyName),
+      ]);
+      if (!module.signedBy) {
+        vendorInfoCell.prepend(
+          $.new(
+            "img",
+            "",
+            "third-party-svg-common third-party-image-unsigned",
+            {
+              src: iconUnsigned,
+              "data-l10n-id": "support-third-party-modules-unsigned-icon",
+            }
+          )
+        );
+      }
+
+      outerTBody.appendChild(
+        $.new("tr", [
+          $.new("td", [
+            document.createTextNode(module.dllFile.leafName),
+            btnOpenDir,
+          ]),
+          createElementWithLabel("td", module.fileVersion),
+          vendorInfoCell,
+          $.new(
+            "td",
+            module.events.length,
+            "third-party-modules-column-occurrence"
+          ),
+          $.new("td", [btnExpandCollapse], "third-party-modules-column-expand"),
+        ])
+      );
+      outerTBody.appendChild(detailRow);
+    }
   },
 };
 
@@ -1448,11 +1714,9 @@ function openProfileDirectory() {
 function populateActionBox() {
   if (ResetProfile.resetSupported()) {
     $("reset-box").style.display = "block";
-    $("action-box").style.display = "block";
   }
   if (!Services.appinfo.inSafeMode && AppConstants.platform !== "android") {
     $("safe-mode-box").style.display = "block";
-    $("action-box").style.display = "block";
 
     if (Services.policies && !Services.policies.isAllowed("safeMode")) {
       $("restart-in-safe-mode-button").setAttribute("disabled", "true");
@@ -1483,6 +1747,42 @@ function setupEventListeners() {
   if (button) {
     button.addEventListener("click", function(event) {
       ResetProfile.openConfirmationDialog(window);
+    });
+  }
+  button = $("clear-startup-cache-button");
+  if (button) {
+    button.addEventListener("click", async function(event) {
+      const [
+        promptTitle,
+        promptBody,
+        restartButtonLabel,
+      ] = await document.l10n.formatValues([
+        { id: "startup-cache-dialog-title" },
+        { id: "startup-cache-dialog-body" },
+        { id: "restart-button-label" },
+      ]);
+      const buttonFlags =
+        Services.prompt.BUTTON_POS_0 * Services.prompt.BUTTON_TITLE_IS_STRING +
+        Services.prompt.BUTTON_POS_1 * Services.prompt.BUTTON_TITLE_CANCEL +
+        Services.prompt.BUTTON_POS_0_DEFAULT;
+      const result = Services.prompt.confirmEx(
+        window,
+        promptTitle,
+        promptBody,
+        buttonFlags,
+        restartButtonLabel,
+        null,
+        null,
+        null,
+        {}
+      );
+      if (result !== 0) {
+        return;
+      }
+      Services.appinfo.invalidateCachesOnRestart();
+      Services.startup.quit(
+        Ci.nsIAppStartup.eRestart | Ci.nsIAppStartup.eAttemptQuit
+      );
     });
   }
   button = $("restart-in-safe-mode-button");
@@ -1521,7 +1821,7 @@ function setupEventListeners() {
     button = $("show-update-history-button");
     if (button) {
       button.addEventListener("click", function(event) {
-        window.docShell.rootTreeItem.domWindow.openDialog(
+        window.browsingContext.topChromeWindow.openDialog(
           "chrome://mozapps/content/update/history.xhtml",
           "Update:History",
           "centerscreen,resizable=no,titlebar,modal"

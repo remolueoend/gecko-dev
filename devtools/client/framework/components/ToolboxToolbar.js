@@ -217,10 +217,8 @@ class ToolboxToolbar extends Component {
         id,
         title: description,
         disabled,
-        className:
-          "command-button devtools-button " +
-          (buttonClass || "") +
-          (isChecked ? " checked" : ""),
+        className: `devtools-tabbar-button command-button ${buttonClass ||
+          ""} ${isChecked ? "checked" : ""}`,
         onClick: event => {
           onClick(event);
           focusButton(id);
@@ -262,16 +260,17 @@ class ToolboxToolbar extends Component {
         disabled,
         menuId: id + "-panel",
         toolboxDoc: toolbox.doc,
-        className: `devtools-button command-button ${
+        className: `devtools-tabbar-button command-button ${
           isChecked ? "checked" : ""
         }`,
         ref: "frameMenuButton",
         title: description,
-        onCloseButton: () => {
-          // Only try to unhighlight if the highlighter has been started
+        onCloseButton: async () => {
+          // Only try to unhighlight if the inspectorFront has been created already
           const inspectorFront = toolbox.target.getCachedFront("inspector");
           if (inspectorFront) {
-            inspectorFront.highlighter.unhighlight();
+            const highlighter = toolbox.getHighlighter();
+            await highlighter.unhighlight();
           }
         },
       },
@@ -399,7 +398,7 @@ class ToolboxToolbar extends Component {
         menuId: meatballMenuButtonId + "-panel",
         toolboxDoc: toolbox.doc,
         onFocus: () => focusButton(meatballMenuButtonId),
-        className: "devtools-button",
+        className: "devtools-tabbar-button",
         title: L10N.getStr("toolbox.meatballMenu.button.tooltip"),
         tabIndex: focusedButton === meatballMenuButtonId ? "0" : "-1",
         ref: "meatballMenuButton",
@@ -419,7 +418,7 @@ class ToolboxToolbar extends Component {
       ? button({
           id: closeButtonId,
           onFocus: () => focusButton(closeButtonId),
-          className: "devtools-button",
+          className: "devtools-tabbar-button",
           title: L10N.getStr("toolbox.closebutton.tooltip"),
           onClick: () => closeToolbox(),
           tabIndex: focusedButton === "toolbox-close" ? "0" : "-1",

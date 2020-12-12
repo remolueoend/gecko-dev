@@ -11,6 +11,15 @@
 #include "nsDataHashtable.h"
 #include "nsTArray.h"
 
+#define COOKIEJARSETTINGS_CONTRACTID "@mozilla.org/cookieJarSettings;1"
+// 4ce234f1-52e8-47a9-8c8d-b02f815733c7
+#define COOKIEJARSETTINGS_CID                        \
+  {                                                  \
+    0x4ce234f1, 0x52e8, 0x47a9, {                    \
+      0x8c, 0x8d, 0xb0, 0x2f, 0x81, 0x57, 0x33, 0xc7 \
+    }                                                \
+  }
+
 class nsIPermission;
 
 namespace mozilla {
@@ -111,13 +120,15 @@ class CookieJarSettings final : public nsICookieJarSettings {
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSICOOKIEJARSETTINGS
+  NS_DECL_NSISERIALIZABLE
 
   static already_AddRefed<nsICookieJarSettings> GetBlockingAll();
 
   static already_AddRefed<nsICookieJarSettings> Create();
 
   static already_AddRefed<nsICookieJarSettings> Create(
-      uint32_t aCookieBehavior);
+      uint32_t aCookieBehavior, const nsAString& aPartitionKey,
+      bool aIsFirstPartyIsolated, bool aIsOnContentBlockingAllowList);
 
   static CookieJarSettings* Cast(nsICookieJarSettings* aCS) {
     return static_cast<CookieJarSettings*>(aCS);
@@ -136,6 +147,9 @@ class CookieJarSettings final : public nsICookieJarSettings {
   bool HasBeenChanged() const { return mToBeMerged; }
 
   void UpdateIsOnContentBlockingAllowList(nsIChannel* aChannel);
+
+  void SetPartitionKey(nsIURI* aURI);
+  const nsAString& GetPartitionKey() { return mPartitionKey; };
 
   // Utility function to test if the passed cookiebahvior is
   // BEHAVIOR_REJECT_TRACKER, BEHAVIOR_REJECT_TRACKER_AND_PARTITION_FOREIGN or
@@ -158,12 +172,15 @@ class CookieJarSettings final : public nsICookieJarSettings {
     eProgressive,
   };
 
-  CookieJarSettings(uint32_t aCookieBehavior, State aState);
+  CookieJarSettings(uint32_t aCookieBehavior, bool aIsFirstPartyIsolated,
+                    State aState);
   ~CookieJarSettings();
 
   uint32_t mCookieBehavior;
+  bool mIsFirstPartyIsolated;
   CookiePermissionList mCookiePermissions;
   bool mIsOnContentBlockingAllowList;
+  nsString mPartitionKey;
 
   State mState;
 

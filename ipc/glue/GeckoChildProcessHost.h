@@ -11,12 +11,15 @@
 #include "base/process_util.h"
 #include "base/waitable_event.h"
 #include "chrome/common/child_process_host.h"
+#include "chrome/common/ipc_message.h"
 
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/Buffer.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Monitor.h"
 #include "mozilla/MozPromise.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/UniquePtr.h"
 
@@ -121,7 +124,7 @@ class GeckoChildProcessHost : public ChildProcessHost,
 
   using ChildProcessHost::TakeChannel;
   IPC::Channel* GetChannel() { return channelp(); }
-  std::wstring GetChannelId() { return channel_id(); }
+  ChannelId GetChannelId() { return channel_id(); }
 
   // Returns a "borrowed" handle to the child process - the handle returned
   // by this function must not be closed by the caller.
@@ -134,6 +137,8 @@ class GeckoChildProcessHost : public ChildProcessHost,
 #endif
 
 #ifdef XP_WIN
+  static void CacheNtDllThunk();
+
   void AddHandleToShare(HANDLE aHandle) {
     mLaunchOptions->handles_to_inherit.push_back(aHandle);
   }
@@ -177,6 +182,8 @@ class GeckoChildProcessHost : public ChildProcessHost,
   // Iterates over all instances and calls aCallback with each one of them.
   // This method will lock any addition/removal of new processes
   // so you need to make sure the callback is as fast as possible.
+  //
+  // To reiterate: the callbacks are executed synchronously.
   static void GetAll(const GeckoProcessCallback& aCallback);
 
   friend class BaseProcessLauncher;
@@ -278,6 +285,9 @@ class GeckoChildProcessHost : public ChildProcessHost,
   static uint32_t sNextUniqueID;
   static StaticAutoPtr<LinkedList<GeckoChildProcessHost>>
       sGeckoChildProcessHosts;
+#ifdef XP_WIN
+  static StaticAutoPtr<Buffer<IMAGE_THUNK_DATA>> sCachedNtDllThunk;
+#endif
   static StaticMutex sMutex;
 };
 

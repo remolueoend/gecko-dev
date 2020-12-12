@@ -6,51 +6,63 @@
 #ifndef GFX_FONTENTRY_H
 #define GFX_FONTENTRY_H
 
-#include "gfxTypes.h"
-#include "nsString.h"
-#include "gfxFontConstants.h"
-#include "gfxFontFeatures.h"
+#include <math.h>
+#include <new>
+#include <utility>
+#include "ThebesRLBoxTypes.h"
 #include "gfxFontUtils.h"
 #include "gfxFontVariations.h"
-#include "nsTArray.h"
-#include "nsTHashtable.h"
-#include "mozilla/HashFunctions.h"
-#include "mozilla/MemoryReporting.h"
-#include "MainThreadUtils.h"
-#include "nsUnicodeScriptCodes.h"
-#include "nsDataHashtable.h"
+#include "gfxRect.h"
+#include "gfxTypes.h"
 #include "harfbuzz/hb.h"
+#include "ipc/EnumSerializer.h"
+#include "mozilla/AlreadyAddRefed.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/FontPropertyTypes.h"
-#include "mozilla/gfx/2D.h"
+#include "mozilla/MemoryReporting.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/TypedEnumBits.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/WeakPtr.h"
-#include "ThebesRLBoxTypes.h"
-#include <math.h>
+#include "nsDataHashtable.h"
+#include "nsDebug.h"
+#include "nsHashKeys.h"
+#include "nsISupports.h"
+#include "nsStringFwd.h"
+#include "nsTArray.h"
+#include "nsUnicodeScriptCodes.h"
+#include "nscore.h"
 
-typedef struct gr_face gr_face;
-typedef struct FT_MM_Var_ FT_MM_Var;
-
-#ifdef DEBUG
-#  include <stdio.h>
-#endif
-
-struct gfxFontStyle;
+class FontInfoData;
 class gfxContext;
 class gfxFont;
 class gfxFontFamily;
-class gfxUserFontData;
+class gfxPlatformFontList;
 class gfxSVGGlyphs;
-class FontInfoData;
-struct FontListSizes;
+class gfxUserFontData;
 class nsAtom;
+struct FontListSizes;
+struct gfxFontFeature;
+struct gfxFontStyle;
+enum class eFontPresentation : uint8_t;
+
+namespace IPC {
+template <class P>
+struct ParamTraits;
+}
 
 namespace mozilla {
 class SVGContextPaint;
 namespace fontlist {
-struct Family;
 struct Face;
+struct Family;
 }  // namespace fontlist
+namespace gfx {
+struct DeviceColor;
+}
 }  // namespace mozilla
+
+typedef struct gr_face gr_face;
+typedef struct FT_MM_Var_ FT_MM_Var;
 
 #define NO_FONT_LANGUAGE_OVERRIDE 0
 
@@ -254,6 +266,19 @@ class gfxFontEntry {
                           const mozilla::gfx::DeviceColor& aDefaultColor,
                           nsTArray<uint16_t>& layerGlyphs,
                           nsTArray<mozilla::gfx::DeviceColor>& layerColors);
+  bool HasColorLayersForGlyph(uint32_t aGlyphId) {
+    MOZ_ASSERT(mCOLR);
+    return gfxFontUtils::HasColorLayersForGlyph(mCOLR, aGlyphId);
+  }
+
+  bool HasColorBitmapTable() {
+    if (!mCheckedForColorBitmapTables) {
+      mHasColorBitmapTable = HasFontTable(TRUETYPE_TAG('C', 'B', 'D', 'T')) ||
+                             HasFontTable(TRUETYPE_TAG('s', 'b', 'i', 'x'));
+      mCheckedForColorBitmapTables = true;
+    }
+    return mHasColorBitmapTable;
+  }
 
   // Access to raw font table data (needed for Harfbuzz):
   // returns a pointer to data owned by the fontEntry or the OS,
@@ -498,9 +523,6 @@ class gfxFontEntry {
   };
   RangeFlags mRangeFlags = RangeFlags::eNoFlags;
 
-  // NOTE that there are currently exactly 24 one-bit flags defined here,
-  // so together with the 8-bit RangeFlags above, this packs neatly to a
-  // 32-bit boundary. Worth considering if further flags are wanted.
   bool mFixedPitch : 1;
   bool mIsBadUnderlineFont : 1;
   bool mIsUserFontContainer : 1;  // userfont entry
@@ -525,13 +547,12 @@ class gfxFontEntry {
   bool mGrFaceInitialized : 1;
   bool mCheckedForColorGlyph : 1;
   bool mCheckedForVariationAxes : 1;
+  bool mHasColorBitmapTable : 1;
+  bool mCheckedForColorBitmapTables : 1;
 
  protected:
   friend class gfxPlatformFontList;
-  friend class gfxMacPlatformFontList;
-  friend class gfxUserFcFontEntry;
   friend class gfxFontFamily;
-  friend class gfxSingleFaceMacFontFamily;
   friend class gfxUserFontEntry;
 
   gfxFontEntry();
@@ -569,6 +590,11 @@ class gfxFontEntry {
   // return true if successful, false if it remains null (maybe the parent
   // hasn't handled our SetCharacterMap message yet).
   bool TrySetShmemCharacterMap();
+
+  // Helper for gfxPlatformFontList::CreateFontEntry methods: set properties
+  // of the gfxFontEntry based on shared Face and Family records.
+  void InitializeFrom(mozilla::fontlist::Face* aFace,
+                      const mozilla::fontlist::Family* aFamily);
 
   // Shaper-specific face objects, shared by all instantiations of the same
   // physical font, regardless of size.
@@ -747,17 +773,23 @@ inline bool gfxFontEntry::SupportsBold() {
 
 // used when iterating over all fonts looking for a match for a given character
 struct GlobalFontMatch {
-  GlobalFontMatch(const uint32_t aCharacter, const gfxFontStyle& aStyle)
-      : mStyle(aStyle), mCh(aCharacter) {}
+  GlobalFontMatch(uint32_t aCharacter, uint32_t aNextCh,
+                  const gfxFontStyle& aStyle, eFontPresentation aPresentation)
+      : mStyle(aStyle),
+        mCh(aCharacter),
+        mNextCh(aNextCh),
+        mPresentation(aPresentation) {}
 
   RefPtr<gfxFontEntry> mBestMatch;       // current best match
   RefPtr<gfxFontFamily> mMatchedFamily;  // the family it belongs to
   mozilla::fontlist::Family* mMatchedSharedFamily = nullptr;
-  const gfxFontStyle& mStyle;       // style to match
-  const uint32_t mCh;               // codepoint to be matched
-  uint32_t mCount = 0;              // number of fonts matched
-  uint32_t mCmapsTested = 0;        // number of cmaps tested
-  float mMatchDistance = INFINITY;  // metric indicating closest match
+  const gfxFontStyle& mStyle;  // style to match
+  const uint32_t mCh;          // codepoint to be matched
+  const uint32_t mNextCh;      // following codepoint (or zero)
+  eFontPresentation mPresentation;
+  uint32_t mCount = 0;               // number of fonts matched
+  uint32_t mCmapsTested = 0;         // number of cmaps tested
+  double mMatchDistance = INFINITY;  // metric indicating closest match
 };
 
 // Installation status (base system / langpack / user-installed) may determine
@@ -834,11 +866,7 @@ class gfxFontFamily {
     // we need to ensure any null entries are removed, as well as clearing
     // the flag (which may be set again later).
     if (mIsSimpleFamily) {
-      for (size_t i = mAvailableFonts.Length() - 1; i-- > 0;) {
-        if (!mAvailableFonts[i]) {
-          mAvailableFonts.RemoveElementAt(i);
-        }
-      }
+      mAvailableFonts.RemoveElementsBy([](const auto& font) { return !font; });
       mIsSimpleFamily = false;
     }
   }
@@ -898,7 +926,7 @@ class gfxFontFamily {
     mFamilyCharacterMapInitialized = false;
   }
 
-  // mark this family as being in the "bad" underline offset blacklist
+  // mark this family as being in the "bad" underline offset blocklist
   void SetBadUnderlineFamily() {
     mIsBadUnderlineFamily = true;
     if (mHasStyles) {
@@ -957,7 +985,7 @@ class gfxFontFamily {
                                    hb_blob_t* aNameTable,
                                    bool useFullName = false);
 
-  // set whether this font family is in "bad" underline offset blacklist.
+  // set whether this font family is in "bad" underline offset blocklist.
   void SetBadUnderlineFonts() {
     uint32_t i, numFonts = mAvailableFonts.Length();
     for (i = 0; i < numFonts; i++) {

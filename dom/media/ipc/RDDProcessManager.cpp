@@ -5,19 +5,21 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "RDDProcessManager.h"
 
-#include "mozilla/MemoryReportingProcess.h"
-#include "mozilla/RemoteDecoderManagerChild.h"
-#include "mozilla/RemoteDecoderManagerParent.h"
-#include "mozilla/Preferences.h"
-#include "mozilla/StaticPrefs_media.h"
-#include "mozilla/dom/ContentParent.h"
-#include "mozilla/gfx/GPUProcessManager.h"
-#include "mozilla/layers/VideoBridgeParent.h"
-#include "mozilla/layers/CompositorThread.h"
-#include "nsAppRunner.h"
-#include "nsContentUtils.h"
 #include "RDDChild.h"
 #include "RDDProcessHost.h"
+#include "mozilla/MemoryReportingProcess.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/RemoteDecoderManagerChild.h"
+#include "mozilla/RemoteDecoderManagerParent.h"
+#include "mozilla/StaticPrefs_media.h"
+#include "mozilla/SyncRunnable.h"  // for LaunchRDDProcess
+#include "mozilla/dom/ContentParent.h"
+#include "mozilla/gfx/GPUProcessManager.h"
+#include "mozilla/ipc/Endpoint.h"
+#include "mozilla/layers/CompositorThread.h"
+#include "mozilla/layers/VideoBridgeParent.h"
+#include "nsAppRunner.h"
+#include "nsContentUtils.h"
 
 namespace mozilla {
 
@@ -36,22 +38,20 @@ void RDDProcessManager::Initialize() {
 void RDDProcessManager::Shutdown() { sRDDSingleton = nullptr; }
 
 RDDProcessManager::RDDProcessManager()
-    : mTaskFactory(this),
-      mNumProcessAttempts(0),
-      mProcess(nullptr),
-      mProcessToken(0),
-      mRDDChild(nullptr) {
+    : mObserver(new Observer(this)), mTaskFactory(this) {
   MOZ_COUNT_CTOR(RDDProcessManager);
+  // Start listening for pref changes so we can
+  // forward them to the process once it is running.
+  nsContentUtils::RegisterShutdownObserver(mObserver);
+  Preferences::AddStrongObserver(mObserver, "");
 }
 
 RDDProcessManager::~RDDProcessManager() {
   MOZ_COUNT_DTOR(RDDProcessManager);
+  MOZ_ASSERT(NS_IsMainThread());
 
   // The RDD process should have already been shut down.
   MOZ_ASSERT(!mProcess && !mRDDChild);
-
-  // We should have already removed observers.
-  MOZ_ASSERT(!mObserver);
 }
 
 NS_IMPL_ISUPPORTS(RDDProcessManager::Observer, nsIObserver);
@@ -71,17 +71,18 @@ RDDProcessManager::Observer::Observe(nsISupports* aSubject, const char* aTopic,
 }
 
 void RDDProcessManager::OnXPCOMShutdown() {
-  if (mObserver) {
-    nsContentUtils::UnregisterShutdownObserver(mObserver);
-    Preferences::RemoveObserver(mObserver, "");
-    mObserver = nullptr;
-  }
-
+  nsContentUtils::UnregisterShutdownObserver(mObserver);
+  Preferences::RemoveObserver(mObserver, "");
   CleanShutdown();
 }
 
 void RDDProcessManager::OnPreferenceChange(const char16_t* aData) {
-  // A pref changed. If it's not on the blacklist, inform child processes.
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!mProcess) {
+    // Process hasn't been launched yet
+    return;
+  }
+  // A pref changed. If it is useful to do so, inform child processes.
   if (!dom::ContentParent::ShouldSyncPreference(aData)) {
     return;
   }
@@ -99,38 +100,88 @@ void RDDProcessManager::OnPreferenceChange(const char16_t* aData) {
   }
 }
 
-bool RDDProcessManager::LaunchRDDProcess() {
-  if (mProcess) {
-    return true;
-  }
+auto RDDProcessManager::EnsureRDDProcessAndCreateBridge(
+    base::ProcessId aOtherProcess) -> RefPtr<EnsureRDDPromise> {
+  return InvokeAsync(
+      GetMainThreadSerialEventTarget(), __func__,
+      [aOtherProcess, this]() -> RefPtr<EnsureRDDPromise> {
+        if (!Get()) {
+          // Shutdown?
+          return EnsureRDDPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
+        }
+        if (mProcess) {
+          return mProcess->LaunchPromise()->Then(
+              GetMainThreadSerialEventTarget(), __func__,
+              [aOtherProcess, this](bool) {
+                ipc::Endpoint<PRemoteDecoderManagerChild> endpoint;
+                if (!CreateContentBridge(aOtherProcess, &endpoint)) {
+                  return EnsureRDDPromise::CreateAndReject(
+                      NS_ERROR_NOT_AVAILABLE, __func__);
+                }
+                return EnsureRDDPromise::CreateAndResolve(std::move(endpoint),
+                                                          __func__);
+              },
+              [](nsresult aError) {
+                return EnsureRDDPromise::CreateAndReject(aError, __func__);
+              });
+        }
 
-  // Start listening for pref changes so we can
-  // forward them to the process once it is running.
-  if (!mObserver) {
-    mObserver = new Observer(this);
-    nsContentUtils::RegisterShutdownObserver(mObserver);
-    Preferences::AddStrongObserver(mObserver, "");
-  }
+        if (mNumProcessAttempts &&
+            !StaticPrefs::media_rdd_retryonfailure_enabled()) {
+          // We failed to start the RDD process earlier, abort now.
+          return EnsureRDDPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
+        }
+        // Launch the RDD process.
+        std::vector<std::string> extraArgs;
+        nsCString parentBuildID(mozilla::PlatformBuildID());
+        extraArgs.push_back("-parentBuildID");
+        extraArgs.push_back(parentBuildID.get());
 
-  mNumProcessAttempts++;
+        // The subprocess is launched asynchronously, so we
+        // wait for the promise to be resolved to acquire the IPDL actor.
+        mProcess = new RDDProcessHost(this);
+        if (!mProcess->Launch(extraArgs)) {
+          DestroyProcess();
+          return EnsureRDDPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                   __func__);
+        }
+        return mProcess->LaunchPromise()->Then(
+            GetMainThreadSerialEventTarget(), __func__,
+            [aOtherProcess, this](bool) {
+              mRDDChild = mProcess->GetActor();
+              mProcessToken = mProcess->GetProcessToken();
 
-  std::vector<std::string> extraArgs;
-  nsCString parentBuildID(mozilla::PlatformBuildID());
-  extraArgs.push_back("-parentBuildID");
-  extraArgs.push_back(parentBuildID.get());
+              // Flush any pref updates that happened during
+              // launch and weren't included in the blobs set
+              // up in LaunchRDDProcess.
+              for (const mozilla::dom::Pref& pref : mQueuedPrefs) {
+                Unused << NS_WARN_IF(!mRDDChild->SendPreferenceUpdate(pref));
+              }
+              mQueuedPrefs.Clear();
 
-  // The subprocess is launched asynchronously, so we wait for a callback to
-  // acquire the IPDL actor.
-  mProcess = new RDDProcessHost(this);
-  if (!mProcess->Launch(extraArgs)) {
-    DestroyProcess();
-    return false;
-  }
-  if (!EnsureRDDReady()) {
-    return false;
-  }
+              CrashReporter::AnnotateCrashReport(
+                  CrashReporter::Annotation::RDDProcessStatus, "Running"_ns);
 
-  return CreateVideoBridge();
+              ipc::Endpoint<PRemoteDecoderManagerChild> endpoint;
+
+              if (!CreateVideoBridge() ||
+                  !CreateContentBridge(aOtherProcess, &endpoint)) {
+                mNumProcessAttempts++;
+                return EnsureRDDPromise::CreateAndReject(NS_ERROR_NOT_AVAILABLE,
+                                                         __func__);
+              }
+              mNumProcessAttempts = 0;
+              return EnsureRDDPromise::CreateAndResolve(std::move(endpoint),
+                                                        __func__);
+            },
+            [this](nsresult aError) {
+              mNumProcessAttempts++;
+              DestroyProcess();
+              return EnsureRDDPromise::CreateAndReject(aError, __func__);
+            });
+      });
 }
 
 bool RDDProcessManager::IsRDDProcessLaunching() {
@@ -138,42 +189,11 @@ bool RDDProcessManager::IsRDDProcessLaunching() {
   return !!mProcess && !mRDDChild;
 }
 
-bool RDDProcessManager::EnsureRDDReady() {
-  if (mProcess && !mProcess->IsConnected() && !mProcess->WaitForLaunch()) {
-    // If this fails, we should have fired OnProcessLaunchComplete and
-    // removed the process.
-    MOZ_ASSERT(!mProcess && !mRDDChild);
-    return false;
-  }
-
-  return true;
-}
-
-void RDDProcessManager::OnProcessLaunchComplete(RDDProcessHost* aHost) {
-  MOZ_ASSERT(mProcess && mProcess == aHost);
-
-  if (!mProcess->IsConnected()) {
-    DestroyProcess();
-    return;
-  }
-
-  mRDDChild = mProcess->GetActor();
-  mProcessToken = mProcess->GetProcessToken();
-
-  // Flush any pref updates that happened during launch and weren't
-  // included in the blobs set up in LaunchRDDProcess.
-  for (const mozilla::dom::Pref& pref : mQueuedPrefs) {
-    Unused << NS_WARN_IF(!mRDDChild->SendPreferenceUpdate(pref));
-  }
-  mQueuedPrefs.Clear();
-
-  CrashReporter::AnnotateCrashReport(
-      CrashReporter::Annotation::RDDProcessStatus,
-      NS_LITERAL_CSTRING("Running"));
-}
-
 void RDDProcessManager::OnProcessUnexpectedShutdown(RDDProcessHost* aHost) {
+  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mProcess && mProcess == aHost);
+
+  mNumUnexpectedCrashes++;
 
   DestroyProcess();
 }
@@ -201,15 +221,8 @@ void RDDProcessManager::NotifyRemoteActorDestroyed(
 
 void RDDProcessManager::CleanShutdown() { DestroyProcess(); }
 
-void RDDProcessManager::KillProcess() {
-  if (!mProcess) {
-    return;
-  }
-
-  mProcess->KillProcess();
-}
-
 void RDDProcessManager::DestroyProcess() {
+  MOZ_ASSERT(NS_IsMainThread());
   if (!mProcess) {
     return;
   }
@@ -221,13 +234,14 @@ void RDDProcessManager::DestroyProcess() {
   mQueuedPrefs.Clear();
 
   CrashReporter::AnnotateCrashReport(
-      CrashReporter::Annotation::RDDProcessStatus,
-      NS_LITERAL_CSTRING("Destroyed"));
+      CrashReporter::Annotation::RDDProcessStatus, "Destroyed"_ns);
 }
 
 bool RDDProcessManager::CreateContentBridge(
     base::ProcessId aOtherProcess,
     ipc::Endpoint<PRemoteDecoderManagerChild>* aOutRemoteDecoderManager) {
+  MOZ_ASSERT(NS_IsMainThread());
+
   ipc::Endpoint<PRemoteDecoderManagerParent> parentPipe;
   ipc::Endpoint<PRemoteDecoderManagerChild> childPipe;
 
@@ -246,6 +260,7 @@ bool RDDProcessManager::CreateContentBridge(
 }
 
 bool RDDProcessManager::CreateVideoBridge() {
+  MOZ_ASSERT(NS_IsMainThread());
   ipc::Endpoint<PVideoBridgeParent> parentPipe;
   ipc::Endpoint<PVideoBridgeChild> childPipe;
 
@@ -267,7 +282,11 @@ bool RDDProcessManager::CreateVideoBridge() {
     return false;
   }
 
-  mRDDChild->SendInitVideoBridge(std::move(childPipe));
+  ContentDeviceData contentDeviceData;
+  gfxPlatform::GetPlatform()->BuildContentDeviceData(&contentDeviceData);
+
+  mRDDChild->SendInitVideoBridge(std::move(childPipe),
+                                 mNumUnexpectedCrashes == 0, contentDeviceData);
   if (gpuProcessPid != -1) {
     gpuManager->InitVideoBridge(std::move(parentPipe));
   } else {
@@ -279,6 +298,7 @@ bool RDDProcessManager::CreateVideoBridge() {
 }
 
 base::ProcessId RDDProcessManager::RDDProcessPid() {
+  MOZ_ASSERT(NS_IsMainThread());
   base::ProcessId rddPid = mRDDChild ? mRDDChild->OtherPid() : -1;
   return rddPid;
 }
@@ -324,7 +344,7 @@ class RDDMemoryReporter : public MemoryReportingProcess {
 };
 
 RefPtr<MemoryReportingProcess> RDDProcessManager::GetProcessMemoryReporter() {
-  if (!EnsureRDDReady()) {
+  if (!mProcess || !mProcess->IsConnected()) {
     return nullptr;
   }
   return new RDDMemoryReporter();

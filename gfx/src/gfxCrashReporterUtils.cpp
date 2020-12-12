@@ -5,17 +5,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "gfxCrashReporterUtils.h"
-#include <string.h>              // for strcmp
-#include "mozilla/Assertions.h"  // for MOZ_ASSERT_HELPER2
+#include <string.h>                  // for strcmp
+#include "mozilla/Assertions.h"      // for MOZ_ASSERT_HELPER2
 #include "mozilla/SchedulerGroup.h"  // for SchedulerGroup
-#include "mozilla/Services.h"    // for GetObserverService
+#include "mozilla/Services.h"        // for GetObserverService
 #include "mozilla/StaticMutex.h"
-#include "mozilla/mozalloc.h"     // for operator new, etc
-#include "mozilla/RefPtr.h"       // for RefPtr
-#include "MainThreadUtils.h"      // for NS_IsMainThread
-#include "nsCOMPtr.h"             // for nsCOMPtr
-#include "nsError.h"              // for NS_OK, NS_FAILED, nsresult
-#include "nsExceptionHandler.h"   // for AppendAppNotesToCrashReport
+#include "mozilla/mozalloc.h"    // for operator new, etc
+#include "mozilla/RefPtr.h"      // for RefPtr
+#include "MainThreadUtils.h"     // for NS_IsMainThread
+#include "nsCOMPtr.h"            // for nsCOMPtr
+#include "nsError.h"             // for NS_OK, NS_FAILED, nsresult
+#include "nsExceptionHandler.h"  // for AppendAppNotesToCrashReport
 #include "nsID.h"
 #include "nsIObserver.h"         // for nsIObserver, etc
 #include "nsIObserverService.h"  // for nsIObserverService
@@ -78,11 +78,10 @@ class RegisterObserverRunnable : public Runnable {
   }
 };
 
-class AppendAppNotesRunnable : public CancelableRunnable {
+class AppendAppNotesRunnable : public Runnable {
  public:
   explicit AppendAppNotesRunnable(const nsACString& aFeatureStr)
-      : CancelableRunnable("AppendAppNotesRunnable"),
-        mFeatureString(aFeatureStr) {}
+      : Runnable("AppendAppNotesRunnable"), mFeatureString(aFeatureStr) {}
 
   NS_IMETHOD Run() override {
     CrashReporter::AppendAppNotesToCrashReport(mFeatureString);

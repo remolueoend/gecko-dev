@@ -95,7 +95,7 @@ iframe {
 /******** window & page ******/
 
 window {
-  overflow: -moz-hidden-unscrollable;
+  overflow: clip;
   -moz-box-orient: vertical;
 }
 
@@ -117,14 +117,17 @@ label html|span.accesskey {
 
 /********** toolbarbutton **********/
 
-toolbarbutton:not([type="menu"]) > .toolbarbutton-menu-dropmarker,
 toolbar[mode="icons"] .toolbarbutton-text,
-toolbar[mode="icons"] .toolbarbutton-multiline-text,
 toolbar[mode="text"] .toolbarbutton-icon,
-.toolbarbutton-multiline-text:not([wrap="true"]),
-.toolbarbutton-text[wrap="true"],
 html|label.toolbarbutton-badge:empty {
   display: none;
+}
+
+/********** button **********/
+
+button {
+  -moz-default-appearance: button;
+  appearance: auto;
 }
 
 /******** browser, editor, iframe ********/
@@ -141,6 +144,15 @@ iframe {
   iframe {
     display: block;
   }
+}
+
+/* Allow the browser to shrink below its intrinsic size, to match legacy
+ * behavior */
+browser {
+  align-self: stretch;
+  justify-self: stretch;
+  min-height: 0;
+  min-width: 0;
 }
 
 /*********** popup notification ************/
@@ -239,7 +251,10 @@ tooltip {
   margin-top: 21px;
 }
 
+% excluding Android here to work around bug 1637975:
+%ifndef ANDROID
 @supports -moz-bool-pref("xul.panel-animations.enabled") {
+@media (prefers-reduced-motion: no-preference) {
 %ifdef MOZ_WIDGET_COCOA
   /* On Mac, use the properties "-moz-window-transform" and "-moz-window-opacity"
      instead of "transform" and "opacity" for these animations.
@@ -250,12 +265,19 @@ tooltip {
      for repaints.
      These properties are not implemented on other platforms. */
   panel[type="arrow"]:not([animate="false"]) {
-    -moz-window-opacity: 0;
-    -moz-window-transform: translateY(-70px);
     transition-property: -moz-window-transform, -moz-window-opacity;
     transition-duration: 0.18s, 0.18s;
     transition-timing-function:
       var(--animation-easing-function), ease-out;
+  }
+
+  /* Only do the fade-in animation on pre-Big Sur to avoid missing shadows on
+   * Big Sur, see bug 1672091. */
+  @media (-moz-mac-big-sur-theme: 0) {
+    panel[type="arrow"]:not([animate="false"]) {
+      -moz-window-opacity: 0;
+      -moz-window-transform: translateY(-70px);
+    }
   }
 
   panel[type="arrow"][side="bottom"]:not([animate="false"]) {
@@ -273,6 +295,7 @@ tooltip {
   }
 
   panel[type="arrow"][animate][animate="cancel"] {
+    -moz-window-opacity: 0;
     -moz-window-transform: none;
   }
 %else
@@ -304,30 +327,11 @@ tooltip {
   }
 %endif
 }
+}
+%endif
 
 panel[type="arrow"][animating] {
   pointer-events: none;
-}
-
-/******** grid **********/
-
-grid {
-  display: -moz-grid;
-}
-
-rows,
-columns {
-  display: -moz-grid-group;
-}
-
-row,
-column {
-  display: -moz-grid-line;
-}
-
-rows,
-column {
-  -moz-box-orient: vertical;
 }
 
 /******** tree ******/
@@ -338,7 +342,7 @@ treecolpicker {
 
 treechildren {
   display: -moz-box;
-  -moz-user-select: none;
+  user-select: none;
   -moz-box-flex: 1;
 }
 
@@ -443,7 +447,7 @@ tooltip[titletip="true"] {
 /********** textbox **********/
 
 search-textbox {
-  -moz-user-select: text;
+  user-select: text;
   text-shadow: none;
 }
 
@@ -473,7 +477,7 @@ search-textbox {
 .autocomplete-richlistitem {
   -moz-box-orient: vertical;
   -moz-box-align: center;
-  overflow: -moz-hidden-unscrollable;
+  overflow: clip;
 }
 
 %endif
@@ -493,7 +497,7 @@ search-textbox {
 /********** menulist **********/
 
 menulist[popuponly] {
-  -moz-appearance: none !important;
+  appearance: none !important;
   margin: 0 !important;
   height: 0 !important;
   min-height: 0 !important;
@@ -567,12 +571,6 @@ richlistbox {
 /*********** findbar ************/
 findbar {
   overflow-x: hidden;
-}
-
-/*********** tabmodalprompt ************/
-tabmodalprompt {
-  overflow: hidden;
-  text-shadow: none;
 }
 
 /* Some elements that in HTML blocks should be inline-level by default */

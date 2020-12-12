@@ -7,23 +7,42 @@
 #ifndef mozilla_antitrackingipcutils_h
 #define mozilla_antitrackingipcutils_h
 
-#include "ipc/IPCMessageUtils.h"
+#include "ipc/EnumSerializer.h"
 
 #include "mozilla/ContentBlockingNotifier.h"
+#include "mozilla/ContentBlocking.h"
 
 namespace IPC {
 
 // For allowing passing the enum
-// ContentBlockingNotifier::StorageAccessGrantedReason over IPC.
+// ContentBlockingNotifier::StorageAccessPermissionGrantedReason over IPC.
 template <>
-struct ParamTraits<mozilla::ContentBlockingNotifier::StorageAccessGrantedReason>
+struct ParamTraits<
+    mozilla::ContentBlockingNotifier::StorageAccessPermissionGrantedReason>
     : public ContiguousEnumSerializerInclusive<
-          mozilla::ContentBlockingNotifier::StorageAccessGrantedReason,
-          mozilla::ContentBlockingNotifier::StorageAccessGrantedReason::
-              eStorageAccessAPI,
-          mozilla::ContentBlockingNotifier::StorageAccessGrantedReason::
-              eOpener> {};
+          mozilla::ContentBlockingNotifier::
+              StorageAccessPermissionGrantedReason,
+          mozilla::ContentBlockingNotifier::
+              StorageAccessPermissionGrantedReason::eStorageAccessAPI,
+          mozilla::ContentBlockingNotifier::
+              StorageAccessPermissionGrantedReason::eOpener> {};
 
+// ContentBlockingNotifier::BlockingDecision over IPC.
+template <>
+struct ParamTraits<mozilla::ContentBlockingNotifier::BlockingDecision>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::ContentBlockingNotifier::BlockingDecision,
+          mozilla::ContentBlockingNotifier::BlockingDecision::eBlock,
+          mozilla::ContentBlockingNotifier::BlockingDecision::eAllow> {};
+
+// ContentBlocking::StorageAccessPromptChoices over IPC.
+template <>
+struct ParamTraits<mozilla::ContentBlocking::StorageAccessPromptChoices>
+    : public ContiguousEnumSerializerInclusive<
+          mozilla::ContentBlocking::StorageAccessPromptChoices,
+          mozilla::ContentBlocking::StorageAccessPromptChoices::eAllow,
+          mozilla::ContentBlocking::StorageAccessPromptChoices::
+              eAllowAutoGrant> {};
 }  // namespace IPC
 
 #endif  // mozilla_antitrackingipcutils_h

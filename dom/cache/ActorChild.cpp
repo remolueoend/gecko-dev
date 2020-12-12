@@ -9,20 +9,22 @@
 #include "mozilla/dom/cache/CacheWorkerRef.h"
 #include "nsThreadUtils.h"
 
-namespace mozilla {
-namespace dom {
-namespace cache {
+namespace mozilla::dom::cache {
 
-void ActorChild::SetWorkerRef(CacheWorkerRef* aWorkerRef) {
+void ActorChild::SetWorkerRef(SafeRefPtr<CacheWorkerRef> aWorkerRef) {
   // Some of the Cache actors can have multiple DOM objects associated with
   // them.  In this case the workerRef will be added multiple times.  This is
   // permitted, but the workerRef should be the same each time.
   if (mWorkerRef) {
+    // XXX Here, we don't use aWorkerRef, so we unnecessarily add-refed... This
+    // might be a case to show in the raw pointer guideline as a possible
+    // exception, if warranted by performance analyses.
+
     MOZ_DIAGNOSTIC_ASSERT(mWorkerRef == aWorkerRef);
     return;
   }
 
-  mWorkerRef = aWorkerRef;
+  mWorkerRef = std::move(aWorkerRef);
   if (mWorkerRef) {
     mWorkerRef->AddActor(this);
   }
@@ -36,7 +38,9 @@ void ActorChild::RemoveWorkerRef() {
   }
 }
 
-CacheWorkerRef* ActorChild::GetWorkerRef() const { return mWorkerRef; }
+const SafeRefPtr<CacheWorkerRef>& ActorChild::GetWorkerRefPtr() const {
+  return mWorkerRef;
+}
 
 bool ActorChild::WorkerRefNotified() const {
   return mWorkerRef && mWorkerRef->Notified();
@@ -46,6 +50,4 @@ ActorChild::ActorChild() = default;
 
 ActorChild::~ActorChild() { MOZ_DIAGNOSTIC_ASSERT(!mWorkerRef); }
 
-}  // namespace cache
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom::cache

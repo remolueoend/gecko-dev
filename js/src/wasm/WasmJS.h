@@ -19,22 +19,53 @@
 #ifndef wasm_js_h
 #define wasm_js_h
 
-#include "gc/Policy.h"
-#include "gc/ZoneAllocator.h"
-#include "vm/NativeObject.h"
-#include "wasm/WasmTypes.h"
+#include "mozilla/Attributes.h"  // MOZ_MUST_USE
+#include "mozilla/HashTable.h"   // DefaultHasher
+#include "mozilla/Maybe.h"       // mozilla::Maybe
+
+#include <stdint.h>  // int32_t, int64_t, uint32_t
+
+#include "gc/Barrier.h"        // HeapPtr
+#include "gc/ZoneAllocator.h"  // ZoneAllocPolicy
+#include "js/AllocPolicy.h"    // SystemAllocPolicy
+#include "js/Class.h"          // JSClassOps, ClassSpec
+#include "js/GCHashTable.h"    // GCHashMap, GCHashSet
+#include "js/GCVector.h"       // GCVector
+#include "js/PropertySpec.h"   // JSPropertySpec, JSFunctionSpec
+#include "js/RootingAPI.h"     // MovableCellHasher
+#include "js/SweepingAPI.h"    // JS::WeakCache
+#include "js/TypeDecls.h"  // HandleValue, HandleObject, MutableHandleObject, MutableHandleFunction
+#include "js/Vector.h"        // JS::Vector
+#include "vm/JSFunction.h"    // JSFunction
+#include "vm/NativeObject.h"  // NativeObject
+#include "wasm/WasmTypes.h"   // MutableHandleWasmInstanceObject, wasm::*
+
+class JSFreeOp;
+class JSObject;
+class JSTracer;
+struct JSContext;
+
+namespace JS {
+class CallArgs;
+class Value;
+}  // namespace JS
 
 namespace js {
 
+class ArrayBufferObject;
 class ArrayBufferObjectMaybeShared;
 class JSStringBuilder;
+class SharedArrayRawBuffer;
 class StructTypeDescr;
 class TypedArrayObject;
+class WasmArrayRawBuffer;
 class WasmFunctionScope;
 class WasmInstanceScope;
 class SharedArrayRawBuffer;
 
 namespace wasm {
+
+struct ImportValues;
 
 // Return whether WebAssembly can in principle be compiled on this platform (ie
 // combination of hardware and OS), assuming at least one of the compilers that
@@ -46,9 +77,11 @@ namespace wasm {
 bool HasPlatformSupport(JSContext* cx);
 
 // Return whether WebAssembly is supported on this platform. This determines
-// whether the WebAssembly object is exposed to JS and takes into account
-// configuration options that disable various modes.  It also checks that at
-// least one compiler is (currently) available.
+// whether the WebAssembly object is exposed to JS in this context / realm and
+//
+// It does *not* guarantee that a compiler is actually available; that has to be
+// checked separately, as it is sometimes run-time variant, depending on whether
+// a debugger has been created or not.
 
 bool HasSupport(JSContext* cx);
 
@@ -65,6 +98,10 @@ bool HasSupport(JSContext* cx);
 bool BaselineAvailable(JSContext* cx);
 bool IonAvailable(JSContext* cx);
 bool CraneliftAvailable(JSContext* cx);
+
+// Test all three.
+
+bool AnyCompilerAvailable(JSContext* cx);
 
 // Predicates for white-box compiler disablement testing.
 //
@@ -97,8 +134,11 @@ bool StreamingCompilationAvailable(JSContext* cx);
 // optimizing compiler tier.
 bool CodeCachingAvailable(JSContext* cx);
 
-// General reference types (anyref, funcref, nullref) and operations on them.
+// General reference types (externref, funcref) and operations on them.
 bool ReftypesAvailable(JSContext* cx);
+
+// Typed functions reference support.
+bool FunctionReferencesAvailable(JSContext* cx);
 
 // Experimental (ref T) types and structure types.
 bool GcTypesAvailable(JSContext* cx);
@@ -106,11 +146,20 @@ bool GcTypesAvailable(JSContext* cx);
 // Multi-value block and function returns.
 bool MultiValuesAvailable(JSContext* cx);
 
-// I64<->BigInt interconversion at the wasm/JS boundary.
-bool I64BigIntConversionAvailable(JSContext* cx);
-
 // Shared memory and atomics.
 bool ThreadsAvailable(JSContext* cx);
+
+// SIMD data and operations.
+bool SimdAvailable(JSContext* cx);
+
+#if defined(ENABLE_WASM_SIMD) && defined(DEBUG)
+// Report the result of a Simd simplification to the testing infrastructure.
+void ReportSimdAnalysis(const char* data);
+#endif
+
+// Returns true if WebAssembly as configured by compile-time flags and run-time
+// options can support try/catch, throw, rethrow, and branch_on_exn (evolving).
+bool ExceptionsAvailable(JSContext* cx);
 
 // Compiles the given binary wasm module given the ArrayBufferObject
 // and links the module's imports with the given import object.
@@ -149,6 +198,8 @@ MOZ_MUST_USE bool DeserializeModule(JSContext* cx, const Bytes& serialized,
 bool IsWasmExportedFunction(JSFunction* fun);
 MOZ_MUST_USE bool CheckFuncRefValue(JSContext* cx, HandleValue v,
                                     MutableHandleFunction fun);
+MOZ_MUST_USE bool CheckEqRefValue(JSContext* cx, HandleValue v,
+                                  MutableHandleAnyRef vp);
 
 Instance& ExportedFunctionToInstance(JSFunction* fun);
 WasmInstanceObject* ExportedFunctionToInstanceObject(JSFunction* fun);
@@ -156,23 +207,30 @@ uint32_t ExportedFunctionToFuncIndex(JSFunction* fun);
 
 bool IsSharedWasmMemoryObject(JSObject* obj);
 
-// Check a value against the given reference type kind.  If the targetTypeKind
-// is RefType::Any then the test always passes, but the value may be boxed.  If
-// the test passes then the value is stored either in fnval (for RefType::Func)
-// or in refval (for other types); this split is not strictly necessary but is
-// convenient for the users of this function.
+// Check a value against the given reference type.  If the targetType
+// is RefType::Extern then the test always passes, but the value may be boxed.
+// If the test passes then the value is stored either in fnval (for
+// RefType::Func) or in refval (for other types); this split is not strictly
+// necessary but is convenient for the users of this function.
 //
 // This can return false if the type check fails, or if a boxing into AnyRef
 // throws an OOM.
-MOZ_MUST_USE bool CheckRefType(JSContext* cx, RefType::Kind targetTypeKind,
-                               HandleValue v, MutableHandleFunction fnval,
+MOZ_MUST_USE bool CheckRefType(JSContext* cx, RefType targetType, HandleValue v,
+                               MutableHandleFunction fnval,
                                MutableHandleAnyRef refval);
 
+// Abstractions that clarify that we are working on a 32-bit memory and check
+// that the buffer length does not exceed that's memory's fixed limits.
+//
+// Once the larger ArrayBuffers are stable these may become accessors on the
+// objects themselves: wasmByteLength32() etc.
+uint32_t ByteLength32(Handle<ArrayBufferObjectMaybeShared*> buffer);
+uint32_t ByteLength32(const ArrayBufferObjectMaybeShared& buffer);
+uint32_t ByteLength32(const WasmArrayRawBuffer* buffer);
+uint32_t ByteLength32(const ArrayBufferObject& buffer);
+uint32_t VolatileByteLength32(const SharedArrayRawBuffer* buffer);
+
 }  // namespace wasm
-
-// The class of the WebAssembly global namespace object.
-
-extern const JSClass WebAssemblyClass;
 
 // The class of WebAssembly.Module. Each WasmModuleObject owns a
 // wasm::Module. These objects are used both as content-facing JS objects and as
@@ -197,7 +255,7 @@ class WasmModuleObject : public NativeObject {
   static bool construct(JSContext*, unsigned, Value*);
 
   static WasmModuleObject* create(JSContext* cx, const wasm::Module& module,
-                                  HandleObject proto = nullptr);
+                                  HandleObject proto);
   const wasm::Module& module() const;
 };
 
@@ -222,6 +280,9 @@ class WasmGlobalObject : public NativeObject {
   static void finalize(JSFreeOp*, JSObject* obj);
   static void trace(JSTracer* trc, JSObject* obj);
 
+  static bool typeImpl(JSContext* cx, const CallArgs& args);
+  static bool type(JSContext* cx, unsigned argc, Value* vp);
+
   static bool valueGetterImpl(JSContext* cx, const CallArgs& args);
   static bool valueGetter(JSContext* cx, unsigned argc, Value* vp);
   static bool valueSetterImpl(JSContext* cx, const CallArgs& args);
@@ -235,8 +296,9 @@ class WasmGlobalObject : public NativeObject {
     int64_t i64;
     float f32;
     double f64;
+    wasm::V128 v128;
     wasm::AnyRef ref;
-    Cell() : i64(0) {}
+    Cell() : v128() {}
     ~Cell() = default;
   };
 
@@ -249,7 +311,7 @@ class WasmGlobalObject : public NativeObject {
   static bool construct(JSContext*, unsigned, Value*);
 
   static WasmGlobalObject* create(JSContext* cx, wasm::HandleVal value,
-                                  bool isMutable);
+                                  bool isMutable, HandleObject proto);
   bool isNewborn() { return getReservedSlot(CELL_SLOT).isUndefined(); }
 
   wasm::ValType type() const;
@@ -288,13 +350,9 @@ class WasmInstanceObject : public NativeObject {
                               DefaultHasher<uint32_t>, ZoneAllocPolicy>;
   ExportMap& exports() const;
 
-  // WeakScopeMap maps from function index to js::Scope. This maps is weak
-  // to avoid holding scope objects alive. The scopes are normally created
-  // during debugging.
-  using ScopeMap =
-      JS::WeakCache<GCHashMap<uint32_t, WeakHeapPtr<WasmFunctionScope*>,
-                              DefaultHasher<uint32_t>, ZoneAllocPolicy>>;
-  ScopeMap& scopes() const;
+  // See the definition inside WasmJS.cpp.
+  class UnspecifiedScopeMap;
+  UnspecifiedScopeMap& scopes() const;
 
  public:
   static const unsigned RESERVED_SLOTS = 6;
@@ -310,6 +368,7 @@ class WasmInstanceObject : public NativeObject {
       const wasm::DataSegmentVector& dataSegments,
       const wasm::ElemSegmentVector& elemSegments, wasm::UniqueTlsData tlsData,
       HandleWasmMemoryObject memory,
+      Vector<RefPtr<wasm::ExceptionTag>, 0, SystemAllocPolicy>&& exceptionTags,
       Vector<RefPtr<wasm::Table>, 0, SystemAllocPolicy>&& tables,
       GCVector<HeapPtr<StructTypeDescr*>, 0, SystemAllocPolicy>&&
           structTypeDescrs,
@@ -352,6 +411,8 @@ class WasmMemoryObject : public NativeObject {
   static void finalize(JSFreeOp* fop, JSObject* obj);
   static bool bufferGetterImpl(JSContext* cx, const CallArgs& args);
   static bool bufferGetter(JSContext* cx, unsigned argc, Value* vp);
+  static bool typeImpl(JSContext* cx, const CallArgs& args);
+  static bool type(JSContext* cx, unsigned argc, Value* vp);
   static bool growImpl(JSContext* cx, const CallArgs& args);
   static bool grow(JSContext* cx, unsigned argc, Value* vp);
   static uint32_t growShared(HandleWasmMemoryObject memory, uint32_t delta);
@@ -380,21 +441,21 @@ class WasmMemoryObject : public NativeObject {
   // `buffer()` returns the current buffer object always.  If the buffer
   // represents shared memory then `buffer().byteLength()` never changes, and
   // in particular it may be a smaller value than that returned from
-  // `volatileMemoryLength()` below.
+  // `volatileMemoryLength32()` below.
   //
   // Generally, you do not want to call `buffer().byteLength()`, but to call
-  // `volatileMemoryLength()`, instead.
+  // `volatileMemoryLength32()`, instead.
   ArrayBufferObjectMaybeShared& buffer() const;
 
   // The current length of the memory.  In the case of shared memory, the
   // length can change at any time.  Also note that this will acquire a lock
   // for shared memory, so do not call this from a signal handler.
-  uint32_t volatileMemoryLength() const;
+  uint32_t volatileMemoryLength32() const;
 
   bool isShared() const;
   bool isHuge() const;
   bool movingGrowable() const;
-  uint32_t boundsCheckLimit() const;
+  uint32_t boundsCheckLimit32() const;
 
   // If isShared() is true then obtain the underlying buffer object.
   SharedArrayRawBuffer* sharedArrayRawBuffer() const;
@@ -417,6 +478,8 @@ class WasmTableObject : public NativeObject {
   static void trace(JSTracer* trc, JSObject* obj);
   static bool lengthGetterImpl(JSContext* cx, const CallArgs& args);
   static bool lengthGetter(JSContext* cx, unsigned argc, Value* vp);
+  static bool typeImpl(JSContext* cx, const CallArgs& args);
+  static bool type(JSContext* cx, unsigned argc, Value* vp);
   static bool getImpl(JSContext* cx, const CallArgs& args);
   static bool get(JSContext* cx, unsigned argc, Value* vp);
   static bool setImpl(JSContext* cx, const CallArgs& args);
@@ -436,9 +499,61 @@ class WasmTableObject : public NativeObject {
   // Note that, after creation, a WasmTableObject's table() is not initialized
   // and must be initialized before use.
 
-  static WasmTableObject* create(JSContext* cx, const wasm::Limits& limits,
-                                 wasm::TableKind tableKind);
+  static WasmTableObject* create(JSContext* cx, uint32_t initialLength,
+                                 mozilla::Maybe<uint32_t> maximumLength,
+                                 wasm::RefType tableType, HandleObject proto);
   wasm::Table& table() const;
+};
+
+// The class of WebAssembly.Exception. This class is used to track exception
+// types for exports and imports.
+
+class WasmExceptionObject : public NativeObject {
+  static const unsigned TAG_SLOT = 0;
+  static const unsigned TYPE_SLOT = 1;
+
+  static const JSClassOps classOps_;
+  static const ClassSpec classSpec_;
+  static void finalize(JSFreeOp*, JSObject* obj);
+  static void trace(JSTracer* trc, JSObject* obj);
+
+ public:
+  static const unsigned RESERVED_SLOTS = 2;
+  static const JSClass class_;
+  static const JSClass& protoClass_;
+  static const JSPropertySpec properties[];
+  static const JSFunctionSpec methods[];
+  static const JSFunctionSpec static_methods[];
+  static bool construct(JSContext*, unsigned, Value*);
+
+  static WasmExceptionObject* create(JSContext* cx, wasm::ResultType type,
+                                     HandleObject proto);
+  bool isNewborn() const;
+
+  wasm::ValTypeVector& valueTypes() const;
+  wasm::ExceptionTag& tag() const;
+};
+
+// The class of the WebAssembly global namespace object.
+
+class WasmNamespaceObject : public NativeObject {
+ public:
+  enum Slot {
+    ArrayTypePrototype,
+    StructTypePrototype,
+    Int32Desc,
+    Int64Desc,
+    Float32Desc,
+    Float64Desc,
+    ObjectDesc,
+    WasmAnyRefDesc,
+    SlotCount
+  };
+
+  static const JSClass class_;
+
+ private:
+  static const ClassSpec classSpec_;
 };
 
 }  // namespace js

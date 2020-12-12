@@ -9,6 +9,11 @@
 
 #include "nsIObserver.h"
 #include "nsITimer.h"
+#include "nsString.h"
+#include "nsTArray.h"
+
+// XXX Avoid including this here by moving function bodies to the cpp file
+#include "nsIPrincipal.h"
 
 class nsIPrincipal;
 class nsPIDOMWindowInner;

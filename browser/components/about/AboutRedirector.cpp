@@ -99,8 +99,7 @@ static const RedirEntry kRedirMap[] = {
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_CAN_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
          nsIAboutModule::HIDE_FROM_ABOUTABOUT},
-    {"preferences",
-     "chrome://browser/content/preferences/in-content/preferences.xhtml",
+    {"preferences", "chrome://browser/content/preferences/preferences.xhtml",
      nsIAboutModule::ALLOW_SCRIPT},
     {"downloads",
      "chrome://browser/content/downloads/contentAreaDownloadsView.xhtml",
@@ -119,6 +118,8 @@ static const RedirEntry kRedirMap[] = {
      nsIAboutModule::URI_SAFE_FOR_UNTRUSTED_CONTENT |
          nsIAboutModule::URI_MUST_LOAD_IN_CHILD | nsIAboutModule::ALLOW_SCRIPT |
          nsIAboutModule::URI_CAN_LOAD_IN_PRIVILEGEDABOUT_PROCESS},
+    {"ion", "chrome://browser/content/ion.html",
+     nsIAboutModule::ALLOW_SCRIPT | nsIAboutModule::HIDE_FROM_ABOUTABOUT},
 };
 
 static nsAutoCString GetAboutModuleName(nsIURI* aURI) {
@@ -155,7 +156,7 @@ AboutRedirector::NewChannel(nsIURI* aURI, nsILoadInfo* aLoadInfo,
   // startup cache.
   if (XRE_IsContentProcess() && path.EqualsLiteral("home")) {
     auto& remoteType = dom::ContentChild::GetSingleton()->GetRemoteType();
-    if (remoteType.EqualsLiteral(PRIVILEGEDABOUT_REMOTE_TYPE)) {
+    if (remoteType == PRIVILEGEDABOUT_REMOTE_TYPE) {
       nsCOMPtr<nsIAboutNewTabService> aboutNewTabService =
           do_GetService("@mozilla.org/browser/aboutnewtab-service;1", &rv);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -234,6 +235,21 @@ AboutRedirector::GetURIFlags(nsIURI* aURI, uint32_t* result) {
     if (name.Equals(redir.id)) {
       *result = redir.flags;
       return NS_OK;
+    }
+  }
+
+  return NS_ERROR_ILLEGAL_VALUE;
+}
+
+NS_IMETHODIMP
+AboutRedirector::GetChromeURI(nsIURI* aURI, nsIURI** chromeURI) {
+  NS_ENSURE_ARG_POINTER(aURI);
+
+  nsAutoCString name = GetAboutModuleName(aURI);
+
+  for (const auto& redir : kRedirMap) {
+    if (name.Equals(redir.id)) {
+      return NS_NewURI(chromeURI, redir.url);
     }
   }
 

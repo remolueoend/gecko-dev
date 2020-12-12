@@ -206,14 +206,14 @@ static void UpdateDocShellOrientationLock(nsPIDOMWindowInner* aWindow,
     return;
   }
 
-  nsCOMPtr<nsIDocShellTreeItem> root;
-  docShell->GetInProcessSameTypeRootTreeItem(getter_AddRefs(root));
-  nsCOMPtr<nsIDocShell> rootShell(do_QueryInterface(root));
-  if (!rootShell) {
+  RefPtr<BrowsingContext> bc = docShell->GetBrowsingContext();
+  bc = bc ? bc->Top() : nullptr;
+  if (!bc) {
     return;
   }
 
-  rootShell->SetOrientationLock(aOrientation);
+  // Setting orientation lock on a discarded context has no effect.
+  Unused << bc->SetOrientationLock(aOrientation);
 }
 
 bool nsScreen::MozLockOrientation(const nsAString& aOrientation,
@@ -297,9 +297,16 @@ nsresult nsScreen::GetWindowInnerRect(nsRect& aRect) {
   if (!win) {
     return NS_ERROR_FAILURE;
   }
-  nsresult rv = win->GetInnerWidth(&aRect.width);
+  double width;
+  double height;
+  nsresult rv = win->GetInnerWidth(&width);
   NS_ENSURE_SUCCESS(rv, rv);
-  return win->GetInnerHeight(&aRect.height);
+  rv = win->GetInnerHeight(&height);
+  NS_ENSURE_SUCCESS(rv, rv);
+  // FIXME(emilio): This is an nsRect but should really be a CSSIntRect, these
+  // are CSS pixels!
+  aRect.SizeTo(std::round(width), std::round(height));
+  return NS_OK;
 }
 
 bool nsScreen::ShouldResistFingerprinting() const {

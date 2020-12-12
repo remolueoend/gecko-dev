@@ -8,18 +8,17 @@
 #include "ContentBlockingLog.h"
 
 #include "nsITrackingDBService.h"
-#include "nsStringStream.h"
+#include "nsServiceManagerUtils.h"
 #include "nsTArray.h"
-#include "mozilla/dom/ContentChild.h"
 #include "mozilla/HashFunctions.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/RandomNum.h"
+#include "mozilla/ReverseIterator.h"
 #include "mozilla/StaticPrefs_browser.h"
 #include "mozilla/StaticPrefs_privacy.h"
 #include "mozilla/StaticPrefs_telemetry.h"
 #include "mozilla/Telemetry.h"
-#include "mozilla/Unused.h"
 #include "mozilla/XorShift128PlusRNG.h"
-#include "mozilla/ipc/IPCStreamUtils.h"
 
 namespace mozilla {
 
@@ -28,7 +27,7 @@ using ipc::AutoIPCStream;
 typedef Telemetry::OriginMetricID OriginMetricID;
 
 // sync with TelemetryOriginData.inc
-NS_NAMED_LITERAL_CSTRING(ContentBlockingLog::kDummyOriginHash, "PAGELOAD");
+const nsLiteralCString ContentBlockingLog::kDummyOriginHash = "PAGELOAD"_ns;
 
 // randomly choose 1% users included in the content blocking measurement
 // based on their client id.
@@ -105,7 +104,8 @@ static void ReportOriginSingleHash(OriginMetricID aId,
 
 Maybe<uint32_t> ContentBlockingLog::RecordLogParent(
     const nsACString& aOrigin, uint32_t aType, bool aBlocked,
-    const Maybe<ContentBlockingNotifier::StorageAccessGrantedReason>& aReason,
+    const Maybe<ContentBlockingNotifier::StorageAccessPermissionGrantedReason>&
+        aReason,
     const nsTArray<nsCString>& aTrackingFullHashes) {
   MOZ_ASSERT(XRE_IsParentProcess());
 
@@ -155,6 +155,10 @@ Maybe<uint32_t> ContentBlockingLog::RecordLogParent(
     case nsIWebProgressListener::STATE_COOKIES_BLOCKED_SOCIALTRACKER:
       RecordLogInternal(aOrigin, aType, blockedValue, aReason,
                         aTrackingFullHashes);
+      break;
+
+    case nsIWebProgressListener::STATE_UNBLOCKED_TRACKING_CONTENT:
+      RecordLogInternal(aOrigin, aType, blockedValue);
       break;
 
     default:
@@ -242,21 +246,22 @@ void ContentBlockingLog::ReportOrigins() {
       }
 
       const bool isBlocked = logEntry.mBlocked;
-      Maybe<StorageAccessGrantedReason> reason = logEntry.mReason;
+      Maybe<StorageAccessPermissionGrantedReason> reason = logEntry.mReason;
 
       metricId = testMode ? OriginMetricID::ContentBlocking_Blocked_TestOnly
                           : OriginMetricID::ContentBlocking_Blocked;
       if (!isBlocked) {
         MOZ_ASSERT(reason.isSome());
         switch (reason.value()) {
-          case StorageAccessGrantedReason::eStorageAccessAPI:
+          case StorageAccessPermissionGrantedReason::eStorageAccessAPI:
             metricId =
                 testMode
                     ? OriginMetricID::
                           ContentBlocking_StorageAccessAPIExempt_TestOnly
                     : OriginMetricID::ContentBlocking_StorageAccessAPIExempt;
             break;
-          case StorageAccessGrantedReason::eOpenerAfterUserInteraction:
+          case StorageAccessPermissionGrantedReason::
+              eOpenerAfterUserInteraction:
             metricId =
                 testMode
                     ? OriginMetricID::
@@ -264,13 +269,14 @@ void ContentBlockingLog::ReportOrigins() {
                     : OriginMetricID::
                           ContentBlocking_OpenerAfterUserInteractionExempt;
             break;
-          case StorageAccessGrantedReason::eOpener:
+          case StorageAccessPermissionGrantedReason::eOpener:
             metricId =
                 testMode ? OriginMetricID::ContentBlocking_OpenerExempt_TestOnly
                          : OriginMetricID::ContentBlocking_OpenerExempt;
             break;
           default:
-            MOZ_ASSERT_UNREACHABLE("Unknown StorageAccessGrantedReason");
+            MOZ_ASSERT_UNREACHABLE(
+                "Unknown StorageAccessPermissionGrantedReason");
         }
       }
 

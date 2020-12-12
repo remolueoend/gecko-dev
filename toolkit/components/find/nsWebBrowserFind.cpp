@@ -10,6 +10,7 @@
 // else we could use nsRange.h and nsIFind.h.
 #include "nsFind.h"
 
+#include "mozilla/dom/ScriptSettings.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsPIDOMWindow.h"
@@ -33,6 +34,7 @@
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Selection.h"
 #include "nsISimpleEnumerator.h"
+#include "nsComponentManagerUtils.h"
 #include "nsContentUtils.h"
 #include "nsGenericHTMLElement.h"
 
@@ -344,8 +346,7 @@ void nsWebBrowserFind::SetSelectionAndScroll(nsPIDOMWindowOuter* aWindow,
     selection->AddRangeAndSelectFramesAndNotifyListeners(*aRange,
                                                          IgnoreErrors());
 
-    nsFocusManager* fm = nsFocusManager::GetFocusManager();
-    if (fm) {
+    if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
       if (tcFrame) {
         RefPtr<Element> newFocusedElement = Element::FromNode(content);
         fm->SetFocus(newFocusedElement, nsIFocusManager::FLAG_NOSCROLL);
@@ -444,9 +445,14 @@ nsresult nsWebBrowserFind::GetSearchLimits(nsRange* aSearchRange,
   // There are four possible range endpoints we might use:
   // DocumentStart, SelectionStart, SelectionEnd, DocumentEnd.
 
-  RefPtr<nsRange> range;
+  RefPtr<const nsRange> range;
   nsCOMPtr<nsINode> node;
   uint32_t offset;
+
+  // Prevent the security checks in nsRange from getting into effect for the
+  // purposes of determining the search range. These ranges will never be
+  // exposed to content.
+  mozilla::dom::AutoNoJSAPI nojsapi;
 
   // Forward, not wrapping: SelEnd to DocEnd
   if (!mFindBackwards && !aWrap) {
@@ -742,10 +748,11 @@ nsresult nsWebBrowserFind::OnFind(nsPIDOMWindowOuter* aFoundWindow) {
     ClearFrameSelection(lastFocusedWindow);
   }
 
-  if (nsFocusManager* fm = nsFocusManager::GetFocusManager()) {
+  if (RefPtr<nsFocusManager> fm = nsFocusManager::GetFocusManager()) {
     // get the containing frame and focus it. For top-level windows, the right
     // window should already be focused.
-    if (RefPtr<Element> frameElement = aFoundWindow->GetFrameElementInternal()) {
+    if (RefPtr<Element> frameElement =
+            aFoundWindow->GetFrameElementInternal()) {
       fm->SetFocus(frameElement, 0);
     }
 

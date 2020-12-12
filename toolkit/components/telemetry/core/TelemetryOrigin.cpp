@@ -143,7 +143,7 @@ static uint32_t gPrioDatasPerMetric;
 // Currently 1: the "unknown origin recorded" meta-origin.
 static uint32_t kNumMetaOrigins = 1;
 
-NS_NAMED_LITERAL_CSTRING(kUnknownOrigin, "__UNKNOWN__");
+constexpr auto kUnknownOrigin = "__UNKNOWN__"_ns;
 
 }  // namespace
 
@@ -230,7 +230,7 @@ nsresult AppEncodeTo(const StaticMutexAutoLock& lock,
           metricData[shardIndex][index % PrioEncoder::gNumBooleans] = true;
         }
       }
-      aResult.AppendElement(std::make_pair(id, metricData));
+      aResult.EmplaceBack(id, std::move(metricData));
     } while (generation++ < maxGeneration);
   }
   return NS_OK;
@@ -522,8 +522,8 @@ nsresult TelemetryOrigin::GetEncodedOriginSnapshot(
         return rv;
       }
 
-      prioData.AppendElement(
-          std::make_pair(encodingName, std::make_pair(aBase64, bBase64)));
+      prioData.EmplaceBack(std::move(encodingName),
+                           std::pair(std::move(aBase64), std::move(bBase64)));
     }
   }
 

@@ -7,35 +7,41 @@
 #ifndef nsThread_h__
 #define nsThread_h__
 
-#include "mozilla/Mutex.h"
-#include "nsIThreadInternal.h"
-#include "nsISupportsPriority.h"
-#include "nsThreadUtils.h"
-#include "nsString.h"
-#include "nsTObserverArray.h"
+#include "MainThreadUtils.h"
+#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
-#include "mozilla/IntegerTypeTraits.h"
+#include "mozilla/EventQueue.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/MemoryReporting.h"
-#include "mozilla/SynchronizedEventQueue.h"
+#include "mozilla/Mutex.h"
 #include "mozilla/NotNull.h"
+#include "mozilla/PerformanceCounter.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/TaskDispatcher.h"
 #include "mozilla/TimeStamp.h"
-#include "mozilla/AlreadyAddRefed.h"
 #include "mozilla/UniquePtr.h"
-#include "mozilla/Array.h"
-#include "mozilla/dom/DocGroup.h"
+#include "nsIDirectTaskDispatcher.h"
+#include "nsIEventTarget.h"
+#include "nsISerialEventTarget.h"
+#include "nsISupportsPriority.h"
+#include "nsIThread.h"
+#include "nsIThreadInternal.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 class CycleCollectedJSContext;
-class EventQueue;
-template <typename>
+class SynchronizedEventQueue;
 class ThreadEventQueue;
 class ThreadEventTarget;
+
+template <typename T, size_t Length>
+class Array;
 }  // namespace mozilla
 
 using mozilla::NotNull;
 
+class nsIRunnable;
 class nsLocalExecutionRecord;
 class nsThreadEnumerator;
 
@@ -124,7 +130,7 @@ class PerformanceCounterState {
   bool mCurrentRunnableIsIdleRunnable = false;
 
   // Whether we're attached to the mainthread nsThread.
-  bool mIsMainThread;
+  const bool mIsMainThread;
 
   // The timestamp from which time to be accounted for should be measured.  This
   // can be the start of a runnable running or the end of a nested runnable
@@ -146,6 +152,7 @@ class PerformanceCounterState {
 // A native thread
 class nsThread : public nsIThreadInternal,
                  public nsISupportsPriority,
+                 public nsIDirectTaskDispatcher,
                  private mozilla::LinkedListElement<nsThread> {
   friend mozilla::LinkedList<nsThread>;
   friend mozilla::LinkedListElement<nsThread>;
@@ -156,6 +163,7 @@ class nsThread : public nsIThreadInternal,
   NS_DECL_NSITHREAD
   NS_DECL_NSITHREADINTERNAL
   NS_DECL_NSISUPPORTSPRIORITY
+  NS_DECL_NSIDIRECTTASKDISPATCHER
 
   enum MainThreadFlag { MAIN_THREAD, NOT_MAIN_THREAD };
 
@@ -179,7 +187,7 @@ class nsThread : public nsIThreadInternal,
 
  public:
   // The PRThread corresponding to this thread.
-  PRThread* GetPRThread() { return mThread; }
+  PRThread* GetPRThread() const { return mThread; }
 
   const void* StackBase() const { return mStackBase; }
   size_t StackSize() const { return mStackSize; }
@@ -207,27 +215,17 @@ class nsThread : public nsIThreadInternal,
   static const uint32_t kRunnableNameBufSize = 1000;
   static mozilla::Array<char, kRunnableNameBufSize> sMainThreadRunnableName;
 
-  void EnableInputEventPrioritization() {
-    EventQueue()->EnableInputEventPrioritization();
-  }
-
-  void FlushInputEventPrioritization() {
-    EventQueue()->FlushInputEventPrioritization();
-  }
-
-  void SuspendInputEventPrioritization() {
-    EventQueue()->SuspendInputEventPrioritization();
-  }
-
-  void ResumeInputEventPrioritization() {
-    EventQueue()->ResumeInputEventPrioritization();
-  }
-
   mozilla::SynchronizedEventQueue* EventQueue() { return mEvents.get(); }
 
-  bool ShuttingDown() { return mShutdownContext != nullptr; }
+  bool ShuttingDown() const { return mShutdownContext != nullptr; }
+
+  static bool GetLabeledRunnableName(nsIRunnable* aEvent, nsACString& aName,
+                                     mozilla::EventQueuePriority aPriority);
 
   virtual mozilla::PerformanceCounter* GetPerformanceCounter(
+      nsIRunnable* aEvent) const;
+
+  static mozilla::PerformanceCounter* GetPerformanceCounterBase(
       nsIRunnable* aEvent);
 
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
@@ -257,8 +255,13 @@ class nsThread : public nsIThreadInternal,
   // notifications, etc.
   nsLocalExecutionRecord EnterLocalExecution();
 
+  void SetUseHangMonitor(bool aValue) {
+    MOZ_ASSERT(IsOnCurrentThread());
+    mUseHangMonitor = aValue;
+  }
+
  private:
-  void DoMainThreadSpecificProcessing(bool aReallyWait);
+  void DoMainThreadSpecificProcessing() const;
 
  protected:
   friend class nsThreadShutdownEvent;
@@ -328,7 +331,8 @@ class nsThread : public nsIThreadInternal,
 
   int8_t mPriority;
 
-  bool mIsMainThread;
+  const bool mIsMainThread;
+  bool mUseHangMonitor;
   mozilla::Atomic<bool, mozilla::Relaxed>* mIsAPoolThreadFree;
 
   // Set to true if this thread creates a JSRuntime.
@@ -351,6 +355,8 @@ class nsThread : public nsIThreadInternal,
   mozilla::PerformanceCounterState mPerformanceCounterState;
 
   bool mIsInLocalExecutionMode = false;
+
+  mozilla::SimpleTaskQueue mDirectTasks;
 };
 
 struct nsThreadShutdownContext {
@@ -374,8 +380,6 @@ struct nsThreadShutdownContext {
   bool mAwaitingShutdownAck;
   bool mIsMainThreadJoining;
 };
-
-class nsLocalExecutionRecord;
 
 // This RAII class controls the duration of the associated nsThread's local
 // execution mode and provides access to the local event target. (See

@@ -20,13 +20,13 @@ struct LangGroupFontPrefs {
   // Font sizes default to zero; they will be set in GetFontPreferences
   LangGroupFontPrefs()
       : mLangGroup(nullptr),
-        mMinimumFontSize(0),
+        mMinimumFontSize({0}),
         mDefaultVariableFont(),
-        mDefaultSerifFont(StyleGenericFontFamily::Serif, 0),
-        mDefaultSansSerifFont(StyleGenericFontFamily::SansSerif, 0),
-        mDefaultMonospaceFont(StyleGenericFontFamily::Monospace, 0),
-        mDefaultCursiveFont(StyleGenericFontFamily::Cursive, 0),
-        mDefaultFantasyFont(StyleGenericFontFamily::Fantasy, 0) {
+        mDefaultSerifFont(StyleGenericFontFamily::Serif, {0}),
+        mDefaultSansSerifFont(StyleGenericFontFamily::SansSerif, {0}),
+        mDefaultMonospaceFont(StyleGenericFontFamily::Monospace, {0}),
+        mDefaultCursiveFont(StyleGenericFontFamily::Cursive, {0}),
+        mDefaultFantasyFont(StyleGenericFontFamily::Fantasy, {0}) {
     mDefaultVariableFont.fontlist.SetDefaultFontType(
         StyleGenericFontFamily::Serif);
     // We create mDefaultVariableFont.fontlist with defaultType as the
@@ -72,15 +72,16 @@ struct LangGroupFontPrefs {
         return &mDefaultCursiveFont;
       case StyleGenericFontFamily::Fantasy:
         return &mDefaultFantasyFont;
+      case StyleGenericFontFamily::MozEmoji:
+        // This shouldn't appear in font family names.
         break;
-      default:
-        MOZ_ASSERT_UNREACHABLE("invalid font id");
-        return nullptr;
     }
+    MOZ_ASSERT_UNREACHABLE("invalid font id");
+    return nullptr;
   }
 
   nsStaticAtom* mLangGroup;
-  nscoord mMinimumFontSize;
+  Length mMinimumFontSize;
   nsFont mDefaultVariableFont;
   nsFont mDefaultSerifFont;
   nsFont mDefaultSansSerifFont;

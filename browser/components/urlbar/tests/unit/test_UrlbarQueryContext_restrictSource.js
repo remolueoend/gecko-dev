@@ -7,7 +7,6 @@
  */
 
 add_task(async function setup() {
-  await AddonTestUtils.promiseStartupManager();
   let engine = await addTestSuggestionsEngine();
   let oldDefaultEngine = await Services.search.getDefault();
   Services.search.setDefault(engine);
@@ -135,7 +134,10 @@ async function get_results(test) {
     sources: test.sources,
   };
   if (test.engineName) {
-    options.engineName = test.engineName;
+    options.searchMode = {
+      source: UrlbarUtils.RESULT_SOURCE.SEARCH,
+      engineName: test.engineName,
+    };
   }
   let queryContext = createContext(test.searchString, options);
   await controller.startQuery(queryContext);

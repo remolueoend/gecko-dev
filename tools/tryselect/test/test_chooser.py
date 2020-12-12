@@ -12,18 +12,18 @@ from tryselect.selectors.chooser.app import create_application
 
 TASKS = [
     {
-        'kind': 'build',
-        'label': 'build-windows',
-        'attributes': {
-            'build_platform': 'windows',
+        "kind": "build",
+        "label": "build-windows",
+        "attributes": {
+            "build_platform": "windows",
         },
     },
     {
-        'kind': 'test',
-        'label': 'test-windows-mochitest-e10s',
-        'attributes': {
-            'unittest_suite': 'mochitest-browser-chrome',
-            'mochitest_try_name': 'mochitest-browser-chrome',
+        "kind": "test",
+        "label": "test-windows-mochitest-e10s",
+        "attributes": {
+            "unittest_suite": "mochitest-browser-chrome",
+            "mochitest_try_name": "mochitest-browser-chrome",
         },
     },
 ]
@@ -32,7 +32,7 @@ TASKS = [
 @pytest.fixture
 def app(tg):
     app = create_application(tg)
-    app.config['TESTING'] = True
+    app.config["TESTING"] = True
 
     ctx = app.app_context()
     ctx.push()
@@ -43,36 +43,39 @@ def app(tg):
 def test_try_chooser(app):
     client = app.test_client()
 
-    response = client.get('/')
+    response = client.get("/")
     assert response.status_code == 200
 
     expected_output = [
-        """<title>Try Chooser Enhanced</title>""",
-        """<input class="filter" type="checkbox" id=windows name="build" value='{"build_platform": ["windows"]}' onchange="console.log('checkbox onchange triggered');apply();">""",  # noqa
-        """<input class="filter" type="checkbox" id=mochitest-browser-chrome name="test" value='{"unittest_suite": ["mochitest-browser-chrome"]}' onchange="console.log('checkbox onchange triggered');apply();">""",  # noqa
+        b"""<title>Try Chooser Enhanced</title>""",
+        b"""<input class="filter" type="checkbox" id=windows name="build" value='{"build_platform": ["windows"]}' onchange="console.log('checkbox onchange triggered');apply();">""",  # noqa
+        b"""<input class="filter" type="checkbox" id=mochitest-browser-chrome name="test" value='{"unittest_suite": ["mochitest-browser-chrome"]}' onchange="console.log('checkbox onchange triggered');apply();">""",  # noqa
     ]
 
     for expected in expected_output:
         assert expected in response.data
 
-    response = client.post('/', data={'action': 'Cancel'})
+    response = client.post("/", data={"action": "Cancel"})
     assert response.status_code == 200
-    assert "You may now close this page" in response.data
+    assert b"You may now close this page" in response.data
     assert app.tasks == []
 
-    response = client.post('/', data={'action': 'Push', 'selected-tasks': ''})
+    response = client.post("/", data={"action": "Push", "selected-tasks": ""})
     assert response.status_code == 200
-    assert "You may now close this page" in response.data
+    assert b"You may now close this page" in response.data
     assert app.tasks == []
 
-    response = client.post('/', data={
-        'action': 'Push',
-        'selected-tasks': 'build-windows\ntest-windows-mochitest-e10s'
-    })
+    response = client.post(
+        "/",
+        data={
+            "action": "Push",
+            "selected-tasks": "build-windows\ntest-windows-mochitest-e10s",
+        },
+    )
     assert response.status_code == 200
-    assert "You may now close this page" in response.data
-    assert set(app.tasks) == set(['build-windows', 'test-windows-mochitest-e10s'])
+    assert b"You may now close this page" in response.data
+    assert set(app.tasks) == set(["build-windows", "test-windows-mochitest-e10s"])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     mozunit.main()

@@ -20,8 +20,6 @@
 #include "nsNodeInfoManager.h"
 #include "nsContentCreatorFunctions.h"
 
-//#define DEBUG_REFLOW
-
 using namespace mozilla;
 using namespace mozilla::dom;
 
@@ -98,8 +96,9 @@ nsresult nsDocElementBoxFrame::CreateAnonymousContent(
                                  nodeInfo.forget(), dom::NOT_FROM_PARSER);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (!aElements.AppendElement(mPopupgroupContent))
-    return NS_ERROR_OUT_OF_MEMORY;
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  aElements.AppendElement(mPopupgroupContent);
 
   // create the top-secret default tooltip node. shhhhh!
   nodeInfo = nodeInfoManager->GetNodeInfo(
@@ -110,10 +109,12 @@ nsresult nsDocElementBoxFrame::CreateAnonymousContent(
                         dom::NOT_FROM_PARSER);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mTooltipContent->SetAttr(kNameSpaceID_None, nsGkAtoms::_default,
-                           NS_LITERAL_STRING("true"), false);
+  mTooltipContent->SetAttr(kNameSpaceID_None, nsGkAtoms::_default, u"true"_ns,
+                           false);
 
-  if (!aElements.AppendElement(mTooltipContent)) return NS_ERROR_OUT_OF_MEMORY;
+  // XXX(Bug 1631371) Check if this should use a fallible operation as it
+  // pretended earlier.
+  aElements.AppendElement(mTooltipContent);
 
   return NS_OK;
 }
@@ -135,6 +136,6 @@ NS_QUERYFRAME_TAIL_INHERITING(nsBoxFrame)
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsDocElementBoxFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("DocElementBox"), aResult);
+  return MakeFrameName(u"DocElementBox"_ns, aResult);
 }
 #endif

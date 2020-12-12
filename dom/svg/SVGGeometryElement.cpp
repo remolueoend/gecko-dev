@@ -9,7 +9,6 @@
 #include "DOMSVGPoint.h"
 #include "gfxPlatform.h"
 #include "nsCOMPtr.h"
-#include "nsSVGUtils.h"
 #include "SVGAnimatedLength.h"
 #include "SVGCircleElement.h"
 #include "SVGEllipseElement.h"
@@ -54,7 +53,7 @@ nsresult SVGGeometryElement::AfterSetAttr(int32_t aNamespaceID, nsAtom* aName,
 }
 
 bool SVGGeometryElement::IsNodeOfType(uint32_t aFlags) const {
-  return !(aFlags & ~eSHAPE);
+  return !(aFlags & ~(eSHAPE | eUSE_TARGET));
 }
 
 bool SVGGeometryElement::AttributeDefinesGeometry(const nsAtom* aName) {
@@ -193,6 +192,9 @@ bool SVGGeometryElement::IsPointInStroke(const DOMPointInit& aPoint) {
   if (!path) {
     return false;
   }
+  if (nsCOMPtr<Document> doc = GetComposedDoc()) {
+    doc->FlushPendingNotifications(FlushType::Layout);
+  }
 
   bool res = false;
   SVGGeometryProperty::DoForComputedStyle(this, [&](const ComputedStyle* s) {
@@ -224,15 +226,15 @@ float SVGGeometryElement::GetTotalLength() {
   return flat ? flat->ComputeLength() : 0.f;
 }
 
-already_AddRefed<nsISVGPoint> SVGGeometryElement::GetPointAtLength(
+already_AddRefed<DOMSVGPoint> SVGGeometryElement::GetPointAtLength(
     float distance, ErrorResult& rv) {
   RefPtr<Path> path = GetOrBuildPathForMeasuring();
   if (!path) {
-    rv.Throw(NS_ERROR_FAILURE);
+    rv.ThrowInvalidStateError("No path available for measuring");
     return nullptr;
   }
 
-  nsCOMPtr<nsISVGPoint> point = new DOMSVGPoint(path->ComputePointAtLength(
+  RefPtr<DOMSVGPoint> point = new DOMSVGPoint(path->ComputePointAtLength(
       clamped(distance, 0.f, path->ComputeLength())));
   return point.forget();
 }

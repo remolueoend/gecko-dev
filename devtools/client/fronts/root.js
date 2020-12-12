@@ -59,35 +59,36 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
       : await this.listAllWorkerTargets();
 
     for (const registrationFront of registrations) {
-      // TODO: add all workers to the result. See Bug 1612897
-      const latestWorker =
-        registrationFront.activeWorker ||
-        registrationFront.waitingWorker ||
-        registrationFront.installingWorker ||
-        registrationFront.evaluatingWorker;
+      // workers from the registration, ordered from most recent to older
+      const workers = [
+        registrationFront.activeWorker,
+        registrationFront.waitingWorker,
+        registrationFront.installingWorker,
+        registrationFront.evaluatingWorker,
+      ]
+        // filter out non-existing workers
+        .filter(w => !!w)
+        // build a worker object with its WorkerDescriptorFront
+        .map(workerFront => {
+          const workerDescriptorFront = allWorkers.find(
+            targetFront => targetFront.id === workerFront.id
+          );
 
-      if (latestWorker !== null) {
-        const latestWorkerFront = allWorkers.find(
-          workerFront => workerFront.id === latestWorker.id
-        );
-        if (latestWorkerFront) {
-          registrationFront.workerTargetFront = latestWorkerFront;
-        }
-        // TODO: return only the worker targets. See Bug 1620605
-        result.push({
-          registration: registrationFront,
-          workers: [
-            {
-              id: registrationFront.id,
-              name: latestWorker.url,
-              state: latestWorker.state,
-              stateText: latestWorker.stateText,
-              url: latestWorker.url,
-              workerTargetFront: latestWorkerFront,
-            },
-          ],
+          return {
+            id: workerFront.id,
+            name: workerFront.url,
+            state: workerFront.state,
+            stateText: workerFront.stateText,
+            url: workerFront.url,
+            workerDescriptorFront,
+          };
         });
-      }
+
+      // TODO: return only the worker targets. See Bug 1620605
+      result.push({
+        registration: registrationFront,
+        workers,
+      });
     }
 
     return result;
@@ -112,10 +113,14 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
     const allWorkers = await this.listAllWorkerTargets();
     const serviceWorkers = await this.listAllServiceWorkers(allWorkers);
 
+    // NOTE: listAllServiceWorkers() now returns all the workers belonging to
+    //       a registration. To preserve the usual behavior at about:debugging,
+    //       in which we show only the most recent one, we grab the first
+    //       worker in the array only.
     const result = {
       service: serviceWorkers
         .map(({ registration, workers }) => {
-          return workers.map(worker => {
+          return workers.slice(0, 1).map(worker => {
             return Object.assign(worker, {
               registrationFront: registration,
               fetch: registration.fetch,
@@ -132,7 +137,7 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
         id: front.id,
         url: front.url,
         name: front.url,
-        workerTargetFront: front,
+        workerDescriptorFront: front,
       };
 
       switch (front.type) {
@@ -195,7 +200,7 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
   }
 
   /**
-   * Fetch the target actor for the currently selected tab, or for a specific
+   * Fetch the tab descriptor for the currently selected tab, or for a specific
    * tab given as first parameter.
    *
    * @param [optional] object filter
@@ -218,13 +223,10 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
         if (browser.frameLoader.remoteTab) {
           // Tabs in child process
           packet.tabId = browser.frameLoader.remoteTab.tabId;
-        } else if (browser.outerWindowID) {
-          // <xul:browser> tabs in parent process
-          packet.outerWindowID = browser.outerWindowID;
         } else {
-          // <iframe mozbrowser> tabs in parent process
-          const windowUtils = browser.contentWindow.windowUtils;
-          packet.outerWindowID = windowUtils.outerWindowID;
+          // <xul:browser> or <iframe mozbrowser> tabs in parent process
+          packet.outerWindowID =
+            browser.browsingContext.currentWindowGlobal.outerWindowId;
         }
       } else {
         // Throw if a filter object have been passed but without
@@ -234,7 +236,17 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
     }
 
     const descriptorFront = await super.getTab(packet);
-    return descriptorFront.getTarget(filter);
+
+    // If the tab is a local tab, forward it to the descriptor.
+    if (filter?.tab?.tagName == "tab") {
+      // Ignore the fake `tab` object we receive, where there is only a
+      // `linkedBrowser` attribute, but this isn't a real <tab> element.
+      // devtools/client/framework/test/browser_toolbox_target.js is passing such
+      // a fake tab.
+      descriptorFront.setLocalTab(filter.tab);
+    }
+
+    return descriptorFront;
   }
 
   /**
@@ -263,7 +275,7 @@ class RootFront extends FrontClassWithSpec(rootSpec) {
     if (!worker) {
       return null;
     }
-    return worker.workerTargetFront || worker.registrationFront;
+    return worker.workerDescriptorFront || worker.registrationFront;
   }
 
   /**

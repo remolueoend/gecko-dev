@@ -4,10 +4,9 @@
 "use strict";
 
 /**
- * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS. This
- * is a whitelist that should slowly go away as we improve the performance of
- * the front-end. Instead of adding more reflows to the whitelist, you should
- * be modifying your code to avoid the reflow.
+ * WHOA THERE: We should never be adding new things to EXPECTED_REFLOWS.
+ * Instead of adding reflows to the list, you should be modifying your code to
+ * avoid the reflow.
  *
  * See https://developer.mozilla.org/en-US/Firefox/Performance_best_practices_for_Firefox_fe_engineers
  * for tips on how to do that.
@@ -23,14 +22,25 @@ const EXPECTED_REFLOWS = [
  * uninterruptible reflows when opening new tabs.
  */
 add_task(async function() {
+  // Force-enable tab animations
+  gReduceMotionOverride = false;
+
   await ensureNoPreloadedBrowser();
   await disableFxaBadge();
+
+  // The test starts on about:blank and opens an about:blank
+  // tab which triggers opening the toolbar since
+  // ensureNoPreloadedBrowser sets AboutNewTab.newTabURL to about:blank.
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.toolbars.bookmarks.visibility", "never"]],
+  });
 
   // Prepare the window to avoid flicker and reflow that's unrelated to our
   // tab opening operation.
   gURLBar.focus();
 
   let tabStripRect = gBrowser.tabContainer.arrowScrollbox.getBoundingClientRect();
+
   let firstTabRect = gBrowser.selectedTab.getBoundingClientRect();
   let firstTabLabelRect = gBrowser.selectedTab.textLabel.getBoundingClientRect();
   let textBoxRect = gURLBar

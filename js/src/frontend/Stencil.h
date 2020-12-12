@@ -7,50 +7,65 @@
 #ifndef frontend_Stencil_h
 #define frontend_Stencil_h
 
-#include "mozilla/Assertions.h"  // MOZ_ASSERT, MOZ_RELEASE_ASSERT
-#include "mozilla/CheckedInt.h"  // CheckedUint32
+#include "mozilla/Assertions.h"  // MOZ_ASSERT
+#include "mozilla/Attributes.h"  // MOZ_MUST_USE
 #include "mozilla/Maybe.h"       // mozilla::{Maybe, Nothing}
 #include "mozilla/Range.h"       // mozilla::Range
 #include "mozilla/Span.h"        // mozilla::Span
+#include "mozilla/Variant.h"     // mozilla::Variant
 
-#include <stdint.h>  // char16_t, uint8_t, uint32_t
-#include <stdlib.h>  // size_t
+#include <stddef.h>  // size_t
+#include <stdint.h>  // char16_t, uint8_t, uint16_t, uint32_t
 
-#include "frontend/AbstractScopePtr.h"   // AbstractScopePtr, ScopeIndex
-#include "frontend/NameAnalysisTypes.h"  // {AtomVector, FunctionBoxVector}
-#include "frontend/ObjLiteral.h"         // ObjLiteralCreationData
-#include "frontend/TypedIndex.h"         // TypedIndex
-#include "gc/AllocKind.h"                // gc::AllocKind
-#include "gc/Barrier.h"                  // HeapPtr, GCPtrAtom
-#include "gc/Rooting.h"  // HandleAtom, HandleModuleObject, HandleScriptSourceObject, MutableHandleScope
-#include "js/GCVariant.h"    // GC Support for mozilla::Variant
-#include "js/RegExpFlags.h"  // JS::RegExpFlags
-#include "js/RootingAPI.h"   // Handle
-#include "js/UniquePtr.h"    // UniquePtr
-#include "js/Utility.h"      // JS::FreePolicy, UniqueTwoByteChars
-#include "js/Vector.h"       // js::Vector
-#include "util/Text.h"       // DuplicateString
-#include "vm/BigIntType.h"   // ParseBigIntLiteral
-#include "vm/JSFunction.h"   // FunctionFlags
-#include "vm/JSScript.h"  // GeneratorKind, FunctionAsyncKind, ScopeNote, JSTryNote, FieldInitializers
-#include "vm/Runtime.h"  // ReportOutOfMemory
-#include "vm/Scope.h"  // BaseScopeData, FunctionScope, LexicalScope, VarScope, GlobalScope, EvalScope, ModuleScope
+#include "frontend/AbstractScopePtr.h"    // AbstractScopePtr, ScopeIndex
+#include "frontend/FunctionSyntaxKind.h"  // FunctionSyntaxKind
+#include "frontend/ObjLiteral.h"          // ObjLiteralStencil
+#include "frontend/ParserAtom.h"          // ParserAtom, TaggedParserAtomIndex
+#include "frontend/TypedIndex.h"          // TypedIndex
+#include "js/AllocPolicy.h"               // SystemAllocPolicy
+#include "js/RegExpFlags.h"               // JS::RegExpFlags
+#include "js/RootingAPI.h"                // Handle
+#include "js/TypeDecls.h"                 // JSContext
+#include "js/UniquePtr.h"                 // js::UniquePtr
+#include "js/Utility.h"                   // UniqueTwoByteChars
+#include "js/Vector.h"                    // js::Vector
+#include "util/Text.h"                    // DuplicateString
+#include "vm/BigIntType.h"                // ParseBigIntLiteral
+#include "vm/FunctionFlags.h"             // FunctionFlags
+#include "vm/GeneratorAndAsyncKind.h"     // GeneratorKind, FunctionAsyncKind
+#include "vm/Scope.h"  // Scope, BaseScopeData, FunctionScope, LexicalScope, VarScope, GlobalScope, EvalScope, ModuleScope
 #include "vm/ScopeKind.h"      // ScopeKind
-#include "vm/SharedStencil.h"  // ImmutableScriptFlags
-
-struct JSContext;
-class JSAtom;
-class JSFunction;
-class JSTracer;
+#include "vm/SharedStencil.h"  // ImmutableScriptFlags, GCThingIndex, js::SharedImmutableScriptData, MemberInitializers, SourceExtent
+#include "vm/StencilEnums.h"   // ImmutableScriptFlagsEnum
 
 namespace js {
 
-class Shape;
+class JSONPrinter;
+class RegExpObject;
 
 namespace frontend {
 
 struct CompilationInfo;
-class FunctionBox;
+struct CompilationAtomCache;
+struct CompilationStencil;
+struct CompilationGCOutput;
+class ScriptStencil;
+class RegExpStencil;
+class BigIntStencil;
+class StencilXDR;
+
+using BaseParserScopeData = AbstractBaseScopeData<const ParserAtom>;
+
+template <typename Scope>
+using ParserScopeData = typename Scope::template AbstractData<const ParserAtom>;
+using ParserGlobalScopeData = ParserScopeData<GlobalScope>;
+using ParserEvalScopeData = ParserScopeData<EvalScope>;
+using ParserLexicalScopeData = ParserScopeData<LexicalScope>;
+using ParserFunctionScopeData = ParserScopeData<FunctionScope>;
+using ParserModuleScopeData = ParserScopeData<ModuleScope>;
+using ParserVarScopeData = ParserScopeData<VarScope>;
+
+using ParserBindingIter = AbstractBindingIter<const ParserAtom>;
 
 // [SMDOC] Script Stencil (Frontend Representation)
 //
@@ -61,150 +76,58 @@ class FunctionBox;
 //
 // Renaming to use the term stencil more broadly is still in progress.
 
-enum class FunctionSyntaxKind : uint8_t;
+// Typed indices for the different stencil elements in the compilation result.
+using RegExpIndex = TypedIndex<RegExpStencil>;
+using BigIntIndex = TypedIndex<BigIntStencil>;
+using ObjLiteralIndex = TypedIndex<ObjLiteralStencil>;
+using FunctionIndex = TypedIndex<ScriptStencil>;
 
-// Arbitrary typename to disambiguate TypedIndexes;
-class FunctionIndexType;
+FunctionFlags InitialFunctionFlags(FunctionSyntaxKind kind,
+                                   GeneratorKind generatorKind,
+                                   FunctionAsyncKind asyncKind,
+                                   bool isSelfHosting = false,
+                                   bool hasUnclonedName = false);
 
-// We need to be able to forward declare this type, so make a subclass
-// rather than just using.
-class FunctionIndex : public TypedIndex<FunctionIndexType> {
-  // Delegate constructors;
-  using Base = TypedIndex<FunctionIndexType>;
-  using Base::Base;
-};
+// A syntax-checked regular expression string.
+class RegExpStencil {
+  friend class StencilXDR;
 
-// Data used to instantiate the lazy script before script emission.
-struct LazyScriptCreationData {
-  frontend::AtomVector closedOverBindings;
-
-  // This is traced by the functionbox which owns this LazyScriptCreationData
-  Vector<FunctionIndex> innerFunctionIndexes;
-  bool forceStrict = false;
-  bool strict = false;
-
-  explicit LazyScriptCreationData(JSContext* cx) : innerFunctionIndexes(cx) {}
-
-  bool init(JSContext* cx, const frontend::AtomVector& COB,
-            Vector<FunctionIndex>&& innerIndexes, bool isForceStrict,
-            bool isStrict) {
-    // Check if we will overflow the `ngcthings` field later.
-    mozilla::CheckedUint32 ngcthings =
-        mozilla::CheckedUint32(COB.length()) +
-        mozilla::CheckedUint32(innerIndexes.length());
-    if (!ngcthings.isValid()) {
-      ReportAllocationOverflow(cx);
-      return false;
-    }
-
-    forceStrict = isForceStrict;
-    strict = isStrict;
-    innerFunctionIndexes = std::move(innerIndexes);
-
-    if (!closedOverBindings.appendAll(COB)) {
-      ReportOutOfMemory(cx);  // closedOverBindings uses SystemAllocPolicy.
-      return false;
-    }
-    return true;
-  }
-
-  bool create(JSContext* cx, CompilationInfo& compilationInfo,
-              HandleFunction function, FunctionBox* funbox,
-              HandleScriptSourceObject sourceObject);
-};
-
-// Metadata that can be used to allocate a JSFunction object.
-//
-// Keeping metadata separate allows the parser to generate
-// metadata without requiring immediate access to the garbage
-// collector.
-struct FunctionCreationData {
-  FunctionCreationData(HandleAtom atom, FunctionSyntaxKind kind,
-                       GeneratorKind generatorKind, FunctionAsyncKind asyncKind,
-                       bool isSelfHosting = false, bool inFunctionBox = false);
-
-  // Custom Copy constructor to ensure we never copy a FunctionCreationData
-  // that has a LazyScriptData.
-  //
-  // We want to be able to copy FunctionCreationData into a Functionbox as part
-  // of our attempts to syntax parse an inner function, however, because
-  // trySyntaxParseInnerFunction is fallible, for example, if a new directive
-  // like "use asmjs" is encountered, we don't want to -move- it into the
-  // FunctionBox, because we may need it again if the syntax parse fails.
-  //
-  // To ensure that we never lose a lazyScriptData however, we guarantee that
-  // when this copy constructor is run, it doesn't have any lazyScriptData.
-  FunctionCreationData(const FunctionCreationData& data)
-      : atom(data.atom),
-        kind(data.kind),
-        generatorKind(data.generatorKind),
-        asyncKind(data.asyncKind),
-        allocKind(data.allocKind),
-        flags(data.flags),
-        isSelfHosting(data.isSelfHosting),
-        lazyScriptData(mozilla::Nothing()) {
-    MOZ_RELEASE_ASSERT(!data.lazyScriptData);
-  }
-
-  FunctionCreationData(FunctionCreationData&& data) = default;
-
-  // The Parser uses KeepAtoms to prevent GC from collecting atoms
-  JSAtom* atom = nullptr;
-  FunctionSyntaxKind kind;  // can't field-initialize and forward declare
-  GeneratorKind generatorKind = GeneratorKind::NotGenerator;
-  FunctionAsyncKind asyncKind = FunctionAsyncKind::SyncFunction;
-
-  gc::AllocKind allocKind = gc::AllocKind::FUNCTION;
-  FunctionFlags flags = {};
-
-  bool isSelfHosting = false;
-
-  mozilla::Maybe<LazyScriptCreationData> lazyScriptData;
-
-  HandleAtom getAtom(JSContext* cx) const;
-
-  void trace(JSTracer* trc) {
-    TraceNullableRoot(trc, &atom, "FunctionCreationData atom");
-  }
-};
-
-// This owns a set of characters, previously syntax checked as a RegExp. Used
-// to avoid allocating the RegExp on the GC heap during parsing.
-class RegExpCreationData {
-  UniquePtr<char16_t[], JS::FreePolicy> buf_;
-  size_t length_ = 0;
+  TaggedParserAtomIndex atom_;
   JS::RegExpFlags flags_;
 
  public:
-  RegExpCreationData() = default;
+  RegExpStencil() = default;
 
-  MOZ_MUST_USE bool init(JSContext* cx, mozilla::Range<const char16_t> range,
-                         JS::RegExpFlags flags) {
-    length_ = range.length();
-    buf_ = js::DuplicateString(cx, range.begin().get(), range.length());
-    if (!buf_) {
-      return false;
-    }
-    flags_ = flags;
-    return true;
-  }
+  RegExpStencil(TaggedParserAtomIndex atom, JS::RegExpFlags flags)
+      : atom_(atom), flags_(flags) {}
 
-  MOZ_MUST_USE bool init(JSContext* cx, JSAtom* pattern, JS::RegExpFlags flags);
+  RegExpObject* createRegExp(JSContext* cx,
+                             CompilationAtomCache& atomCache) const;
 
-  RegExpObject* createRegExp(JSContext* cx) const;
+  // This is used by `Reflect.parse` when we need the RegExpObject but are not
+  // doing a complete instantiation of the CompilationStencil.
+  RegExpObject* createRegExpAndEnsureAtom(JSContext* cx,
+                                          CompilationAtomCache& atomCache,
+                                          CompilationStencil& stencil) const;
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+  void dump();
+  void dump(JSONPrinter& json, CompilationStencil* compilationStencil);
+  void dumpFields(JSONPrinter& json, CompilationStencil* compilationStencil);
+#endif
 };
-
-using RegExpIndex = TypedIndex<RegExpCreationData>;
 
 // This owns a set of characters guaranteed to parse into a BigInt via
 // ParseBigIntLiteral. Used to avoid allocating the BigInt on the
 // GC heap during parsing.
-class BigIntCreationData {
+class BigIntStencil {
+  friend class StencilXDR;
+
   UniqueTwoByteChars buf_;
   size_t length_ = 0;
 
  public:
-  BigIntCreationData() = default;
+  BigIntStencil() = default;
 
   MOZ_MUST_USE bool init(JSContext* cx, const Vector<char16_t, 32>& buf) {
 #ifdef DEBUG
@@ -219,274 +142,504 @@ class BigIntCreationData {
     return buf_ != nullptr;
   }
 
-  BigInt* createBigInt(JSContext* cx) {
+  BigInt* createBigInt(JSContext* cx) const {
     mozilla::Range<const char16_t> source(buf_.get(), length_);
 
     return js::ParseBigIntLiteral(cx, source);
   }
 
-  bool isZero() {
+  bool isZero() const {
     mozilla::Range<const char16_t> source(buf_.get(), length_);
     return js::BigIntLiteralIsZero(source);
   }
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+  void dump();
+  void dump(JSONPrinter& json);
+#endif
 };
 
-using BigIntIndex = TypedIndex<BigIntCreationData>;
+class ScopeStencil {
+  friend class StencilXDR;
 
-class EnvironmentShapeCreationData {
-  // Data used to call CreateEnvShapeData
-  struct CreateEnvShapeData {
-    BindingIter freshBi;
-    const JSClass* cls;
-    uint32_t nextEnvironmentSlot;
-    uint32_t baseShapeFlags;
-
-    void trace(JSTracer* trc) { freshBi.trace(trc); }
-  };
-
-  // Data used to call EmptyEnvironmentShape
-  struct EmptyEnvShapeData {
-    const JSClass* cls;
-    uint32_t baseShapeFlags;
-    void trace(JSTracer* trc){
-        // Rather than having to expose this type as public to provide
-        // an IgnoreGCPolicy, just have an empty trace.
-    };
-  };
-
-  // Three different paths to creating an environment shape: Either we produce
-  // nullptr directly (represented by storing Nothing in the variant), or we
-  // call CreateEnvironmentShape, or we call EmptyEnvironmentShape.
-  mozilla::Variant<mozilla::Nothing, CreateEnvShapeData, EmptyEnvShapeData>
-      data_ = mozilla::AsVariant(mozilla::Nothing());
-
- public:
-  explicit operator bool() const { return !data_.is<mozilla::Nothing>(); }
-
-  // Setup for calling CreateEnvironmentShape
-  void set(const BindingIter& freshBi, const JSClass* cls,
-           uint32_t nextEnvironmentSlot, uint32_t baseShapeFlags) {
-    data_ = mozilla::AsVariant(
-        CreateEnvShapeData{freshBi, cls, nextEnvironmentSlot, baseShapeFlags});
-  }
-
-  // Setup for calling EmptyEnviornmentShape
-  void set(const JSClass* cls, uint32_t shapeFlags) {
-    data_ = mozilla::AsVariant(EmptyEnvShapeData{cls, shapeFlags});
-  }
-
-  // Reifiy this into an actual shape.
-  MOZ_MUST_USE bool createShape(JSContext* cx, MutableHandleShape shape);
-
-  void trace(JSTracer* trc) {
-    using DataGCPolicy = JS::GCPolicy<decltype(data_)>;
-    DataGCPolicy::trace(trc, &data_, "data_");
-  }
-};
-
-class ScopeCreationData {
-  friend class js::AbstractScopePtr;
-  friend class js::GCMarker;
-
-  // The enclosing scope if it exists
-  AbstractScopePtr enclosing_;
+  // The enclosing scope. If Nothing, then the enclosing scope of the
+  // compilation applies.
+  mozilla::Maybe<ScopeIndex> enclosing_;
 
   // The kind determines data_.
-  ScopeKind kind_;
+  ScopeKind kind_{UINT8_MAX};
 
-  // Data to reify an environment shape at creation time.
-  EnvironmentShapeCreationData environmentShape_;
+  // First frame slot to use, or LOCALNO_LIMIT if none are allowed.
+  uint32_t firstFrameSlot_ = UINT32_MAX;
 
-  // Once we've produced a scope from a scope creation data, there may still be
-  // AbstractScopePtrs refering to this ScopeCreationData, and if reification is
-  // requested multiple times, we should return the same scope rather than
-  // creating multiple sopes.
-  //
-  // As well, any queries that require data() to answer must be redirected to
-  // the scope once the scope has been reified, as the ScopeCreationData loses
-  // ownership of the data on reification.
-  HeapPtr<Scope*> scope_ = {};
+  // If Some, then an environment Shape must be created. The shape itself may
+  // have no slots if the environment may be extensible later.
+  mozilla::Maybe<uint32_t> numEnvironmentSlots_;
 
-  // For FunctionScopes we need the funbox; nullptr otherwise.
-  frontend::FunctionBox* funbox_ = nullptr;
+  // Canonical function if this is a FunctionScope.
+  mozilla::Maybe<FunctionIndex> functionIndex_;
 
-  UniquePtr<BaseScopeData> data_;
+  // True if this is a FunctionScope for an arrow function.
+  bool isArrow_ = false;
+
+  // The list of binding and scope-specific data.
+  // Note: The back pointers to the owning JSFunction / ModuleObject are not set
+  //       until Stencils are converted to GC allocations.
+  // Note: This allocation is owned by CompilationStencil.
+  BaseParserScopeData* data_ = nullptr;
 
  public:
-  ScopeCreationData(
-      JSContext* cx, ScopeKind kind, Handle<AbstractScopePtr> enclosing,
-      Handle<frontend::EnvironmentShapeCreationData> environmentShape,
-      UniquePtr<BaseScopeData> data = {},
-      frontend::FunctionBox* funbox = nullptr)
+  // For XDR only.
+  ScopeStencil() = default;
+
+  ScopeStencil(ScopeKind kind, mozilla::Maybe<ScopeIndex> enclosing,
+               uint32_t firstFrameSlot,
+               mozilla::Maybe<uint32_t> numEnvironmentSlots,
+               BaseParserScopeData* data = {},
+               mozilla::Maybe<FunctionIndex> functionIndex = mozilla::Nothing(),
+               bool isArrow = false)
       : enclosing_(enclosing),
         kind_(kind),
-        environmentShape_(environmentShape),  // Copied
-        funbox_(funbox),
-        data_(std::move(data)) {}
+        firstFrameSlot_(firstFrameSlot),
+        numEnvironmentSlots_(numEnvironmentSlots),
+        functionIndex_(functionIndex),
+        isArrow_(isArrow),
+        data_(data) {}
+
+  static bool createForFunctionScope(
+      JSContext* cx, CompilationInfo& compilationInfo,
+      ParserFunctionScopeData* dataArg, bool hasParameterExprs,
+      bool needsEnvironment, FunctionIndex functionIndex, bool isArrow,
+      mozilla::Maybe<ScopeIndex> enclosing, ScopeIndex* index);
+
+  static bool createForLexicalScope(
+      JSContext* cx, CompilationInfo& compilationInfo, ScopeKind kind,
+      ParserLexicalScopeData* dataArg, uint32_t firstFrameSlot,
+      mozilla::Maybe<ScopeIndex> enclosing, ScopeIndex* index);
+
+  static bool createForVarScope(JSContext* cx,
+                                frontend::CompilationInfo& compilationInfo,
+                                ScopeKind kind, ParserVarScopeData* dataArg,
+                                uint32_t firstFrameSlot, bool needsEnvironment,
+                                mozilla::Maybe<ScopeIndex> enclosing,
+                                ScopeIndex* index);
+
+  static bool createForGlobalScope(JSContext* cx,
+                                   CompilationInfo& compilationInfo,
+                                   ScopeKind kind,
+                                   ParserGlobalScopeData* dataArg,
+                                   ScopeIndex* index);
+
+  static bool createForEvalScope(JSContext* cx,
+                                 CompilationInfo& compilationInfo,
+                                 ScopeKind kind, ParserEvalScopeData* dataArg,
+                                 mozilla::Maybe<ScopeIndex> enclosing,
+                                 ScopeIndex* index);
+
+  static bool createForModuleScope(JSContext* cx,
+                                   CompilationInfo& compilationInfo,
+                                   ParserModuleScopeData* dataArg,
+                                   mozilla::Maybe<ScopeIndex> enclosing,
+                                   ScopeIndex* index);
+
+  static bool createForWithScope(JSContext* cx,
+                                 CompilationInfo& compilationInfo,
+                                 mozilla::Maybe<ScopeIndex> enclosing,
+                                 ScopeIndex* index);
+
+  AbstractScopePtr enclosing(CompilationInfo& compilationInfo) const;
+  js::Scope* enclosingExistingScope(const CompilationInput& input,
+                                    const CompilationGCOutput& gcOutput) const;
 
   ScopeKind kind() const { return kind_; }
-  AbstractScopePtr enclosing() { return enclosing_; }
-  bool getOrCreateEnclosingScope(JSContext* cx, MutableHandleScope scope) {
-    return enclosing_.getOrCreateScope(cx, scope);
-  }
-
-  // FunctionScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     Handle<FunctionScope::Data*> dataArg,
-                     bool hasParameterExprs, bool needsEnvironment,
-                     frontend::FunctionBox* funbox,
-                     Handle<AbstractScopePtr> enclosing, ScopeIndex* index);
-
-  // LexicalScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     ScopeKind kind, Handle<LexicalScope::Data*> dataArg,
-                     uint32_t firstFrameSlot,
-                     Handle<AbstractScopePtr> enclosing, ScopeIndex* index);
-  // VarScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     ScopeKind kind, Handle<VarScope::Data*> dataArg,
-                     uint32_t firstFrameSlot, bool needsEnvironment,
-                     Handle<AbstractScopePtr> enclosing, ScopeIndex* index);
-
-  // GlobalScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     ScopeKind kind, Handle<GlobalScope::Data*> dataArg,
-                     ScopeIndex* index);
-
-  // EvalScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     ScopeKind kind, Handle<EvalScope::Data*> dataArg,
-                     Handle<AbstractScopePtr> enclosing, ScopeIndex* index);
-
-  // ModuleScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     Handle<ModuleScope::Data*> dataArg,
-                     HandleModuleObject module,
-                     Handle<AbstractScopePtr> enclosing, ScopeIndex* index);
-
-  // WithScope
-  static bool create(JSContext* cx, frontend::CompilationInfo& compilationInfo,
-                     Handle<AbstractScopePtr> enclosing, ScopeIndex* index);
 
   bool hasEnvironment() const {
     // Check if scope kind alone means we have an env shape, and
     // otherwise check if we have one created.
-    return Scope::hasEnvironment(kind(), !!environmentShape_);
+    bool hasEnvironmentShape = numEnvironmentSlots_.isSome();
+    return Scope::hasEnvironment(kind(), hasEnvironmentShape);
   }
 
-  // Valid for functions;
-  bool isArrow() const;
-  JSFunction* canonicalFunction() const;
+  bool isArrow() const { return isArrow_; }
 
-  bool hasScope() const { return scope_ != nullptr; }
-
-  Scope* getScope() const {
-    MOZ_ASSERT(hasScope());
-    return scope_;
-  }
-
-  Scope* createScope(JSContext* cx);
-
-  void trace(JSTracer* trc);
+  Scope* createScope(JSContext* cx, CompilationInput& input,
+                     CompilationGCOutput& gcOutput) const;
 
   uint32_t nextFrameSlot() const;
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+  void dump();
+  void dump(JSONPrinter& json);
+  void dumpFields(JSONPrinter& json);
+#endif
 
  private:
   // Non owning reference to data
   template <typename SpecificScopeType>
-  typename SpecificScopeType::Data& data() const {
-    MOZ_ASSERT(data_.get());
-    return *static_cast<typename SpecificScopeType::Data*>(data_.get());
+  typename SpecificScopeType::template AbstractData<const ParserAtom>& data()
+      const {
+    using Data =
+        typename SpecificScopeType ::template AbstractData<const ParserAtom>;
+
+    MOZ_ASSERT(data_);
+    return *static_cast<Data*>(data_);
   }
 
   // Transfer ownership into a new UniquePtr.
   template <typename SpecificScopeType>
-  UniquePtr<typename SpecificScopeType::Data> releaseData() {
-    return UniquePtr<typename SpecificScopeType::Data>(
-        static_cast<typename SpecificScopeType::Data*>(data_.release()));
-  }
-
-  template <typename SpecificScopeType>
-  Scope* createSpecificScope(JSContext* cx);
+  UniquePtr<typename SpecificScopeType::Data> createSpecificScopeData(
+      JSContext* cx, CompilationAtomCache& atomCache,
+      CompilationGCOutput& gcOutput) const;
 
   template <typename SpecificScopeType>
   uint32_t nextFrameSlot() const {
-    // If a scope has been allocated for the ScopeCreationData we no longer own
-    // data, so defer to scope
-    if (hasScope()) {
-      return getScope()->template as<SpecificScopeType>().nextFrameSlot();
-    }
+    // If a scope has been allocated for the ScopeStencil we no longer own data,
+    // so defer to scope
     return data<SpecificScopeType>().nextFrameSlot;
   }
+
+  template <typename SpecificEnvironmentType>
+  MOZ_MUST_USE bool createSpecificShape(JSContext* cx, ScopeKind kind,
+                                        BaseScopeData* scopeData,
+                                        MutableHandleShape shape) const;
+
+  template <typename SpecificScopeType, typename SpecificEnvironmentType>
+  Scope* createSpecificScope(JSContext* cx, CompilationInput& input,
+                             CompilationGCOutput& gcOutput) const;
 };
 
-class EmptyGlobalScopeType {};
+// See JSOp::Lambda for interepretation of this index.
+using FunctionDeclaration = GCThingIndex;
+using FunctionDeclarationVector =
+    Vector<FunctionDeclaration, 0, js::SystemAllocPolicy>;
 
-// These types all end up being baked into GC things as part of stencil
-// instantiation.
-using ScriptThingVariant =
-    mozilla::Variant<BigIntIndex, ObjLiteralCreationData, RegExpIndex,
-                     ScopeIndex, FunctionIndex, EmptyGlobalScopeType>;
-
-// A vector of things destined to be converted to GC things.
-using ScriptThingsVector = Vector<ScriptThingVariant>;
-
-// Data used to instantiate the non-lazy script.
-class ScriptStencil {
+// Common type for ImportEntry / ExportEntry / ModuleRequest within frontend. We
+// use a shared stencil class type to simplify serialization.
+//
+// https://tc39.es/ecma262/#importentry-record
+// https://tc39.es/ecma262/#exportentry-record
+//
+// Note: We subdivide the spec's ExportEntry into ExportAs / ExportFrom forms
+//       for readability.
+class StencilModuleEntry {
  public:
-  using ImmutableFlags = ImmutableScriptFlagsEnum;
+  //              | ModuleRequest | ImportEntry | ExportAs | ExportFrom |
+  //              |-----------------------------------------------------|
+  // specifier    | required      | required    | nullptr  | required   |
+  // localName    | null          | required    | required | nullptr    |
+  // importName   | null          | required    | nullptr  | required   |
+  // exportName   | null          | null        | required | optional   |
+  TaggedParserAtomIndex specifier;
+  TaggedParserAtomIndex localName;
+  TaggedParserAtomIndex importName;
+  TaggedParserAtomIndex exportName;
+
+  // Location used for error messages. If this is for a module request entry
+  // then it is the module specifier string, otherwise the import/export spec
+  // that failed. Exports may not fill these fields if an error cannot be
+  // generated such as `export let x;`.
+  uint32_t lineno = 0;
+  uint32_t column = 0;
+
+ private:
+  StencilModuleEntry(uint32_t lineno, uint32_t column)
+      : lineno(lineno), column(column) {}
 
  public:
-  js::UniquePtr<js::ImmutableScriptData> immutableScriptData = nullptr;
+  // For XDR only.
+  StencilModuleEntry() = default;
 
-  // See `initAtomMap` method.
-  uint32_t natoms = 0;
-
-  // See `finishGCThings` method.
-  uint32_t ngcthings = 0;
-
-  // The flags that will be added to the script when initializing it.
-  ImmutableScriptFlags immutableFlags;
-
-  ScriptThingsVector gcThings;
-
-  // The function to link this script to.
-  mozilla::Maybe<FunctionIndex> functionIndex;
-
-  // (Only) Class-constructors should use this field.
-  mozilla::Maybe<FieldInitializers> fieldInitializers;
-
-  ScriptStencil(JSContext* cx,
-                UniquePtr<js::ImmutableScriptData> immutableScriptData)
-      : immutableScriptData(std::move(immutableScriptData)), gcThings(cx) {}
-
-  bool isFunction() const {
-    return immutableFlags.hasFlag(ImmutableFlags::IsFunction);
+  static StencilModuleEntry moduleRequest(TaggedParserAtomIndex specifier,
+                                          uint32_t lineno, uint32_t column) {
+    MOZ_ASSERT(!!specifier);
+    StencilModuleEntry entry(lineno, column);
+    entry.specifier = specifier;
+    return entry;
   }
 
-  // Store all GC things into `gcthings`.
-  // `gcthings.Length()` is `this.ngcthings`.
-  virtual bool finishGCThings(JSContext* cx,
-                              mozilla::Span<JS::GCCellPtr> output) const = 0;
+  static StencilModuleEntry importEntry(TaggedParserAtomIndex specifier,
+                                        TaggedParserAtomIndex localName,
+                                        TaggedParserAtomIndex importName,
+                                        uint32_t lineno, uint32_t column) {
+    MOZ_ASSERT(specifier && localName && importName);
+    StencilModuleEntry entry(lineno, column);
+    entry.specifier = specifier;
+    entry.localName = localName;
+    entry.importName = importName;
+    return entry;
+  }
 
-  // Store all atoms into `atoms`
-  // `atoms` is the pointer to `this.natoms`-length array of `GCPtrAtom`.
-  virtual void initAtomMap(GCPtrAtom* atoms) const = 0;
+  static StencilModuleEntry exportAsEntry(TaggedParserAtomIndex localName,
+                                          TaggedParserAtomIndex exportName,
+                                          uint32_t lineno, uint32_t column) {
+    MOZ_ASSERT(localName && exportName);
+    StencilModuleEntry entry(lineno, column);
+    entry.localName = localName;
+    entry.exportName = exportName;
+    return entry;
+  }
 
-  // Call `FunctionBox::finish` for all inner functions.
-  virtual void finishInnerFunctions() const = 0;
+  static StencilModuleEntry exportFromEntry(TaggedParserAtomIndex specifier,
+                                            TaggedParserAtomIndex importName,
+                                            TaggedParserAtomIndex exportName,
+                                            uint32_t lineno, uint32_t column) {
+    // NOTE: The `export * from "mod";` syntax generates nullptr exportName.
+    MOZ_ASSERT(specifier && importName);
+    StencilModuleEntry entry(lineno, column);
+    entry.specifier = specifier;
+    entry.importName = importName;
+    entry.exportName = exportName;
+    return entry;
+  }
 };
+
+// Metadata generated by parsing module scripts, including import/export tables.
+class StencilModuleMetadata {
+ public:
+  using EntryVector = Vector<StencilModuleEntry, 0, js::SystemAllocPolicy>;
+
+  EntryVector requestedModules;
+  EntryVector importEntries;
+  EntryVector localExportEntries;
+  EntryVector indirectExportEntries;
+  EntryVector starExportEntries;
+  FunctionDeclarationVector functionDecls;
+  // Set to true if the module has a top-level await keyword.
+  bool isAsync = false;
+
+  StencilModuleMetadata() = default;
+
+  bool initModule(JSContext* cx, CompilationAtomCache& atomCache,
+                  JS::Handle<ModuleObject*> module) const;
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+  void dump();
+  void dump(JSONPrinter& json, CompilationStencil* compilationStencil);
+  void dumpFields(JSONPrinter& json, CompilationStencil* compilationStencil);
+#endif
+};
+
+// As an alternative to a ScopeIndex (which references a ScopeStencil), we may
+// instead refer to an existing scope from GlobalObject::emptyGlobalScope().
+//
+// NOTE: This is only used for the self-hosting global.
+class EmptyGlobalScopeType {};
+
+// Things pointed by this index all end up being baked into GC things as part
+// of stencil instantiation.
+//
+// 0x0000_0000  Null
+// 0x1YYY_YYYY  28-bit ParserAtom
+// 0x2YYY_YYYY  Well-known/static atom (See TaggedParserAtomIndex)
+// 0x3YYY_YYYY  28-bit BigInt
+// 0x4YYY_YYYY  28-bit ObjLiteral
+// 0x5YYY_YYYY  28-bit RegExp
+// 0x6YYY_YYYY  28-bit Scope
+// 0x7YYY_YYYY  28-bit Function
+// 0x8000_0000  EmptyGlobalScope
+class TaggedScriptThingIndex {
+  uint32_t data_;
+
+  static constexpr size_t IndexBit = TaggedParserAtomIndex::IndexBit;
+  static constexpr size_t IndexMask = TaggedParserAtomIndex::IndexMask;
+
+  static constexpr size_t TagShift = TaggedParserAtomIndex::TagShift;
+  static constexpr size_t TagBit = TaggedParserAtomIndex::TagBit;
+  static constexpr size_t TagMask = TaggedParserAtomIndex::TagMask;
+
+ public:
+  enum class Kind : uint32_t {
+    Null = uint32_t(TaggedParserAtomIndex::Kind::Null),
+    ParserAtomIndex = uint32_t(TaggedParserAtomIndex::Kind::ParserAtomIndex),
+    WellKnown = uint32_t(TaggedParserAtomIndex::Kind::WellKnown),
+    BigInt,
+    ObjLiteral,
+    RegExp,
+    Scope,
+    Function,
+    EmptyGlobalScope,
+  };
+
+ private:
+  static constexpr uint32_t NullTag = uint32_t(Kind::Null) << TagShift;
+  static_assert(NullTag == TaggedParserAtomIndex::NullTag);
+  static constexpr uint32_t ParserAtomIndexTag = uint32_t(Kind::ParserAtomIndex)
+                                                 << TagShift;
+  static_assert(ParserAtomIndexTag ==
+                TaggedParserAtomIndex::ParserAtomIndexTag);
+  static constexpr uint32_t WellKnownTag = uint32_t(Kind::WellKnown)
+                                           << TagShift;
+  static_assert(WellKnownTag == TaggedParserAtomIndex::WellKnownTag);
+
+  static constexpr uint32_t BigIntTag = uint32_t(Kind::BigInt) << TagShift;
+  static constexpr uint32_t ObjLiteralTag = uint32_t(Kind::ObjLiteral)
+                                            << TagShift;
+  static constexpr uint32_t RegExpTag = uint32_t(Kind::RegExp) << TagShift;
+  static constexpr uint32_t ScopeTag = uint32_t(Kind::Scope) << TagShift;
+  static constexpr uint32_t FunctionTag = uint32_t(Kind::Function) << TagShift;
+  static constexpr uint32_t EmptyGlobalScopeTag =
+      uint32_t(Kind::EmptyGlobalScope) << TagShift;
+
+ public:
+  static constexpr uint32_t IndexLimit = Bit(IndexBit);
+
+  TaggedScriptThingIndex() : data_(NullTag) {}
+
+  explicit TaggedScriptThingIndex(TaggedParserAtomIndex index)
+      : data_(*index.rawData()) {}
+  explicit TaggedScriptThingIndex(BigIntIndex index)
+      : data_(uint32_t(index) | BigIntTag) {
+    MOZ_ASSERT(uint32_t(index) < IndexLimit);
+  }
+  explicit TaggedScriptThingIndex(ObjLiteralIndex index)
+      : data_(uint32_t(index) | ObjLiteralTag) {
+    MOZ_ASSERT(uint32_t(index) < IndexLimit);
+  }
+  explicit TaggedScriptThingIndex(RegExpIndex index)
+      : data_(uint32_t(index) | RegExpTag) {
+    MOZ_ASSERT(uint32_t(index) < IndexLimit);
+  }
+  explicit TaggedScriptThingIndex(ScopeIndex index)
+      : data_(uint32_t(index) | ScopeTag) {
+    MOZ_ASSERT(uint32_t(index) < IndexLimit);
+  }
+  explicit TaggedScriptThingIndex(FunctionIndex index)
+      : data_(uint32_t(index) | FunctionTag) {
+    MOZ_ASSERT(uint32_t(index) < IndexLimit);
+  }
+  explicit TaggedScriptThingIndex(EmptyGlobalScopeType t)
+      : data_(EmptyGlobalScopeTag) {}
+
+  bool isAtom() const {
+    return (data_ & TagMask) == ParserAtomIndexTag ||
+           (data_ & TagMask) == WellKnownTag;
+  }
+  bool isNull() const {
+    bool result = !data_;
+    MOZ_ASSERT_IF(result, (data_ & TagMask) == NullTag);
+    return result;
+  }
+  bool isBigInt() const { return (data_ & TagMask) == BigIntTag; }
+  bool isObjLiteral() const { return (data_ & TagMask) == ObjLiteralTag; }
+  bool isRegExp() const { return (data_ & TagMask) == RegExpTag; }
+  bool isScope() const { return (data_ & TagMask) == ScopeTag; }
+  bool isFunction() const { return (data_ & TagMask) == FunctionTag; }
+  bool isEmptyGlobalScope() const {
+    return (data_ & TagMask) == EmptyGlobalScopeTag;
+  }
+
+  TaggedParserAtomIndex toAtom() const {
+    MOZ_ASSERT(isAtom());
+    return TaggedParserAtomIndex::fromRaw(data_);
+  }
+  BigIntIndex toBigInt() const { return BigIntIndex(data_ & IndexMask); }
+  ObjLiteralIndex toObjLiteral() const {
+    return ObjLiteralIndex(data_ & IndexMask);
+  }
+  RegExpIndex toRegExp() const { return RegExpIndex(data_ & IndexMask); }
+  ScopeIndex toScope() const { return ScopeIndex(data_ & IndexMask); }
+  FunctionIndex toFunction() const { return FunctionIndex(data_ & IndexMask); }
+
+  uint32_t* rawData() { return &data_; }
+
+  Kind tag() const { return Kind((data_ & TagMask) >> TagShift); }
+
+  bool operator==(const TaggedScriptThingIndex& rhs) const {
+    return data_ == rhs.data_;
+  }
+};
+
+// Data generated by frontend that will be used to create a js::BaseScript.
+class ScriptStencil {
+ public:
+  // Fields for BaseScript.
+  // Used by:
+  //   * Global script
+  //   * Eval
+  //   * Module
+  //   * non-lazy Function (except asm.js module)
+  //   * lazy Function (cannot be asm.js module)
+
+  // See `BaseScript::immutableFlags_`.
+  ImmutableScriptFlags immutableFlags;
+
+  // See `BaseScript::data_`.
+  // NOTE: The backing memory is owned by the CompilationStencil.
+  mozilla::Maybe<MemberInitializers> memberInitializers;
+  mozilla::Span<TaggedScriptThingIndex> gcThings;
+
+  // See `BaseScript::sharedData_`.
+  RefPtr<js::SharedImmutableScriptData> sharedData = {};
+
+  // The location of this script in the source.
+  SourceExtent extent = {};
+
+  // Fields for JSFunction.
+  // Used by:
+  //   * non-lazy Function
+  //   * lazy Function
+  //   * asm.js module
+
+  // The explicit or implicit name of the function. The FunctionFlags indicate
+  // the kind of name.
+  TaggedParserAtomIndex functionAtom;
+
+  // See: `FunctionFlags`.
+  FunctionFlags functionFlags = {};
+
+  // See `JSFunction::nargs_`.
+  uint16_t nargs = 0;
+
+  // If this ScriptStencil refers to a lazy child of the function being
+  // compiled, this field holds the child's immediately enclosing scope's index.
+  // Once compilation succeeds, we will store the scope pointed by this in the
+  // child's BaseScript.  (Debugger may become confused if lazy scripts refer to
+  // partially initialized enclosing scopes, so we must avoid storing the
+  // scope in the BaseScript until compilation has completed
+  // successfully.)
+  mozilla::Maybe<ScopeIndex> lazyFunctionEnclosingScopeIndex_;
+
+  // This is set by the BytecodeEmitter of the enclosing script when a reference
+  // to this function is generated.
+  bool wasFunctionEmitted : 1;
+
+  // If this is for the root of delazification, this represents
+  // MutableScriptFlagsEnum::AllowRelazify value of the script *after*
+  // delazification.
+  // False otherwise.
+  bool allowRelazify : 1;
+
+  // End of fields.
+
+  ScriptStencil() : wasFunctionEmitted(false), allowRelazify(false) {}
+
+  bool isFunction() const {
+    bool result = functionFlags.toRaw() != 0x0000;
+    MOZ_ASSERT_IF(
+        result, functionFlags.isAsmJSNative() || functionFlags.hasBaseScript());
+    return result;
+  }
+
+  bool isModule() const {
+    bool result = immutableFlags.hasFlag(ImmutableScriptFlagsEnum::IsModule);
+    MOZ_ASSERT_IF(result, !isFunction());
+    return result;
+  }
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+  void dump();
+  void dump(JSONPrinter& json, CompilationStencil* compilationStencil);
+  void dumpFields(JSONPrinter& json, CompilationStencil* compilationStencil);
+#endif
+};
+
+#if defined(DEBUG) || defined(JS_JITSPEW)
+void DumpTaggedParserAtomIndex(js::JSONPrinter& json,
+                               TaggedParserAtomIndex taggedIndex,
+                               CompilationStencil* compilationStencil);
+#endif
 
 } /* namespace frontend */
 } /* namespace js */
 
-namespace JS {
-template <>
-struct GCPolicy<js::frontend::ScopeCreationData*> {
-  static void trace(JSTracer* trc, js::frontend::ScopeCreationData** data,
-                    const char* name) {
-    (*data)->trace(trc);
-  }
-};
-}  // namespace JS
 #endif /* frontend_Stencil_h */

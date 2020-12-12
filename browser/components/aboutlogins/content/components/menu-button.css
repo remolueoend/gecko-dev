@@ -66,18 +66,22 @@
   background-image: url("chrome://global/skin/icons/help.svg");
 }
 
-.menuitem-import {
+.menuitem-import-browser {
   background-image: url("chrome://browser/skin/import.svg");
+}
+
+.menuitem-import-file {
+  background-image: url("chrome://browser/skin/open.svg");
+}
+
+.menuitem-export {
+  background-image: url("chrome://browser/skin/save.svg");
+}
+
+.menuitem-remove-all-logins {
+  background-image: url("chrome://global/skin/icons/delete.svg");
 }
 
 .menuitem-preferences {
   background-image: url("chrome://global/skin/icons/settings.svg");
-}
-
-.menuitem-mobile-ios {
-  background-image: url("chrome://browser/skin/logo-ios.svg");
-}
-
-.menuitem-mobile-android {
-  background-image: url("chrome://browser/skin/logo-android.svg");
 }

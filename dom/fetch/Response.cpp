@@ -12,7 +12,9 @@
 #include "nsPIDOMWindow.h"
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ErrorResult.h"
+#include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/dom/BodyStream.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/dom/FetchBinding.h"
 #include "mozilla/dom/ResponseBinding.h"
 #include "mozilla/dom/Headers.h"
@@ -26,8 +28,7 @@
 #include "FetchStreamReader.h"
 #include "InternalResponse.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_ADDREF_INHERITED(Response, FetchBody<Response>)
 NS_IMPL_RELEASE_INHERITED(Response, FetchBody<Response>)
@@ -35,6 +36,7 @@ NS_IMPL_RELEASE_INHERITED(Response, FetchBody<Response>)
 NS_IMPL_CYCLE_COLLECTION_CLASS(Response)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(Response, FetchBody<Response>)
+  AbortFollower::Unlink(static_cast<AbortFollower*>(tmp));
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOwner)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mHeaders)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mSignalImpl)
@@ -47,6 +49,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(Response, FetchBody<Response>)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(Response, FetchBody<Response>)
+  AbortFollower::Traverse(static_cast<AbortFollower*>(tmp), cb);
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOwner)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mHeaders)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSignalImpl)
@@ -158,8 +161,8 @@ already_AddRefed<Response> Response::Redirect(const GlobalObject& aGlobal,
     return nullptr;
   }
 
-  r->GetInternalHeaders()->Set(NS_LITERAL_CSTRING("Location"),
-                               NS_ConvertUTF16toUTF8(parsedURL), aRv);
+  r->GetInternalHeaders()->Set("Location"_ns, NS_ConvertUTF16toUTF8(parsedURL),
+                               aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
@@ -354,11 +357,10 @@ already_AddRefed<Response> Response::Constructor(
     internalResponse->SetBody(bodyStream, bodySize);
 
     if (!contentTypeWithCharset.IsVoid() &&
-        !internalResponse->Headers()->Has(NS_LITERAL_CSTRING("Content-Type"),
-                                          aRv)) {
+        !internalResponse->Headers()->Has("Content-Type"_ns, aRv)) {
       // Ignore Append() failing here.
       ErrorResult error;
-      internalResponse->Headers()->Append(NS_LITERAL_CSTRING("Content-Type"),
+      internalResponse->Headers()->Append("Content-Type"_ns,
                                           contentTypeWithCharset, error);
       error.SuppressException();
     }
@@ -495,5 +497,4 @@ Headers* Response::Headers_() {
   return mHeaders;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

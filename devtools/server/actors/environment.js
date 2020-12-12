@@ -3,8 +3,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-/* global Debugger */
-
 const { ActorClassWithSpec, Actor } = require("devtools/shared/protocol");
 const { createValueGrip } = require("devtools/server/actors/object/utils");
 const { environmentSpec } = require("devtools/shared/specs/environment");
@@ -45,7 +43,7 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
 
     // What is this environment's type?
     if (this.obj.type == "declarative") {
-      form.type = this.obj.callee ? "function" : "block";
+      form.type = this.obj.calleeScript ? "function" : "block";
     } else {
       form.type = this.obj.type;
     }
@@ -69,12 +67,12 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     // Is this the environment created for a function call?
-    if (this.obj.callee) {
-      form.function = createValueGrip(
-        this.obj.callee,
-        this.getParent(),
-        this.threadActor.objectGrip
-      );
+    if (this.obj.calleeScript) {
+      // Client only uses "displayName" for "function".
+      // Create a fake object actor containing only "displayName" as replacement
+      // for the no longer available obj.callee (see bug 1663847).
+      // See bug 1664218 for cleanup.
+      form.function = { displayName: this.obj.calleeScript.displayName };
     }
 
     // Shall we list this environment's bindings?
@@ -83,42 +81,6 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     return form;
-  },
-
-  /**
-   * Handle a protocol request to change the value of a variable bound in this
-   * lexical environment.
-   *
-   * @param string name
-   *        The name of the variable to be changed.
-   * @param any value
-   *        The value to be assigned.
-   */
-  assign: function(name, value) {
-    // TODO: enable the commented-out part when getVariableDescriptor lands
-    // (bug 725815).
-    /* let desc = this.obj.getVariableDescriptor(name);
-
-    if (!desc.writable) {
-      return { error: "immutableBinding",
-               message: "Changing the value of an immutable binding is not " +
-                        "allowed" };
-    }*/
-
-    try {
-      this.obj.setVariable(name, value);
-    } catch (e) {
-      if (e instanceof Debugger.DebuggeeWouldRun) {
-        const errorObject = {
-          error: "threadWouldRun",
-          message: "Assigning a value would cause the debuggee to run",
-        };
-        throw errorObject;
-      } else {
-        throw e;
-      }
-    }
-    return { from: this.actorID };
   },
 
   /**
@@ -136,8 +98,8 @@ const EnvironmentActor = ActorClassWithSpec(environmentSpec, {
     }
 
     let parameterNames;
-    if (this.obj.callee) {
-      parameterNames = this.obj.callee.parameterNames;
+    if (this.obj.calleeScript) {
+      parameterNames = this.obj.calleeScript.parameterNames;
     } else {
       parameterNames = [];
     }

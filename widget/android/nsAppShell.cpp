@@ -31,15 +31,18 @@
 #include "mozilla/Preferences.h"
 #include "mozilla/Hal.h"
 #include "mozilla/dom/BrowserChild.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/intl/OSPreferences.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
+#include "mozilla/java/GeckoAppShellNatives.h"
+#include "mozilla/java/GeckoThreadNatives.h"
+#include "mozilla/java/XPCOMEventTargetNatives.h"
 #include "mozilla/widget/ScreenManager.h"
 #include "prenv.h"
 
 #include "AndroidBridge.h"
 #include "AndroidBridgeUtilities.h"
 #include "AndroidSurfaceTexture.h"
-#include "GeneratedJNINatives.h"
 #include <android/log.h>
 #include <pthread.h>
 #include <wchar.h>
@@ -58,6 +61,7 @@
 #include "AndroidAlerts.h"
 #include "AndroidUiThread.h"
 #include "GeckoBatteryManager.h"
+#include "GeckoEditableSupport.h"
 #include "GeckoNetworkManager.h"
 #include "GeckoProcessManager.h"
 #include "GeckoScreenOrientation.h"
@@ -70,6 +74,7 @@
 #include "Telemetry.h"
 #include "WebExecutorSupport.h"
 #include "Base64UtilsSupport.h"
+#include "WebAuthnTokenManager.h"
 
 #ifdef DEBUG_ANDROID_EVENTS
 #  define EVLOG(args...) ALOG(args)
@@ -217,7 +222,8 @@ class GeckoThreadSupport final
     nsCOMPtr<nsIAppStartup> appStartup = components::AppStartup::Service();
 
     if (appStartup) {
-      appStartup->Quit(nsIAppStartup::eForceQuit);
+      bool userAllowedQuit = true;
+      appStartup->Quit(nsIAppStartup::eForceQuit, 0, &userAllowedQuit);
     }
   }
 
@@ -352,9 +358,9 @@ class XPCOMEventTargetWrapper final
 
   static void Init() {
     java::XPCOMEventTarget::Natives<XPCOMEventTargetWrapper>::Init();
-    CreateWrapper(NS_LITERAL_STRING("main"), do_GetMainThread());
+    CreateWrapper(u"main"_ns, do_GetMainThread());
     if (XRE_IsParentProcess()) {
-      CreateWrapper(NS_LITERAL_STRING("launcher"), ipc::GetIPCLauncher());
+      CreateWrapper(u"launcher"_ns, ipc::GetIPCLauncher());
     }
   }
 
@@ -585,8 +591,7 @@ nsAppShell::Observe(nsISupports* aSubject, const char* aTopic,
     }
   } else if (!strcmp(aTopic, "quit-application")) {
     if (jni::IsAvailable()) {
-      const bool restarting =
-          aData && NS_LITERAL_STRING("restart").Equals(aData);
+      const bool restarting = aData && u"restart"_ns.Equals(aData);
       java::GeckoThread::SetState(restarting
                                       ? java::GeckoThread::State::RESTARTING()
                                       : java::GeckoThread::State::EXITING());
@@ -666,7 +671,6 @@ bool nsAppShell::ProcessNextNativeEvent(bool mayWait) {
       AUTO_PROFILER_LABEL("nsAppShell::ProcessNextNativeEvent:Wait", IDLE);
       mozilla::BackgroundHangMonitor().NotifyWait();
 
-      AUTO_PROFILER_THREAD_SLEEP;
       curEvent = mEventQueue.Pop(/* mayWait */ true);
     }
   }
@@ -736,8 +740,11 @@ already_AddRefed<nsIURI> nsAppShell::ResolveURI(const nsCString& aUriStr) {
   }
 
   nsCOMPtr<nsIURIFixup> fixup = components::URIFixup::Service();
-  if (fixup && NS_SUCCEEDED(fixup->CreateFixupURI(aUriStr, 0, nullptr,
-                                                  getter_AddRefs(uri)))) {
+  nsCOMPtr<nsIURIFixupInfo> fixupInfo;
+  if (fixup &&
+      NS_SUCCEEDED(fixup->GetFixupURIInfo(aUriStr, nsIURIFixup::FIXUP_FLAG_NONE,
+                                          getter_AddRefs(fixupInfo))) &&
+      NS_SUCCEEDED(fixupInfo->GetPreferredURI(getter_AddRefs(uri)))) {
     return uri.forget();
   }
   return nullptr;

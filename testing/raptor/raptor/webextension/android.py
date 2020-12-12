@@ -15,14 +15,14 @@ import time
 import mozcrash
 from cpu import start_android_cpu_profiler
 from logger.logger import RaptorLogger
-from mozdevice import ADBDevice
+from mozdevice import ADBDeviceFactory, ADBProcessError
 from performance_tuning import tune_performance
 from perftest import PerftestAndroid
 from power import (
     init_android_power_test,
     finish_android_power_test,
     enable_charging,
-    disable_charging
+    disable_charging,
 )
 from signal_handler import SignalHandlerException
 from utils import write_yml_file
@@ -39,10 +39,6 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
 
         self.config.update({"activity": activity, "intent": intent})
 
-        self.remote_test_root = os.path.abspath(
-            os.path.join(os.sep, "sdcard", "raptor")
-        )
-        self.remote_profile = os.path.join(self.remote_test_root, "profile")
         self.os_baseline_data = None
         self.power_test_time = None
         self.screen_off_timeout = 0
@@ -51,20 +47,27 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
 
     def setup_adb_device(self):
         if self.device is None:
-            self.device = ADBDevice(verbose=True)
+            self.device = ADBDeviceFactory(verbose=True)
             if not self.config.get("disable_perf_tuning", False):
                 tune_performance(self.device, log=LOG)
 
-        if self.config['power_test']:
+        self.device.run_as_package = self.config["binary"]
+        self.remote_test_root = os.path.join(self.device.test_root, "raptor")
+        self.remote_profile = os.path.join(self.remote_test_root, "profile")
+        if self.config["power_test"]:
             disable_charging(self.device)
 
         LOG.info("creating remote root folder for raptor: %s" % self.remote_test_root)
         self.device.rm(self.remote_test_root, force=True, recursive=True)
-        self.device.mkdir(self.remote_test_root)
-        self.device.chmod(self.remote_test_root, recursive=True, root=True)
+        self.device.mkdir(self.remote_test_root, parents=True)
 
         self.clear_app_data()
         self.set_debug_app_flag()
+
+    def process_exists(self):
+        return self.device is not None and self.device.process_exist(
+            self.config["binary"]
+        )
 
     def write_android_app_config(self):
         # geckoview supports having a local on-device config file; use this file
@@ -82,8 +85,6 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
                 "--profile",
                 self.remote_profile,
                 "--allow-downgrade",
-                "use_multiprocess",
-                self.config["e10s"],
             ],
             env=dict(
                 LOG_VERBOSE=1,
@@ -107,36 +108,48 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
             raise
 
     def log_android_device_temperature(self):
+        # retrieve and log the android device temperature
         try:
-            # retrieve and log the android device temperature
+            # use sort since cat gives I/O Error on Pixel 2 - 10.
             thermal_zone0 = self.device.shell_output(
-                "cat sys/class/thermal/thermal_zone0/temp"
+                "sort /sys/class/thermal/thermal_zone0/temp"
             )
-            thermal_zone0 = float(thermal_zone0)
+            try:
+                thermal_zone0 = "%.3f" % (float(thermal_zone0) / 1000)
+            except ValueError:
+                thermal_zone0 = "Unknown"
+        except ADBProcessError:
+            thermal_zone0 = "Unknown"
+        try:
             zone_type = self.device.shell_output(
-                "cat sys/class/thermal/thermal_zone0/type"
+                "cat /sys/class/thermal/thermal_zone0/type"
             )
-            LOG.info(
-                "(thermal_zone0) device temperature: %.3f zone type: %s"
-                % (thermal_zone0 / 1000, zone_type)
-            )
-        except Exception as exc:
-            LOG.warning("Unexpected error: {} - {}".format(exc.__class__.__name__, exc))
+        except ADBProcessError:
+            zone_type = "Unknown"
+        LOG.info(
+            "(thermal_zone0) device temperature: %s zone type: %s"
+            % (thermal_zone0, zone_type)
+        )
 
     def launch_firefox_android_app(self, test_name):
         LOG.info("starting %s" % self.config["app"])
 
         extra_args = [
-            "-profile", self.remote_profile,
+            "-profile",
+            self.remote_profile,
             "--allow-downgrade",
-            "--es", "env0",
+            "--es",
+            "env0",
             "LOG_VERBOSE=1",
-            "--es", "env1",
+            "--es",
+            "env1",
             "R_LOG_LEVEL=6",
-            "--es", "env2",
+            "--es",
+            "env2",
             "MOZ_WEBRENDER=%d" % self.config["enable_webrender"],
             # Force the app to immediately exit for content crashes
-            "--es", "env3",
+            "--es",
+            "env3",
             "MOZ_CRASHREPORTER_SHUTDOWN=1",
         ]
 
@@ -166,7 +179,7 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
                 )
 
             # Check if app has started and it's running
-            if not self.device.process_exist(self.config["binary"]):
+            if not self.process_exists:
                 raise Exception(
                     "Error launching %s. App did not start properly!"
                     % self.config["binary"]
@@ -226,14 +239,14 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
                 # initialize for the test
                 init_android_power_test(self)
 
-            if test.get("cold", False) is True:
+            if self.config.get("cold") or test.get("cold"):
                 self.__run_test_cold(test, timeout)
             else:
                 self.__run_test_warm(test, timeout)
 
         except SignalHandlerException:
             self.device.stop_application(self.config["binary"])
-            if self.config['power_test']:
+            if self.config["power_test"]:
                 enable_charging(self.device)
 
         finally:
@@ -333,7 +346,7 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
                 # start measuring CPU usage
                 self.cpu_profiler = start_android_cpu_profiler(self)
 
-            self.wait_for_test_finish(test, timeout)
+            self.wait_for_test_finish(test, timeout, self.process_exists)
 
             # in debug mode, and running locally, leave the browser running
             if self.debug_mode and self.config["run_local"]:
@@ -378,7 +391,7 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
             # start measuring CPU usage
             self.cpu_profiler = start_android_cpu_profiler(self)
 
-        self.wait_for_test_finish(test, timeout)
+        self.wait_for_test_finish(test, timeout, self.process_exists)
 
         # in debug mode, and running locally, leave the browser running
         if self.debug_mode and self.config["run_local"]:
@@ -398,7 +411,9 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
             if not self.device.is_dir(remote_dir):
                 return
             self.device.pull(remote_dir, dump_dir)
-            self.crashes += mozcrash.log_crashes(LOG, dump_dir, self.config["symbols_path"])
+            self.crashes += mozcrash.log_crashes(
+                LOG, dump_dir, self.config["symbols_path"]
+            )
         finally:
             try:
                 shutil.rmtree(dump_dir)
@@ -409,7 +424,7 @@ class WebExtensionAndroid(PerftestAndroid, WebExtension):
         LOG.info("removing test folder for raptor: %s" % self.remote_test_root)
         self.device.rm(self.remote_test_root, force=True, recursive=True)
 
-        if self.config['power_test']:
+        if self.config["power_test"]:
             enable_charging(self.device)
 
         super(WebExtensionAndroid, self).clean_up()

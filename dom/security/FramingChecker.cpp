@@ -10,6 +10,8 @@
 #include "nsCSPUtils.h"
 #include "nsDocShell.h"
 #include "nsHttpChannel.h"
+#include "nsContentSecurityUtils.h"
+#include "nsGlobalWindowOuter.h"
 #include "nsIChannel.h"
 #include "nsIConsoleReportCollector.h"
 #include "nsIContentSecurityPolicy.h"
@@ -27,6 +29,7 @@
 #include "nsIObserverService.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 /* static */
 void FramingChecker::ReportError(const char* aMessageTag,
@@ -51,8 +54,7 @@ void FramingChecker::ReportError(const char* aMessageTag,
   params.AppendElement(aPolicy);
   params.AppendElement(NS_ConvertUTF8toUTF16(spec));
 
-  httpChannel->AddConsoleReport(nsIScriptError::errorFlag,
-                                NS_LITERAL_CSTRING("X-Frame-Options"),
+  httpChannel->AddConsoleReport(nsIScriptError::errorFlag, "X-Frame-Options"_ns,
                                 nsContentUtils::eSECURITY_PROPERTIES, spec, 0,
                                 0, nsDependentCString(aMessageTag), params);
 }
@@ -80,12 +82,21 @@ bool FramingChecker::CheckOneFrameOptionsPolicy(nsIHttpChannel* aHttpChannel,
 
   while (ctx) {
     nsCOMPtr<nsIPrincipal> principal;
-    WindowGlobalParent* window = ctx->Canonical()->GetCurrentWindowGlobal();
-    if (window) {
-      // Using the URI of the Principal and not the document because e.g.
-      // window.open inherits the principal and hence the URI of the
-      // opening context needed for same origin checks.
-      principal = window->DocumentPrincipal();
+    // Generally CheckOneFrameOptionsPolicy is consulted from within the
+    // DocumentLoadListener in the parent process. For loads of type object
+    // and embed it's called from the Document in the content process.
+    // After Bug 1646899 we should be able to remove that branching code for
+    // querying the principal.
+    if (XRE_IsParentProcess()) {
+      WindowGlobalParent* window = ctx->Canonical()->GetCurrentWindowGlobal();
+      if (window) {
+        // Using the URI of the Principal and not the document because e.g.
+        // window.open inherits the principal and hence the URI of the
+        // opening context needed for same origin checks.
+        principal = window->DocumentPrincipal();
+      }
+    } else if (nsPIDOMWindowOuter* windowOuter = ctx->GetDOMWindow()) {
+      principal = nsGlobalWindowOuter::Cast(windowOuter)->GetPrincipal();
     }
 
     if (principal && principal->IsSystemPrincipal()) {
@@ -139,16 +150,16 @@ static bool ShouldIgnoreFrameOptions(nsIChannel* aChannel,
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->LoadInfo();
   uint64_t innerWindowID = loadInfo->GetInnerWindowID();
   bool privateWindow = !!loadInfo->GetOriginAttributes().mPrivateBrowsingId;
-  AutoTArray<nsString, 2> params = {NS_LITERAL_STRING("x-frame-options"),
-                                    NS_LITERAL_STRING("frame-ancestors")};
+  AutoTArray<nsString, 2> params = {u"x-frame-options"_ns,
+                                    u"frame-ancestors"_ns};
   CSP_LogLocalizedStr("IgnoringSrcBecauseOfDirective", params,
-                      EmptyString(),  // no sourcefile
-                      EmptyString(),  // no scriptsample
-                      0,              // no linenumber
-                      0,              // no columnnumber
+                      u""_ns,  // no sourcefile
+                      u""_ns,  // no scriptsample
+                      0,       // no linenumber
+                      0,       // no columnnumber
                       nsIScriptError::warningFlag,
-                      NS_LITERAL_CSTRING("IgnoringSrcBecauseOfDirective"),
-                      innerWindowID, privateWindow);
+                      "IgnoringSrcBecauseOfDirective"_ns, innerWindowID,
+                      privateWindow);
 
   return true;
 }
@@ -160,8 +171,6 @@ static bool ShouldIgnoreFrameOptions(nsIChannel* aChannel,
 /* static */
 bool FramingChecker::CheckFrameOptions(nsIChannel* aChannel,
                                        nsIContentSecurityPolicy* aCsp) {
-  MOZ_ASSERT(XRE_IsParentProcess(), "check frame options only in parent");
-
   if (!aChannel) {
     return true;
   }
@@ -179,12 +188,6 @@ bool FramingChecker::CheckFrameOptions(nsIChannel* aChannel,
   // xfo checks are ignored in case CSP frame-ancestors is present,
   // if so, there is nothing to do here.
   if (ShouldIgnoreFrameOptions(aChannel, aCsp)) {
-    return true;
-  }
-
-  // if the load is triggered by an extension, then xfo should
-  // not apply and we should allow the load.
-  if (loadInfo->TriggeringPrincipal()->GetIsAddonOrExpandedAddonPrincipal()) {
     return true;
   }
 
@@ -212,8 +215,8 @@ bool FramingChecker::CheckFrameOptions(nsIChannel* aChannel,
   }
 
   nsAutoCString xfoHeaderCValue;
-  Unused << httpChannel->GetResponseHeader(
-      NS_LITERAL_CSTRING("X-Frame-Options"), xfoHeaderCValue);
+  Unused << httpChannel->GetResponseHeader("X-Frame-Options"_ns,
+                                           xfoHeaderCValue);
   NS_ConvertUTF8toUTF16 xfoHeaderValue(xfoHeaderCValue);
 
   // if no header value, there's nothing to do.

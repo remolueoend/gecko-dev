@@ -9,7 +9,6 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/TextControlElement.h"
-#include "mozilla/dom/Element.h"
 #include "nsContainerFrame.h"
 #include "nsIAnonymousContentCreator.h"
 #include "nsIContent.h"
@@ -32,6 +31,8 @@ class nsTextControlFrame : public nsContainerFrame,
                            public nsIAnonymousContentCreator,
                            public nsITextControlFrame,
                            public nsIStatefulFrame {
+  using Element = mozilla::dom::Element;
+
  public:
   NS_DECL_FRAMEARENA_HELPERS(nsTextControlFrame)
 
@@ -59,10 +60,7 @@ class nsTextControlFrame : public nsContainerFrame,
   MOZ_CAN_RUN_SCRIPT_BOUNDARY void DestroyFrom(nsIFrame* aDestructRoot,
                                                PostDestroyData&) override;
 
-  nsIScrollableFrame* GetScrollTargetFrame() override;
-  nsIScrollableFrame* GetScrollTargetFrame() const {
-    return const_cast<nsTextControlFrame*>(this)->GetScrollTargetFrame();
-  }
+  nsIScrollableFrame* GetScrollTargetFrame() const override;
 
   nscoord GetMinISize(gfxContext* aRenderingContext) override;
   nscoord GetPrefISize(gfxContext* aRenderingContext) override;
@@ -70,8 +68,9 @@ class nsTextControlFrame : public nsContainerFrame,
   mozilla::LogicalSize ComputeAutoSize(
       gfxContext* aRenderingContext, mozilla::WritingMode aWM,
       const mozilla::LogicalSize& aCBSize, nscoord aAvailableISize,
-      const mozilla::LogicalSize& aMargin, const mozilla::LogicalSize& aBorder,
-      const mozilla::LogicalSize& aPadding, ComputeSizeFlags aFlags) override;
+      const mozilla::LogicalSize& aMargin,
+      const mozilla::LogicalSize& aBorderPadding,
+      mozilla::ComputeSizeFlags aFlags) override;
 
   void Reflow(nsPresContext* aPresContext, ReflowOutput& aDesiredSize,
               const ReflowInput& aReflowInput,
@@ -153,6 +152,8 @@ class nsTextControlFrame : public nsContainerFrame,
       nsISelectionController** aSelCon) override;
   nsFrameSelection* GetOwnedFrameSelection() override;
 
+  void PlaceholderChanged(const nsAttrValue* aOld, const nsAttrValue* aNew);
+
   /**
    * Ensure mEditor is initialized with the proper flags and the default value.
    * @throws NS_ERROR_NOT_INITIALIZED if mEditor has not been created
@@ -172,8 +173,8 @@ class nsTextControlFrame : public nsContainerFrame,
   //==== OVERLOAD of nsIFrame
 
   /** handler for attribute changes to mContent */
-  nsresult AttributeChanged(int32_t aNameSpaceID, nsAtom* aAttribute,
-                            int32_t aModType) override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY nsresult AttributeChanged(
+      int32_t aNameSpaceID, nsAtom* aAttribute, int32_t aModType) override;
 
   void GetText(nsString& aText);
 
@@ -187,6 +188,11 @@ class nsTextControlFrame : public nsContainerFrame,
   nsresult PeekOffset(nsPeekOffsetStruct* aPos) override;
 
   NS_DECL_QUERYFRAME
+
+  // Whether we should scroll only the current selection into view in the inner
+  // scroller, or also ancestors as needed.
+  enum class ScrollAncestors { No, Yes };
+  void ScrollSelectionIntoViewAsync(ScrollAncestors = ScrollAncestors::No);
 
  protected:
   /**
@@ -202,11 +208,11 @@ class nsTextControlFrame : public nsContainerFrame,
  public:  // for methods who access nsTextControlFrame directly
   void SetValueChanged(bool aValueChanged);
 
-  mozilla::dom::Element* GetRootNode() const { return mRootNode; }
+  Element* GetRootNode() const { return mRootNode; }
 
-  mozilla::dom::Element* GetPreviewNode() const { return mPreviewDiv; }
+  Element* GetPreviewNode() const { return mPreviewDiv; }
 
-  mozilla::dom::Element* GetPlaceholderNode() const { return mPlaceholderDiv; }
+  Element* GetPlaceholderNode() const { return mPlaceholderDiv; }
 
   // called by the focus listener
   nsresult MaybeBeginSecureKeyboardInput();
@@ -257,23 +263,6 @@ class nsTextControlFrame : public nsContainerFrame,
     nsTextControlFrame* mFrame;
   };
 
-  class ScrollOnFocusEvent;
-  friend class ScrollOnFocusEvent;
-
-  class ScrollOnFocusEvent : public mozilla::Runnable {
-   public:
-    explicit ScrollOnFocusEvent(nsTextControlFrame* aFrame)
-        : mozilla::Runnable("nsTextControlFrame::ScrollOnFocusEvent"),
-          mFrame(aFrame) {}
-
-    NS_DECL_NSIRUNNABLE
-
-    void Revoke() { mFrame = nullptr; }
-
-   private:
-    nsTextControlFrame* mFrame;
-  };
-
   nsresult OffsetToDOMPoint(uint32_t aOffset, nsINode** aResult,
                             uint32_t* aPosition);
 
@@ -307,8 +296,6 @@ class nsTextControlFrame : public nsContainerFrame,
                                          mozilla::WritingMode aWM,
                                          float aFontSizeInflation) const;
 
-  nsresult ScrollSelectionIntoView() override;
-
  private:
   // helper methods
   MOZ_CAN_RUN_SCRIPT nsresult SetSelectionInternal(
@@ -341,18 +328,20 @@ class nsTextControlFrame : public nsContainerFrame,
 
   nsresult CreateRootNode();
   void CreatePlaceholderIfNeeded();
+  void UpdatePlaceholderText(nsString&, bool aNotify);
   void CreatePreviewIfNeeded();
-  already_AddRefed<mozilla::dom::Element> CreateEmptyAnonymousDiv(
-      mozilla::PseudoStyleType) const;
-  already_AddRefed<mozilla::dom::Element> CreateEmptyAnonymousDivWithTextNode(
+  already_AddRefed<Element> MakeAnonElement(
+      mozilla::PseudoStyleType, Element* aParent = nullptr,
+      nsAtom* aTag = nsGkAtoms::div) const;
+  already_AddRefed<Element> MakeAnonDivWithTextNode(
       mozilla::PseudoStyleType) const;
 
   bool ShouldInitializeEagerly() const;
   void InitializeEagerlyIfNeeded();
 
-  RefPtr<mozilla::dom::Element> mRootNode;
-  RefPtr<mozilla::dom::Element> mPlaceholderDiv;
-  RefPtr<mozilla::dom::Element> mPreviewDiv;
+  RefPtr<Element> mRootNode;
+  RefPtr<Element> mPlaceholderDiv;
+  RefPtr<Element> mPreviewDiv;
   RefPtr<nsAnonDivObserver> mMutationObserver;
   // Cache of the |.value| of <input> or <textarea> element without hard-wrap.
   // If its IsVoid() returns true, it doesn't cache |.value|.
@@ -376,8 +365,6 @@ class nsTextControlFrame : public nsContainerFrame,
   bool mInEditorInitialization;
   friend class EditorInitializerEntryTracker;
 #endif
-
-  nsRevocableEventPtr<ScrollOnFocusEvent> mScrollEvent;
 };
 
 #endif

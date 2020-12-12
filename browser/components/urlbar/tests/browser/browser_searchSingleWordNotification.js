@@ -1,12 +1,19 @@
 /* eslint-disable mozilla/no-arbitrary-setTimeout */
 "use strict";
 
-var notificationObserver;
-registerCleanupFunction(function() {
-  Services.prefs.clearUserPref("browser.fixup.domainwhitelist.localhost");
-  if (notificationObserver) {
-    notificationObserver.disconnect();
-  }
+let gDNSResolved = false;
+let gRealDNSService = gDNSService;
+add_task(async function setup() {
+  gDNSService = {
+    asyncResolve() {
+      gDNSResolved = true;
+      return gRealDNSService.asyncResolve(...arguments);
+    },
+  };
+  registerCleanupFunction(function() {
+    gDNSService = gRealDNSService;
+    Services.prefs.clearUserPref("browser.fixup.domainwhitelist.localhost");
+  });
 });
 
 function promiseNotification(aBrowser, value, expected, input) {
@@ -35,20 +42,26 @@ function promiseNotification(aBrowser, value, expected, input) {
 
 async function runURLBarSearchTest({
   valueToOpen,
+  enterSearchMode,
   expectSearch,
   expectNotification,
+  expectDNSResolve,
   aWindow = window,
 }) {
+  gDNSResolved = false;
   // Test both directly setting a value and pressing enter, or setting the
   // value through input events, like the user would do.
   const setValueFns = [
     value => {
       aWindow.gURLBar.value = value;
+      if (enterSearchMode) {
+        // Ensure to open the panel.
+        UrlbarTestUtils.fireInputEvent(aWindow);
+      }
     },
     value => {
       return UrlbarTestUtils.promiseAutocompleteResultPopup({
         window: aWindow,
-        waitForFocus,
         value,
       });
     },
@@ -56,6 +69,13 @@ async function runURLBarSearchTest({
 
   for (let i = 0; i < setValueFns.length; ++i) {
     await setValueFns[i](valueToOpen);
+    if (enterSearchMode) {
+      if (!expectSearch) {
+        throw new Error("Must execute a search in search mode");
+      }
+      await UrlbarTestUtils.enterSearchMode(aWindow);
+    }
+
     let expectedURI;
     if (!expectSearch) {
       expectedURI = "http://" + valueToOpen + "/";
@@ -73,15 +93,15 @@ async function runURLBarSearchTest({
     );
     EventUtils.synthesizeKey("VK_RETURN", {}, aWindow);
 
-    await Promise.all([
-      docLoadPromise,
-      promiseNotification(
+    if (!enterSearchMode) {
+      await promiseNotification(
         aWindow.gBrowser,
         "keyword-uri-fixup",
         expectNotification,
         valueToOpen
-      ),
-    ]);
+      );
+    }
+    await docLoadPromise;
 
     if (expectNotification) {
       let notificationBox = aWindow.gBrowser.getNotificationBox(
@@ -102,6 +122,11 @@ async function runURLBarSearchTest({
         notificationBox.currentNotification.close();
       }
     }
+    Assert.equal(
+      gDNSResolved,
+      expectDNSResolve,
+      `Should${expectDNSResolve ? "" : " not"} DNS resolve "${valueToOpen}"`
+    );
   }
 }
 
@@ -115,6 +140,7 @@ add_task(async function test_navigate_full_domain() {
     valueToOpen: "www.singlewordtest.org",
     expectSearch: false,
     expectNotification: false,
+    expectDNSResolve: false,
   });
   gBrowser.removeTab(tab);
 });
@@ -129,6 +155,7 @@ add_task(async function test_navigate_decimal_ip() {
     valueToOpen: "1234",
     expectSearch: true,
     expectNotification: false,
+    expectDNSResolve: false, // Possible IP in numeric format.
   });
   gBrowser.removeTab(tab);
 });
@@ -143,6 +170,7 @@ add_task(async function test_navigate_decimal_ip_with_path() {
     valueToOpen: "1234/12",
     expectSearch: true,
     expectNotification: false,
+    expectDNSResolve: false,
   });
   gBrowser.removeTab(tab);
 });
@@ -157,6 +185,7 @@ add_task(async function test_navigate_large_number() {
     valueToOpen: "123456789012345",
     expectSearch: true,
     expectNotification: false,
+    expectDNSResolve: false, // Possible IP in numeric format.
   });
   gBrowser.removeTab(tab);
 });
@@ -171,6 +200,7 @@ add_task(async function test_navigate_small_hex_number() {
     valueToOpen: "0x1f00ffff",
     expectSearch: true,
     expectNotification: false,
+    expectDNSResolve: false, // Possible IP in numeric format.
   });
   gBrowser.removeTab(tab);
 });
@@ -185,26 +215,38 @@ add_task(async function test_navigate_large_hex_number() {
     valueToOpen: "0x7f0000017f000001",
     expectSearch: true,
     expectNotification: false,
+    expectDNSResolve: false, // Possible IP in numeric format.
   });
   gBrowser.removeTab(tab);
 });
 
-function get_test_function_for_localhost_with_hostname(hostName, isPrivate) {
+function get_test_function_for_localhost_with_hostname(
+  hostName,
+  isPrivate = false
+) {
   return async function test_navigate_single_host() {
+    info(`Test ${hostName}${isPrivate ? " in Private Browsing mode" : ""}`);
     const pref = "browser.fixup.domainwhitelist.localhost";
     let win;
     if (isPrivate) {
       let promiseWin = BrowserTestUtils.waitForNewWindow();
       win = OpenBrowserWindow({ private: true });
       await promiseWin;
-      await new Promise(resolve => {
-        waitForFocus(resolve, win);
-      });
+      await SimpleTest.promiseFocus(win);
+      // We can do this since the window will be gone shortly.
+      delete win.gDNSService;
+      win.gDNSService = {
+        asyncResolve() {
+          gDNSResolved = true;
+          return gRealDNSService.asyncResolve(...arguments);
+        },
+      };
     } else {
       win = window;
     }
 
-    // Remove the domain from the whitelist.
+    // Remove the domain from the whitelist, the notification sould appear,
+    // unless we are in private browsing mode.
     Services.prefs.setBoolPref(pref, false);
 
     await BrowserTestUtils.withNewTab(
@@ -217,6 +259,7 @@ function get_test_function_for_localhost_with_hostname(hostName, isPrivate) {
           valueToOpen: hostName,
           expectSearch: true,
           expectNotification: true,
+          expectDNSResolve: true,
           aWindow: win,
         })
     );
@@ -237,6 +280,7 @@ function get_test_function_for_localhost_with_hostname(hostName, isPrivate) {
           valueToOpen: hostName,
           expectSearch: isPrivate,
           expectNotification: isPrivate,
+          expectDNSResolve: isPrivate,
           aWindow: win,
         })
     );
@@ -244,10 +288,7 @@ function get_test_function_for_localhost_with_hostname(hostName, isPrivate) {
     if (isPrivate) {
       info("Waiting for private window to close");
       await BrowserTestUtils.closeWindow(win);
-      await new Promise(resolve => {
-        info("Waiting for focus");
-        waitForFocus(resolve, window);
-      });
+      await SimpleTest.promiseFocus(window);
     }
   };
 }
@@ -255,6 +296,29 @@ function get_test_function_for_localhost_with_hostname(hostName, isPrivate) {
 add_task(get_test_function_for_localhost_with_hostname("localhost"));
 add_task(get_test_function_for_localhost_with_hostname("localhost."));
 add_task(get_test_function_for_localhost_with_hostname("localhost", true));
+
+add_task(async function test_dnsResolveSingleWordsAfterSearch() {
+  await SpecialPowers.pushPrefEnv({
+    set: [
+      ["browser.urlbar.dnsResolveSingleWordsAfterSearch", 0],
+      ["browser.fixup.domainwhitelist.localhost", false],
+    ],
+  });
+  await BrowserTestUtils.withNewTab(
+    {
+      gBrowser,
+      url: "about:blank",
+    },
+    browser =>
+      runURLBarSearchTest({
+        valueToOpen: "localhost",
+        expectSearch: true,
+        expectNotification: false,
+        expectDNSResolve: false,
+      })
+  );
+  await SpecialPowers.popPrefEnv();
+});
 
 add_task(async function test_navigate_invalid_url() {
   let tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(
@@ -266,6 +330,27 @@ add_task(async function test_navigate_invalid_url() {
     valueToOpen: "mozilla is awesome",
     expectSearch: true,
     expectNotification: false,
+    expectDNSResolve: false,
+  });
+  gBrowser.removeTab(tab);
+});
+
+add_task(async function test_search_mode() {
+  info("When in search mode we should never query the DNS");
+  await SpecialPowers.pushPrefEnv({
+    set: [["browser.search.suggest.enabled", false]],
+  });
+  let tab = (gBrowser.selectedTab = BrowserTestUtils.addTab(
+    gBrowser,
+    "about:blank"
+  ));
+  await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
+  await runURLBarSearchTest({
+    enterSearchMode: true,
+    valueToOpen: "mozilla",
+    expectSearch: true,
+    expectNotification: false,
+    expectDNSResolve: false,
   });
   gBrowser.removeTab(tab);
 });

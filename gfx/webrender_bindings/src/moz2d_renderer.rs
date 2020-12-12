@@ -60,7 +60,7 @@ fn dump_bounds(blob: &[u8], dirty_rect: Box2d) {
 }
 
 /// Debug prints a blob's metadata.
-fn dump_index(blob: &[u8]) -> () {
+fn dump_index(blob: &[u8]) {
     let mut index = BlobReader::new(blob);
     // we might get an empty result here because sub groups are not tightly bound
     // and we'll sometimes have display items that end up with empty bounds in
@@ -107,7 +107,7 @@ struct BufReader<'a> {
 impl<'a> BufReader<'a> {
     /// Creates a reader over the given input.
     fn new(buf: &'a [u8]) -> BufReader<'a> {
-        BufReader { buf: buf, pos: 0 }
+        BufReader { buf, pos: 0 }
     }
 
     /// Transmute-deserializes a value of type T from the stream.
@@ -565,7 +565,7 @@ impl AsyncBlobImageRasterizer for Moz2dBlobRasterizer {
         let _marker = GeckoProfilerMarker::new(b"BlobRasterization\0");
 
         let requests: Vec<Job> = requests
-            .into_iter()
+            .iter()
             .map(|params| {
                 let command = &self.blob_commands[&params.request.key];
                 let blob = Arc::clone(&command.data);
@@ -656,13 +656,14 @@ fn rasterize_blob(job: Job) -> (BlobImageRequest, BlobImageResult) {
 }
 
 impl BlobImageHandler for Moz2dBlobImageHandler {
-    fn add(
-        &mut self,
-        key: BlobImageKey,
-        data: Arc<BlobImageData>,
-        visible_rect: &DeviceIntRect,
-        tile_size: TileSize,
-    ) {
+    fn create_similar(&self) -> Box<dyn BlobImageHandler> {
+        Box::new(Self::new(
+            Arc::clone(&self.workers),
+            Arc::clone(&self.workers_low_priority),
+        ))
+    }
+
+    fn add(&mut self, key: BlobImageKey, data: Arc<BlobImageData>, visible_rect: &DeviceIntRect, tile_size: TileSize) {
         {
             let index = BlobReader::new(&data);
             assert!(index.reader.has_more());
@@ -788,8 +789,8 @@ impl Moz2dBlobImageHandler {
     pub fn new(workers: Arc<ThreadPool>, workers_low_priority: Arc<ThreadPool>) -> Self {
         Moz2dBlobImageHandler {
             blob_commands: HashMap::new(),
-            workers: workers,
-            workers_low_priority: workers_low_priority,
+            workers,
+            workers_low_priority,
             enable_multithreading: true,
         }
     }
@@ -850,7 +851,7 @@ impl Moz2dBlobImageHandler {
                         AddBlobFont(
                             font.font_instance_key,
                             instance.font_key,
-                            instance.size.to_f32_px(),
+                            instance.size,
                             instance.options.as_ref(),
                             instance.platform_options.as_ref(),
                             instance.variations.as_ptr(),

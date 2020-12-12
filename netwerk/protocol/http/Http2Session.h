@@ -14,7 +14,8 @@
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WeakPtr.h"
 #include "nsAHttpConnection.h"
-#include "nsClassHashtable.h"
+#include "nsCOMArray.h"
+#include "nsRefPtrHashtable.h"
 #include "nsDataHashtable.h"
 #include "nsDeque.h"
 #include "nsHashKeys.h"
@@ -45,8 +46,9 @@ class Http2Session final : public ASpdySession,
   NS_DECL_NSAHTTPSEGMENTREADER
   NS_DECL_NSAHTTPSEGMENTWRITER
 
-  Http2Session(nsISocketTransport*, enum SpdyVersion version,
-               bool attemptingEarlyData);
+  static Http2Session* CreateSession(nsISocketTransport*,
+                                     enum SpdyVersion version,
+                                     bool attemptingEarlyData);
 
   [[nodiscard]] bool AddStream(nsAHttpTransaction*, int32_t, bool, bool,
                                nsIInterfaceRequestor*) override;
@@ -278,6 +280,9 @@ class Http2Session final : public ASpdySession,
   bool CanAcceptWebsocket() override;
 
  private:
+  Http2Session(nsISocketTransport*, enum SpdyVersion version,
+               bool attemptingEarlyData);
+
   // These internal states do not correspond to the states of the HTTP/2
   // specification
   enum internalStateType {
@@ -359,7 +364,7 @@ class Http2Session final : public ASpdySession,
   // These are temporary state variables to hold the argument to
   // Read/WriteSegments so it can be accessed by On(read/write)segment
   // further up the stack.
-  nsAHttpSegmentReader* mSegmentReader;
+  RefPtr<nsAHttpSegmentReader> mSegmentReader;
   nsAHttpSegmentWriter* mSegmentWriter;
 
   uint32_t mSendingChunkSize; /* the transmission chunk size */
@@ -374,17 +379,14 @@ class Http2Session final : public ASpdySession,
   // There are also several lists of streams: ready to write, queued due to
   // max parallelism, streams that need to force a read for push, and the full
   // set of pushed streams.
-  // The objects are not ref counted - they get destroyed
-  // by the nsClassHashtable implementation when they are removed from
-  // the transaction hash.
   nsDataHashtable<nsUint32HashKey, Http2Stream*> mStreamIDHash;
-  nsClassHashtable<nsPtrHashKey<nsAHttpTransaction>, Http2Stream>
+  nsRefPtrHashtable<nsPtrHashKey<nsAHttpTransaction>, Http2Stream>
       mStreamTransactionHash;
 
-  nsDeque mReadyForWrite;
-  nsDeque mQueuedStreams;
-  nsDeque mPushesReadyForRead;
-  nsDeque mSlowConsumersReadyForRead;
+  nsDeque<Http2Stream> mReadyForWrite;
+  nsDeque<Http2Stream> mQueuedStreams;
+  nsDeque<Http2Stream> mPushesReadyForRead;
+  nsDeque<Http2Stream> mSlowConsumersReadyForRead;
   nsTArray<Http2PushedStream*> mPushedStreams;
 
   // Compression contexts for header transport.
@@ -527,7 +529,7 @@ class Http2Session final : public ASpdySession,
   bool mPreviousUsed;                     // true when backup is used
 
   // used as a temporary buffer while enumerating the stream hash during GoAway
-  nsDeque mGoAwayStreamsToRestart;
+  nsDeque<Http2Stream> mGoAwayStreamsToRestart;
 
   // Each session gets a unique serial number because the push cache is
   // correlated by the load group and the serial number can be used as part of
@@ -562,21 +564,7 @@ class Http2Session final : public ASpdySession,
 
   uint64_t mCurrentForegroundTabOuterContentWindowId;
 
-  class CachePushCheckCallback final : public nsICacheEntryOpenCallback {
-   public:
-    CachePushCheckCallback(Http2Session* session, uint32_t promisedID,
-                           const nsACString& requestString);
-
-    NS_DECL_ISUPPORTS
-    NS_DECL_NSICACHEENTRYOPENCALLBACK
-
-   private:
-    ~CachePushCheckCallback() = default;
-
-    RefPtr<Http2Session> mSession;
-    uint32_t mPromisedID;
-    nsHttpRequestHead mRequestHead;
-  };
+  uint32_t mCntActivated;
 
   // A h2 session will be created before all socket events are trigered,
   // e.g. NS_NET_STATUS_TLS_HANDSHAKE_ENDED and for TFO many others.

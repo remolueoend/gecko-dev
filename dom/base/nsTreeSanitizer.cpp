@@ -6,6 +6,7 @@
 
 #include "nsTreeSanitizer.h"
 
+#include "mozilla/Algorithm.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/BindingStyleRule.h"
 #include "mozilla/DeclarationBlock.h"
@@ -26,6 +27,8 @@
 #include "nsIParserUtils.h"
 #include "mozilla/dom/Document.h"
 #include "nsQueryObject.h"
+
+#include <iterator>
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -282,6 +285,9 @@ const nsStaticAtom* const kPresAttributesHTML[] = {
     // clang-format on
 };
 
+// List of HTML attributes with URLs that the
+// browser will fetch. Should be kept in sync with
+// https://html.spec.whatwg.org/multipage/indices.html#attributes-3
 const nsStaticAtom* const kURLAttributesHTML[] = {
     // clang-format off
   nsGkAtoms::action,
@@ -290,6 +296,10 @@ const nsStaticAtom* const kURLAttributesHTML[] = {
   nsGkAtoms::longdesc,
   nsGkAtoms::cite,
   nsGkAtoms::background,
+  nsGkAtoms::formaction,
+  nsGkAtoms::data,
+  nsGkAtoms::ping,
+  nsGkAtoms::poster,
   nullptr
     // clang-format on
 };
@@ -373,7 +383,7 @@ const nsStaticAtom* const kElementsSVG[] = {
     // vkern
     nullptr};
 
-const nsStaticAtom* const kAttributesSVG[] = {
+constexpr const nsStaticAtom* const kAttributesSVG[] = {
     // accent-height
     nsGkAtoms::accumulate,          // accumulate
     nsGkAtoms::additive,            // additive
@@ -447,6 +457,7 @@ const nsStaticAtom* const kAttributesSVG[] = {
     nsGkAtoms::gradientTransform,  // gradientTransform
     nsGkAtoms::gradientUnits,      // gradientUnits
     nsGkAtoms::height,             // height
+    nsGkAtoms::href,
     // horiz-adv-x
     // horiz-origin-x
     // horiz-origin-y
@@ -606,7 +617,17 @@ const nsStaticAtom* const kAttributesSVG[] = {
     nsGkAtoms::zoomAndPan,        // zoomAndPan
     nullptr};
 
-const nsStaticAtom* const kURLAttributesSVG[] = {nsGkAtoms::href, nullptr};
+constexpr const nsStaticAtom* const kURLAttributesSVG[] = {nsGkAtoms::href,
+                                                           nullptr};
+
+static_assert(AllOf(std::begin(kURLAttributesSVG), std::end(kURLAttributesSVG),
+                    [](auto aURLAttributeSVG) {
+                      return AnyOf(std::begin(kAttributesSVG),
+                                   std::end(kAttributesSVG),
+                                   [&](auto aAttributeSVG) {
+                                     return aAttributeSVG == aURLAttributeSVG;
+                                   });
+                    }));
 
 const nsStaticAtom* const kElementsMathML[] = {
     nsGkAtoms::abs_,                  // abs
@@ -1211,8 +1232,7 @@ void nsTreeSanitizer::SanitizeAttributes(mozilla::dom::Element* aElement,
   // If we've got HTML audio or video, add the controls attribute, because
   // otherwise the content is unplayable with scripts removed.
   if (aElement->IsAnyOfHTMLElements(nsGkAtoms::video, nsGkAtoms::audio)) {
-    aElement->SetAttr(kNameSpaceID_None, nsGkAtoms::controls, EmptyString(),
-                      false);
+    aElement->SetAttr(kNameSpaceID_None, nsGkAtoms::controls, u""_ns, false);
   }
 }
 
@@ -1334,6 +1354,7 @@ void nsTreeSanitizer::SanitizeChildren(nsINode* aRoot) {
         nsAutoString sanitizedStyle;
         SanitizeStyleSheet(styleText, sanitizedStyle, aRoot->OwnerDoc(),
                            node->GetBaseURI());
+        RemoveAllAttributesFromDescendants(elt);
         nsContentUtils::SetNodeTextContent(node, sanitizedStyle, true);
 
         if (!mOnlyConditionalCSS) {
@@ -1420,22 +1441,32 @@ void nsTreeSanitizer::RemoveAllAttributes(Element* aElement) {
   }
 }
 
+void nsTreeSanitizer::RemoveAllAttributesFromDescendants(
+    mozilla::dom::Element* aElement) {
+  nsIContent* node = aElement->GetFirstChild();
+  while (node) {
+    if (node->IsElement()) {
+      mozilla::dom::Element* elt = node->AsElement();
+      RemoveAllAttributes(elt);
+    }
+    node = node->GetNextNode(aElement);
+  }
+}
+
 void nsTreeSanitizer::LogMessage(const char* aMessage, Document* aDoc,
                                  Element* aElement, nsAtom* aAttr) {
   if (mLogRemovals) {
     nsAutoString msg;
     msg.Assign(NS_ConvertASCIItoUTF16(aMessage));
     if (aElement) {
-      msg.Append(NS_LITERAL_STRING(" Element: ") + aElement->LocalName() +
-                 NS_LITERAL_STRING("."));
+      msg.Append(u" Element: "_ns + aElement->LocalName() + u"."_ns);
     }
     if (aAttr) {
-      msg.Append(NS_LITERAL_STRING(" Attribute: ") +
-                 nsDependentAtomString(aAttr) + NS_LITERAL_STRING("."));
+      msg.Append(u" Attribute: "_ns + nsDependentAtomString(aAttr) + u"."_ns);
     }
 
     nsContentUtils::ReportToConsoleNonLocalized(
-        msg, nsIScriptError::warningFlag, NS_LITERAL_CSTRING("DOM"), aDoc);
+        msg, nsIScriptError::warningFlag, "DOM"_ns, aDoc);
   }
 }
 

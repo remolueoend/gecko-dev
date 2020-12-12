@@ -13,8 +13,8 @@
 #include "WebBrowserPersistLocalDocument.h"
 #include "WebBrowserPersistResourcesChild.h"
 #include "WebBrowserPersistSerializeChild.h"
-#include "SHEntryChild.h"
 #include "mozilla/StaticPrefs_fission.h"
+#include "mozilla/net/CookieJarSettings.h"
 
 namespace mozilla {
 
@@ -40,6 +40,7 @@ void WebBrowserPersistDocumentChild::Start(
 
   nsCOMPtr<nsIPrincipal> principal;
   nsCOMPtr<nsIReferrerInfo> referrerInfo;
+  nsCOMPtr<nsICookieJarSettings> cookieJarSettings;
   WebBrowserPersistDocumentAttrs attrs;
   nsCOMPtr<nsIInputStream> postDataStream;
 #define ENSURE(e)          \
@@ -58,15 +59,7 @@ void WebBrowserPersistDocumentChild::Start(
   ENSURE(aDocument->GetTitle(attrs.title()));
   ENSURE(aDocument->GetContentDisposition(attrs.contentDisposition()));
 
-  // shEntryChild needs to remain in scope until after the SendAttributes call,
-  // to keep the actor alive.
-  RefPtr<dom::SHEntryChild> shEntryChild;
-  if (StaticPrefs::fission_sessionHistoryInParent()) {
-    shEntryChild = aDocument->GetHistory().downcast<dom::SHEntryChild>();
-    attrs.sessionHistoryEntryOrCacheKey() = shEntryChild;
-  } else {
-    attrs.sessionHistoryEntryOrCacheKey() = aDocument->GetCacheKey();
-  }
+  attrs.sessionHistoryCacheKey() = aDocument->GetCacheKey();
 
   ENSURE(aDocument->GetPersistFlags(&(attrs.persistFlags())));
 
@@ -75,6 +68,10 @@ void WebBrowserPersistDocumentChild::Start(
 
   ENSURE(aDocument->GetReferrerInfo(getter_AddRefs(referrerInfo)));
   attrs.referrerInfo() = referrerInfo;
+
+  ENSURE(aDocument->GetCookieJarSettings(getter_AddRefs(cookieJarSettings)));
+  net::CookieJarSettings::Cast(cookieJarSettings)
+      ->Serialize(attrs.cookieJarSettings());
 
   ENSURE(aDocument->GetPostData(getter_AddRefs(postDataStream)));
 #undef ENSURE

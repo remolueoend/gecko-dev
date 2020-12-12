@@ -15,10 +15,9 @@
 #  include "mozilla/Monitor.h"
 #  include "mozilla/Mutex.h"
 #  include "mozilla/RefPtr.h"
-#  include "mozilla/Tuple.h"
 #  include "mozilla/UniquePtr.h"
 #  include "mozilla/Variant.h"
-
+#  include "nsIDirectTaskDispatcher.h"
 #  include "nsISerialEventTarget.h"
 #  include "nsTArray.h"
 #  include "nsThreadUtils.h"
@@ -37,6 +36,10 @@
 #    define PROMISE_ASSERT(...) \
       do {                      \
       } while (0)
+#  endif
+
+#  if DEBUG
+#    include "nsPrintfCString.h"
 #  endif
 
 namespace mozilla {
@@ -284,8 +287,12 @@ class MozPromise : public MozPromiseBase {
     return p;
   }
 
-  typedef MozPromise<nsTArray<ResolveValueType>, RejectValueType, IsExclusive>
+  typedef MozPromise<CopyableTArray<ResolveValueType>, RejectValueType,
+                     IsExclusive>
       AllPromiseType;
+
+  typedef MozPromise<CopyableTArray<ResolveOrRejectValue>, bool, IsExclusive>
+      AllSettledPromiseType;
 
  private:
   class AllPromiseHolder : public MozPromiseRefcountable {
@@ -336,13 +343,57 @@ class MozPromise : public MozPromiseBase {
     size_t mOutstandingPromises;
   };
 
+  // Trying to pass ResolveOrRejectValue by value fails static analysis checks,
+  // so we need to use either a const& or an rvalue reference, depending on
+  // whether IsExclusive is true or not.
+  typedef std::conditional_t<IsExclusive, ResolveOrRejectValue&&,
+                             const ResolveOrRejectValue&>
+      ResolveOrRejectValueParam;
+
+  class AllSettledPromiseHolder : public MozPromiseRefcountable {
+   public:
+    explicit AllSettledPromiseHolder(size_t aDependentPromises)
+        : mPromise(new typename AllSettledPromiseType::Private(__func__)),
+          mOutstandingPromises(aDependentPromises) {
+      MOZ_ASSERT(aDependentPromises > 0);
+      mValues.SetLength(aDependentPromises);
+    }
+
+    void Settle(size_t aIndex, ResolveOrRejectValueParam aValue) {
+      if (!mPromise) {
+        // Already rejected.
+        return;
+      }
+
+      mValues[aIndex].emplace(MaybeMove(aValue));
+      if (--mOutstandingPromises == 0) {
+        nsTArray<ResolveOrRejectValue> values;
+        values.SetCapacity(mValues.Length());
+        for (auto&& value : mValues) {
+          values.AppendElement(std::move(value.ref()));
+        }
+
+        mPromise->Resolve(std::move(values), __func__);
+        mPromise = nullptr;
+        mValues.Clear();
+      }
+    }
+
+    AllSettledPromiseType* Promise() { return mPromise; }
+
+   private:
+    nsTArray<Maybe<ResolveOrRejectValue>> mValues;
+    RefPtr<typename AllSettledPromiseType::Private> mPromise;
+    size_t mOutstandingPromises;
+  };
+
  public:
   [[nodiscard]] static RefPtr<AllPromiseType> All(
       nsISerialEventTarget* aProcessingTarget,
       nsTArray<RefPtr<MozPromise>>& aPromises) {
     if (aPromises.Length() == 0) {
-      return AllPromiseType::CreateAndResolve(nsTArray<ResolveValueType>(),
-                                              __func__);
+      return AllPromiseType::CreateAndResolve(
+          CopyableTArray<ResolveValueType>(), __func__);
     }
 
     RefPtr<AllPromiseHolder> holder = new AllPromiseHolder(aPromises.Length());
@@ -356,6 +407,26 @@ class MozPromise : public MozPromiseBase {
           [holder](RejectValueType aRejectValue) -> void {
             holder->Reject(std::move(aRejectValue));
           });
+    }
+    return promise;
+  }
+
+  [[nodiscard]] static RefPtr<AllSettledPromiseType> AllSettled(
+      nsISerialEventTarget* aProcessingTarget,
+      nsTArray<RefPtr<MozPromise>>& aPromises) {
+    if (aPromises.Length() == 0) {
+      return AllSettledPromiseType::CreateAndResolve(
+          CopyableTArray<ResolveOrRejectValue>(), __func__);
+    }
+
+    RefPtr<AllSettledPromiseHolder> holder =
+        new AllSettledPromiseHolder(aPromises.Length());
+    RefPtr<AllSettledPromiseType> promise = holder->Promise();
+    for (size_t i = 0; i < aPromises.Length(); ++i) {
+      aPromises[i]->Then(aProcessingTarget, __func__,
+                         [holder, i](ResolveOrRejectValueParam aValue) -> void {
+                           holder->Settle(i, MaybeMove(aValue));
+                         });
     }
     return promise;
   }
@@ -450,9 +521,43 @@ class MozPromise : public MozPromiseBase {
 
       nsCOMPtr<nsIRunnable> r = new ResolveOrRejectRunnable(this, aPromise);
       PROMISE_LOG(
-          "%s Then() call made from %s [Runnable=%p, Promise=%p, ThenValue=%p]",
+          "%s Then() call made from %s [Runnable=%p, Promise=%p, ThenValue=%p] "
+          "%s dispatch",
           aPromise->mValue.IsResolve() ? "Resolving" : "Rejecting", mCallSite,
-          r.get(), aPromise, this);
+          r.get(), aPromise, this,
+          aPromise->mUseSynchronousTaskDispatch ? "synchronous"
+          : aPromise->mUseDirectTaskDispatch    ? "directtask"
+                                                : "normal");
+
+      if (aPromise->mUseSynchronousTaskDispatch &&
+          mResponseTarget->IsOnCurrentThread()) {
+        PROMISE_LOG("ThenValue::Dispatch running task synchronously [this=%p]",
+                    this);
+        r->Run();
+        return;
+      }
+
+      if (aPromise->mUseDirectTaskDispatch &&
+          mResponseTarget->IsOnCurrentThread()) {
+        PROMISE_LOG(
+            "ThenValue::Dispatch dispatch task via direct task queue [this=%p]",
+            this);
+        nsCOMPtr<nsIDirectTaskDispatcher> dispatcher =
+            do_QueryInterface(mResponseTarget);
+        if (dispatcher) {
+          dispatcher->DispatchDirectTask(r.forget());
+          return;
+        }
+        NS_WARNING(
+            nsPrintfCString(
+                "Direct Task dispatching not available for thread \"%s\"",
+                PR_GetThreadName(PR_GetCurrentThread()))
+                .get());
+        MOZ_DIAGNOSTIC_ASSERT(
+            false,
+            "mResponseTarget must implement nsIDirectTaskDispatcher for direct "
+            "task dispatching");
+      }
 
       // Promise consumers are allowed to disconnect the Request object and
       // then shut down the thread or task queue that the promise result would
@@ -941,6 +1046,22 @@ class MozPromise : public MozPromiseBase {
     PROMISE_LOG(
         "%s invoking Chain() [this=%p, chainedPromise=%p, isPending=%d]",
         aCallSite, this, chainedPromise.get(), (int)IsPending());
+
+    // We want to use the same type of dispatching method with the chained
+    // promises.
+
+    // We need to ensure that the UseSynchronousTaskDispatch branch isn't taken
+    // at compilation time to ensure we're not triggering the static_assert in
+    // UseSynchronousTaskDispatch method. if constexpr (IsExclusive) ensures
+    // that.
+    if (mUseDirectTaskDispatch) {
+      chainedPromise->UseDirectTaskDispatch(aCallSite);
+    } else if constexpr (IsExclusive) {
+      if (mUseSynchronousTaskDispatch) {
+        chainedPromise->UseSynchronousTaskDispatch(aCallSite);
+      }
+    }
+
     if (!IsPending()) {
       ForwardTo(chainedPromise);
     } else {
@@ -1038,6 +1159,8 @@ class MozPromise : public MozPromiseBase {
   const char* mCreationSite;  // For logging
   Mutex mMutex;
   ResolveOrRejectValue mValue;
+  bool mUseSynchronousTaskDispatch = false;
+  bool mUseDirectTaskDispatch = false;
 #  ifdef PROMISE_DEBUG
   uint32_t mMagic1 = sMagic;
 #  endif
@@ -1117,6 +1240,43 @@ class MozPromise<ResolveValueT, RejectValueT, IsExclusive>::Private
     }
     mValue = std::forward<ResolveOrRejectValue_>(aValue);
     DispatchAll();
+  }
+
+  // If the caller and target are both on the same thread, run the the resolve
+  // or reject callback synchronously. Otherwise, the task will be dispatched
+  // via the target Dispatch method.
+  void UseSynchronousTaskDispatch(const char* aSite) {
+    static_assert(
+        IsExclusive,
+        "Synchronous dispatch can only be used with exclusive promises");
+    PROMISE_ASSERT(mMagic1 == sMagic && mMagic2 == sMagic &&
+                   mMagic3 == sMagic && mMagic4 == &mMutex);
+    MutexAutoLock lock(mMutex);
+    PROMISE_LOG("%s UseSynchronousTaskDispatch MozPromise (%p created at %s)",
+                aSite, this, mCreationSite);
+    MOZ_ASSERT(IsPending(),
+               "A Promise must not have been already resolved or rejected to "
+               "set dispatch state");
+    mUseSynchronousTaskDispatch = true;
+  }
+
+  // If the caller and target are both on the same thread, run the
+  // resolve/reject callback off the direct task queue instead. This avoids a
+  // full trip to the back of the event queue for each additional asynchronous
+  // step when using MozPromise, and is similar (but not identical to) the
+  // microtask semantics of JS promises.
+  void UseDirectTaskDispatch(const char* aSite) {
+    PROMISE_ASSERT(mMagic1 == sMagic && mMagic2 == sMagic &&
+                   mMagic3 == sMagic && mMagic4 == &mMutex);
+    MutexAutoLock lock(mMutex);
+    PROMISE_LOG("%s UseDirectTaskDispatch MozPromise (%p created at %s)", aSite,
+                this, mCreationSite);
+    MOZ_ASSERT(IsPending(),
+               "A Promise must not have been already resolved or rejected to "
+               "set dispatch state");
+    MOZ_ASSERT(!mUseSynchronousTaskDispatch,
+               "Promise already set for synchronous dispatch");
+    mUseDirectTaskDispatch = true;
   }
 };
 
@@ -1221,6 +1381,16 @@ class MozPromiseHolderBase {
       ResolveOrReject(std::forward<ResolveOrRejectValueType_>(aValue),
                       aMethodName);
     }
+  }
+
+  void UseSynchronousTaskDispatch(const char* aSite) {
+    MOZ_ASSERT(mPromise);
+    mPromise->UseSynchronousTaskDispatch(aSite);
+  }
+
+  void UseDirectTaskDispatch(const char* aSite) {
+    MOZ_ASSERT(mPromise);
+    mPromise->UseDirectTaskDispatch(aSite);
   }
 
  private:

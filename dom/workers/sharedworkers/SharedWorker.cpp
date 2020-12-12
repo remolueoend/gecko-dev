@@ -7,12 +7,14 @@
 #include "SharedWorker.h"
 
 #include "mozilla/AsyncEventDispatcher.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/dom/ClientInfo.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/MessageChannel.h"
 #include "mozilla/dom/MessagePort.h"
 #include "mozilla/dom/PMessagePort.h"
+#include "mozilla/dom/RemoteWorkerManager.h"  // RemoteWorkerManager::GetRemoteType
 #include "mozilla/dom/RemoteWorkerTypes.h"
 #include "mozilla/dom/SharedWorkerBinding.h"
 #include "mozilla/dom/SharedWorkerChild.h"
@@ -23,6 +25,7 @@
 #include "mozilla/ipc/BackgroundUtils.h"
 #include "mozilla/ipc/PBackgroundChild.h"
 #include "mozilla/ipc/URIUtils.h"
+#include "mozilla/net/CookieJarSettings.h"
 #include "mozilla/StorageAccess.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
@@ -121,9 +124,9 @@ already_AddRefed<SharedWorker> SharedWorker::Constructor(
     return nullptr;
   }
 
-  // Here, the StoragePrincipal is always equal to the SharedWorker's principal
-  // because the channel is not opened yet, and, because of this, it's not
-  // classified. We need to force the correct originAttributes.
+  // Here, the PartitionedPrincipal is always equal to the SharedWorker's
+  // principal because the channel is not opened yet, and, because of this, it's
+  // not classified. We need to force the correct originAttributes.
   if (ShouldPartitionStorage(storageAllowed)) {
     nsCOMPtr<nsIScriptObjectPrincipal> sop = do_QueryInterface(window);
     if (!sop) {
@@ -137,27 +140,27 @@ already_AddRefed<SharedWorker> SharedWorker::Constructor(
       return nullptr;
     }
 
-    nsIPrincipal* windowStoragePrincipal = sop->GetEffectiveStoragePrincipal();
-    if (!windowStoragePrincipal) {
+    nsIPrincipal* windowPartitionedPrincipal = sop->PartitionedPrincipal();
+    if (!windowPartitionedPrincipal) {
       aRv.Throw(NS_ERROR_UNEXPECTED);
       return nullptr;
     }
 
-    if (!windowPrincipal->Equals(windowStoragePrincipal)) {
-      loadInfo.mStoragePrincipal =
+    if (!windowPrincipal->Equals(windowPartitionedPrincipal)) {
+      loadInfo.mPartitionedPrincipal =
           BasePrincipal::Cast(loadInfo.mPrincipal)
               ->CloneForcingOriginAttributes(
-                  BasePrincipal::Cast(windowStoragePrincipal)
+                  BasePrincipal::Cast(windowPartitionedPrincipal)
                       ->OriginAttributesRef());
     }
   }
 
-  PrincipalInfo storagePrincipalInfo;
-  if (loadInfo.mPrincipal->Equals(loadInfo.mStoragePrincipal)) {
-    storagePrincipalInfo = principalInfo;
+  PrincipalInfo partitionedPrincipalInfo;
+  if (loadInfo.mPrincipal->Equals(loadInfo.mPartitionedPrincipal)) {
+    partitionedPrincipalInfo = principalInfo;
   } else {
-    aRv = PrincipalToPrincipalInfo(loadInfo.mStoragePrincipal,
-                                   &storagePrincipalInfo);
+    aRv = PrincipalToPrincipalInfo(loadInfo.mPartitionedPrincipal,
+                                   &partitionedPrincipalInfo);
     if (NS_WARN_IF(aRv.Failed())) {
       return nullptr;
     }
@@ -193,11 +196,25 @@ already_AddRefed<SharedWorker> SharedWorker::Constructor(
 
   nsID agentClusterId = nsContentUtils::GenerateUUID();
 
+  net::CookieJarSettingsArgs cjsData;
+  MOZ_ASSERT(loadInfo.mCookieJarSettings);
+  net::CookieJarSettings::Cast(loadInfo.mCookieJarSettings)->Serialize(cjsData);
+
+  auto remoteType = RemoteWorkerManager::GetRemoteType(
+      loadInfo.mPrincipal, WorkerType::WorkerTypeShared);
+  if (NS_WARN_IF(remoteType.isErr())) {
+    aRv.Throw(remoteType.unwrapErr());
+    return nullptr;
+  }
+
   RemoteWorkerData remoteWorkerData(
       nsString(aScriptURL), baseURL, resolvedScriptURL, name,
-      loadingPrincipalInfo, principalInfo, storagePrincipalInfo,
-      loadInfo.mDomain, isSecureContext, ipcClientInfo, loadInfo.mReferrerInfo,
-      storageAllowed, void_t() /* OptionalServiceWorkerData */, agentClusterId);
+      loadingPrincipalInfo, principalInfo, partitionedPrincipalInfo,
+      loadInfo.mUseRegularPrincipal,
+      loadInfo.mHasStorageAccessPermissionGranted, cjsData, loadInfo.mDomain,
+      isSecureContext, ipcClientInfo, loadInfo.mReferrerInfo, storageAllowed,
+      void_t() /* OptionalServiceWorkerData */, agentClusterId,
+      remoteType.unwrap());
 
   PSharedWorkerChild* pActor = actorChild->SendPSharedWorkerConstructor(
       remoteWorkerData, loadInfo.mWindowID, portIdentifier.release());
@@ -211,6 +228,10 @@ already_AddRefed<SharedWorker> SharedWorker::Constructor(
   // Let's inform the window about this SharedWorker.
   nsGlobalWindowInner::Cast(window)->StoreSharedWorker(sharedWorker);
   actor->SetParent(sharedWorker);
+
+  if (nsGlobalWindowInner::Cast(window)->IsSuspended()) {
+    sharedWorker->Suspend();
+  }
 
   return sharedWorker.forget();
 }
@@ -250,8 +271,7 @@ void SharedWorker::Thaw() {
   }
 
   if (!mFrozenEvents.IsEmpty()) {
-    nsTArray<RefPtr<Event>> events;
-    mFrozenEvents.SwapElements(events);
+    nsTArray<RefPtr<Event>> events = std::move(mFrozenEvents);
 
     for (uint32_t index = 0; index < events.Length(); index++) {
       RefPtr<Event>& event = events[index];
@@ -352,7 +372,7 @@ void SharedWorker::GetEventTargetParent(EventChainPreVisitor& aVisitor) {
     if (!event) {
       event = EventDispatcher::CreateEvent(aVisitor.mEvent->mOriginalTarget,
                                            aVisitor.mPresContext,
-                                           aVisitor.mEvent, EmptyString());
+                                           aVisitor.mEvent, u""_ns);
     }
 
     QueueEvent(event);
@@ -370,8 +390,8 @@ void SharedWorker::ErrorPropagation(nsresult aError) {
   MOZ_ASSERT(mActor);
   MOZ_ASSERT(NS_FAILED(aError));
 
-  RefPtr<AsyncEventDispatcher> errorEvent = new AsyncEventDispatcher(
-      this, NS_LITERAL_STRING("error"), CanBubble::eNo);
+  RefPtr<AsyncEventDispatcher> errorEvent =
+      new AsyncEventDispatcher(this, u"error"_ns, CanBubble::eNo);
   errorEvent->PostDOMEvent();
 
   Close();

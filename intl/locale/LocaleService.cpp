@@ -147,20 +147,24 @@ LocaleService* LocaleService::GetInstance() {
           mozilla::services::GetObserverService();
       if (obs) {
         obs->AddObserver(sInstance, INTL_SYSTEM_LOCALES_CHANGED, true);
+        obs->AddObserver(sInstance, NS_XPCOM_SHUTDOWN_OBSERVER_ID, true);
       }
     }
-    ClearOnShutdown(&sInstance, ShutdownPhase::Shutdown);
+    // DOM might use ICUUtils and LocaleService during UnbindFromTree by
+    // final cycle collection.
+    ClearOnShutdown(&sInstance, ShutdownPhase::ShutdownPostLastCycleCollection);
   }
   return sInstance;
 }
 
-LocaleService::~LocaleService() {
+void LocaleService::RemoveObservers() {
   if (mIsServer) {
     Preferences::RemoveObservers(this, kObservedPrefs);
 
     nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
     if (obs) {
       obs->RemoveObserver(this, INTL_SYSTEM_LOCALES_CHANGED);
+      obs->RemoveObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID);
     }
   }
 }
@@ -169,7 +173,7 @@ void LocaleService::AssignAppLocales(const nsTArray<nsCString>& aAppLocales) {
   MOZ_ASSERT(!mIsServer,
              "This should only be called for LocaleService in client mode.");
 
-  mAppLocales = aAppLocales;
+  mAppLocales = aAppLocales.Clone();
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (obs) {
     obs->NotifyObservers(nullptr, "intl:app-locales-changed", nullptr);
@@ -181,7 +185,7 @@ void LocaleService::AssignRequestedLocales(
   MOZ_ASSERT(!mIsServer,
              "This should only be called for LocaleService in client mode.");
 
-  mRequestedLocales = aRequestedLocales;
+  mRequestedLocales = aRequestedLocales.Clone();
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (obs) {
     obs->NotifyObservers(nullptr, "intl:requested-locales-changed", nullptr);
@@ -235,6 +239,10 @@ void LocaleService::LocalesChanged() {
 }
 
 bool LocaleService::IsLocaleRTL(const nsACString& aLocale) {
+  return unic_langid_is_rtl(&aLocale);
+}
+
+bool LocaleService::IsAppLocaleRTL() {
   // First, let's check if there's a manual override
   // preference for directionality set.
   int pref = Preferences::GetInt("intl.uidirection", -1);
@@ -242,11 +250,7 @@ bool LocaleService::IsLocaleRTL(const nsACString& aLocale) {
     return (pref > 0);
   }
 
-  return unic_langid_is_rtl(&aLocale);
-}
-
-bool LocaleService::IsAppLocaleRTL() {
-  // First, check if there is a pseudo locale `bidi` set.
+  // Next, check if there is a pseudo locale `bidi` set.
   nsAutoCString pseudoLocale;
   if (NS_SUCCEEDED(Preferences::GetCString("intl.l10n.pseudo", pseudoLocale))) {
     if (pseudoLocale.EqualsLiteral("bidi")) {
@@ -270,6 +274,8 @@ LocaleService::Observe(nsISupports* aSubject, const char* aTopic,
   if (!strcmp(aTopic, INTL_SYSTEM_LOCALES_CHANGED)) {
     RequestedLocalesChanged();
     WebExposedLocalesChanged();
+  } else if (!strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID)) {
+    RemoveObservers();
   } else {
     NS_ConvertUTF16toUTF8 pref(aData);
     // At the moment the only thing we're observing are settings indicating
@@ -416,7 +422,7 @@ LocaleService::GetAppLocalesAsBCP47(nsTArray<nsCString>& aRetVal) {
   if (mAppLocales.IsEmpty()) {
     NegotiateAppLocales(mAppLocales);
   }
-  aRetVal = mAppLocales;
+  aRetVal = mAppLocales.Clone();
 
   return NS_OK;
 }
@@ -474,7 +480,7 @@ LocaleService::GetRegionalPrefsLocales(nsTArray<nsCString>& aRetVal) {
   }
 
   if (LocaleService::LanguagesMatch(appLocale, regionalPrefsLocales[0])) {
-    aRetVal = regionalPrefsLocales;
+    aRetVal = regionalPrefsLocales.Clone();
     return NS_OK;
   }
 
@@ -486,12 +492,12 @@ LocaleService::GetRegionalPrefsLocales(nsTArray<nsCString>& aRetVal) {
 NS_IMETHODIMP
 LocaleService::GetWebExposedLocales(nsTArray<nsCString>& aRetVal) {
   if (StaticPrefs::privacy_spoof_english() == 2) {
-    aRetVal = nsTArray<nsCString>({NS_LITERAL_CSTRING("en-US")});
+    aRetVal = nsTArray<nsCString>({"en-US"_ns});
     return NS_OK;
   }
 
   if (!mWebExposedLocales.IsEmpty()) {
-    aRetVal = mWebExposedLocales;
+    aRetVal = mWebExposedLocales.Clone();
     return NS_OK;
   }
 
@@ -542,7 +548,7 @@ LocaleService::GetRequestedLocales(nsTArray<nsCString>& aRetVal) {
     ReadRequestedLocales(mRequestedLocales);
   }
 
-  aRetVal = mRequestedLocales;
+  aRetVal = mRequestedLocales.Clone();
   return NS_OK;
 }
 
@@ -599,7 +605,7 @@ LocaleService::GetAvailableLocales(nsTArray<nsCString>& aRetVal) {
     GetPackagedLocales(mAvailableLocales);
   }
 
-  aRetVal = mAvailableLocales;
+  aRetVal = mAvailableLocales.Clone();
   return NS_OK;
 }
 
@@ -640,6 +646,6 @@ LocaleService::GetPackagedLocales(nsTArray<nsCString>& aRetVal) {
   if (mPackagedLocales.IsEmpty()) {
     InitPackagedLocales();
   }
-  aRetVal = mPackagedLocales;
+  aRetVal = mPackagedLocales.Clone();
   return NS_OK;
 }

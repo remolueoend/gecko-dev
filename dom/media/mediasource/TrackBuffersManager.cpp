@@ -72,7 +72,7 @@ class DispatchKeyNeededEvent : public Runnable {
                          const nsString& aInitDataType)
       : Runnable("DispatchKeyNeededEvent"),
         mDecoder(aDecoder),
-        mInitData(aInitData),
+        mInitData(aInitData.Clone()),
         mInitDataType(aInitDataType) {}
   NS_IMETHOD Run() override {
     // Note: Null check the owner, as the decoder could have been shutdown
@@ -1392,10 +1392,9 @@ void TrackBuffersManager::OnDemuxerInitDone(const MediaResult& aResult) {
       MutexAutoLock mut(mMutex);
       mInfo = info;
     }
-
-    // We now have a valid init data ; we can store it for later use.
-    mInitData = mParser->InitData();
   }
+  // We now have a valid init data ; we can store it for later use.
+  mInitData = mParser->InitData();
 
   // We have now completed the changeType operation.
   mChangeTypeReceived = false;
@@ -2080,10 +2079,7 @@ void TrackBuffersManager::InsertFrames(TrackBuffer& aSamples,
   // the previous step and the next random access point after those removed
   // frames.
 
-  TimeIntervals intersection = trackBuffer.mBufferedRanges;
-  intersection.Intersection(aIntervals);
-
-  if (!intersection.IsEmpty()) {
+  if (trackBuffer.mBufferedRanges.IntersectsStrict(aIntervals)) {
     if (aSamples[0]->mKeyframe &&
         (mType.Type() == MEDIAMIMETYPE("video/webm") ||
          mType.Type() == MEDIAMIMETYPE("audio/webm"))) {
@@ -2862,7 +2858,7 @@ void TrackBuffersManager::TrackData::AddSizeOfResources(
 
 void TrackBuffersManager::GetDebugInfo(
     dom::TrackBuffersManagerDebugInfo& aInfo) {
-  aInfo.mType = NS_ConvertUTF8toUTF16(mType.Type().AsString());
+  CopyUTF8toUTF16(mType.Type().AsString(), aInfo.mType);
 
   if (HasAudio()) {
     aInfo.mNextSampleTime = mAudioTracks.mNextSampleTime.ToSeconds();
@@ -2882,7 +2878,7 @@ void TrackBuffersManager::GetDebugInfo(
       range->mStart = ranges.Start(i).ToSeconds();
       range->mEnd = ranges.End(i).ToSeconds();
     }
-    aInfo.mRanges = items;
+    aInfo.mRanges = std::move(items);
   } else if (HasVideo()) {
     aInfo.mNextSampleTime = mVideoTracks.mNextSampleTime.ToSeconds();
     aInfo.mNumSamples = mVideoTracks.mBuffers[0].Length();
@@ -2901,7 +2897,7 @@ void TrackBuffersManager::GetDebugInfo(
       range->mStart = ranges.Start(i).ToSeconds();
       range->mEnd = ranges.End(i).ToSeconds();
     }
-    aInfo.mRanges = items;
+    aInfo.mRanges = std::move(items);
   }
 }
 

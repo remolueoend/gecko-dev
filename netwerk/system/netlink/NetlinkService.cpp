@@ -13,6 +13,7 @@
 #include "nsThreadUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "NetlinkService.h"
+#include "nsIThread.h"
 #include "nsString.h"
 #include "nsPrintfCString.h"
 #include "mozilla/Logging.h"
@@ -878,6 +879,9 @@ void NetlinkService::OnAddrMessage(struct nlmsghdr* aNlh) {
     }
   }
 
+  // Address change on the interface can change its status
+  linkInfo->UpdateStatus();
+
   // Don't treat address changes during initial scan as a network change
   if (mInitialScanFinished) {
     // Send network event change regardless of whether the ID has changed or not
@@ -1619,7 +1623,7 @@ bool NetlinkService::CalculateIDForFamily(uint8_t aFamily, SHA1Sum* aSHA1) {
       if (linkInfo->mIsUp) {
         nsAutoCString linkName;
         linkInfo->mLink->GetName(linkName);
-        if (StringBeginsWith(linkName, NS_LITERAL_CSTRING("rmnet"))) {
+        if (StringBeginsWith(linkName, "rmnet"_ns)) {
           // Check whether there is some non-local address associated with this
           // link.
           for (uint32_t i = 0; i < linkInfo->mAddresses.Length(); ++i) {
@@ -1819,7 +1823,7 @@ void NetlinkService::GetNetworkID(nsACString& aNetworkID) {
 nsresult NetlinkService::GetDnsSuffixList(nsTArray<nsCString>& aDnsSuffixList) {
 #if defined(HAVE_RES_NINIT)
   MutexAutoLock lock(mMutex);
-  aDnsSuffixList = mDNSSuffixList;
+  aDnsSuffixList = mDNSSuffixList.Clone();
   return NS_OK;
 #else
   return NS_ERROR_NOT_IMPLEMENTED;

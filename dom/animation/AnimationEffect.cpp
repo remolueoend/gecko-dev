@@ -12,9 +12,9 @@
 #include "mozilla/dom/MutationObservers.h"
 #include "mozilla/AnimationUtils.h"
 #include "mozilla/FloatingPoint.h"
+#include "nsDOMMutationObserver.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(AnimationEffect)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(AnimationEffect)
@@ -40,6 +40,10 @@ AnimationEffect::AnimationEffect(Document* aDocument, TimingParams&& aTiming)
     : mDocument(aDocument), mTiming(std::move(aTiming)) {}
 
 AnimationEffect::~AnimationEffect() = default;
+
+nsISupports* AnimationEffect::GetParentObject() const {
+  return ToSupports(mDocument);
+}
 
 // https://drafts.csswg.org/web-animations/#current
 bool AnimationEffect::IsCurrent() const {
@@ -87,8 +91,8 @@ void AnimationEffect::SetSpecifiedTiming(TimingParams&& aTiming) {
       AsKeyframeEffect()->RequestRestyle(EffectCompositor::RestyleType::Layer);
     }
   }
-  // For keyframe effects, NotifyEffectTimingUpdated above will eventually cause
-  // KeyframeEffect::NotifyAnimationTimingUpdated to be called so it can
+  // For keyframe effects, NotifyEffectTimingUpdated above will eventually
+  // cause KeyframeEffect::NotifyAnimationTimingUpdated to be called so it can
   // update its registration with the target element as necessary.
 }
 
@@ -207,8 +211,8 @@ ComputedTiming AnimationEffect::GetComputedTimingAt(
       result.mActiveTime == result.mActiveDuration &&
       result.mIterations != 0.0) {
     // The only way we can reach the end of the active interval and have
-    // a progress of zero and a current iteration of zero, is if we have a zero
-    // iteration count -- something we should have detected above.
+    // a progress of zero and a current iteration of zero, is if we have a
+    // zero iteration count -- something we should have detected above.
     MOZ_ASSERT(result.mCurrentIteration != 0,
                "Should not have zero current iteration");
     progress = 1.0;
@@ -321,7 +325,7 @@ void AnimationEffect::GetComputedTimingAsDict(
 void AnimationEffect::UpdateTiming(const OptionalEffectTiming& aTiming,
                                    ErrorResult& aRv) {
   TimingParams timing =
-      TimingParams::MergeOptionalEffectTiming(mTiming, aTiming, mDocument, aRv);
+      TimingParams::MergeOptionalEffectTiming(mTiming, aTiming, aRv);
   if (aRv.Failed()) {
     return;
   }
@@ -339,5 +343,4 @@ Nullable<TimeDuration> AnimationEffect::GetLocalTime() const {
   return result;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

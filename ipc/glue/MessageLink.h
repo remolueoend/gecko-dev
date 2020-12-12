@@ -8,12 +8,15 @@
 #ifndef ipc_glue_MessageLink_h
 #define ipc_glue_MessageLink_h 1
 
-#include "base/basictypes.h"
+#include <cstdint>
 #include "base/message_loop.h"
-
-#include "mozilla/WeakPtr.h"
+#include "mozilla/Assertions.h"
 #include "mozilla/UniquePtr.h"
 #include "mozilla/ipc/Transport.h"
+
+namespace IPC {
+class Message;
+}
 
 namespace mozilla {
 namespace ipc {
@@ -42,10 +45,13 @@ class MessageLink {
   explicit MessageLink(MessageChannel* aChan);
   virtual ~MessageLink();
 
+  // This is called immediately before the MessageChannel destroys its
+  // MessageLink. See the implementation in ThreadLink for details.
+  virtual void PrepareToDestroy(){};
+
   // n.b.: These methods all require that the channel monitor is
   // held when they are invoked.
-  virtual void EchoMessage(Message* msg) = 0;
-  virtual void SendMessage(Message* msg) = 0;
+  virtual void SendMessage(mozilla::UniquePtr<Message> msg) = 0;
   virtual void SendClose() = 0;
 
   virtual bool Unsound_IsClosed() const = 0;
@@ -59,7 +65,6 @@ class ProcessLink : public MessageLink, public Transport::Listener {
   void OnCloseChannel();
   void OnChannelOpened();
   void OnTakeConnectedChannel();
-  void OnEchoMessage(Message* msg);
 
   void AssertIOThread() const {
     MOZ_ASSERT(mIOLoop == MessageLoop::current(), "not on I/O thread!");
@@ -86,8 +91,7 @@ class ProcessLink : public MessageLink, public Transport::Listener {
   virtual void OnChannelConnected(int32_t peer_pid) override;
   virtual void OnChannelError() override;
 
-  virtual void EchoMessage(Message* msg) override;
-  virtual void SendMessage(Message* msg) override;
+  virtual void SendMessage(mozilla::UniquePtr<Message> msg) override;
   virtual void SendClose() override;
 
   virtual bool Unsound_IsClosed() const override;
@@ -105,10 +109,11 @@ class ProcessLink : public MessageLink, public Transport::Listener {
 class ThreadLink : public MessageLink {
  public:
   ThreadLink(MessageChannel* aChan, MessageChannel* aTargetChan);
-  virtual ~ThreadLink();
+  virtual ~ThreadLink() = default;
 
-  virtual void EchoMessage(Message* msg) override;
-  virtual void SendMessage(Message* msg) override;
+  virtual void PrepareToDestroy() override;
+
+  virtual void SendMessage(mozilla::UniquePtr<Message> msg) override;
   virtual void SendClose() override;
 
   virtual bool Unsound_IsClosed() const override;

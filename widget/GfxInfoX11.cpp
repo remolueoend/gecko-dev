@@ -14,17 +14,22 @@
 #include <cctype>
 #include "nsCRTGlue.h"
 #include "nsExceptionHandler.h"
+#include "nsUnicharUtils.h"
 #include "prenv.h"
 #include "nsPrintfCString.h"
 #include "nsWhitespaceTokenizer.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/gfx/Logging.h"
 
 #include "GfxInfoX11.h"
 
 #include <gdk/gdkx.h>
 #ifdef MOZ_WAYLAND
 #  include "mozilla/widget/nsWaylandDisplay.h"
+#  include "mozilla/widget/DMABufLibWrapper.h"
 #endif
 
+#define EXIT_STATUS_BUFFER_TOO_SMALL 2
 #ifdef DEBUG
 bool fire_glxtest_process();
 #endif
@@ -47,6 +52,9 @@ nsresult GfxInfo::Init() {
   mIsAccelerated = true;
   mIsWayland = false;
   mIsWaylandDRM = false;
+  mIsXWayland = false;
+  mHasMultipleGPUs = false;
+  mGlxTestError = false;
   return GfxInfoBase::Init();
 }
 
@@ -65,6 +73,18 @@ void GfxInfo::AddCrashReportAnnotations() {
                                      mIsWaylandDRM);
   CrashReporter::AnnotateCrashReport(
       CrashReporter::Annotation::DesktopEnvironment, mDesktopEnvironment);
+
+  if (mHasMultipleGPUs) {
+    nsAutoCString note;
+    note.AppendLiteral("Has dual GPUs.");
+    if (!mSecondaryVendorId.IsEmpty()) {
+      note.AppendLiteral(" GPU #2: AdapterVendorID2: ");
+      note.Append(mSecondaryVendorId);
+      note.AppendLiteral(", AdapterDeviceID2: ");
+      note.Append(mSecondaryDeviceId);
+    }
+    CrashReporter::AppendAppNotesToCrashReport(note);
+  }
 }
 
 void GfxInfo::GetData() {
@@ -76,7 +96,7 @@ void GfxInfo::GetData() {
   // if glxtest_pipe == -1, that means that we already read the information
   if (glxtest_pipe == -1) return;
 
-  enum { buf_size = 1024 };
+  enum { buf_size = 2048 };
   char buf[buf_size];
   ssize_t bytesread = read(glxtest_pipe, &buf,
                            buf_size - 1);  // -1 because we'll append a zero
@@ -84,9 +104,13 @@ void GfxInfo::GetData() {
   glxtest_pipe = -1;
 
   // bytesread < 0 would mean that the above read() call failed.
-  // This should never happen. If it did, the outcome would be to blacklist
+  // This should never happen. If it did, the outcome would be to blocklist
   // anyway.
-  if (bytesread < 0) bytesread = 0;
+  if (bytesread < 0) {
+    bytesread = 0;
+  } else if (bytesread == buf_size - 1) {
+    gfxCriticalNote << "glxtest: read from pipe exceeded buffer size";
+  }
 
   // let buf be a zero-terminated string
   buf[bytesread] = 0;
@@ -109,20 +133,25 @@ void GfxInfo::GetData() {
         // ECHILD happens when the glxtest process got reaped got reaped after a
         // PR_CreateProcess as per bug 227246. This shouldn't matter, as we
         // still seem to get the data from the pipe, and if we didn't, the
-        // outcome would be to blacklist anyway.
+        // outcome would be to blocklist anyway.
         waiting_for_glxtest_process_failed = (waitpid_errno != ECHILD);
       }
     }
   }
 
-  bool exited_with_error_code = !waiting_for_glxtest_process_failed &&
-                                WIFEXITED(glxtest_status) &&
-                                WEXITSTATUS(glxtest_status) != EXIT_SUCCESS;
+  int exit_code = EXIT_FAILURE;
+  bool exited_with_error_code = false;
+  if (!waiting_for_glxtest_process_failed && WIFEXITED(glxtest_status)) {
+    exit_code = WEXITSTATUS(glxtest_status);
+    exited_with_error_code = exit_code != EXIT_SUCCESS;
+  }
+
   bool received_signal =
       !waiting_for_glxtest_process_failed && WIFSIGNALED(glxtest_status);
 
   bool error = waiting_for_glxtest_process_failed || exited_with_error_code ||
                received_signal;
+  bool errorLog = false;
 
   nsCString glVendor;
   nsCString glRenderer;
@@ -138,38 +167,59 @@ void GfxInfo::GetData() {
   nsCString screenInfo;
   nsCString adapterRam;
 
+  AutoTArray<nsCString, 2> pciVendors;
+  AutoTArray<nsCString, 2> pciDevices;
+
   nsCString* stringToFill = nullptr;
+  bool logString = false;
 
   char* bufptr = buf;
-  if (!error) {
-    while (true) {
-      char* line = NS_strtok("\n", &bufptr);
-      if (!line) break;
-      if (stringToFill) {
-        stringToFill->Assign(line);
-        stringToFill = nullptr;
-      } else if (!strcmp(line, "VENDOR"))
-        stringToFill = &glVendor;
-      else if (!strcmp(line, "RENDERER"))
-        stringToFill = &glRenderer;
-      else if (!strcmp(line, "VERSION"))
-        stringToFill = &glVersion;
-      else if (!strcmp(line, "TFP"))
-        stringToFill = &textureFromPixmap;
-      else if (!strcmp(line, "MESA_VENDOR_ID"))
-        stringToFill = &mesaVendor;
-      else if (!strcmp(line, "MESA_DEVICE_ID"))
-        stringToFill = &mesaDevice;
-      else if (!strcmp(line, "MESA_ACCELERATED"))
-        stringToFill = &mesaAccelerated;
-      else if (!strcmp(line, "MESA_VRAM"))
-        stringToFill = &adapterRam;
-      else if (!strcmp(line, "DRI_DRIVER"))
-        stringToFill = &driDriver;
-      else if (!strcmp(line, "SCREEN_INFO"))
-        stringToFill = &screenInfo;
+  while (true) {
+    char* line = NS_strtok("\n", &bufptr);
+    if (!line) break;
+    if (stringToFill) {
+      stringToFill->Assign(line);
+      stringToFill = nullptr;
+    } else if (logString) {
+      gfxCriticalNote << "glxtest: " << line;
+      logString = false;
+    } else if (!strcmp(line, "VENDOR")) {
+      stringToFill = &glVendor;
+    } else if (!strcmp(line, "RENDERER")) {
+      stringToFill = &glRenderer;
+    } else if (!strcmp(line, "VERSION")) {
+      stringToFill = &glVersion;
+    } else if (!strcmp(line, "TFP")) {
+      stringToFill = &textureFromPixmap;
+    } else if (!strcmp(line, "MESA_VENDOR_ID")) {
+      stringToFill = &mesaVendor;
+    } else if (!strcmp(line, "MESA_DEVICE_ID")) {
+      stringToFill = &mesaDevice;
+    } else if (!strcmp(line, "MESA_ACCELERATED")) {
+      stringToFill = &mesaAccelerated;
+    } else if (!strcmp(line, "MESA_VRAM")) {
+      stringToFill = &adapterRam;
+    } else if (!strcmp(line, "DRI_DRIVER")) {
+      stringToFill = &driDriver;
+    } else if (!strcmp(line, "SCREEN_INFO")) {
+      stringToFill = &screenInfo;
+    } else if (!strcmp(line, "PCI_VENDOR_ID")) {
+      stringToFill = pciVendors.AppendElement();
+    } else if (!strcmp(line, "PCI_DEVICE_ID")) {
+      stringToFill = pciDevices.AppendElement();
+    } else if (!strcmp(line, "WARNING")) {
+      logString = true;
+    } else if (!strcmp(line, "ERROR")) {
+      logString = true;
+      errorLog = true;
     }
   }
+
+  MOZ_ASSERT(pciDevices.Length() == pciVendors.Length(),
+             "Missing PCI vendors/devices");
+
+  size_t pciLen = std::min(pciVendors.Length(), pciDevices.Length());
+  mHasMultipleGPUs = pciLen > 1;
 
   if (!strcmp(textureFromPixmap.get(), "TRUE")) mHasTextureFromPixmap = true;
 
@@ -192,29 +242,6 @@ void GfxInfo::GetData() {
   const char* spoofedOSRelease = PR_GetEnv("MOZ_GFX_SPOOF_OS_RELEASE");
   if (spoofedOSRelease) mOSRelease.Assign(spoofedOSRelease);
 
-  if (error || glVendor.IsEmpty() || glRenderer.IsEmpty() ||
-      glVersion.IsEmpty() || mOS.IsEmpty() || mOSRelease.IsEmpty()) {
-    mAdapterDescription.AppendLiteral("GLXtest process failed");
-    if (waiting_for_glxtest_process_failed)
-      mAdapterDescription.AppendPrintf(
-          " (waitpid failed with errno=%d for pid %d)", waitpid_errno,
-          glxtest_pid);
-    if (exited_with_error_code)
-      mAdapterDescription.AppendPrintf(" (exited with status %d)",
-                                       WEXITSTATUS(glxtest_status));
-    if (received_signal)
-      mAdapterDescription.AppendPrintf(" (received signal %d)",
-                                       WTERMSIG(glxtest_status));
-    if (bytesread) {
-      mAdapterDescription.AppendLiteral(": ");
-      mAdapterDescription.Append(nsDependentCString(buf));
-      mAdapterDescription.Append('\n');
-    }
-
-    CrashReporter::AppendAppNotesToCrashReport(mAdapterDescription);
-    return;
-  }
-
   // Scan the GL_VERSION string for the GL and driver versions.
   nsCWhitespaceTokenizer tokenizer(glVersion);
   while (tokenizer.hasMoreTokens()) {
@@ -236,7 +263,6 @@ void GfxInfo::GetData() {
 
   if (mGLMajorVersion == 0) {
     NS_WARNING("Failed to parse GL version!");
-    return;
   }
 
   // Mesa always exposes itself in the GL_VERSION string, but not always the
@@ -325,6 +351,102 @@ void GfxInfo::GetData() {
     mAdapterRAM = (uint32_t)atoi(adapterRam.get());
   }
 
+  // If we have the DRI driver, we can derive the vendor ID from that if needed.
+  if (mVendorId.IsEmpty() && !driDriver.IsEmpty()) {
+    const char* nvidiaDrivers[] = {"nouveau", "tegra", nullptr};
+    for (size_t i = 0; nvidiaDrivers[i]; ++i) {
+      if (driDriver.Equals(nvidiaDrivers[i])) {
+        CopyUTF16toUTF8(GfxDriverInfo::GetDeviceVendor(DeviceVendor::NVIDIA),
+                        mVendorId);
+        break;
+      }
+    }
+
+    if (mVendorId.IsEmpty()) {
+      const char* intelDrivers[] = {"iris", "i915",  "i965",
+                                    "i810", "intel", nullptr};
+      for (size_t i = 0; intelDrivers[i]; ++i) {
+        if (driDriver.Equals(intelDrivers[i])) {
+          CopyUTF16toUTF8(GfxDriverInfo::GetDeviceVendor(DeviceVendor::Intel),
+                          mVendorId);
+          break;
+        }
+      }
+    }
+
+    if (mVendorId.IsEmpty()) {
+      const char* amdDrivers[] = {"r600",   "r200",     "r100",
+                                  "radeon", "radeonsi", nullptr};
+      for (size_t i = 0; amdDrivers[i]; ++i) {
+        if (driDriver.Equals(amdDrivers[i])) {
+          CopyUTF16toUTF8(GfxDriverInfo::GetDeviceVendor(DeviceVendor::ATI),
+                          mVendorId);
+          break;
+        }
+      }
+    }
+
+    if (mVendorId.IsEmpty()) {
+      if (driDriver.EqualsLiteral("freedreno")) {
+        CopyUTF16toUTF8(GfxDriverInfo::GetDeviceVendor(DeviceVendor::Qualcomm),
+                        mVendorId);
+      }
+    }
+  }
+
+  // If we still don't have a vendor ID, we can try the PCI vendor list.
+  if (mVendorId.IsEmpty()) {
+    if (pciVendors.Length() == 1) {
+      mVendorId = pciVendors[0];
+    } else if (pciVendors.IsEmpty()) {
+      gfxCriticalNote << "No GPUs detected via PCI";
+    } else {
+      gfxCriticalNote
+          << "More than 1 GPU detected via PCI, cannot deduce vendor";
+    }
+  }
+
+  // If we know the vendor ID, but didn't get a device ID, we can guess from the
+  // PCI device list.
+  if (mDeviceId.IsEmpty() && !mVendorId.IsEmpty()) {
+    for (size_t i = 0; i < pciLen; ++i) {
+      if (mVendorId.Equals(pciVendors[i])) {
+        if (mDeviceId.IsEmpty()) {
+          mDeviceId = pciDevices[i];
+        } else {
+          gfxCriticalNote << "More than 1 GPU from same vendor detected via "
+                             "PCI, cannot deduce device";
+          mDeviceId.Truncate();
+          break;
+        }
+      }
+    }
+  }
+
+  // Assuming we know the vendor, we should check for a secondary card.
+  if (!mVendorId.IsEmpty()) {
+    if (pciLen > 2) {
+      gfxCriticalNote
+          << "More than 2 GPUs detected via PCI, secondary GPU is arbitrary";
+    }
+    for (size_t i = 0; i < pciLen; ++i) {
+      if (!mVendorId.Equals(pciVendors[i]) ||
+          (!mDeviceId.IsEmpty() && !mDeviceId.Equals(pciDevices[i]))) {
+        mSecondaryVendorId = pciVendors[i];
+        mSecondaryDeviceId = pciDevices[i];
+        break;
+      }
+    }
+  }
+
+  // If we couldn't choose, log them.
+  if (mVendorId.IsEmpty()) {
+    for (size_t i = 0; i < pciLen; ++i) {
+      gfxCriticalNote << "PCI candidate " << pciVendors[i].get() << "/"
+                      << pciDevices[i].get();
+    }
+  }
+
   // Fallback to GL_VENDOR and GL_RENDERER.
   if (mVendorId.IsEmpty()) {
     mVendorId.Assign(glVendor.get());
@@ -338,13 +460,27 @@ void GfxInfo::GetData() {
   mIsWayland = gdk_display_get_default() &&
                !GDK_IS_X11_DISPLAY(gdk_display_get_default());
   if (mIsWayland) {
-    mIsWaylandDRM = nsWaylandDisplay::IsDMABufEnabled();
+    mIsWaylandDRM = GetDMABufDevice()->IsDMABufVAAPIEnabled() ||
+                    GetDMABufDevice()->IsDMABufWebGLEnabled() ||
+                    GetDMABufDevice()->IsDMABufTexturesEnabled();
   }
 #endif
+
+  // Make a best effort guess at whether or not we are using the XWayland compat
+  // layer. For all intents and purposes, we should otherwise believe we are
+  // using X11.
+  const char* windowEnv = getenv("XDG_SESSION_TYPE");
+  mIsXWayland = windowEnv && strcmp(windowEnv, "wayland") == 0;
 
   // Make a best effort guess at the desktop environment in use. Sadly there
   // does not appear to be a standard way to do this, so we check a few
   // different environment variables and search for relevant keywords.
+  //
+  // Note that some users manually change these values. Some applications check
+  // the environment variable like we are here, and either not work or restrict
+  // functionality. There may be some heroics we could go through to determine
+  // the truth, but for the moment, this is the best we can do. This is
+  // something to keep in mind when updating the blocklist.
   const char* desktopEnv = getenv("XDG_CURRENT_DESKTOP");
   if (!desktopEnv) {
     desktopEnv = getenv("DESKTOP_SESSION");
@@ -356,7 +492,13 @@ void GfxInfo::GetData() {
       c = std::tolower(c);
     }
 
-    if (currentDesktop.find("gnome") != std::string::npos) {
+    if (currentDesktop.find("budgie") != std::string::npos) {
+      // We need to check for Budgie first, because it might incorporate GNOME
+      // into the environment variable value.
+      CopyUTF16toUTF8(
+          GfxDriverInfo::GetDesktopEnvironment(DesktopEnvironment::Budgie),
+          mDesktopEnvironment);
+    } else if (currentDesktop.find("gnome") != std::string::npos) {
       CopyUTF16toUTF8(
           GfxDriverInfo::GetDesktopEnvironment(DesktopEnvironment::GNOME),
           mDesktopEnvironment);
@@ -409,6 +551,10 @@ void GfxInfo::GetData() {
       CopyUTF16toUTF8(
           GfxDriverInfo::GetDesktopEnvironment(DesktopEnvironment::Deepin),
           mDesktopEnvironment);
+    } else if (currentDesktop.find("dwm") != std::string::npos) {
+      CopyUTF16toUTF8(
+          GfxDriverInfo::GetDesktopEnvironment(DesktopEnvironment::Dwm),
+          mDesktopEnvironment);
     }
   }
 
@@ -436,13 +582,45 @@ void GfxInfo::GetData() {
     }
   }
 
+  if (error || errorLog) {
+    if (!mAdapterDescription.IsEmpty()) {
+      mAdapterDescription.AppendLiteral(" (See failure log)");
+    } else {
+      mAdapterDescription.AppendLiteral("See failure log");
+    }
+
+    mGlxTestError = true;
+  }
+
+  if (error) {
+    nsAutoCString msg("glxtest: process failed");
+    if (waiting_for_glxtest_process_failed) {
+      msg.AppendPrintf(" (waitpid failed with errno=%d for pid %d)",
+                       waitpid_errno, glxtest_pid);
+    }
+
+    if (exited_with_error_code) {
+      if (exit_code == EXIT_STATUS_BUFFER_TOO_SMALL) {
+        msg.AppendLiteral(" (buffer too small)");
+      } else {
+        msg.AppendPrintf(" (exited with status %d)",
+                         WEXITSTATUS(glxtest_status));
+      }
+    }
+    if (received_signal) {
+      msg.AppendPrintf(" (received signal %d)", WTERMSIG(glxtest_status));
+    }
+
+    gfxCriticalNote << msg.get();
+  }
+
   AddCrashReportAnnotations();
 }
 
 const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
   if (!sDriverInfo->Length()) {
     // Mesa 10.0 provides the GLX_MESA_query_renderer extension, which allows us
-    // to query device IDs backing a GL context for blacklisting.
+    // to query device IDs backing a GL context for blocklisting.
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
         OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
         DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
@@ -507,18 +685,77 @@ const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
         nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
         V(0, 0, 0, 0), "FEATURE_FAILURE_WEBRENDER_NO_LINUX_ATI", "");
 
+    // Bug 1673939 - Garbled text on RS880 GPUs with Mesa drivers.
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
+        DeviceFamily::AmdR600, nsIGfxInfo::FEATURE_WEBRENDER,
+        nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
+        V(0, 0, 0, 0), "FEATURE_FAILURE_WEBRENDER_BUG_1673939", "");
+
     ////////////////////////////////////
     // FEATURE_WEBRENDER - ALLOWLIST
+
+    // Intel Mesa baseline, chosen arbitrarily.
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::SmallAndMedium,
+        BatteryStatus::All, DesktopEnvironment::GNOME, WindowProtocol::X11,
+        DriverVendor::MesaAll, DeviceFamily::IntelRolloutWebRender,
+        nsIGfxInfo::FEATURE_WEBRENDER, nsIGfxInfo::FEATURE_ALLOW_ALWAYS,
+        DRIVER_GREATER_THAN_OR_EQUAL, V(18, 0, 0, 0),
+        "FEATURE_ROLLOUT_INTEL_GNOME_X11_MESA", "Mesa 18.0.0.0");
+
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::SmallAndMedium,
+        BatteryStatus::All, DesktopEnvironment::GNOME, WindowProtocol::Wayland,
+        DriverVendor::MesaAll, DeviceFamily::IntelRolloutWebRender,
+        nsIGfxInfo::FEATURE_WEBRENDER, nsIGfxInfo::FEATURE_ALLOW_ALWAYS,
+        DRIVER_GREATER_THAN_OR_EQUAL, V(18, 0, 0, 0),
+        "FEATURE_ROLLOUT_INTEL_GNOME_WAYLAND_MESA", "Mesa 18.0.0.0");
+
+    // ATI Mesa baseline, chosen arbitrarily.
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::GNOME, WindowProtocol::X11, DriverVendor::MesaAll,
+        DeviceFamily::AtiRolloutWebRender, nsIGfxInfo::FEATURE_WEBRENDER,
+        nsIGfxInfo::FEATURE_ALLOW_ALWAYS, DRIVER_GREATER_THAN_OR_EQUAL,
+        V(18, 0, 0, 0), "FEATURE_ROLLOUT_ATI_GNOME_X11_MESA", "Mesa 18.0.0.0");
+
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::GNOME, WindowProtocol::Wayland,
+        DriverVendor::MesaAll, DeviceFamily::AtiRolloutWebRender,
+        nsIGfxInfo::FEATURE_WEBRENDER, nsIGfxInfo::FEATURE_ALLOW_ALWAYS,
+        DRIVER_GREATER_THAN_OR_EQUAL, V(18, 0, 0, 0),
+        "FEATURE_ROLLOUT_ATI_GNOME_WAYLAND_MESA", "Mesa 18.0.0.0");
+
+#ifdef EARLY_BETA_OR_EARLIER
+    // Intel Mesa baseline, chosen arbitrarily.
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
+        DeviceFamily::IntelRolloutWebRender, nsIGfxInfo::FEATURE_WEBRENDER,
+        nsIGfxInfo::FEATURE_ALLOW_ALWAYS, DRIVER_GREATER_THAN_OR_EQUAL,
+        V(18, 0, 0, 0), "FEATURE_ROLLOUT_EARLY_BETA_INTEL_MESA",
+        "Mesa 18.0.0.0");
+
+    // ATI Mesa baseline, chosen arbitrarily.
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
+        DeviceFamily::AtiRolloutWebRender, nsIGfxInfo::FEATURE_WEBRENDER,
+        nsIGfxInfo::FEATURE_ALLOW_ALWAYS, DRIVER_GREATER_THAN_OR_EQUAL,
+        V(18, 0, 0, 0), "FEATURE_ROLLOUT_EARLY_BETA_ATI_MESA", "Mesa 18.0.0.0");
+#endif
 
 #ifdef NIGHTLY_BUILD
     // Intel Mesa baseline, chosen arbitrarily.
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
-        OperatingSystem::Linux, ScreenSizeStatus::SmallAndMedium,
-        BatteryStatus::All, DesktopEnvironment::All, WindowProtocol::All,
-        DriverVendor::MesaAll, DeviceFamily::IntelRolloutWebRender,
-        nsIGfxInfo::FEATURE_WEBRENDER, nsIGfxInfo::FEATURE_ALLOW_QUALIFIED,
-        DRIVER_GREATER_THAN_OR_EQUAL, V(18, 0, 0, 0),
-        "FEATURE_ROLLOUT_INTEL_MESA", "Mesa 18.0.0.0");
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
+        DeviceFamily::IntelRolloutWebRender, nsIGfxInfo::FEATURE_WEBRENDER,
+        nsIGfxInfo::FEATURE_ALLOW_QUALIFIED, DRIVER_GREATER_THAN_OR_EQUAL,
+        V(18, 0, 0, 0), "FEATURE_ROLLOUT_NIGHTLY_INTEL_MESA", "Mesa 18.0.0.0");
 
     // Nvidia Mesa baseline, see bug 1563859.
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
@@ -526,7 +763,7 @@ const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
         DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
         DeviceFamily::NvidiaRolloutWebRender, nsIGfxInfo::FEATURE_WEBRENDER,
         nsIGfxInfo::FEATURE_ALLOW_QUALIFIED, DRIVER_GREATER_THAN_OR_EQUAL,
-        V(18, 2, 0, 0), "FEATURE_ROLLOUT_NVIDIA_MESA", "Mesa 18.2.0.0");
+        V(18, 2, 0, 0), "FEATURE_ROLLOUT_NIGHTLY_NVIDIA_MESA", "Mesa 18.2.0.0");
 
     // ATI Mesa baseline, chosen arbitrarily.
     APPEND_TO_DRIVER_BLOCKLIST_EXT(
@@ -534,8 +771,39 @@ const nsTArray<GfxDriverInfo>& GfxInfo::GetGfxDriverInfo() {
         DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaAll,
         DeviceFamily::AtiRolloutWebRender, nsIGfxInfo::FEATURE_WEBRENDER,
         nsIGfxInfo::FEATURE_ALLOW_QUALIFIED, DRIVER_GREATER_THAN_OR_EQUAL,
-        V(18, 0, 0, 0), "FEATURE_ROLLOUT_ATI_MESA", "Mesa 18.0.0.0");
+        V(18, 0, 0, 0), "FEATURE_ROLLOUT_NIGHTLY_ATI_MESA", "Mesa 18.0.0.0");
 #endif
+
+    ////////////////////////////////////
+    // FEATURE_WEBRENDER_SOFTWARE - ALLOWLIST
+#ifdef NIGHTLY_BUILD
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::SmallAndMedium,
+        BatteryStatus::All, DesktopEnvironment::All, WindowProtocol::All,
+        DriverVendor::NonMesaAll, DeviceFamily::All,
+        nsIGfxInfo::FEATURE_WEBRENDER_SOFTWARE,
+        nsIGfxInfo::FEATURE_ALLOW_ALWAYS, DRIVER_COMPARISON_IGNORED,
+        V(0, 0, 0, 0), "FEATURE_ROLLOUT_NIGHTLY_SOFTWARE_WR_NON_MESA_S_M_SCRN",
+        "");
+
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::SmallAndMedium,
+        BatteryStatus::All, DesktopEnvironment::All, WindowProtocol::All,
+        DriverVendor::HardwareMesaAll, DeviceFamily::All,
+        nsIGfxInfo::FEATURE_WEBRENDER_SOFTWARE,
+        nsIGfxInfo::FEATURE_ALLOW_ALWAYS, DRIVER_COMPARISON_IGNORED,
+        V(0, 0, 0, 0), "FEATURE_ROLLOUT_NIGHTLY_SOFTWARE_WR_HW_MESA_S_M_SCRN",
+        "");
+#endif
+
+    ////////////////////////////////////
+
+    APPEND_TO_DRIVER_BLOCKLIST_EXT(
+        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
+        DesktopEnvironment::All, WindowProtocol::All, DriverVendor::MesaNouveau,
+        DeviceFamily::All, nsIGfxInfo::FEATURE_THREADSAFE_GL,
+        nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
+        V(0, 0, 0, 0), "FEATURE_FAILURE_THREADSAFE_GL", "");
   }
   return *sDriverInfo;
 }
@@ -545,7 +813,13 @@ bool GfxInfo::DoesWindowProtocolMatch(const nsAString& aBlocklistWindowProtocol,
   if (mIsWayland &&
       aBlocklistWindowProtocol.Equals(
           GfxDriverInfo::GetWindowProtocol(WindowProtocol::WaylandAll),
-          nsCaseInsensitiveStringComparator())) {
+          nsCaseInsensitiveStringComparator)) {
+    return true;
+  }
+  if (!mIsWayland &&
+      aBlocklistWindowProtocol.Equals(
+          GfxDriverInfo::GetWindowProtocol(WindowProtocol::X11All),
+          nsCaseInsensitiveStringComparator)) {
     return true;
   }
   return GfxInfoBase::DoesWindowProtocolMatch(aBlocklistWindowProtocol,
@@ -554,14 +828,28 @@ bool GfxInfo::DoesWindowProtocolMatch(const nsAString& aBlocklistWindowProtocol,
 
 bool GfxInfo::DoesDriverVendorMatch(const nsAString& aBlocklistVendor,
                                     const nsAString& aDriverVendor) {
-  if (mIsMesa && aBlocklistVendor.Equals(
-                     GfxDriverInfo::GetDriverVendor(DriverVendor::MesaAll),
-                     nsCaseInsensitiveStringComparator())) {
-    return true;
+  if (mIsMesa) {
+    if (aBlocklistVendor.Equals(
+            GfxDriverInfo::GetDriverVendor(DriverVendor::MesaAll),
+            nsCaseInsensitiveStringComparator)) {
+      return true;
+    }
+    if (mIsAccelerated &&
+        aBlocklistVendor.Equals(
+            GfxDriverInfo::GetDriverVendor(DriverVendor::HardwareMesaAll),
+            nsCaseInsensitiveStringComparator)) {
+      return true;
+    }
+    if (!mIsAccelerated &&
+        aBlocklistVendor.Equals(
+            GfxDriverInfo::GetDriverVendor(DriverVendor::SoftwareMesaAll),
+            nsCaseInsensitiveStringComparator)) {
+      return true;
+    }
   }
   if (!mIsMesa && aBlocklistVendor.Equals(
                       GfxDriverInfo::GetDriverVendor(DriverVendor::NonMesaAll),
-                      nsCaseInsensitiveStringComparator())) {
+                      nsCaseInsensitiveStringComparator)) {
     return true;
   }
   return GfxInfoBase::DoesDriverVendorMatch(aBlocklistVendor, aDriverVendor);
@@ -585,8 +873,8 @@ nsresult GfxInfo::GetFeatureStatusImpl(
 
   GetData();
 
-  if (mGLMajorVersion == 0) {
-    // If we failed to get a GL version, glxtest failed.
+  if (mGlxTestError) {
+    // If glxtest failed, block all features by default.
     *aStatus = nsIGfxInfo::FEATURE_BLOCKED_DEVICE;
     aFailureId = "FEATURE_FAILURE_GLXTEST_FAILED";
     return NS_OK;
@@ -601,7 +889,7 @@ nsresult GfxInfo::GetFeatureStatusImpl(
     return NS_OK;
   }
 
-  // Blacklist software GL implementations from using layers acceleration.
+  // Blocklist software GL implementations from using layers acceleration.
   // On the test infrastructure, we'll force-enable layers acceleration.
   if (aFeature == nsIGfxInfo::FEATURE_OPENGL_LAYERS && !mIsAccelerated &&
       !PR_GetEnv("MOZ_LAYERS_ALLOW_SOFTWARE_GL")) {
@@ -630,6 +918,11 @@ NS_IMETHODIMP GfxInfo::GetHasBattery(bool* aHasBattery) {
 }
 
 NS_IMETHODIMP
+GfxInfo::GetEmbeddedInFirefoxReality(bool* aEmbeddedInFirefoxReality) {
+  return NS_ERROR_FAILURE;
+}
+
+NS_IMETHODIMP
 GfxInfo::GetCleartypeParameters(nsAString& aCleartypeParams) {
   return NS_ERROR_FAILURE;
 }
@@ -645,10 +938,14 @@ GfxInfo::GetWindowProtocol(nsAString& aWindowProtocol) {
       aWindowProtocol =
           GfxDriverInfo::GetWindowProtocol(WindowProtocol::Wayland);
     }
-    return NS_OK;
+  } else if (mIsXWayland) {
+    aWindowProtocol =
+        GfxDriverInfo::GetWindowProtocol(WindowProtocol::XWayland);
+  } else {
+    aWindowProtocol = GfxDriverInfo::GetWindowProtocol(WindowProtocol::X11);
   }
-
-  aWindowProtocol = GfxDriverInfo::GetWindowProtocol(WindowProtocol::X11);
+  Telemetry::ScalarSet(Telemetry::ScalarID::GFX_LINUX_WINDOW_PROTOCOL,
+                       aWindowProtocol);
   return NS_OK;
 }
 
@@ -736,7 +1033,9 @@ GfxInfo::GetAdapterVendorID(nsAString& aAdapterVendorID) {
 
 NS_IMETHODIMP
 GfxInfo::GetAdapterVendorID2(nsAString& aAdapterVendorID) {
-  return NS_ERROR_FAILURE;
+  GetData();
+  CopyUTF8toUTF16(mSecondaryVendorId, aAdapterVendorID);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -748,7 +1047,9 @@ GfxInfo::GetAdapterDeviceID(nsAString& aAdapterDeviceID) {
 
 NS_IMETHODIMP
 GfxInfo::GetAdapterDeviceID2(nsAString& aAdapterDeviceID) {
-  return NS_ERROR_FAILURE;
+  GetData();
+  CopyUTF8toUTF16(mSecondaryDeviceId, aAdapterDeviceID);
+  return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -792,7 +1093,11 @@ GfxInfo::GetDisplayHeight(nsTArray<uint32_t>& aDisplayHeight) {
 }
 
 NS_IMETHODIMP
-GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active) { return NS_ERROR_FAILURE; }
+GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active) {
+  // This is never the case, as the active GPU should be the primary GPU.
+  *aIsGPU2Active = false;
+  return NS_OK;
+}
 
 #ifdef DEBUG
 

@@ -13,8 +13,7 @@ def is_mobile(platform):
 
 
 class TabSwitcher:
-    """ Helper used to create tabs and circulate in them.
-    """
+    """Helper used to create tabs and circulate in them."""
 
     def __init__(self, session, options):
         self.handles = None
@@ -100,3 +99,12 @@ async def execute_async_script(session, script, *args):
             await session._request(
                 url="/moz/context", method="POST", data={"context": current_context}
             )
+
+
+async def close_extra_windows(session):
+    logger.info("Closing all tabs")
+    handles = await session.get_window_handles()
+    # we're closing all tabs except the last one
+    for handle in handles[:-1]:
+        await session.switch_to_window(handle)
+        await session._request(url="/window", method="DELETE")

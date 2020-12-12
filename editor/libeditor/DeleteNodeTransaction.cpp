@@ -8,6 +8,7 @@
 #include "HTMLEditUtils.h"
 #include "mozilla/EditorBase.h"
 #include "mozilla/SelectionState.h"  // RangeUpdater
+#include "mozilla/TextEditor.h"
 #include "nsDebug.h"
 #include "nsError.h"
 #include "nsAString.h"
@@ -92,6 +93,9 @@ DeleteNodeTransaction::UndoTransaction() {
   // XXX Perhaps, we should check `refContent` is a child of `parentNode`,
   //     and if it's not, we should stop undoing or something.
   parentNode->InsertBefore(contentToDelete, refContent, error);
+  // InsertBefore() may call MightThrowJSException() even if there is no error.
+  // We don't need the flag here.
+  error.WouldReportJSException();
   if (error.Failed()) {
     NS_WARNING("nsINode::InsertBefore() failed");
     return error.StealNSResult();

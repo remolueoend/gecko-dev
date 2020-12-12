@@ -1,3 +1,5 @@
+/* eslint max-nested-callbacks: ["error", 100] */
+
 import { CFRPageActions, PageAction } from "lib/CFRPageActions.jsm";
 import { FAKE_RECOMMENDATION } from "./constants";
 import { GlobalOverrider } from "test/unit/utils";
@@ -14,7 +16,7 @@ describe("CFRPageActions", () => {
   let containerElem;
   let elements;
   let announceStub;
-  let remoteL10n;
+  let fakeRemoteL10n;
 
   const elementIDs = [
     "urlbar",
@@ -57,9 +59,10 @@ describe("CFRPageActions", () => {
     };
     dispatchStub = sandbox.stub();
 
-    remoteL10n = {
+    fakeRemoteL10n = {
       l10n: {},
       reloadL10n: sandbox.stub(),
+      createElement: sandbox.stub().returns(document.createElement("div")),
     };
 
     const gURLBar = document.createElement("div");
@@ -67,7 +70,7 @@ describe("CFRPageActions", () => {
 
     globals = new GlobalOverrider();
     globals.set({
-      RemoteL10n: remoteL10n,
+      RemoteL10n: fakeRemoteL10n,
       promiseDocumentFlushed: sandbox
         .stub()
         .callsFake(fn => Promise.resolve(fn())),
@@ -342,20 +345,20 @@ describe("CFRPageActions", () => {
     });
 
     describe("#dispatchUserAction", () => {
-      it("should call ._dispatchToASRouter with the right action", () => {
+      it("should call ._dispatchCFRAction with the right action", () => {
         const fakeAction = {};
         pageAction.dispatchUserAction(fakeAction);
         assert.calledOnce(dispatchStub);
         assert.calledWith(
           dispatchStub,
           { type: "USER_ACTION", data: fakeAction },
-          { browser: fakeBrowser }
+          fakeBrowser
         );
       });
     });
 
     describe("#_dispatchImpression", () => {
-      it("should call ._dispatchToASRouter with the right action", () => {
+      it("should call ._dispatchCFRAction with the right action", () => {
         pageAction._dispatchImpression("fake impression");
         assert.calledWith(dispatchStub, {
           type: "IMPRESSION",
@@ -365,7 +368,7 @@ describe("CFRPageActions", () => {
     });
 
     describe("#_sendTelemetry", () => {
-      it("should call ._dispatchToASRouter with the right action", () => {
+      it("should call ._dispatchCFRAction with the right action", () => {
         const fakePing = { message_id: 42 };
         pageAction._sendTelemetry(fakePing);
         assert.calledWith(dispatchStub, {
@@ -376,7 +379,7 @@ describe("CFRPageActions", () => {
     });
 
     describe("#_blockMessage", () => {
-      it("should call ._dispatchToASRouter with the right action", () => {
+      it("should call ._dispatchCFRAction with the right action", () => {
         pageAction._blockMessage("fake id");
         assert.calledOnce(dispatchStub);
         assert.calledWith(dispatchStub, {
@@ -540,7 +543,6 @@ describe("CFRPageActions", () => {
         const headerLabel = elements["cfr-notification-header-label"];
         const headerLink = elements["cfr-notification-header-link"];
         const headerImage = elements["cfr-notification-header-image"];
-        const footerText = elements["cfr-notification-footer-text"];
         const footerLink = elements["cfr-notification-footer-learn-more-link"];
         assert.equal(
           headerLabel.value,
@@ -555,7 +557,12 @@ describe("CFRPageActions", () => {
           headerImage.getAttribute("tooltiptext"),
           fakeRecommendation.content.info_icon.label
         );
-        assert.equal(footerText.textContent, fakeRecommendation.content.text);
+        const htmlFooterEl = fakeRemoteL10n.createElement.args.find(
+          /* eslint-disable-next-line max-nested-callbacks */
+          ([doc, el, args]) =>
+            args && args.content === fakeRecommendation.content.text
+        );
+        assert.ok(htmlFooterEl);
         assert.equal(footerLink.value, "Learn more");
         assert.equal(
           footerLink.getAttribute("href"),
@@ -651,7 +658,7 @@ describe("CFRPageActions", () => {
             type: "USER_ACTION",
             data: { id: "primary_action", data: { url: "latest-addon.xpi" } },
           },
-          { browser: fakeBrowser }
+          fakeBrowser
         );
         // Should send telemetry
         assert.calledWith(dispatchStub, {
@@ -767,6 +774,7 @@ describe("CFRPageActions", () => {
             popupIconURL: fakeRecommendation.content.addon.icon,
             hideClose: true,
             eventCallback: pageAction._popupStateChange,
+            persistent: false,
           }
         );
       });
@@ -774,18 +782,23 @@ describe("CFRPageActions", () => {
         fakeRecommendation.content.layout = "message_and_animation";
         await pageAction._cfrUrlbarButtonClick();
 
-        assert.calledOnce(translateElementsStub);
+        assert.ok(
+          fakeRemoteL10n.createElement.args.find(
+            /* eslint-disable-next-line max-nested-callbacks */
+            ([doc, el, args]) => el === "span" && args && args.content
+          )
+        );
       });
       it("should set the data-l10n-id on the list element", async () => {
         fakeRecommendation.content.layout = "message_and_animation";
         await pageAction._cfrUrlbarButtonClick();
 
-        assert.calledOnce(setAttributesStub);
-        assert.calledWith(
-          setAttributesStub,
-          sinon.match.any,
-          fakeRecommendation.content.descriptionDetails.steps[0].string_id
-        );
+        for (let step of fakeRecommendation.content.descriptionDetails.steps) {
+          fakeRemoteL10n.createElement.args.find(
+            /* eslint-disable-next-line max-nested-callbacks */
+            ([doc, el, args]) => el === "span" && args && args.content === step
+          );
+        }
       });
       it("should set the correct data-notification-category", async () => {
         fakeRecommendation.content.layout = "message_and_animation";
@@ -820,10 +833,11 @@ describe("CFRPageActions", () => {
       });
     });
     describe("#_cfrUrlbarButtonClick/cfr_urlbar_chiclet", () => {
-      const heartbeatRecommendation = CFRMessageProvider.getMessages().find(
-        m => m.template === "cfr_urlbar_chiclet"
-      );
+      let heartbeatRecommendation;
       beforeEach(async () => {
+        heartbeatRecommendation = (await CFRMessageProvider.getMessages()).find(
+          m => m.template === "cfr_urlbar_chiclet"
+        );
         CFRPageActions.PageActionMap.set(fakeBrowser.ownerGlobal, pageAction);
         await CFRPageActions.addRecommendation(
           fakeBrowser,
@@ -974,7 +988,7 @@ describe("CFRPageActions", () => {
       it("should succeed and add an element to the RecommendationMap", async () => {
         assert.isTrue(
           await CFRPageActions.forceRecommendation(
-            { browser: fakeBrowser },
+            fakeBrowser,
             fakeRecommendation,
             dispatchStub
           )
@@ -988,13 +1002,13 @@ describe("CFRPageActions", () => {
         const win = fakeBrowser.ownerGlobal;
         assert.isFalse(CFRPageActions.PageActionMap.has(win));
         await CFRPageActions.forceRecommendation(
-          { browser: fakeBrowser },
+          fakeBrowser,
           fakeRecommendation,
           dispatchStub
         );
         const pageAction = CFRPageActions.PageActionMap.get(win);
         assert.equal(win, pageAction.window);
-        assert.equal(dispatchStub, pageAction._dispatchToASRouter);
+        assert.equal(dispatchStub, pageAction._dispatchCFRAction);
         assert.calledOnce(PageAction.prototype.showAddressBarNotifier);
       });
     });
@@ -1060,7 +1074,7 @@ describe("CFRPageActions", () => {
         );
         const pageAction = CFRPageActions.PageActionMap.get(win);
         assert.equal(win, pageAction.window);
-        assert.equal(dispatchStub, pageAction._dispatchToASRouter);
+        assert.equal(dispatchStub, pageAction._dispatchCFRAction);
         assert.calledOnce(PageAction.prototype.showAddressBarNotifier);
       });
       it("should add the right url if we fetched and addon install URL", async () => {

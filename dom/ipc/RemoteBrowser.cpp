@@ -8,9 +8,9 @@
 
 #include "nsFrameLoader.h"
 #include "nsFrameLoaderOwner.h"
+#include "nsQueryObject.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 RemoteBrowser* RemoteBrowser::GetFrom(nsFrameLoader* aFrameLoader) {
   if (!aFrameLoader) {
@@ -28,5 +28,4 @@ RemoteBrowser* RemoteBrowser::GetFrom(nsIContent* aContent) {
   return GetFrom(frameLoader);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/dom/Document.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPrefs_security.h"
 #include "nsCOMPtr.h"
@@ -18,6 +19,7 @@
 #include "nsUnicharUtils.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 static LogModule* GetCspParserLog() {
   static LazyLogModule gCspParserPRLog("CSPParser");
@@ -28,29 +30,6 @@ static LogModule* GetCspParserLog() {
   MOZ_LOG(GetCspParserLog(), mozilla::LogLevel::Debug, args)
 #define CSPPARSERLOGENABLED() \
   MOZ_LOG_TEST(GetCspParserLog(), mozilla::LogLevel::Debug)
-
-// clang-format off
-static const char16_t COLON        = ':';
-static const char16_t SEMICOLON    = ';';
-static const char16_t SLASH        = '/';
-static const char16_t PLUS         = '+';
-static const char16_t DASH         = '-';
-static const char16_t DOT          = '.';
-static const char16_t UNDERLINE    = '_';
-static const char16_t TILDE        = '~';
-static const char16_t WILDCARD     = '*';
-static const char16_t SINGLEQUOTE  = '\'';
-static const char16_t NUMBER_SIGN  = '#';
-static const char16_t QUESTIONMARK = '?';
-static const char16_t PERCENT_SIGN = '%';
-static const char16_t EXCLAMATION  = '!';
-static const char16_t DOLLAR       = '$';
-static const char16_t AMPERSAND    = '&';
-static const char16_t OPENBRACE    = '(';
-static const char16_t CLOSINGBRACE = ')';
-static const char16_t EQUALS       = '=';
-static const char16_t ATSYMBOL     = '@';
-// clang-format on
 
 static const uint32_t kSubHostPathCharacterCutoff = 512;
 
@@ -71,7 +50,7 @@ nsCSPParser::nsCSPParser(policyTokens& aTokens, nsIURI* aSelfURI,
       mWorkerSrc(nullptr),
       mScriptSrc(nullptr),
       mParsingFrameAncestorsDir(false),
-      mTokens(aTokens),
+      mTokens(aTokens.Clone()),
       mSelfURI(aSelfURI),
       mPolicy(nullptr),
       mCSPContext(aCSPContext),
@@ -86,11 +65,11 @@ static bool isCharacterToken(char16_t aSymbol) {
          (aSymbol >= 'A' && aSymbol <= 'Z');
 }
 
-static bool isNumberToken(char16_t aSymbol) {
+bool isNumberToken(char16_t aSymbol) {
   return (aSymbol >= '0' && aSymbol <= '9');
 }
 
-static bool isValidHexDig(char16_t aHexDig) {
+bool isValidHexDig(char16_t aHexDig) {
   return (isNumberToken(aHexDig) || (aHexDig >= 'A' && aHexDig <= 'F') ||
           (aHexDig >= 'a' && aHexDig <= 'f'));
 }
@@ -182,8 +161,8 @@ void nsCSPParser::logWarningErrorToConsole(uint32_t aSeverityFlag,
   // send console messages off to the context and let the context
   // deal with it (potentially messages need to be queued up)
   mCSPContext->logToConsole(aProperty, aParams,
-                            EmptyString(),   // aSourceName
-                            EmptyString(),   // aSourceLine
+                            u""_ns,          // aSourceName
+                            u""_ns,          // aSourceLine
                             0,               // aLineNumber
                             0,               // aColumnNumber
                             aSeverityFlag);  // aFlags
@@ -309,7 +288,7 @@ bool nsCSPParser::path(nsCSPHostSrc* aCspHost) {
     // www.example.com/ should result in www.example.com/
     // please note that we do not have to perform any pct-decoding here
     // because we are just appending a '/' and not any actual chars.
-    aCspHost->appendPath(NS_LITERAL_STRING("/"));
+    aCspHost->appendPath(u"/"_ns);
     return true;
   }
   // path can begin with "/" but not "//"
@@ -419,14 +398,10 @@ nsCSPBaseSrc* nsCSPParser::keywordSource() {
   }
 
   if (CSP_IsKeyword(mCurToken, CSP_STRICT_DYNAMIC)) {
-    // make sure strict dynamic is enabled
-    if (!StaticPrefs::security_csp_enableStrictDynamic()) {
-      return nullptr;
-    }
     if (!CSP_IsDirective(mCurDir[0],
                          nsIContentSecurityPolicy::SCRIPT_SRC_DIRECTIVE)) {
       // Todo: Enforce 'strict-dynamic' within default-src; see Bug 1313937
-      AutoTArray<nsString, 1> params = {NS_LITERAL_STRING("strict-dynamic")};
+      AutoTArray<nsString, 1> params = {u"strict-dynamic"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "ignoringStrictDynamic", params);
       return nullptr;
@@ -469,9 +444,8 @@ nsCSPBaseSrc* nsCSPParser::keywordSource() {
     if (!CSP_IsDirective(mCurDir[0],
                          nsIContentSecurityPolicy::NAVIGATE_TO_DIRECTIVE)) {
       // Only allow 'unsafe-allow-redirects' within navigate-to.
-      AutoTArray<nsString, 2> params = {
-          NS_LITERAL_STRING("unsafe-allow-redirects"),
-          NS_LITERAL_STRING("navigate-to")};
+      AutoTArray<nsString, 2> params = {u"unsafe-allow-redirects"_ns,
+                                        u"navigate-to"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "IgnoringSourceWithinDirective", params);
       return nullptr;
@@ -559,7 +533,7 @@ nsCSPNonceSrc* nsCSPParser::nonceSource() {
   // Check if mCurToken begins with "'nonce-" and ends with "'"
   if (!StringBeginsWith(mCurToken,
                         nsDependentString(CSP_EnumToUTF16Keyword(CSP_NONCE)),
-                        nsASCIICaseInsensitiveStringComparator()) ||
+                        nsASCIICaseInsensitiveStringComparator) ||
       mCurToken.Last() != SINGLEQUOTE) {
     return nullptr;
   }
@@ -646,7 +620,7 @@ nsCSPBaseSrc* nsCSPParser::sourceExpression() {
   // the default scheme. However, we still would need to apply the default
   // scheme in case we would parse "*:80".
   if (mCurToken.EqualsASCII("*")) {
-    return new nsCSPHostSrc(NS_LITERAL_STRING("*"));
+    return new nsCSPHostSrc(u"*"_ns);
   }
 
   // Calling resetCurChar allows us to use mCurChar and mEndChar
@@ -971,7 +945,7 @@ void nsCSPParser::directive() {
   // Make sure that the directive-srcs-array contains at least
   // one directive and one src.
   if (mCurDir.Length() < 1) {
-    AutoTArray<nsString, 1> params = {NS_LITERAL_STRING("directive missing")};
+    AutoTArray<nsString, 1> params = {u"directive missing"_ns};
     logWarningErrorToConsole(nsIScriptError::warningFlag,
                              "failedToParseUnrecognizedSource", params);
     return;
@@ -993,8 +967,7 @@ void nsCSPParser::directive() {
   // by a directive name but does not include any srcs.
   if (cspDir->equals(nsIContentSecurityPolicy::BLOCK_ALL_MIXED_CONTENT)) {
     if (mCurDir.Length() > 1) {
-      AutoTArray<nsString, 1> params = {
-          NS_LITERAL_STRING("block-all-mixed-content")};
+      AutoTArray<nsString, 1> params = {u"block-all-mixed-content"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "ignoreSrcForDirective", params);
     }
@@ -1007,8 +980,7 @@ void nsCSPParser::directive() {
   // specified by a directive name but does not include any srcs.
   if (cspDir->equals(nsIContentSecurityPolicy::UPGRADE_IF_INSECURE_DIRECTIVE)) {
     if (mCurDir.Length() > 1) {
-      AutoTArray<nsString, 1> params = {
-          NS_LITERAL_STRING("upgrade-insecure-requests")};
+      AutoTArray<nsString, 1> params = {u"upgrade-insecure-requests"_ns};
       logWarningErrorToConsole(nsIScriptError::warningFlag,
                                "ignoreSrcForDirective", params);
     }
@@ -1075,7 +1047,7 @@ void nsCSPParser::directive() {
           !srcStr.EqualsASCII(CSP_EnumToUTF8Keyword(CSP_UNSAFE_EVAL)) &&
           !StringBeginsWith(
               srcStr, nsDependentString(CSP_EnumToUTF16Keyword(CSP_NONCE))) &&
-          !StringBeginsWith(srcStr, NS_LITERAL_STRING("'sha"))) {
+          !StringBeginsWith(srcStr, u"'sha"_ns)) {
         AutoTArray<nsString, 1> params = {srcStr};
         logWarningErrorToConsole(nsIScriptError::warningFlag,
                                  "ignoringSrcForStrictDynamic", params);
@@ -1093,7 +1065,7 @@ void nsCSPParser::directive() {
               cspDir->equals(nsIContentSecurityPolicy::STYLE_SRC_DIRECTIVE))) {
     mUnsafeInlineKeywordSrc->invalidate();
     // log to the console that unsafe-inline will be ignored
-    AutoTArray<nsString, 1> params = {NS_LITERAL_STRING("'unsafe-inline'")};
+    AutoTArray<nsString, 1> params = {u"'unsafe-inline'"_ns};
     logWarningErrorToConsole(nsIScriptError::warningFlag,
                              "ignoringSrcWithinScriptStyleSrc", params);
   }
@@ -1113,7 +1085,7 @@ nsCSPPolicy* nsCSPParser::policy() {
     // All input is already tokenized; set one tokenized array in the form of
     // [ name, src, src, ... ]
     // to mCurDir and call directive which processes the current directive.
-    mCurDir = mTokens[i];
+    mCurDir = mTokens[i].Clone();
     directive();
   }
 
@@ -1162,7 +1134,7 @@ nsCSPPolicy* nsCSPParser::parseContentSecurityPolicy(
   // The tokenizer itself can not fail; all eventual errors
   // are detected in the parser itself.
 
-  nsTArray<nsTArray<nsString> > tokens;
+  nsTArray<CopyableTArray<nsString> > tokens;
   PolicyTokenizer::tokenizePolicy(aPolicyString, tokens);
 
   nsCSPParser parser(tokens, aSelfURI, aCSPContext, aDeliveredViaMetaTag);

@@ -9,6 +9,7 @@
 
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/WebXRBinding.h"
+#include "mozilla/dom/XRRigidTransform.h"
 
 #include "gfxVR.h"
 
@@ -25,6 +26,7 @@ class XRPose : public nsISupports, public nsWrapperCache {
 
   explicit XRPose(nsISupports* aParent, XRRigidTransform* aTransform,
                   bool aEmulatedPosition);
+  void SetEmulatedPosition(bool aEmulated);
 
   // WebIDL Boilerplate
   nsISupports* GetParentObject() const { return mParent; }

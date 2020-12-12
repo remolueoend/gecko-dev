@@ -33,9 +33,7 @@
       Services.obs.addObserver(this, "contextual-identity-updated");
 
       Services.els.addSystemEventListener(document, "keydown", this, false);
-      if (AppConstants.platform == "macosx") {
-        Services.els.addSystemEventListener(document, "keypress", this, false);
-      }
+      Services.els.addSystemEventListener(document, "keypress", this, false);
       window.addEventListener("sizemodechange", this);
       window.addEventListener("occlusionstatechange", this);
       window.addEventListener("framefocusrequested", this);
@@ -53,32 +51,17 @@
         );
       }
 
-      let messageManager = window.getGroupMessageManager("browsers");
-      window.messageManager.addMessageListener("contextmenu", this);
-
-      if (gMultiProcessBrowser) {
-        messageManager.addMessageListener("DOMTitleChanged", this);
-        messageManager.addMessageListener("DOMWindowClose", this);
-        messageManager.addMessageListener("Browser:Init", this);
-      } else {
-        this._outerWindowIDBrowserMap.set(
-          this.selectedBrowser.outerWindowID,
-          this.selectedBrowser
-        );
-      }
-      messageManager.addMessageListener("RefreshBlocker:Blocked", this);
-
       this._setFindbarData();
 
       XPCOMUtils.defineLazyModuleGetters(this, {
         E10SUtils: "resource://gre/modules/E10SUtils.jsm",
       });
 
-      XPCOMUtils.defineLazyPreferenceGetter(
-        this,
-        "animationsEnabled",
-        "toolkit.cosmeticAnimations.enabled"
-      );
+      // We take over setting the document title, so remove the l10n id to
+      // avoid it being re-translated and overwriting document content if
+      // we ever switch languages at runtime. After a language change, the
+      // window title will update at the next tab or location change.
+      document.querySelector("title").removeAttribute("data-l10n-id");
 
       this._setupEventListeners();
       this._initialized = true;
@@ -106,11 +89,9 @@
 
     _isBusy: false,
 
-    _outerWindowIDBrowserMap: new Map(),
-
     arrowKeysShouldWrap: AppConstants == "macosx",
 
-    _autoScrollPopup: null,
+    _dateTimePicker: null,
 
     _previewMode: false,
 
@@ -121,8 +102,6 @@
     _tabLayerCache: [],
 
     tabAnimationsInProgress: 0,
-
-    _XUL_NS: "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul",
 
     /**
      * Binding from browser to tab
@@ -301,7 +280,10 @@
     },
 
     set selectedTab(val) {
-      if (gNavToolbox.collapsed && !this._allowTabChange) {
+      if (
+        gSharedTabWarning.willShowSharedTabWarning(val) ||
+        (gNavToolbox.collapsed && !this._allowTabChange)
+      ) {
         return this.tabbox.selectedTab;
       }
       // Update the tab
@@ -326,19 +308,26 @@
         .QueryInterface(Ci.nsIInterfaceRequestor)
         .getInterface(Ci.nsIAppWindow).initialOpenWindowInfo;
 
+      if (!openWindowInfo && window.arguments && window.arguments[11]) {
+        openWindowInfo = window.arguments[11];
+      }
+
       let tabArgument = gBrowserInit.getTabToAdopt();
 
-      // We only need sameProcessAsFrameLoader in the case where we're passed a tab
-      let sameProcessAsFrameLoader;
       // If we have a tab argument with browser, we use its remoteType. Otherwise,
       // if e10s is disabled or there's a parent process opener (e.g. parent
       // process about: page) for the content tab, we use a parent
       // process remoteType. Otherwise, we check the URI to determine
       // what to do - if there isn't one, we default to the default remote type.
+      //
+      // When adopting a tab, we'll also use that tab's browsingContextGroupId,
+      // if available, to ensure we don't spawn a new process.
       let remoteType;
+      let initialBrowsingContextGroupId;
       if (tabArgument && tabArgument.linkedBrowser) {
         remoteType = tabArgument.linkedBrowser.remoteType;
-        sameProcessAsFrameLoader = tabArgument.linkedBrowser.frameLoader;
+        initialBrowsingContextGroupId =
+          tabArgument.linkedBrowser.browsingContext?.group.id;
       } else if (openWindowInfo) {
         userContextId = openWindowInfo.originAttributes.userContextId;
         if (openWindowInfo.isRemote) {
@@ -374,7 +363,7 @@
       let createOptions = {
         uriIsAboutBlank: false,
         userContextId,
-        sameProcessAsFrameLoader,
+        initialBrowsingContextGroupId,
         remoteType,
         openWindowInfo,
       };
@@ -413,12 +402,6 @@
       // so we have to update it:
       browser.docShellIsActive = this.shouldActivateDocShell(browser);
 
-      let autoScrollPopup = browser._createAutoScrollPopup();
-      autoScrollPopup.id = "autoscroller";
-      document.getElementById("mainPopupSet").appendChild(autoScrollPopup);
-      browser.setAttribute("autoscrollpopup", autoScrollPopup.id);
-      this._autoScrollPopup = autoScrollPopup;
-
       // Hook the browser up with a progress listener.
       let tabListener = new TabProgressListener(tab, browser, true, false);
       let filter = Cc[
@@ -445,12 +428,12 @@
       return this.selectedBrowser.canGoForward;
     },
 
-    goBack() {
-      return this.selectedBrowser.goBack();
+    goBack(requireUserInteraction) {
+      return this.selectedBrowser.goBack(requireUserInteraction);
     },
 
-    goForward() {
-      return this.selectedBrowser.goForward();
+    goForward(requireUserInteraction) {
+      return this.selectedBrowser.goForward(requireUserInteraction);
     },
 
     reload() {
@@ -707,6 +690,16 @@
       }
     },
 
+    _getAndMaybeCreateDateTimePickerPanel() {
+      if (!this._dateTimePicker) {
+        let wrapper = document.getElementById("dateTimePickerTemplate");
+        wrapper.replaceWith(wrapper.content);
+        this._dateTimePicker = document.getElementById("DateTimePickerPanel");
+      }
+
+      return this._dateTimePicker;
+    },
+
     syncThrobberAnimations(aTab) {
       aTab.ownerGlobal.promiseDocumentFlushed(() => {
         if (!aTab.container) {
@@ -759,7 +752,13 @@
     },
 
     getBrowserForOuterWindowID(aID) {
-      return this._outerWindowIDBrowserMap.get(aID);
+      for (let b of this.browsers) {
+        if (b.outerWindowID == aID) {
+          return b;
+        }
+      }
+
+      return null;
     },
 
     getTabForBrowser(aBrowser) {
@@ -793,11 +792,16 @@
       return browser.tabModalPromptBox;
     },
 
+    getTabDialogBox(aBrowser) {
+      let browser = aBrowser || this.selectedBrowser;
+      if (!browser.tabDialogBox) {
+        browser.tabDialogBox = new TabDialogBox(browser);
+      }
+      return browser.tabDialogBox;
+    },
+
     getTabFromAudioEvent(aEvent) {
-      if (
-        !Services.prefs.getBoolPref("browser.tabs.showAudioPlayingIcon") ||
-        !aEvent.isTrusted
-      ) {
+      if (!aEvent.isTrusted) {
         return null;
       }
 
@@ -920,59 +924,57 @@
     },
 
     getWindowTitleForBrowser(aBrowser) {
-      var newTitle = "";
-      var docElement = document.documentElement;
-      var sep = docElement.getAttribute("titlemenuseparator");
-      let tab = this.getTabForBrowser(aBrowser);
-      let docTitle;
-
-      if (tab._labelIsContentTitle) {
-        // Strip out any null bytes in the content title, since the
-        // underlying widget implementations of nsWindow::SetTitle pass
-        // null-terminated strings to system APIs.
-        docTitle = tab.getAttribute("label").replace(/\0/g, "");
-      }
-
-      if (!docTitle) {
-        docTitle = docElement.getAttribute("titledefault");
-      }
-
-      var modifier = docElement.getAttribute("titlemodifier");
-      if (docTitle) {
-        newTitle += docElement.getAttribute("titlepreface") || "";
-        newTitle += docTitle;
-        if (modifier) {
-          newTitle += sep;
-        }
-      }
-      newTitle += modifier;
+      let docElement = document.documentElement;
+      let title = "";
 
       // If location bar is hidden and the URL type supports a host,
       // add the scheme and host to the title to prevent spoofing.
       // XXX https://bugzilla.mozilla.org/show_bug.cgi?id=22183#c239
       try {
         if (docElement.getAttribute("chromehidden").includes("location")) {
-          const uri = Services.io.createExposableURI(aBrowser.currentURI);
-          if (uri.scheme === "about") {
-            newTitle = `${uri.spec}${sep}${newTitle}`;
-          } else if (uri.scheme === "moz-extension") {
+          const uri = Services.uriFixup.createExposableURI(aBrowser.currentURI);
+          let prefix = uri.prePath;
+          if (uri.scheme == "about") {
+            prefix = uri.spec;
+          } else if (uri.scheme == "moz-extension") {
             const ext = WebExtensionPolicy.getByHostname(uri.host);
             if (ext && ext.name) {
-              const prefix = document.querySelector("#urlbar-label-extension")
-                .value;
-              newTitle = `${prefix} (${ext.name})${sep}${newTitle}`;
-            } else {
-              newTitle = `${uri.prePath}${sep}${newTitle}`;
+              let extensionLabel = document.getElementById(
+                "urlbar-label-extension"
+              );
+              prefix = `${extensionLabel.value} (${ext.name})`;
             }
-          } else {
-            newTitle = `${uri.prePath}${sep}${newTitle}`;
           }
+          title = prefix + " - ";
         }
       } catch (e) {
         // ignored
       }
 
-      return newTitle;
+      if (docElement.hasAttribute("titlepreface")) {
+        title += docElement.getAttribute("titlepreface");
+      }
+
+      let tab = this.getTabForBrowser(aBrowser);
+      if (tab._labelIsContentTitle) {
+        // Strip out any null bytes in the content title, since the
+        // underlying widget implementations of nsWindow::SetTitle pass
+        // null-terminated strings to system APIs.
+        title += tab.getAttribute("label").replace(/\0/g, "");
+      }
+
+      let dataSuffix =
+        docElement.getAttribute("privatebrowsingmode") == "temporary"
+          ? "Private"
+          : "Default";
+      if (title) {
+        return docElement.dataset["contentTitle" + dataSuffix].replace(
+          "CONTENTTITLE",
+          title
+        );
+      }
+
+      return docElement.dataset["title" + dataSuffix];
     },
 
     updateTitlebar() {
@@ -1273,8 +1275,10 @@
 
       let newBrowser = this.getBrowserForTab(newTab);
 
-      // If there's a tabmodal prompt showing, focus it.
-      if (newBrowser.hasAttribute("tabmodalPromptShowing")) {
+      if (newBrowser.hasAttribute("tabDialogShowing")) {
+        newBrowser.tabDialogBox.focus();
+      } else if (newBrowser.hasAttribute("tabmodalPromptShowing")) {
+        // If there's a tabmodal prompt showing, focus it.
         let prompts = newBrowser.tabModalPromptBox.listPrompts();
         let prompt = prompts[prompts.length - 1];
         // @tabmodalPromptShowing is also set for other tab modal prompts
@@ -1554,7 +1558,7 @@
       var aForceNotRemote;
       var aPreferredRemoteType;
       var aUserContextId;
-      var aSameProcessAsFrameLoader;
+      var aInitialBrowsingContextGroupId;
       var aOriginPrincipal;
       var aOriginStoragePrincipal;
       var aOpenWindowInfo;
@@ -1584,7 +1588,7 @@
         aForceNotRemote = params.forceNotRemote;
         aPreferredRemoteType = params.preferredRemoteType;
         aUserContextId = params.userContextId;
-        aSameProcessAsFrameLoader = params.sameProcessAsFrameLoader;
+        aInitialBrowsingContextGroupId = params.initialBrowsingContextGroupId;
         aOriginPrincipal = params.originPrincipal;
         aOriginStoragePrincipal = params.originStoragePrincipal;
         aOpenWindowInfo = params.openWindowInfo;
@@ -1627,7 +1631,7 @@
         userContextId: aUserContextId,
         originPrincipal: aOriginPrincipal,
         originStoragePrincipal: aOriginStoragePrincipal,
-        sameProcessAsFrameLoader: aSameProcessAsFrameLoader,
+        initialBrowsingContextGroupId: aInitialBrowsingContextGroupId,
         openWindowInfo: aOpenWindowInfo,
         openerBrowser: aOpenerBrowser,
         focusUrlBar: aFocusUrlBar,
@@ -1771,17 +1775,7 @@
       }
     },
 
-    updateBrowserRemoteness(
-      aBrowser,
-      {
-        newFrameloader,
-        opener,
-        remoteType,
-        sameProcessAsFrameLoader,
-        replaceBrowsingContext,
-        redirectLoadSwitchId,
-      } = {}
-    ) {
+    updateBrowserRemoteness(aBrowser, { newFrameloader, remoteType } = {}) {
       let isRemote = aBrowser.getAttribute("remote") == "true";
 
       // We have to be careful with this here, as the "no remote type" is null,
@@ -1798,22 +1792,6 @@
           "Cannot switch to remote browser in a window " +
             "without the remote tabs load context."
         );
-      }
-
-      // If we are passed an opener, we must be making the browser non-remote, and
-      // if the browser is _currently_ non-remote, we need the openers to match,
-      // because it is already too late to change it.
-      if (opener) {
-        if (shouldBeRemote) {
-          throw new Error(
-            "Cannot set an opener on a browser which should be remote!"
-          );
-        }
-        if (!isRemote && aBrowser.contentWindow.opener != opener) {
-          throw new Error(
-            "Cannot change opener on an already non-remote browser!"
-          );
-        }
       }
 
       // Abort if we're not going to change anything
@@ -1836,54 +1814,24 @@
 
       let wasActive = document.activeElement == aBrowser;
 
-      // Unmap the old outerWindowID.
-      this._outerWindowIDBrowserMap.delete(aBrowser.outerWindowID);
-
       // Unhook our progress listener.
       let filter = this._tabFilters.get(tab);
       let listener = this._tabListeners.get(tab);
       aBrowser.webProgress.removeProgressListener(filter);
       filter.removeProgressListener(listener);
-      let stateFlags = listener.mStateFlags;
 
       // We'll be creating a new listener, so destroy the old one.
       listener.destroy();
 
       let oldDroppedLinkHandler = aBrowser.droppedLinkHandler;
-      let oldSameProcessAsFrameLoader = aBrowser.sameProcessAsFrameLoader;
       let oldUserTypedValue = aBrowser.userTypedValue;
       let hadStartedLoad = aBrowser.didStartLoadSinceLastUserTyping();
-      let parent = aBrowser.parentNode;
 
       // Change the "remote" attribute.
 
       // Make sure the browser is destroyed so it unregisters from observer notifications
       aBrowser.destroy();
-      // Only remove the node if we're not rebuilding the frameloader via nsFrameLoaderOwner.
-      let rebuildFrameLoaders =
-        E10SUtils.rebuildFrameloadersOnRemotenessChange ||
-        window.docShell.nsILoadContext.useRemoteSubframes;
-      if (!rebuildFrameLoaders) {
-        aBrowser.remove();
-      }
 
-      // NB: This works with the hack in the browser constructor that
-      // turns this normal property into a field.
-      if (sameProcessAsFrameLoader) {
-        // Always set sameProcessAsFrameLoader when passed in explicitly.
-        aBrowser.sameProcessAsFrameLoader = sameProcessAsFrameLoader;
-      } else if (!shouldBeRemote || oldRemoteType == remoteType) {
-        // Only copy existing sameProcessAsFrameLoader when not switching
-        // remote type otherwise it would stop the switch.
-        aBrowser.sameProcessAsFrameLoader = oldSameProcessAsFrameLoader;
-      }
-
-      // Note that this block is also affected by the
-      // rebuild_frameloaders_on_remoteness_change pref. If the pref is set to
-      // false, this attribute change is observed by browser-custom-element,
-      // causing browser destroy()/construct() to be run. If the pref is true,
-      // then we update the attributes, we run the construct() call ourselves
-      // after the new frameloader has been created.
       if (shouldBeRemote) {
         aBrowser.setAttribute("remote", "true");
         aBrowser.setAttribute("remoteType", remoteType);
@@ -1892,24 +1840,15 @@
         aBrowser.removeAttribute("remoteType");
       }
 
-      let switchingInProgressLoad = !!redirectLoadSwitchId;
-      if (!rebuildFrameLoaders) {
-        parent.appendChild(aBrowser);
-      } else {
-        // This call actually switches out our frameloaders. Do this as late as
-        // possible before rebuilding the browser, as we'll need the new browser
-        // state set up completely first.
-        aBrowser.changeRemoteness({
-          remoteType,
-          replaceBrowsingContext,
-          switchingInProgressLoad,
-        });
-        // Once we have new frameloaders, this call sets the browser back up.
-        //
-        // FIXME(emilio): Shouldn't we call destroy() first? What hides the
-        // select pop-ups and such otherwise?
-        aBrowser.construct();
-      }
+      // This call actually switches out our frameloaders. Do this as late as
+      // possible before rebuilding the browser, as we'll need the new browser
+      // state set up completely first.
+      aBrowser.changeRemoteness({
+        remoteType,
+      });
+
+      // Once we have new frameloaders, this call sets the browser back up.
+      aBrowser.construct();
 
       aBrowser.userTypedValue = oldUserTypedValue;
       if (hadStartedLoad) {
@@ -1924,24 +1863,10 @@
       // browser window is minimized.
       aBrowser.docShellIsActive = this.shouldActivateDocShell(aBrowser);
 
-      // If we're switching an in-progress load, then we shouldn't expect
-      // notification for a new initial about:blank and we should preserve
-      // the existing stateFlags on the TabProgressListener.
-      let expectInitialAboutBlank = !switchingInProgressLoad;
-      if (expectInitialAboutBlank) {
-        stateFlags = 0;
-      }
-
       // Create a new tab progress listener for the new browser we just injected,
       // since tab progress listeners have logic for handling the initial about:blank
       // load
-      listener = new TabProgressListener(
-        tab,
-        aBrowser,
-        expectInitialAboutBlank,
-        false,
-        stateFlags
-      );
+      listener = new TabProgressListener(tab, aBrowser, true, false);
       this._tabListeners.set(tab, listener);
       filter.addProgressListener(listener, Ci.nsIWebProgress.NOTIFY_ALL);
 
@@ -1985,9 +1910,6 @@
           { isAppTab: tab.pinned },
           "BrowserTab"
         );
-
-        // Register the new outerWindowID.
-        this._outerWindowIDBrowserMap.set(aBrowser.outerWindowID, aBrowser);
       }
 
       if (wasActive) {
@@ -2043,7 +1965,7 @@
       name,
       openWindowInfo,
       remoteType,
-      sameProcessAsFrameLoader,
+      initialBrowsingContextGroupId,
       uriIsAboutBlank,
       userContextId,
       skipLoad,
@@ -2054,9 +1976,21 @@
       // doesn't keep the window alive.
       b.permanentKey = new (Cu.getGlobalForObject(Services).Object)();
 
+      // Ensure that SessionStore has flushed any session history state from the
+      // content process before we this browser's remoteness.
+      if (!Services.appinfo.sessionHistoryInParent) {
+        b.prepareToChangeRemoteness = () =>
+          SessionStore.prepareToChangeRemoteness(b);
+        b.afterChangeRemoteness = switchId => {
+          let tab = this.getTabForBrowser(b);
+          SessionStore.finishTabRemotenessChange(tab, switchId);
+          return true;
+        };
+      }
+
       const defaultBrowserAttributes = {
         contextmenu: "contentAreaContextMenu",
-        datetimepicker: "DateTimePickerPanel",
+        maychangeremoteness: "true",
         message: "true",
         messagemanagergroup: "browsers",
         selectmenulist: "ContentSelectDropdown",
@@ -2079,9 +2013,6 @@
       if (!isPreloadBrowser) {
         b.setAttribute("autocompletepopup", "PopupAutoComplete");
       }
-      if (this._autoScrollPopup) {
-        b.setAttribute("autoscrollpopup", this._autoScrollPopup.id);
-      }
 
       /*
        * This attribute is meant to describe if the browser is the
@@ -2102,8 +2033,16 @@
         b.setAttribute("preloadedState", "preloaded");
       }
 
-      if (sameProcessAsFrameLoader) {
-        b.sameProcessAsFrameLoader = sameProcessAsFrameLoader;
+      // Ensure that the browser will be created in a specific initial
+      // BrowsingContextGroup. This may change the process selection behaviour
+      // of the newly created browser, and is often used in combination with
+      // "remoteType" to ensure that the initial about:blank load occurs
+      // within the same process as another window.
+      if (initialBrowsingContextGroupId) {
+        b.setAttribute(
+          "initialBrowsingContextGroupId",
+          initialBrowsingContextGroupId
+        );
       }
 
       // Propagate information about the opening content window to the browser.
@@ -2195,7 +2134,7 @@
             getter = () => browser.getAttribute("remote") == "true";
             break;
           case "permitUnload":
-            getter = () => () => ({ permitUnload: true, timedOut: false });
+            getter = () => () => ({ permitUnload: true });
             break;
           case "reload":
           case "reloadWithFlags":
@@ -2279,11 +2218,7 @@
         }
       }
 
-      let {
-        uriIsAboutBlank,
-        remoteType,
-        usingPreloadedContent,
-      } = aTab._browserParams;
+      let { uriIsAboutBlank, usingPreloadedContent } = aTab._browserParams;
       delete aTab._browserParams;
       delete aTab._cachedCurrentURI;
 
@@ -2337,15 +2272,6 @@
         browser.docShellIsActive = false;
       }
 
-      // When addTab() is called with an URL that is not "about:blank" we
-      // set the "nodefaultsrc" attribute that prevents a frameLoader
-      // from being created as soon as the linked <browser> is inserted
-      // into the DOM. We thus have to register the new outerWindowID
-      // for non-remote browsers after we have called browser.loadURI().
-      if (remoteType == E10SUtils.NOT_REMOTE) {
-        this._outerWindowIDBrowserMap.set(browser.outerWindowID, browser);
-      }
-
       // If we transitioned from one browser to two browsers, we need to set
       // hasSiblings=false on both the existing browser and the new browser.
       if (this.tabs.length == 2) {
@@ -2380,9 +2306,7 @@
 
     _mayDiscardBrowser(aTab, aForceDiscard) {
       let browser = aTab.linkedBrowser;
-      let permitUnloadFlags = aForceDiscard
-        ? browser.dontPromptAndUnload
-        : browser.dontPromptAndDontUnload;
+      let action = aForceDiscard ? "unload" : "dontUnload";
 
       if (
         !aTab ||
@@ -2391,7 +2315,7 @@
         this._windowIsClosing ||
         !browser.isConnected ||
         !browser.isRemoteBrowser ||
-        !browser.permitUnload(permitUnloadFlags).permitUnload
+        !browser.permitUnload(action).permitUnload
       ) {
         return false;
       }
@@ -2424,8 +2348,6 @@
 
       SessionStore.resetBrowserToLazyState(aTab);
 
-      this._outerWindowIDBrowserMap.delete(browser.outerWindowID);
-
       // Remove the tab's filter and progress listener.
       let filter = this._tabFilters.get(aTab);
       let listener = this._tabListeners.get(aTab);
@@ -2443,8 +2365,14 @@
         delete aTab._findBar;
       }
 
-      // Remove stale loading attributes.
-      let attributesToRemove = ["busy", "progress", "pendingicon"];
+      // Remove potentially stale attributes.
+      let attributesToRemove = [
+        "activemedia-blocked",
+        "busy",
+        "pendingicon",
+        "progress",
+        "soundplaying",
+      ];
       let removedAttributes = [];
       for (let attr of attributesToRemove) {
         if (aTab.hasAttribute(attr)) {
@@ -2524,7 +2452,7 @@
         preferredRemoteType,
         referrerInfo,
         relatedToCurrent,
-        sameProcessAsFrameLoader,
+        initialBrowsingContextGroupId,
         skipAnimation,
         skipBackgroundNotify,
         triggeringPrincipal,
@@ -2541,6 +2469,17 @@
           "Required argument triggeringPrincipal missing within addTab"
         );
       }
+
+      if (!UserInteraction.running("browser.tabs.opening", window)) {
+        UserInteraction.start("browser.tabs.opening", "initting", window);
+      }
+
+      // Don't use document.l10n.setAttributes because the FTL file is loaded
+      // lazily and we won't be able to resolve the string.
+      document
+        .getElementById("History:UndoCloseTab")
+        .setAttribute("data-l10n-args", JSON.stringify({ tabCount: 1 }));
+      SessionStore.setLastClosedTabCount(window, 1);
 
       // if we're adding tabs, we're past interrupt mode, ditch the owner
       if (this.selectedTab.owner) {
@@ -2597,7 +2536,7 @@
         !skipAnimation &&
         !pinned &&
         this.tabContainer.getAttribute("overflow") != "true" &&
-        this.animationsEnabled;
+        !gReduceMotion;
 
       // Related tab inherits current tab's user context unless a different
       // usercontextid is specified
@@ -2632,6 +2571,7 @@
       this.tabContainer._unlockTabSizing();
 
       if (!animate) {
+        UserInteraction.update("browser.tabs.opening", "not-animated", window);
         t.setAttribute("fadein", "true");
 
         // Call _handleNewTab asynchronously as it needs to know if the
@@ -2643,6 +2583,8 @@
           0,
           this.tabContainer
         );
+      } else {
+        UserInteraction.update("browser.tabs.opening", "animated", window);
       }
 
       let usingPreloadedContent = false;
@@ -2707,7 +2649,7 @@
             remoteType,
             uriIsAboutBlank,
             userContextId,
-            sameProcessAsFrameLoader,
+            initialBrowsingContextGroupId,
             openWindowInfo,
             name,
             skipLoad,
@@ -2859,6 +2801,8 @@
       if (pinned) {
         this._notifyPinnedStatus(t);
       }
+
+      gSharedTabWarning.tabAdded(t);
 
       return t;
     },
@@ -3278,24 +3222,32 @@
       this.removeTabs(selectedTabs);
     },
 
-    removeTabs(tabs) {
+    removeTabs(
+      tabs,
+      { animate = true, suppressWarnAboutClosingWindow = false } = {}
+    ) {
       // When 'closeWindowWithLastTab' pref is enabled, closing all tabs
       // can be considered equivalent to closing the window.
       if (
         this.tabs.length == tabs.length &&
         Services.prefs.getBoolPref("browser.tabs.closeWindowWithLastTab")
       ) {
-        window.closeWindow(true, window.warnAboutClosingWindow);
+        window.closeWindow(
+          true,
+          suppressWarnAboutClosingWindow ? null : window.warnAboutClosingWindow
+        );
         return;
       }
 
+      let initialTabCount = tabs.length;
       this._clearMultiSelectionLocked = true;
 
       // Guarantee that _clearMultiSelectionLocked lock gets released.
       try {
         let tabsWithBeforeUnload = [];
         let lastToClose;
-        let aParams = { animate: true, prewarmed: true };
+        let aParams = { animate, prewarmed: true };
+
         for (let tab of tabs) {
           if (tab.selected) {
             lastToClose = tab;
@@ -3324,6 +3276,17 @@
 
       this._clearMultiSelectionLocked = false;
       this.avoidSingleSelectedTab();
+      let closedTabsCount =
+        initialTabCount - tabs.filter(t => t.isConnected && !t.closing).length;
+      // Don't use document.l10n.setAttributes because the FTL file is loaded
+      // lazily and we won't be able to resolve the string.
+      document
+        .getElementById("History:UndoCloseTab")
+        .setAttribute(
+          "data-l10n-args",
+          JSON.stringify({ tabCount: closedTabsCount })
+        );
+      SessionStore.setLastClosedTabCount(window, closedTabsCount);
     },
 
     removeCurrentTab(aParams) {
@@ -3340,6 +3303,10 @@
         prewarmed,
       } = {}
     ) {
+      if (UserInteraction.running("browser.tabs.opening", window)) {
+        UserInteraction.finish("browser.tabs.opening", window);
+      }
+
       // Telemetry stopwatches may already be running if removeTab gets
       // called again for an already closing tab.
       if (
@@ -3388,6 +3355,7 @@
 
       if (
         !animate /* the caller didn't opt in */ ||
+        gReduceMotion ||
         isLastTab ||
         aTab.pinned ||
         aTab.hidden ||
@@ -3396,8 +3364,7 @@
         aTab.getAttribute("fadein") !=
           "true" /* fade-in transition hasn't been triggered yet */ ||
         window.getComputedStyle(aTab).maxWidth ==
-          "0.1px" /* fade-in transition hasn't moved yet */ ||
-        !this.animationsEnabled
+          "0.1px" /* fade-in transition hasn't moved yet */
       ) {
         // We're not animating, so we can cancel the animation stopwatch.
         TelemetryStopwatch.cancel("FX_TAB_CLOSE_TIME_ANIM_MS", aTab);
@@ -3434,7 +3401,7 @@
     _hasBeforeUnload(aTab) {
       let browser = aTab.linkedBrowser;
       if (browser.isRemoteBrowser && browser.frameLoader) {
-        return PermitUnloader.hasBeforeUnload(browser.frameLoader);
+        return browser.hasBeforeUnload;
       }
       return false;
     },
@@ -3474,15 +3441,15 @@
         // processes the event queue and may lead to another removeTab()
         // call before permitUnload() returns.
         aTab._pendingPermitUnload = true;
-        let { permitUnload, timedOut } = browser.permitUnload();
-        delete aTab._pendingPermitUnload;
+        let { permitUnload } = browser.permitUnload();
+        aTab._pendingPermitUnload = false;
 
         TelemetryStopwatch.finish("FX_TAB_CLOSE_PERMIT_UNLOAD_TIME_MS", aTab);
 
         // If we were closed during onbeforeunload, we return false now
         // so we don't (try to) close the same tab again. Of course, we
         // also stop if the unload was cancelled by the user:
-        if (aTab.closing || (!timedOut && !permitUnload)) {
+        if (aTab.closing || !permitUnload) {
           return false;
         }
       }
@@ -3688,8 +3655,6 @@
       var browser = this.getBrowserForTab(aTab);
 
       if (aTab.linkedPanel) {
-        this._outerWindowIDBrowserMap.delete(browser.outerWindowID);
-
         // Because of the fact that we are setting JS properties on
         // the browser elements, and we have code in place
         // to preserve the JS objects for any elements that have
@@ -4069,14 +4034,7 @@
       // Make sure to unregister any open URIs.
       this._swapRegisteredOpenURIs(ourBrowser, aOtherBrowser);
 
-      // Unmap old outerWindowIDs.
-      this._outerWindowIDBrowserMap.delete(ourBrowser.outerWindowID);
       let remoteBrowser = aOtherBrowser.ownerGlobal.gBrowser;
-      if (remoteBrowser) {
-        remoteBrowser._outerWindowIDBrowserMap.delete(
-          aOtherBrowser.outerWindowID
-        );
-      }
 
       // If switcher is active, it will intercept swap events and
       // react as needed.
@@ -4088,22 +4046,6 @@
 
       // Swap the docshells
       ourBrowser.swapDocShells(aOtherBrowser);
-
-      if (ourBrowser.isRemoteBrowser) {
-        // Switch outerWindowIDs for remote browsers.
-        let ourOuterWindowID = ourBrowser._outerWindowID;
-        ourBrowser._outerWindowID = aOtherBrowser._outerWindowID;
-        aOtherBrowser._outerWindowID = ourOuterWindowID;
-      }
-
-      // Register new outerWindowIDs.
-      this._outerWindowIDBrowserMap.set(ourBrowser.outerWindowID, ourBrowser);
-      if (remoteBrowser) {
-        remoteBrowser._outerWindowIDBrowserMap.set(
-          aOtherBrowser.outerWindowID,
-          aOtherBrowser
-        );
-      }
 
       // Swap permanentKey properties.
       let ourPermanentKey = ourBrowser.permanentKey;
@@ -4147,9 +4089,17 @@
 
     announceWindowCreated(browser, userContextId) {
       let tab = this.getTabForBrowser(browser);
-      if (tab && userContextId) {
-        ContextualIdentityService.telemetry(userContextId);
-        tab.setUserContextId(userContextId);
+      if (tab) {
+        if (userContextId) {
+          ContextualIdentityService.telemetry(userContextId);
+          tab.setUserContextId(userContextId);
+        }
+
+        browser.sendMessageToActor(
+          "Browser:AppTab",
+          { isAppTab: tab.pinned },
+          "BrowserTab"
+        );
       }
 
       // We don't want to update the container icon and identifier if
@@ -4180,7 +4130,7 @@
       SitePermissions.clearTemporaryPermissions(browser);
       // Also reset DOS mitigations for the basic auth prompt on reload.
       delete browser.authPromptAbuseCounter;
-      PanelMultiView.hidePopup(gIdentityHandler._identityPopup);
+      gIdentityHandler.hidePopup();
       browser.reload();
     },
 
@@ -4320,7 +4270,7 @@
       // Play the tab closing animation to give immediate feedback while
       // waiting for the new window to appear.
       // content area when the docshells are swapped.
-      if (this.animationsEnabled) {
+      if (!gReduceMotion) {
         aTab.style.maxWidth = ""; // ensure that fade-out transition happens
         aTab.removeAttribute("fadein");
       }
@@ -4357,7 +4307,7 @@
 
       // Play the closing animation for all selected tabs to give
       // immediate feedback while waiting for the new window to appear.
-      if (this.animationsEnabled) {
+      if (!gReduceMotion) {
         for (let tab of tabs) {
           tab.style.maxWidth = ""; // ensure that fade-out transition happens
           tab.removeAttribute("fadein");
@@ -4495,7 +4445,7 @@
       let params = {
         eventDetail: { adoptedTab: aTab },
         preferredRemoteType: linkedBrowser.remoteType,
-        sameProcessAsFrameLoader: linkedBrowser.frameLoader,
+        initialBrowsingContextGroupId: linkedBrowser.browsingContext?.group.id,
         skipAnimation: true,
         index: aIndex,
         createLazyBrowser,
@@ -4579,9 +4529,17 @@
      *          Can be from a different window as well
      * @param   aRestoreTabImmediately
      *          Can defer loading of the tab contents
+     * @param   aOptions
+     *          The new index of the tab
      */
-    duplicateTab(aTab, aRestoreTabImmediately) {
-      return SessionStore.duplicateTab(window, aTab, 0, aRestoreTabImmediately);
+    duplicateTab(aTab, aRestoreTabImmediately, aOptions) {
+      return SessionStore.duplicateTab(
+        window,
+        aTab,
+        0,
+        aRestoreTabImmediately,
+        aOptions
+      );
     },
 
     addToMultiSelectedTabs(aTab, { isLastMultiSelectChange = false } = {}) {
@@ -4949,7 +4907,63 @@
       }
     },
 
-    _handleKeyPressEventMac(aEvent) {
+    toggleCaretBrowsing() {
+      const kPrefShortcutEnabled =
+        "accessibility.browsewithcaret_shortcut.enabled";
+      const kPrefWarnOnEnable = "accessibility.warn_on_browsewithcaret";
+      const kPrefCaretBrowsingOn = "accessibility.browsewithcaret";
+
+      var isEnabled = Services.prefs.getBoolPref(kPrefShortcutEnabled);
+      if (!isEnabled) {
+        return;
+      }
+
+      // Toggle browse with caret mode
+      var browseWithCaretOn = Services.prefs.getBoolPref(
+        kPrefCaretBrowsingOn,
+        false
+      );
+      var warn = Services.prefs.getBoolPref(kPrefWarnOnEnable, true);
+      if (warn && !browseWithCaretOn) {
+        var checkValue = { value: false };
+        var promptService = Services.prompt;
+
+        var buttonPressed = promptService.confirmEx(
+          window,
+          gTabBrowserBundle.GetStringFromName(
+            "browsewithcaret.checkWindowTitle"
+          ),
+          gTabBrowserBundle.GetStringFromName("browsewithcaret.checkLabel"),
+          // Make "No" the default:
+          promptService.STD_YES_NO_BUTTONS | promptService.BUTTON_POS_1_DEFAULT,
+          null,
+          null,
+          null,
+          gTabBrowserBundle.GetStringFromName("browsewithcaret.checkMsg"),
+          checkValue
+        );
+        if (buttonPressed != 0) {
+          if (checkValue.value) {
+            try {
+              Services.prefs.setBoolPref(kPrefShortcutEnabled, false);
+            } catch (ex) {}
+          }
+          return;
+        }
+        if (checkValue.value) {
+          try {
+            Services.prefs.setBoolPref(kPrefWarnOnEnable, false);
+          } catch (ex) {}
+        }
+      }
+
+      // Toggle the pref
+      try {
+        Services.prefs.setBoolPref(kPrefCaretBrowsingOn, !browseWithCaretOn);
+      } catch (ex) {}
+    },
+
+    _handleKeyPressEvent(aEvent) {
       if (!aEvent.isTrusted) {
         // Don't let untrusted events mess with tabs.
         return;
@@ -4960,19 +4974,25 @@
         return;
       }
 
-      if (AppConstants.platform == "macosx") {
-        switch (
-          ShortcutUtils.getSystemActionForEvent(aEvent, { rtl: RTL_UI })
-        ) {
-          case ShortcutUtils.NEXT_TAB:
+      switch (ShortcutUtils.getSystemActionForEvent(aEvent, { rtl: RTL_UI })) {
+        case ShortcutUtils.TOGGLE_CARET_BROWSING:
+          if (!aEvent.defaultPrevented) {
+            this.toggleCaretBrowsing();
+          }
+          break;
+
+        case ShortcutUtils.NEXT_TAB:
+          if (AppConstants.platform == "macosx") {
             this.tabContainer.advanceSelectedTab(1, true);
             aEvent.preventDefault();
-            break;
-          case ShortcutUtils.PREVIOUS_TAB:
+          }
+          break;
+        case ShortcutUtils.PREVIOUS_TAB:
+          if (AppConstants.platform == "macosx") {
             this.tabContainer.advanceSelectedTab(-1, true);
             aEvent.preventDefault();
-            break;
-        }
+          }
+          break;
       }
     },
 
@@ -4981,9 +5001,9 @@
       if (includeLabel) {
         label = tab._fullLabel || tab.getAttribute("label");
       }
-      if (AppConstants.NIGHTLY_BUILD) {
+      if (Services.prefs.getBoolPref("browser.tabs.tooltipsShowPid", false)) {
         if (tab.linkedBrowser) {
-          // On Nightly builds, show the PID of the content process, and if
+          // When enabled, show the PID of the content process, and if
           // we're running with fission enabled, try to include PIDs for
           // every remote subframe.
           let [contentPid, ...framePids] = E10SUtils.getBrowserPids(
@@ -4993,7 +5013,11 @@
           if (contentPid) {
             label += " (pid " + contentPid + ")";
             if (gFissionBrowser) {
-              label += " [F " + framePids.join(", ") + "]";
+              label += " [F";
+              if (framePids.length) {
+                label += " " + framePids.join(", ");
+              }
+              label += "]";
             }
           }
         }
@@ -5048,7 +5072,11 @@
               affectedTabsLength,
               gTabBrowserBundle.GetStringFromName("tabs.closeTabs.tooltip")
             ).replace("#1", affectedTabsLength);
-      } else if (tab._overPlayingIcon) {
+      }
+      // When Picture-in-Picture is open, we repurpose '.tab-icon-sound' as
+      // an inert Picture-in-Picture indicator, so we should display
+      // the default tooltip
+      else if (tab._overPlayingIcon && !tab.pictureinpicture) {
         let stringID;
         if (tab.selected) {
           stringID = tab.linkedBrowser.audioMuted
@@ -5086,7 +5114,7 @@
           this._handleKeyDownEvent(aEvent);
           break;
         case "keypress":
-          this._handleKeyPressEventMac(aEvent);
+          this._handleKeyPressEvent(aEvent);
           break;
         case "framefocusrequested": {
           let tab = this.getTabForBrowser(aEvent.target);
@@ -5115,110 +5143,12 @@
       }
     },
 
-    receiveMessage(aMessage) {
-      let data = aMessage.data;
-      let browser = aMessage.target;
-
-      switch (aMessage.name) {
-        case "DOMTitleChanged": {
-          let tab = this.getTabForBrowser(browser);
-          if (!tab || tab.hasAttribute("pending")) {
-            return undefined;
-          }
-          let titleChanged = this.setTabTitle(tab);
-          if (titleChanged && !tab.selected && !tab.hasAttribute("busy")) {
-            tab.setAttribute("titlechanged", "true");
-          }
-          break;
-        }
-        case "contextmenu": {
-          openContextMenu(aMessage);
-          break;
-        }
-        case "Browser:Init": {
-          let tab = this.getTabForBrowser(browser);
-          if (!tab) {
-            return undefined;
-          }
-
-          this._outerWindowIDBrowserMap.set(browser.outerWindowID, browser);
-          browser.sendMessageToActor(
-            "Browser:AppTab",
-            { isAppTab: tab.pinned },
-            "BrowserTab"
-          );
-          break;
-        }
-        case "RefreshBlocker:Blocked": {
-          // The data object is expected to contain the following properties:
-          //  - URI (string)
-          //     The URI that a page is attempting to refresh or redirect to.
-          //  - delay (int)
-          //     The delay (in milliseconds) before the page was going to
-          //     reload or redirect.
-          //  - sameURI (bool)
-          //     true if we're refreshing the page. false if we're redirecting.
-          //  - outerWindowID (int)
-          //     The outerWindowID of the frame that requested the refresh or
-          //     redirect.
-
-          let brandBundle = document.getElementById("bundle_brand");
-          let brandShortName = brandBundle.getString("brandShortName");
-          let message = gNavigatorBundle.getFormattedString(
-            "refreshBlocked." +
-              (data.sameURI ? "refreshLabel" : "redirectLabel"),
-            [brandShortName]
-          );
-
-          let notificationBox = this.getNotificationBox(browser);
-          let notification = notificationBox.getNotificationWithValue(
-            "refresh-blocked"
-          );
-
-          if (notification) {
-            notification.label = message;
-          } else {
-            let refreshButtonText = gNavigatorBundle.getString(
-              "refreshBlocked.goButton"
-            );
-            let refreshButtonAccesskey = gNavigatorBundle.getString(
-              "refreshBlocked.goButton.accesskey"
-            );
-
-            let buttons = [
-              {
-                label: refreshButtonText,
-                accessKey: refreshButtonAccesskey,
-                callback() {
-                  if (browser.messageManager) {
-                    browser.messageManager.sendAsyncMessage(
-                      "RefreshBlocker:Refresh",
-                      data
-                    );
-                  }
-                },
-              },
-            ];
-
-            notificationBox.appendNotification(
-              message,
-              "refresh-blocked",
-              "chrome://browser/skin/notification-icons/popup.svg",
-              notificationBox.PRIORITY_INFO_MEDIUM,
-              buttons
-            );
-          }
-          break;
-        }
-      }
-      return undefined;
-    },
-
     observe(aSubject, aTopic, aData) {
       switch (aTopic) {
         case "contextual-identity-updated": {
+          let identity = aSubject.wrappedJSObject;
           for (let tab of this.tabs) {
-            if (tab.getAttribute("usercontextid") == aData) {
+            if (tab.getAttribute("usercontextid") == identity.userContextId) {
               ContextualIdentityService.setTabStyle(tab);
             }
           }
@@ -5227,12 +5157,64 @@
       }
     },
 
+    refreshBlocked(actor, browser, data) {
+      // The data object is expected to contain the following properties:
+      //  - URI (string)
+      //     The URI that a page is attempting to refresh or redirect to.
+      //  - delay (int)
+      //     The delay (in milliseconds) before the page was going to
+      //     reload or redirect.
+      //  - sameURI (bool)
+      //     true if we're refreshing the page. false if we're redirecting.
+
+      let brandBundle = document.getElementById("bundle_brand");
+      let brandShortName = brandBundle.getString("brandShortName");
+      let message = gNavigatorBundle.getFormattedString(
+        "refreshBlocked." + (data.sameURI ? "refreshLabel" : "redirectLabel"),
+        [brandShortName]
+      );
+
+      let notificationBox = this.getNotificationBox(browser);
+      let notification = notificationBox.getNotificationWithValue(
+        "refresh-blocked"
+      );
+
+      if (notification) {
+        notification.label = message;
+      } else {
+        let refreshButtonText = gNavigatorBundle.getString(
+          "refreshBlocked.goButton"
+        );
+        let refreshButtonAccesskey = gNavigatorBundle.getString(
+          "refreshBlocked.goButton.accesskey"
+        );
+
+        let buttons = [
+          {
+            label: refreshButtonText,
+            accessKey: refreshButtonAccesskey,
+            callback() {
+              actor.sendAsyncMessage("RefreshBlocker:Refresh", data);
+            },
+          },
+        ];
+
+        notificationBox.appendNotification(
+          message,
+          "refresh-blocked",
+          "chrome://browser/skin/notification-icons/popup.svg",
+          notificationBox.PRIORITY_INFO_MEDIUM,
+          buttons
+        );
+      }
+    },
+
     _generateUniquePanelID() {
       if (!this._uniquePanelIDCounter) {
         this._uniquePanelIDCounter = 0;
       }
 
-      let outerID = window.windowUtils.outerWindowID;
+      let outerID = window.docShell.outerWindowID;
 
       // We want panel IDs to be globally unique, that's why we include the
       // window ID. We switched to a monotonic counter as Date.now() lead
@@ -5284,10 +5266,6 @@
       window.removeEventListener("framefocusrequested", this);
 
       if (gMultiProcessBrowser) {
-        let messageManager = window.getGroupMessageManager("browsers");
-        messageManager.removeMessageListener("DOMTitleChanged", this);
-        window.messageManager.removeMessageListener("contextmenu", this);
-
         if (this._switcher) {
           this._switcher.destroy();
         }
@@ -5342,6 +5320,29 @@
           // to close the entire window. Calling preventDefault is our way of
           // saying we took care of this close request by closing the tab.
           event.preventDefault();
+        }
+      });
+
+      this.addEventListener("pagetitlechanged", event => {
+        let browser = event.target;
+        let tab = this.getTabForBrowser(browser);
+        if (!tab || tab.hasAttribute("pending")) {
+          return;
+        }
+
+        // Ignore empty title changes on internal pages. This prevents the title
+        // from changing while Fluent is populating the (initially-empty) title
+        // element.
+        if (
+          !browser.contentTitle &&
+          browser.contentPrincipal.isSystemPrincipal
+        ) {
+          return;
+        }
+
+        let titleChanged = this.setTabTitle(tab);
+        if (titleChanged && !tab.selected && !tab.hasAttribute("busy")) {
+          tab.setAttribute("titlechanged", "true");
         }
       });
 
@@ -5432,46 +5433,25 @@
         true
       );
 
-      this.addEventListener("DOMTitleChanged", event => {
-        if (!event.isTrusted) {
-          return;
-        }
-
-        var contentWin = event.target.defaultView;
-        if (contentWin != contentWin.top) {
-          return;
-        }
-
-        let browser = contentWin.docShell.chromeEventHandler;
-        var tab = this.getTabForBrowser(browser);
-        if (!tab || tab.hasAttribute("pending")) {
-          return;
-        }
-
-        if (!browser.docShell) {
-          return;
-        }
-        // Ensure `docShell.document` (an nsIWebNavigation idl prop) is there:
-        browser.docShell.QueryInterface(Ci.nsIWebNavigation);
-        if (event.target != browser.docShell.document) {
-          return;
-        }
-
-        // Ignore empty title changes on internal pages. This prevents the title
-        // from changing while Fluent is populating the (initially-empty) title
-        // element.
-        if (
-          !browser.contentTitle &&
-          browser.contentPrincipal.isSystemPrincipal
-        ) {
-          return;
-        }
-
-        var titleChanged = this.setTabTitle(tab);
-        if (titleChanged && !tab.selected && !tab.hasAttribute("busy")) {
-          tab.setAttribute("titlechanged", "true");
-        }
-      });
+      // When cancelling beforeunload tabmodal dialogs, reset the URL bar to
+      // avoid spoofing risks.
+      this.addEventListener(
+        "DOMModalDialogClosed",
+        event => {
+          if (
+            !event.detail?.wasPermitUnload ||
+            event.detail.areLeaving ||
+            event.target.nodeName != "browser"
+          ) {
+            return;
+          }
+          event.target.userTypedValue = null;
+          if (event.target == this.selectedBrowser) {
+            gURLBar.setURI();
+          }
+        },
+        true
+      );
 
       let onTabCrashed = event => {
         if (!event.isTrusted || !event.isTopFrame) {
@@ -5649,6 +5629,120 @@
       );
       this.tabContainer.addEventListener("mouseover", tabContextFTLInserter);
       this.tabContainer.addEventListener("focus", tabContextFTLInserter, true);
+
+      // Fired when Gecko has decided a <browser> element will change
+      // remoteness. This allows persisting some state on this element across
+      // process switches.
+      this.addEventListener("WillChangeBrowserRemoteness", event => {
+        let browser = event.originalTarget;
+        let tab = this.getTabForBrowser(browser);
+        if (!tab) {
+          return;
+        }
+
+        // Dispatch the `BeforeTabRemotenessChange` event, allowing other code
+        // to react to this tab's process switch.
+        let evt = document.createEvent("Events");
+        evt.initEvent("BeforeTabRemotenessChange", true, false);
+        tab.dispatchEvent(evt);
+
+        let wasActive = document.activeElement == browser;
+
+        // Unhook our progress listener.
+        let filter = this._tabFilters.get(tab);
+        let oldListener = this._tabListeners.get(tab);
+        browser.webProgress.removeProgressListener(filter);
+        filter.removeProgressListener(oldListener);
+        let stateFlags = oldListener.mStateFlags;
+        let requestCount = oldListener.mRequestCount;
+
+        // We'll be creating a new listener, so destroy the old one.
+        oldListener.destroy();
+
+        let oldDroppedLinkHandler = browser.droppedLinkHandler;
+        let oldUserTypedValue = browser.userTypedValue;
+        let hadStartedLoad = browser.didStartLoadSinceLastUserTyping();
+
+        let didChange = didChangeEvent => {
+          browser.userTypedValue = oldUserTypedValue;
+          if (hadStartedLoad) {
+            browser.urlbarChangeTracker.startedLoad();
+          }
+
+          browser.droppedLinkHandler = oldDroppedLinkHandler;
+
+          // Switching a browser's remoteness will create a new frameLoader.
+          // As frameLoaders start out with an active docShell we have to
+          // deactivate it if this is not the selected tab's browser or the
+          // browser window is minimized.
+          browser.docShellIsActive = this.shouldActivateDocShell(browser);
+
+          // Create a new tab progress listener for the new browser we just
+          // injected, since tab progress listeners have logic for handling the
+          // initial about:blank load
+          let listener = new TabProgressListener(
+            tab,
+            browser,
+            false,
+            false,
+            stateFlags,
+            requestCount
+          );
+          this._tabListeners.set(tab, listener);
+          filter.addProgressListener(listener, Ci.nsIWebProgress.NOTIFY_ALL);
+
+          // Restore the progress listener.
+          browser.webProgress.addProgressListener(
+            filter,
+            Ci.nsIWebProgress.NOTIFY_ALL
+          );
+
+          let cbEvent = browser.getContentBlockingEvents();
+          // Include the true final argument to indicate that this event is
+          // simulated (instead of being observed by the webProgressListener).
+          this._callProgressListeners(
+            browser,
+            "onContentBlockingEvent",
+            [browser.webProgress, null, cbEvent, true],
+            true,
+            false
+          );
+
+          if (browser.isRemoteBrowser) {
+            // Switching the browser to be remote will connect to a new child
+            // process so the browser can no longer be considered to be
+            // crashed.
+            tab.removeAttribute("crashed");
+          } else {
+            browser.sendMessageToActor(
+              "Browser:AppTab",
+              { isAppTab: tab.pinned },
+              "BrowserTab"
+            );
+          }
+
+          if (wasActive) {
+            browser.focus();
+          }
+
+          if (this.isFindBarInitialized(tab)) {
+            this.getCachedFindBar(tab).browser = browser;
+          }
+
+          browser.sendMessageToActor(
+            "Browser:HasSiblings",
+            this.tabs.length > 1,
+            "BrowserTab"
+          );
+
+          evt = document.createEvent("Events");
+          evt.initEvent("TabRemotenessChange", true, false);
+          tab.dispatchEvent(evt);
+        };
+        browser.addEventListener("DidChangeBrowserRemoteness", didChange, {
+          once: true,
+        });
+      });
     },
 
     setSuccessor(aTab, successorTab) {
@@ -5695,7 +5789,8 @@
       aBrowser,
       aStartsBlank,
       aWasPreloadedBrowser,
-      aOrigStateFlags
+      aOrigStateFlags,
+      aOrigRequestCount
     ) {
       let stateFlags = aOrigStateFlags || 0;
       // Initialize mStateFlags to non-zero e.g. when creating a progress
@@ -5720,7 +5815,7 @@
       this.mTotalProgress = 0;
 
       // count of open requests (should always be 0 or 1)
-      this.mRequestCount = 0;
+      this.mRequestCount = aOrigRequestCount || 0;
     }
 
     destroy() {
@@ -5909,11 +6004,6 @@
           }
         }
       } else if (aStateFlags & STATE_STOP && aStateFlags & STATE_IS_NETWORK) {
-        if (--this.mRequestCount > 0 && aStatus == Cr.NS_ERROR_UNKNOWN_HOST) {
-          // to prevent bug 235825: wait for the request handled
-          // by the automatic keyword resolver
-          return;
-        }
         // since we (try to) only handle STATE_STOP of the last request,
         // the count of open requests should now be 0
         this.mRequestCount = 0;
@@ -5930,7 +6020,7 @@
             !aWebProgress.isLoadingDocument &&
             Components.isSuccessCode(aStatus) &&
             !gBrowser.tabAnimationsInProgress &&
-            Services.prefs.getBoolPref("toolkit.cosmeticAnimations.enabled")
+            !gReduceMotion
           ) {
             if (this.mTab._notselectedsinceload) {
               this.mTab.setAttribute("notselectedsinceload", "true");
@@ -6403,6 +6493,9 @@ var TabContextMenu = {
 
     let disabled = gBrowser.tabs.length == 1;
     let multiselectionContext = this.contextTab.multiselected;
+    let tabCountInfo = JSON.stringify({
+      tabCount: (multiselectionContext && gBrowser.multiSelectedTabsCount) || 1,
+    });
 
     var menuItems = aPopupMenu.getElementsByAttribute(
       "tbattr",
@@ -6454,11 +6547,8 @@ var TabContextMenu = {
     let contextMoveTabOptions = document.getElementById(
       "context_moveTabOptions"
     );
+    contextMoveTabOptions.setAttribute("data-l10n-args", tabCountInfo);
     contextMoveTabOptions.disabled = gBrowser.allTabsSelected();
-    document.l10n.setAttributes(
-      contextMoveTabOptions,
-      multiselectionContext ? "move-tabs" : "move-tab"
-    );
     let selectedTabs = gBrowser.selectedTabs;
     let contextMoveTabToEnd = document.getElementById("context_moveToEnd");
     let allSelectedTabsAdjacent = selectedTabs.every(
@@ -6510,11 +6600,10 @@ var TabContextMenu = {
     document.getElementById("context_closeOtherTabs").disabled =
       unpinnedTabsToClose < 1;
 
-    // Only one of close_tab/close_selected_tabs should be visible
-    document.getElementById("context_closeTab").hidden = multiselectionContext;
-    document.getElementById(
-      "context_closeSelectedTabs"
-    ).hidden = !multiselectionContext;
+    // Update the close item with how many tabs will close.
+    document
+      .getElementById("context_closeTab")
+      .setAttribute("data-l10n-args", tabCountInfo);
 
     // Hide "Bookmark Tab" for multiselection.
     // Update its state if visible.
@@ -6658,9 +6747,11 @@ var TabContextMenu = {
           { userContextId }
         );
       } else if (triggeringPrincipal.isContentPrincipal) {
-        triggeringPrincipal = Services.scriptSecurityManager.createContentPrincipal(
-          triggeringPrincipal.URI,
-          { userContextId }
+        triggeringPrincipal = Services.scriptSecurityManager.principalWithOA(
+          triggeringPrincipal,
+          {
+            userContextId,
+          }
         );
       }
 
@@ -6677,6 +6768,14 @@ var TabContextMenu = {
       if (tab.muted && !newTab.muted) {
         newTab.toggleMuteAudio(tab.muteReason);
       }
+    }
+  },
+
+  closeContextTabs(event) {
+    if (this.contextTab.multiselected) {
+      gBrowser.removeMultiSelectedTabs();
+    } else {
+      gBrowser.removeTab(this.contextTab, { animate: true });
     }
   },
 };

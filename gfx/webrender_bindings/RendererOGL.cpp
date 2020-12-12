@@ -22,6 +22,41 @@
 namespace mozilla {
 namespace wr {
 
+class RendererRecordedFrame final : public layers::RecordedFrame {
+ public:
+  RendererRecordedFrame(const TimeStamp& aTimeStamp, wr::Renderer* aRenderer,
+                        const wr::RecordedFrameHandle aHandle,
+                        const gfx::IntSize& aSize)
+      : RecordedFrame(aTimeStamp),
+        mRenderer(aRenderer),
+        mSize(aSize),
+        mHandle(aHandle) {}
+
+  already_AddRefed<gfx::DataSourceSurface> GetSourceSurface() override {
+    if (!mSurface) {
+      mSurface = gfx::Factory::CreateDataSourceSurface(
+          mSize, gfx::SurfaceFormat::B8G8R8A8, /* aZero = */ false);
+
+      gfx::DataSourceSurface::ScopedMap map(mSurface,
+                                            gfx::DataSourceSurface::WRITE);
+
+      if (!wr_renderer_map_recorded_frame(mRenderer, mHandle, map.GetData(),
+                                          map.GetStride() * mSize.height,
+                                          map.GetStride())) {
+        return nullptr;
+      }
+    }
+
+    return do_AddRef(mSurface);
+  }
+
+ private:
+  wr::Renderer* mRenderer;
+  RefPtr<gfx::DataSourceSurface> mSurface;
+  gfx::IntSize mSize;
+  wr::RecordedFrameHandle mHandle;
+};
+
 wr::WrExternalImage wr_renderer_lock_external_image(
     void* aObj, wr::ExternalImageId aId, uint8_t aChannelIndex,
     wr::ImageRendering aRendering) {
@@ -33,7 +68,17 @@ wr::WrExternalImage wr_renderer_lock_external_image(
                         << AsUint64(aId);
     return InvalidToWrExternalImage();
   }
-  return texture->Lock(aChannelIndex, renderer->gl(), aRendering);
+  if (auto* gl = renderer->gl()) {
+    return texture->Lock(aChannelIndex, gl, aRendering);
+  } else if (auto* swgl = renderer->swgl()) {
+    return texture->LockSWGL(aChannelIndex, swgl, renderer->GetCompositor(),
+                             aRendering);
+  } else {
+    gfxCriticalNoteOnce
+        << "No GL or SWGL context available to lock ExternalImage for extId:"
+        << AsUint64(aId);
+    return InvalidToWrExternalImage();
+  }
 }
 
 void wr_renderer_unlock_external_image(void* aObj, wr::ExternalImageId aId,
@@ -44,20 +89,22 @@ void wr_renderer_unlock_external_image(void* aObj, wr::ExternalImageId aId,
   if (!texture) {
     return;
   }
-  texture->Unlock();
+  if (renderer->gl()) {
+    texture->Unlock();
+  } else if (renderer->swgl()) {
+    texture->UnlockSWGL();
+  }
 }
 
 RendererOGL::RendererOGL(RefPtr<RenderThread>&& aThread,
                          UniquePtr<RenderCompositor> aCompositor,
                          wr::WindowId aWindowId, wr::Renderer* aRenderer,
-                         layers::CompositorBridgeParent* aBridge,
-                         void* aSoftwareContext)
+                         layers::CompositorBridgeParent* aBridge)
     : mThread(aThread),
       mCompositor(std::move(aCompositor)),
       mRenderer(aRenderer),
       mBridge(aBridge),
       mWindowId(aWindowId),
-      mSoftwareContext(aSoftwareContext),
       mDisableNativeCompositor(false) {
   MOZ_ASSERT(mThread);
   MOZ_ASSERT(mCompositor);
@@ -68,18 +115,12 @@ RendererOGL::RendererOGL(RefPtr<RenderThread>&& aThread,
 
 RendererOGL::~RendererOGL() {
   MOZ_COUNT_DTOR(RendererOGL);
-  if (mSoftwareContext) {
-    wr_swgl_make_current(mSoftwareContext);
-  }
   if (!mCompositor->MakeCurrent()) {
     gfxCriticalNote
         << "Failed to make render context current during destroying.";
     // Leak resources!
   } else {
     wr_renderer_delete(mRenderer);
-  }
-  if (mSoftwareContext) {
-    wr_swgl_destroy_context(mSoftwareContext);
   }
 }
 
@@ -96,11 +137,6 @@ void RendererOGL::Update() {
   }
 }
 
-static void DoNotifyWebRenderContextPurge(
-    layers::CompositorBridgeParent* aBridge) {
-  aBridge->NotifyWebRenderContextPurge();
-}
-
 static void DoWebRenderDisableNativeCompositor(
     layers::CompositorBridgeParent* aBridge) {
   aBridge->NotifyWebRenderDisableNativeCompositor();
@@ -109,7 +145,8 @@ static void DoWebRenderDisableNativeCompositor(
 RenderedFrameId RendererOGL::UpdateAndRender(
     const Maybe<gfx::IntSize>& aReadbackSize,
     const Maybe<wr::ImageFormat>& aReadbackFormat,
-    const Maybe<Range<uint8_t>>& aReadbackBuffer, RendererStats* aOutStats) {
+    const Maybe<Range<uint8_t>>& aReadbackBuffer, bool* aNeedsYFlip,
+    RendererStats* aOutStats) {
   mozilla::widget::WidgetRenderingContext widgetContext;
 
 #if defined(XP_MACOSX)
@@ -125,19 +162,13 @@ RenderedFrameId RendererOGL::UpdateAndRender(
   // XXX set clear color if MOZ_WIDGET_ANDROID is defined.
 
   if (!mCompositor->BeginFrame()) {
-    if (mCompositor->IsContextLost()) {
-      RenderThread::Get()->HandleDeviceReset("BeginFrame", /* aNotify */ true);
-    }
+    CheckGraphicsResetStatus("BeginFrame", /* aForce */ true);
     mCompositor->GetWidget()->PostRender(&widgetContext);
     return RenderedFrameId();
   }
 
   auto size = mCompositor->GetBufferSize();
-
-  if (mSoftwareContext) {
-    wr_swgl_make_current(mSoftwareContext);
-    wr_swgl_init_default_framebuffer(mSoftwareContext, size.width, size.height);
-  }
+  auto bufferAge = mCompositor->GetBufferAge();
 
   wr_renderer_update(mRenderer);
 
@@ -152,8 +183,9 @@ RenderedFrameId RendererOGL::UpdateAndRender(
   }
 
   nsTArray<DeviceIntRect> dirtyRects;
-  if (!wr_renderer_render(mRenderer, size.width, size.height, aOutStats,
-                          &dirtyRects)) {
+  if (!wr_renderer_render(mRenderer, size.width, size.height, bufferAge,
+                          aOutStats, &dirtyRects)) {
+    mCompositor->CancelFrame();
     RenderThread::Get()->HandleWebRenderError(WebRenderError::RENDER);
     mCompositor->GetWidget()->PostRender(&widgetContext);
     return RenderedFrameId();
@@ -163,15 +195,20 @@ RenderedFrameId RendererOGL::UpdateAndRender(
     MOZ_ASSERT(aReadbackSize.isSome());
     MOZ_ASSERT(aReadbackFormat.isSome());
     if (!mCompositor->MaybeReadback(aReadbackSize.ref(), aReadbackFormat.ref(),
-                                    aReadbackBuffer.ref())) {
+                                    aReadbackBuffer.ref(), aNeedsYFlip)) {
       wr_renderer_readback(mRenderer, aReadbackSize.ref().width,
                            aReadbackSize.ref().height, aReadbackFormat.ref(),
                            &aReadbackBuffer.ref()[0],
                            aReadbackBuffer.ref().length());
+      if (aNeedsYFlip) {
+        *aNeedsYFlip = !mCompositor->SurfaceOriginIsTopLeft();
+      }
     }
   }
 
-  mScreenshotGrabber.MaybeGrabScreenshot(this, size.ToUnknownSize());
+  if (!mCompositor->MaybeGrabScreenshot(size.ToUnknownSize())) {
+    mScreenshotGrabber.MaybeGrabScreenshot(this, size.ToUnknownSize());
+  }
 
   RenderedFrameId frameId = mCompositor->EndFrame(dirtyRects);
 
@@ -187,7 +224,9 @@ RenderedFrameId RendererOGL::UpdateAndRender(
   mFrameStartTime = TimeStamp();
 #endif
 
-  mScreenshotGrabber.MaybeProcessQueue(this);
+  if (!mCompositor->MaybeProcessScreenshotQueue()) {
+    mScreenshotGrabber.MaybeProcessQueue(this);
+  }
 
   // TODO: Flush pending actions such as texture deletions/unlocks and
   //       textureHosts recycling.
@@ -200,7 +239,7 @@ bool RendererOGL::EnsureAsyncScreenshot() {
     return true;
   }
   if (!mDisableNativeCompositor) {
-    layers::CompositorThreadHolder::Loop()->PostTask(
+    layers::CompositorThread()->Dispatch(
         NewRunnableFunction("DoWebRenderDisableNativeCompositorRunnable",
                             &DoWebRenderDisableNativeCompositor, mBridge));
 
@@ -210,28 +249,23 @@ bool RendererOGL::EnsureAsyncScreenshot() {
   return false;
 }
 
-void RendererOGL::CheckGraphicsResetStatus() {
-  if (!mCompositor || !mCompositor->gl()) {
-    return;
-  }
-
-  gl::GLContext* gl = mCompositor->gl();
-  if (gl->IsSupported(gl::GLFeature::robustness)) {
-    GLenum resetStatus = gl->fGetGraphicsResetStatus();
-    if (resetStatus == LOCAL_GL_PURGED_CONTEXT_RESET_NV) {
-      layers::CompositorThreadHolder::Loop()->PostTask(
-          NewRunnableFunction("DoNotifyWebRenderContextPurgeRunnable",
-                              &DoNotifyWebRenderContextPurge, mBridge));
+void RendererOGL::CheckGraphicsResetStatus(const char* aCaller, bool aForce) {
+  if (mCompositor) {
+    auto reason = mCompositor->IsContextLost(aForce);
+    if (reason != LOCAL_GL_NO_ERROR) {
+      RenderThread::Get()->HandleDeviceReset(aCaller, mBridge, reason);
     }
   }
 }
 
 void RendererOGL::WaitForGPU() {
   if (!mCompositor->WaitForGPU()) {
-    if (mCompositor->IsContextLost()) {
-      RenderThread::Get()->HandleDeviceReset("WaitForGPU", /* aNotify */ true);
-    }
+    CheckGraphicsResetStatus("WaitForGPU", /* aForce */ true);
   }
+}
+
+ipc::FileDescriptor RendererOGL::GetAndResetReleaseFence() {
+  return mCompositor->GetAndResetReleaseFence();
 }
 
 RenderedFrameId RendererOGL::GetLastCompletedFrameId() {
@@ -252,6 +286,8 @@ layers::SyncObjectHost* RendererOGL::GetSyncObject() const {
 
 gl::GLContext* RendererOGL::gl() const { return mCompositor->gl(); }
 
+void* RendererOGL::swgl() const { return mCompositor->swgl(); }
+
 void RendererOGL::SetFrameStartTime(const TimeStamp& aTime) {
   if (mFrameStartTime) {
     // frame start time is already set. This could happen when multiple
@@ -259,6 +295,103 @@ void RendererOGL::SetFrameStartTime(const TimeStamp& aTime) {
     return;
   }
   mFrameStartTime = aTime;
+}
+
+void RendererOGL::BeginRecording(const TimeStamp& aRecordingStart,
+                                 wr::PipelineId aRootPipelineId) {
+  MOZ_ASSERT(!mCompositionRecorder);
+
+  mRootPipelineId = aRootPipelineId;
+  mCompositionRecorder =
+      MakeUnique<layers::CompositionRecorder>(aRecordingStart);
+}
+
+void RendererOGL::MaybeRecordFrame(const WebRenderPipelineInfo* aPipelineInfo) {
+  if (!mCompositionRecorder || !EnsureAsyncScreenshot()) {
+    return;
+  }
+
+  if (!mRenderer || !aPipelineInfo || !DidPaintContent(aPipelineInfo)) {
+    return;
+  }
+
+  if (mCompositor->MaybeRecordFrame(*mCompositionRecorder)) {
+    return;
+  }
+
+  wr::RecordedFrameHandle handle{0};
+  gfx::IntSize size(0, 0);
+
+  if (wr_renderer_record_frame(mRenderer, wr::ImageFormat::BGRA8, &handle,
+                               &size.width, &size.height)) {
+    RefPtr<layers::RecordedFrame> frame =
+        new RendererRecordedFrame(TimeStamp::Now(), mRenderer, handle, size);
+
+    mCompositionRecorder->RecordFrame(frame);
+  }
+}
+
+bool RendererOGL::DidPaintContent(const WebRenderPipelineInfo* aFrameEpochs) {
+  const wr::WrPipelineInfo& info = aFrameEpochs->Raw();
+  bool didPaintContent = false;
+
+  // Check if a non-root pipeline has updated to a new epoch.
+  // We treat all non-root pipelines as "content" pipelines, even if they're
+  // not fed by content paints, such as videos (see bug 1665512).
+  for (const auto& epoch : info.epochs) {
+    const wr::PipelineId pipelineId = epoch.pipeline_id;
+
+    if (pipelineId == mRootPipelineId) {
+      continue;
+    }
+
+    const auto it = mContentPipelineEpochs.find(AsUint64(pipelineId));
+    if (it == mContentPipelineEpochs.end() || it->second != epoch.epoch) {
+      // This pipeline has updated since last render or has newly rendered.
+      didPaintContent = true;
+      mContentPipelineEpochs[AsUint64(pipelineId)] = epoch.epoch;
+    }
+  }
+
+  for (const auto& removedPipeline : info.removed_pipelines) {
+    const wr::PipelineId pipelineId = removedPipeline.pipeline_id;
+    if (pipelineId == mRootPipelineId) {
+      continue;
+    }
+    mContentPipelineEpochs.erase(AsUint64(pipelineId));
+  }
+
+  return didPaintContent;
+}
+void RendererOGL::WriteCollectedFrames() {
+  if (!mCompositionRecorder) {
+    MOZ_DIAGNOSTIC_ASSERT(
+        false,
+        "Attempted to write frames from a window that was not recording.");
+    return;
+  }
+
+  mCompositionRecorder->WriteCollectedFrames();
+
+  wr_renderer_release_composition_recorder_structures(mRenderer);
+
+  mCompositionRecorder = nullptr;
+}
+
+Maybe<layers::CollectedFrames> RendererOGL::GetCollectedFrames() {
+  if (!mCompositionRecorder) {
+    MOZ_DIAGNOSTIC_ASSERT(
+        false, "Attempted to get frames from a window that was not recording.");
+    return Nothing();
+  }
+
+  layers::CollectedFrames frames = mCompositionRecorder->GetCollectedFrames();
+
+  wr_renderer_release_composition_recorder_structures(mRenderer);
+
+  mCompositionRecorder = nullptr;
+
+  return Some(std::move(frames));
 }
 
 RefPtr<WebRenderPipelineInfo> RendererOGL::FlushPipelineInfo() {
@@ -283,6 +416,11 @@ void RendererOGL::AccumulateMemoryReport(MemoryReport* aReport) {
                             BytesPerPixel(gfx::SurfaceFormat::B8G8R8A8) *
                             (mCompositor->UseTripleBuffering() ? 3 : 2);
   aReport->swap_chain += swapChainSize;
+}
+
+void RendererOGL::SetProfilerUI(const nsCString& aUI) {
+  wr_renderer_set_profiler_ui(GetRenderer(), (const uint8_t*)aUI.get(),
+                              aUI.Length());
 }
 
 }  // namespace wr

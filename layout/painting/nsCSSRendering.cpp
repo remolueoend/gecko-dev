@@ -20,6 +20,7 @@
 #include "mozilla/HashFunctions.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/SVGImageContext.h"
 #include "gfxFont.h"
 #include "ScaledFontBase.h"
 #include "skia/include/core/SkTextBlob.h"
@@ -48,8 +49,6 @@
 #include "nsCSSFrameConstructor.h"
 #include "nsCSSProps.h"
 #include "nsContentUtils.h"
-#include "SVGObserverUtils.h"
-#include "nsSVGIntegrationUtils.h"
 #include "gfxDrawable.h"
 #include "GeckoProfiler.h"
 #include "nsCSSRenderingBorders.h"
@@ -62,7 +61,6 @@
 #include "nsInlineFrame.h"
 #include "nsRubyTextContainerFrame.h"
 #include <algorithm>
-#include "SVGImageContext.h"
 #include "TextDrawTarget.h"
 
 using namespace mozilla;
@@ -303,7 +301,7 @@ struct InlineBackgroundData {
 
   nsIFrame* GetPrevContinuation(nsIFrame* aFrame) {
     nsIFrame* prevCont = aFrame->GetPrevContinuation();
-    if (!prevCont && (aFrame->GetStateBits() & NS_FRAME_PART_OF_IBSPLIT)) {
+    if (!prevCont && aFrame->HasAnyStateBits(NS_FRAME_PART_OF_IBSPLIT)) {
       nsIFrame* block = aFrame->GetProperty(nsIFrame::IBSplitPrevSibling());
       if (block) {
         // The {ib} properties are only stored on first continuations
@@ -318,7 +316,7 @@ struct InlineBackgroundData {
 
   nsIFrame* GetNextContinuation(nsIFrame* aFrame) {
     nsIFrame* nextCont = aFrame->GetNextContinuation();
-    if (!nextCont && (aFrame->GetStateBits() & NS_FRAME_PART_OF_IBSPLIT)) {
+    if (!nextCont && aFrame->HasAnyStateBits(NS_FRAME_PART_OF_IBSPLIT)) {
       // The {ib} properties are only stored on first continuations
       aFrame = aFrame->FirstContinuation();
       nsIFrame* block = aFrame->GetProperty(nsIFrame::IBSplitSibling());
@@ -526,22 +524,23 @@ static nsRect JoinBoxesForBlockAxisSlice(nsIFrame* aFrame,
                                          const nsRect& aBorderArea) {
   // Inflate the block-axis size as if our continuations were laid out
   // adjacent in that axis.  Note that we don't touch the inline size.
-  nsRect borderArea = aBorderArea;
+  const auto wm = aFrame->GetWritingMode();
+  const nsSize dummyContainerSize;
+  LogicalRect borderArea(wm, aBorderArea, dummyContainerSize);
   nscoord bSize = 0;
-  auto wm = aFrame->GetWritingMode();
   nsIFrame* f = aFrame->GetNextContinuation();
   for (; f; f = f->GetNextContinuation()) {
     bSize += f->BSize(wm);
   }
-  (wm.IsVertical() ? borderArea.width : borderArea.height) += bSize;
+  borderArea.BSize(wm) += bSize;
   bSize = 0;
   f = aFrame->GetPrevContinuation();
   for (; f; f = f->GetPrevContinuation()) {
     bSize += f->BSize(wm);
   }
-  (wm.IsVertical() ? borderArea.x : borderArea.y) -= bSize;
-  (wm.IsVertical() ? borderArea.width : borderArea.height) += bSize;
-  return borderArea;
+  borderArea.BStart(wm) -= bSize;
+  borderArea.BSize(wm) += bSize;
+  return borderArea.GetPhysicalRect(wm, dummyContainerSize);
 }
 
 /**
@@ -779,7 +778,7 @@ static nsCSSBorderRenderer ConstructBorderRenderer(
                "Should use aBorderArea for box-decoration-break:clone");
     MOZ_ASSERT(
         aForFrame->GetSkipSides().IsEmpty() ||
-            IS_TRUE_OVERFLOW_CONTAINER(aForFrame) ||
+            aForFrame->IsTrueOverflowContainer() ||
             aForFrame->IsColumnSetFrame(),  // a little broader than column-rule
         "Should not skip sides for box-decoration-break:clone except "
         "::first-letter/line continuations or other frame types that "
@@ -836,11 +835,10 @@ ImgDrawResult nsCSSRendering::PaintBorderWithStyleBorder(
   // Check to see if we have an appearance defined.  If so, we let the theme
   // renderer draw the border.  DO not get the data from aForFrame, since the
   // passed in ComputedStyle may be different!  Always use |aStyle|!
-  const nsStyleDisplay* displayData = aStyle->StyleDisplay();
-  if (displayData->HasAppearance()) {
+  StyleAppearance appearance = aStyle->StyleDisplay()->EffectiveAppearance();
+  if (appearance != StyleAppearance::None) {
     nsITheme* theme = aPresContext->Theme();
-    if (theme->ThemeSupportsWidget(aPresContext, aForFrame,
-                                   displayData->mAppearance)) {
+    if (theme->ThemeSupportsWidget(aPresContext, aForFrame, appearance)) {
       return ImgDrawResult::SUCCESS;  // Let the theme handle it.
     }
   }
@@ -924,11 +922,10 @@ nsCSSRendering::CreateNullBorderRendererWithStyleBorder(
     const nsRect& aDirtyRect, const nsRect& aBorderArea,
     const nsStyleBorder& aStyleBorder, ComputedStyle* aStyle,
     bool* aOutBorderIsEmpty, Sides aSkipSides) {
-  const nsStyleDisplay* displayData = aStyle->StyleDisplay();
-  if (displayData->HasAppearance()) {
+  StyleAppearance appearance = aStyle->StyleDisplay()->EffectiveAppearance();
+  if (appearance != StyleAppearance::None) {
     nsITheme* theme = aPresContext->Theme();
-    if (theme->ThemeSupportsWidget(aPresContext, aForFrame,
-                                   displayData->mAppearance)) {
+    if (theme->ThemeSupportsWidget(aPresContext, aForFrame, appearance)) {
       return Nothing();
     }
   }
@@ -1202,10 +1199,10 @@ nsIFrame* nsCSSRendering::FindNonTransparentBackgroundFrame(
 // We need to treat the viewport as canvas because, even though
 // it does not actually paint a background, we need to get the right
 // background style so we correctly detect transparent documents.
-bool nsCSSRendering::IsCanvasFrame(nsIFrame* aFrame) {
+bool nsCSSRendering::IsCanvasFrame(const nsIFrame* aFrame) {
   LayoutFrameType frameType = aFrame->Type();
   return frameType == LayoutFrameType::Canvas ||
-         frameType == LayoutFrameType::Root ||
+         frameType == LayoutFrameType::XULRoot ||
          frameType == LayoutFrameType::PageContent ||
          frameType == LayoutFrameType::Viewport;
 }
@@ -1281,7 +1278,7 @@ ComputedStyle* nsCSSRendering::FindRootFrameBackground(nsIFrame* aForFrame) {
   return FindBackgroundStyleFrame(aForFrame)->Style();
 }
 
-inline bool FindElementBackground(nsIFrame* aForFrame,
+inline bool FindElementBackground(const nsIFrame* aForFrame,
                                   nsIFrame* aRootElementFrame) {
   if (aForFrame == aRootElementFrame) {
     // We must have propagated our background to the viewport or canvas. Abort.
@@ -1319,7 +1316,7 @@ inline bool FindElementBackground(nsIFrame* aForFrame,
   return !htmlBG->IsTransparent(aRootElementFrame);
 }
 
-bool nsCSSRendering::FindBackgroundFrame(nsIFrame* aForFrame,
+bool nsCSSRendering::FindBackgroundFrame(const nsIFrame* aForFrame,
                                          nsIFrame** aBackgroundFrame) {
   nsIFrame* rootElementFrame =
       aForFrame->PresShell()->FrameConstructor()->GetRootElementStyleFrame();
@@ -1328,11 +1325,11 @@ bool nsCSSRendering::FindBackgroundFrame(nsIFrame* aForFrame,
     return true;
   }
 
-  *aBackgroundFrame = aForFrame;
+  *aBackgroundFrame = const_cast<nsIFrame*>(aForFrame);
   return FindElementBackground(aForFrame, rootElementFrame);
 }
 
-bool nsCSSRendering::FindBackground(nsIFrame* aForFrame,
+bool nsCSSRendering::FindBackground(const nsIFrame* aForFrame,
                                     ComputedStyle** aBackgroundSC) {
   nsIFrame* backgroundFrame = nullptr;
   if (FindBackgroundFrame(aForFrame, &backgroundFrame)) {
@@ -1379,10 +1376,9 @@ gfx::sRGBColor nsCSSRendering::GetShadowColor(const StyleSimpleShadow& aShadow,
 
 nsRect nsCSSRendering::GetShadowRect(const nsRect& aFrameArea,
                                      bool aNativeTheme, nsIFrame* aForFrame) {
-  nsRect frameRect = aNativeTheme
-                         ? aForFrame->GetVisualOverflowRectRelativeToSelf() +
-                               aFrameArea.TopLeft()
-                         : aFrameArea;
+  nsRect frameRect = aNativeTheme ? aForFrame->InkOverflowRectRelativeToSelf() +
+                                        aFrameArea.TopLeft()
+                                  : aFrameArea;
   Sides skipSides = aForFrame->GetSkipSides();
   frameRect = BoxDecorationRectForBorder(aForFrame, frameRect, skipSides);
 
@@ -1530,9 +1526,9 @@ void nsCSSRendering::PaintBoxShadowOuter(nsPresContext* aPresContext,
       nsRect nativeRect = aDirtyRect;
       nativeRect.MoveBy(-shadowOffset);
       nativeRect.IntersectRect(frameRect, nativeRect);
-      aPresContext->Theme()->DrawWidgetBackground(shadowContext, aForFrame,
-                                                  styleDisplay->mAppearance,
-                                                  aFrameArea, nativeRect);
+      aPresContext->Theme()->DrawWidgetBackground(
+          shadowContext, aForFrame, styleDisplay->EffectiveAppearance(),
+          aFrameArea, nativeRect);
 
       blurringArea.DoPaint();
       aRenderingContext.Restore();
@@ -1873,11 +1869,10 @@ bool nsCSSRendering::CanBuildWebRenderDisplayItemsForStyleImageLayer(
              (uint32_t)aLayer < aBackgroundStyle->mImage.mLayers.Length());
 
   // We cannot draw native themed backgrounds
-  const nsStyleDisplay* displayData = aFrame->StyleDisplay();
-  if (displayData->HasAppearance()) {
+  StyleAppearance appearance = aFrame->StyleDisplay()->EffectiveAppearance();
+  if (appearance != StyleAppearance::None) {
     nsITheme* theme = aPresCtx.Theme();
-    if (theme->ThemeSupportsWidget(&aPresCtx, aFrame,
-                                   displayData->mAppearance)) {
+    if (theme->ThemeSupportsWidget(&aPresCtx, aFrame, appearance)) {
       return false;
     }
   }
@@ -2019,7 +2014,7 @@ static bool IsHTMLStyleGeometryBox(StyleGeometryBox aBox) {
 
 static StyleGeometryBox ComputeBoxValue(nsIFrame* aForFrame,
                                         StyleGeometryBox aBox) {
-  if (!(aForFrame->GetStateBits() & NS_FRAME_SVG_LAYOUT)) {
+  if (!aForFrame->HasAnyStateBits(NS_FRAME_SVG_LAYOUT)) {
     // For elements with associated CSS layout box, the values fill-box,
     // stroke-box and view-box compute to the initial value of mask-clip.
     if (IsSVGStyleGeometryBox(aBox)) {
@@ -2336,7 +2331,7 @@ static Maybe<nscolor> CalcScrollbarColor(nsIFrame* aFrame,
 }
 
 static nscolor GetBackgroundColor(nsIFrame* aFrame, ComputedStyle* aStyle) {
-  switch (aStyle->StyleDisplay()->mAppearance) {
+  switch (aStyle->StyleDisplay()->EffectiveAppearance()) {
     case StyleAppearance::ScrollbarthumbVertical:
     case StyleAppearance::ScrollbarthumbHorizontal: {
       if (Maybe<nscolor> overrideColor =
@@ -2365,16 +2360,9 @@ nscolor nsCSSRendering::DetermineBackgroundColor(nsPresContext* aPresContext,
                                                  nsIFrame* aFrame,
                                                  bool& aDrawBackgroundImage,
                                                  bool& aDrawBackgroundColor) {
-  aDrawBackgroundImage = true;
-  aDrawBackgroundColor = true;
-
-  const nsStyleVisibility* visibility = aStyle->StyleVisibility();
-
-  if (visibility->mColorAdjust != StyleColorAdjust::Exact &&
-      aFrame->HonorPrintBackgroundSettings()) {
-    aDrawBackgroundImage = aPresContext->GetBackgroundImageDraw();
-    aDrawBackgroundColor = aPresContext->GetBackgroundColorDraw();
-  }
+  auto shouldPaint = aFrame->ComputeShouldPaintBackground();
+  aDrawBackgroundImage = shouldPaint.mImage;
+  aDrawBackgroundColor = shouldPaint.mColor;
 
   const nsStyleBackground* bg = aStyle->StyleBackground();
   nscolor bgColor;
@@ -2447,18 +2435,18 @@ ImgDrawResult nsCSSRendering::PaintStyleImageLayerWithSC(
   // Check to see if we have an appearance defined.  If so, we let the theme
   // renderer draw the background and bail out.
   // XXXzw this ignores aParams.bgClipRect.
-  const nsStyleDisplay* displayData = aParams.frame->StyleDisplay();
-  if (displayData->HasAppearance()) {
+  StyleAppearance appearance =
+      aParams.frame->StyleDisplay()->EffectiveAppearance();
+  if (appearance != StyleAppearance::None) {
     nsITheme* theme = aParams.presCtx.Theme();
     if (theme->ThemeSupportsWidget(&aParams.presCtx, aParams.frame,
-                                   displayData->mAppearance)) {
+                                   appearance)) {
       nsRect drawing(aParams.borderArea);
       theme->GetWidgetOverflow(aParams.presCtx.DeviceContext(), aParams.frame,
-                               displayData->mAppearance, &drawing);
+                               appearance, &drawing);
       drawing.IntersectRect(drawing, aParams.dirtyRect);
-      theme->DrawWidgetBackground(&aRenderingCtx, aParams.frame,
-                                  displayData->mAppearance, aParams.borderArea,
-                                  drawing);
+      theme->DrawWidgetBackground(&aRenderingCtx, aParams.frame, appearance,
+                                  aParams.borderArea, drawing);
       return ImgDrawResult::SUCCESS;
     }
   }
@@ -2471,23 +2459,28 @@ ImgDrawResult nsCSSRendering::PaintStyleImageLayerWithSC(
   // nsDisplayCanvasBackground directly.) Either way we don't need to
   // paint the background color here.
   bool isCanvasFrame = IsCanvasFrame(aParams.frame);
+  const bool paintMask = aParams.paintFlags & PAINTBG_MASK_IMAGE;
 
   // Determine whether we are drawing background images and/or
   // background colors.
-  bool drawBackgroundImage;
-  bool drawBackgroundColor;
+  bool drawBackgroundImage = true;
+  bool drawBackgroundColor = !paintMask;
+  nscolor bgColor = NS_RGBA(0, 0, 0, 0);
+  if (!paintMask) {
+    bgColor =
+        DetermineBackgroundColor(&aParams.presCtx, aBackgroundSC, aParams.frame,
+                                 drawBackgroundImage, drawBackgroundColor);
+  }
 
-  nscolor bgColor =
-      DetermineBackgroundColor(&aParams.presCtx, aBackgroundSC, aParams.frame,
-                               drawBackgroundImage, drawBackgroundColor);
+  // Masks shouldn't be suppressed for print.
+  MOZ_ASSERT_IF(paintMask, drawBackgroundImage);
 
-  bool paintMask = (aParams.paintFlags & PAINTBG_MASK_IMAGE);
   const nsStyleImageLayers& layers =
       paintMask ? aBackgroundSC->StyleSVGReset()->mMask
                 : aBackgroundSC->StyleBackground()->mImage;
   // If we're drawing a specific layer, we don't want to draw the
   // background color.
-  if ((drawBackgroundColor && aParams.layer >= 0) || paintMask) {
+  if (drawBackgroundColor && aParams.layer >= 0) {
     drawBackgroundColor = false;
   }
 
@@ -2757,7 +2750,8 @@ nsRect nsCSSRendering::ComputeImageLayerPositioningArea(
     // finished and this page only displays the continuations of
     // absolutely positioned content).
     if (geometryFrame) {
-      positionArea = geometryFrame->GetRect();
+      positionArea =
+          nsPlaceholderFrame::GetRealFrameFor(geometryFrame)->GetRect();
     }
   } else {
     positionArea = nsRect(nsPoint(0, 0), aBorderArea.Size());
@@ -3021,6 +3015,9 @@ nsBackgroundLayerState nsCSSRendering::PrepareImageLayer(
   }
   if (aFlags & nsCSSRendering::PAINTBG_TO_WINDOW) {
     irFlags |= nsImageRenderer::FLAG_PAINTING_TO_WINDOW;
+  }
+  if (aFlags & nsCSSRendering::PAINTBG_HIGH_QUALITY_SCALING) {
+    irFlags |= nsImageRenderer::FLAG_HIGH_QUALITY_SCALING;
   }
 
   nsBackgroundLayerState state(aForFrame, &aLayer.mImage, irFlags);
@@ -4868,7 +4865,7 @@ bool nsContextBoxBlur::InsetBoxBlur(
   // input data to the blur. This way, we don't have to scale the min
   // inset blur to the invert of the dest context, then rescale it back
   // when we draw to the destination surface.
-  gfx::Size scale = aDestinationCtx->CurrentMatrix().ScaleFactors(true);
+  gfx::Size scale = aDestinationCtx->CurrentMatrix().ScaleFactors();
   Matrix transform = aDestinationCtx->CurrentMatrix();
 
   // XXX: we could probably handle negative scales but for now it's easier just

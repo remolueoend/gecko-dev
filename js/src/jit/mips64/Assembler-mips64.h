@@ -22,8 +22,8 @@ static const uint32_t NumCallTempNonArgRegs =
     mozilla::ArrayLength(CallTempNonArgRegs);
 
 class ABIArgGenerator {
-  unsigned usedArgSlots_;
-  bool firstArgFloat;
+  unsigned regIndex_;
+  uint32_t stackOffset_;
   ABIArg current_;
 
  public:
@@ -31,13 +31,8 @@ class ABIArgGenerator {
   ABIArg next(MIRType argType);
   ABIArg& current() { return current_; }
 
-  uint32_t stackBytesConsumedSoFar() const {
-    if (usedArgSlots_ <= 8) {
-      return 0;
-    }
-
-    return (usedArgSlots_ - 8) * sizeof(int64_t);
-  }
+  uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
+  void increaseStackOffset(uint32_t bytes) { stackOffset_ += bytes; }
 };
 
 // These registers may be volatile or nonvolatile.
@@ -188,14 +183,10 @@ static constexpr uint32_t SimdMemoryAlignment = 16;
 static constexpr uint32_t WasmStackAlignment = SimdMemoryAlignment;
 static const uint32_t WasmTrapInstructionLength = 4;
 
-// Does this architecture support SIMD conversions between Uint32x4 and
-// Float32x4?
-static constexpr bool SupportsUint32x4FloatConversions = false;
-
-// Does this architecture support comparisons of unsigned integer vectors?
-static constexpr bool SupportsUint8x16Compares = false;
-static constexpr bool SupportsUint16x8Compares = false;
-static constexpr bool SupportsUint32x4Compares = false;
+// The offsets are dynamically asserted during
+// code generation in the prologue/epilogue.
+static constexpr uint32_t WasmCheckedCallEntryOffset = 0u;
+static constexpr uint32_t WasmCheckedTailEntryOffset = 16u;
 
 static constexpr Scale ScalePointer = TimesEight;
 
@@ -284,11 +275,6 @@ static inline bool GetTempRegForIntArg(uint32_t usedIntArgs,
   }
   *out = CallTempNonArgRegs[usedIntArgs];
   return true;
-}
-
-static inline uint32_t GetArgStackDisp(uint32_t usedArgSlots) {
-  MOZ_ASSERT(usedArgSlots >= NumIntArgRegs);
-  return (usedArgSlots - NumIntArgRegs) * sizeof(int64_t);
 }
 
 }  // namespace jit

@@ -8,13 +8,12 @@
 #define GFX_WEBRENDERUSERDATA_H
 
 #include <vector>
-#include "BasicLayers.h"  // for BasicLayerManager
-#include "mozilla/layers/StackingContextHelper.h"
 #include "mozilla/webrender/WebRenderAPI.h"
 #include "mozilla/layers/AnimationInfo.h"
 #include "mozilla/dom/RemoteBrowser.h"
 #include "mozilla/UniquePtr.h"
 #include "nsIFrame.h"
+#include "nsRefPtrHashtable.h"
 #include "ImageTypes.h"
 
 class nsDisplayItemGeometry;
@@ -33,12 +32,14 @@ class SourceSurface;
 }
 
 namespace layers {
+class BasicLayerManager;
 class CanvasLayer;
 class ImageClient;
 class ImageContainer;
 class WebRenderBridgeChild;
 class WebRenderCanvasData;
 class WebRenderCanvasRenderer;
+class WebRenderCanvasRendererAsync;
 class WebRenderImageData;
 class WebRenderFallbackData;
 class WebRenderLocalCanvasData;
@@ -157,9 +158,9 @@ class WebRenderImageData : public WebRenderUserData {
   void CreateAsyncImageWebRenderCommands(
       mozilla::wr::DisplayListBuilder& aBuilder, ImageContainer* aContainer,
       const StackingContextHelper& aSc, const LayoutDeviceRect& aBounds,
-      const LayoutDeviceRect& aSCBounds, const gfx::Matrix4x4& aSCTransform,
-      const gfx::MaybeIntSize& aScaleToSize, const wr::ImageRendering& aFilter,
-      const wr::MixBlendMode& aMixBlendMode, bool aIsBackfaceVisible);
+      const LayoutDeviceRect& aSCBounds, VideoInfo::Rotation aRotation,
+      const wr::ImageRendering& aFilter, const wr::MixBlendMode& aMixBlendMode,
+      bool aIsBackfaceVisible);
 
   void CreateImageClientIfNeeded();
 
@@ -272,7 +273,7 @@ class WebRenderCanvasData : public WebRenderUserData {
   void ClearImageContainer();
 
  protected:
-  UniquePtr<WebRenderCanvasRendererAsync> mCanvasRenderer;
+  RefPtr<WebRenderCanvasRendererAsync> mCanvasRenderer;
   RefPtr<ImageContainer> mContainer;
 };
 
@@ -288,12 +289,18 @@ class WebRenderLocalCanvasData : public WebRenderUserData {
   UserDataType GetType() override { return UserDataType::eLocalCanvas; }
   static UserDataType Type() { return UserDataType::eLocalCanvas; }
 
-  void Present();
+  void RequestFrameReadback();
+  void RefreshExternalImage();
+
+  // TODO: introduce a CanvasRenderer derivative to store here?
 
   WeakPtr<webgpu::WebGPUChild> mGpuBridge;
   uint64_t mGpuTextureId = 0;
   wr::ExternalImageId mExternalImageId = {0};
+  wr::ImageKey mImageKey = {};
+  wr::ImageDescriptor mDescriptor;
   gfx::SurfaceFormat mFormat = gfx::SurfaceFormat::UNKNOWN;
+  bool mDirty = false;
 };
 
 class WebRenderRemoteData : public WebRenderUserData {

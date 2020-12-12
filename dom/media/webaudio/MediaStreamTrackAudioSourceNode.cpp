@@ -13,8 +13,7 @@
 #include "nsContentUtils.h"
 #include "nsIScriptError.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(MediaStreamTrackAudioSourceNode)
 
@@ -53,9 +52,8 @@ MediaStreamTrackAudioSourceNode::Create(
       aAudioContext.Graph() != aOptions.mMediaStreamTrack->Graph()) {
     nsCOMPtr<nsPIDOMWindowInner> pWindow = aAudioContext.GetParentObject();
     Document* document = pWindow ? pWindow->GetExtantDoc() : nullptr;
-    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
-                                    NS_LITERAL_CSTRING("Web Audio"), document,
-                                    nsContentUtils::eDOM_PROPERTIES,
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Web Audio"_ns,
+                                    document, nsContentUtils::eDOM_PROPERTIES,
                                     "MediaStreamAudioSourceNodeDifferentRate");
     // This is not a spec-required exception, just a limitation of our
     // implementation.
@@ -166,9 +164,9 @@ void MediaStreamTrackAudioSourceNode::PrincipalChanged(
   fprintf(stderr, "NOW: %s", enabled ? "enabled" : "disabled");
 
   if (!enabled && doc) {
-    nsContentUtils::ReportToConsole(
-        nsIScriptError::warningFlag, NS_LITERAL_CSTRING("Web Audio"), doc,
-        nsContentUtils::eDOM_PROPERTIES, CrossOriginErrorString());
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag, "Web Audio"_ns,
+                                    doc, nsContentUtils::eDOM_PROPERTIES,
+                                    CrossOriginErrorString());
   }
 }
 
@@ -199,5 +197,4 @@ JSObject* MediaStreamTrackAudioSourceNode::WrapObject(
   return MediaStreamTrackAudioSourceNode_Binding::Wrap(aCx, this, aGivenProto);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

@@ -20,16 +20,9 @@ class NativeTemplateObject;
 class TemplateObject {
  protected:
   JSObject* obj_;
-  bool denseElementsAreCopyOnWrite_;
-  bool convertDoubleElements_;
 
  public:
-  explicit TemplateObject(JSObject* obj)
-      : obj_(obj),
-        denseElementsAreCopyOnWrite_(false),
-        convertDoubleElements_(false) {}
-  void setDenseElementsAreCopyOnWrite() { denseElementsAreCopyOnWrite_ = true; }
-  void setConvertDoubleElements() { convertDoubleElements_ = true; }
+  explicit TemplateObject(JSObject* obj) : obj_(obj) {}
 
   inline gc::AllocKind getAllocKind() const;
 
@@ -48,11 +41,6 @@ class TemplateObject {
   // because they're never exposed to arbitrary script.
   inline gc::Cell* group() const;
   inline gc::Cell* shape() const;
-
-  // Some TypedObjec methods that can be called off-thread.
-  inline uint32_t getInlineTypedObjectSize() const;
-  inline uint8_t* getInlineTypedObjectMem(
-      const JS::AutoRequireNoGC& nogc) const;
 };
 
 class NativeTemplateObject : public TemplateObject {
@@ -69,13 +57,8 @@ class NativeTemplateObject : public TemplateObject {
   inline uint32_t slotSpan() const;
   inline Value getSlot(uint32_t i) const;
 
-  // Reading ObjectElements fields is safe, except for the flags (we can set
-  // the convert-double-elements flag on the main thread for COW elements).
+  // Reading ObjectElements fields is safe, except for the flags.
   // isSharedMemory is an exception: it's debug-only and not called on arrays.
-  bool denseElementsAreCopyOnWrite() const {
-    return denseElementsAreCopyOnWrite_;
-  }
-  bool convertDoubleElements() const { return convertDoubleElements_; }
 #ifdef DEBUG
   inline bool isSharedMemory() const;
 #endif

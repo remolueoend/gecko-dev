@@ -81,6 +81,9 @@ describe("DiscoveryStreamFeed", () => {
           [ENDPOINTS_PREF_NAME]: DUMMY_ENDPOINT,
           "discoverystream.enabled": true,
           "feeds.section.topstories": true,
+          "feeds.system.topstories": true,
+          "discoverystream.spocs.personalized": true,
+          "discoverystream.recs.personalized": true,
         },
       },
     });
@@ -455,6 +458,7 @@ describe("DiscoveryStreamFeed", () => {
       assert.calledWith(feed.store.dispatch, {
         type: "DISCOVERY_STREAM_SPOCS_PLACEMENTS",
         data: { placements: [{ name: "first" }, { name: "second" }] },
+        meta: { isStartup: false },
       });
     });
     it("should fire update placements from loadLayout", async () => {
@@ -643,9 +647,11 @@ describe("DiscoveryStreamFeed", () => {
       assert.calledWith(feed.store.dispatch.firstCall, {
         type: at.DISCOVERY_STREAM_FEED_UPDATE,
         data: { feed: { data: { status: "failed" } }, url: "foo.com" },
+        meta: { isStartup: false },
       });
       assert.calledWith(feed.store.dispatch.secondCall, {
         type: at.DISCOVERY_STREAM_FEEDS_UPDATE,
+        meta: { isStartup: false },
       });
     });
 
@@ -674,21 +680,6 @@ describe("DiscoveryStreamFeed", () => {
       assert.calledOnce(global.Promise.all);
       const { args } = global.Promise.all.firstCall;
       assert.equal(args[0].length, 3);
-    });
-
-    it("should not record the request time if no fetch request was issued", async () => {
-      const fakeComponents = { components: [] };
-      const fakeLayout = [fakeComponents, { components: [{}] }, {}];
-      fakeDiscoveryStream = { DiscoveryStream: { layout: fakeLayout } };
-      fakeCache = {
-        feeds: { "foo.com": { lastUpdated: Date.now(), data: "data" } },
-      };
-      sandbox.stub(feed.cache, "get").returns(Promise.resolve(fakeCache));
-      feed.componentFeedRequestTime = undefined;
-
-      await feed.loadComponentFeeds(feed.store.dispatch);
-
-      assert.isUndefined(feed.componentFeedRequestTime);
     });
   });
 
@@ -748,6 +739,49 @@ describe("DiscoveryStreamFeed", () => {
       const feedResp = await feed.getComponentFeed("foo.com");
 
       assert.deepEqual(feedResp, { data: { status: "failed" } });
+    });
+  });
+
+  describe("#personalizationVersionOverride", () => {
+    it("should dispatch setPref", async () => {
+      sandbox.spy(feed.store, "dispatch");
+      feed.store.getState = () => ({
+        Prefs: {
+          values: {
+            "discoverystream.personalization.version": 2,
+          },
+        },
+      });
+
+      feed.personalizationVersionOverride(false);
+
+      assert.calledWithMatch(feed.store.dispatch, {
+        data: {
+          name: "discoverystream.personalization.overrideVersion",
+          value: 1,
+        },
+        type: at.SET_PREF,
+      });
+    });
+    it("should dispatch CLEAR_PREF", async () => {
+      sandbox.spy(feed.store, "dispatch");
+      feed.store.getState = () => ({
+        Prefs: {
+          values: {
+            "discoverystream.personalization.version": 2,
+            "discoverystream.personalization.overrideVersion": 1,
+          },
+        },
+      });
+
+      feed.personalizationVersionOverride(true);
+
+      assert.calledWithMatch(feed.store.dispatch, {
+        data: {
+          name: "discoverystream.personalization.overrideVersion",
+        },
+        type: at.CLEAR_PREF,
+      });
     });
   });
 
@@ -841,6 +875,8 @@ describe("DiscoveryStreamFeed", () => {
           spocs: {
             context: "",
             title: "",
+            sponsor: "",
+            sponsored_by_override: undefined,
             items: [{ id: "data", min_score: 0, score: 1 }],
           },
         },
@@ -866,6 +902,18 @@ describe("DiscoveryStreamFeed", () => {
         { id: "data", min_score: 0, score: 1 }
       );
     });
+    it("should call personalizationVersionOverride with feature_flags", async () => {
+      sandbox.stub(feed.cache, "get").returns(Promise.resolve());
+      sandbox.stub(feed, "personalizationVersionOverride").returns();
+      sandbox
+        .stub(feed, "fetchFromEndpoint")
+        .resolves({ settings: { feature_flags: {} }, spocs: [{ id: "data" }] });
+      sandbox.stub(feed.cache, "set").returns(Promise.resolve());
+
+      await feed.loadSpocs(feed.store.dispatch);
+
+      assert.calledOnce(feed.personalizationVersionOverride);
+    });
     it("should return expected data if normalizeSpocsItems returns no spoc data", async () => {
       sandbox.stub(feed.cache, "get").returns(Promise.resolve());
       sandbox
@@ -887,6 +935,8 @@ describe("DiscoveryStreamFeed", () => {
         placement1: {
           title: "",
           context: "",
+          sponsor: "",
+          sponsored_by_override: undefined,
           items: [{ id: "data", score: 1, min_score: 0 }],
         },
         placement2: {
@@ -902,6 +952,8 @@ describe("DiscoveryStreamFeed", () => {
         placement1: {
           title: "title",
           context: "context",
+          sponsor: "",
+          sponsored_by_override: undefined,
           items: [{ id: "data" }],
         },
       });
@@ -918,6 +970,8 @@ describe("DiscoveryStreamFeed", () => {
         placement1: {
           title: "title",
           context: "context",
+          sponsor: "",
+          sponsored_by_override: undefined,
           items: [{ id: "data", score: 1, min_score: 0 }],
         },
       });
@@ -929,6 +983,8 @@ describe("DiscoveryStreamFeed", () => {
       const spocs = {
         title: "title",
         context: "context",
+        sponsor: "sponsor",
+        sponsored_by_override: "override",
         items: [{ id: "id" }],
       };
       const result = feed.normalizeSpocsItems(spocs);
@@ -942,6 +998,8 @@ describe("DiscoveryStreamFeed", () => {
       assert.deepEqual(result, {
         title: "",
         context: "",
+        sponsor: "",
+        sponsored_by_override: undefined,
         items: [{ id: "id" }],
       });
     });
@@ -951,6 +1009,8 @@ describe("DiscoveryStreamFeed", () => {
       assert.deepEqual(result, {
         title: "",
         context: "",
+        sponsor: "",
+        sponsored_by_override: undefined,
         items: [{ id: "id" }],
       });
     });
@@ -1104,14 +1164,15 @@ describe("DiscoveryStreamFeed", () => {
     });
   });
 
-  describe("#transform", () => {
+  describe("#scoreItems", () => {
     it("should return initial data if spocs are empty", async () => {
-      const { data: result } = await feed.transform({ spocs: [] });
+      const { data: result } = await feed.scoreItems([]);
 
-      assert.equal(result.spocs.length, 0);
+      assert.equal(result.length, 0);
     });
+
     it("should sort based on item_score", async () => {
-      const { data: result } = await feed.transform([
+      const { data: result } = await feed.scoreItems([
         { id: 2, flight_id: 2, item_score: 0.8, min_score: 0.1 },
         { id: 3, flight_id: 3, item_score: 0.7, min_score: 0.1 },
         { id: 1, flight_id: 1, item_score: 0.9, min_score: 0.1 },
@@ -1123,8 +1184,57 @@ describe("DiscoveryStreamFeed", () => {
         { id: 3, flight_id: 3, item_score: 0.7, score: 0.7, min_score: 0.1 },
       ]);
     });
+
+    it("should sort based on priority", async () => {
+      const { data: result } = await feed.scoreItems([
+        { id: 6, flight_id: 6, priority: 2, item_score: 0.7, min_score: 0.1 },
+        { id: 2, flight_id: 3, priority: 1, item_score: 0.2, min_score: 0.1 },
+        { id: 4, flight_id: 4, item_score: 0.6, min_score: 0.1 },
+        { id: 5, flight_id: 5, priority: 2, item_score: 0.8, min_score: 0.1 },
+        { id: 3, flight_id: 3, item_score: 0.8, min_score: 0.1 },
+        { id: 1, flight_id: 1, priority: 1, item_score: 0.3, min_score: 0.1 },
+      ]);
+
+      assert.deepEqual(result, [
+        {
+          id: 1,
+          flight_id: 1,
+          priority: 1,
+          score: 0.3,
+          item_score: 0.3,
+          min_score: 0.1,
+        },
+        {
+          id: 2,
+          flight_id: 3,
+          priority: 1,
+          score: 0.2,
+          item_score: 0.2,
+          min_score: 0.1,
+        },
+        {
+          id: 5,
+          flight_id: 5,
+          priority: 2,
+          score: 0.8,
+          item_score: 0.8,
+          min_score: 0.1,
+        },
+        {
+          id: 6,
+          flight_id: 6,
+          priority: 2,
+          score: 0.7,
+          item_score: 0.7,
+          min_score: 0.1,
+        },
+        { id: 3, flight_id: 3, item_score: 0.8, score: 0.8, min_score: 0.1 },
+        { id: 4, flight_id: 4, item_score: 0.6, score: 0.6, min_score: 0.1 },
+      ]);
+    });
+
     it("should remove items with scores lower than min_score", async () => {
-      const { data: result, filtered } = await feed.transform([
+      const { data: result, filtered } = await feed.scoreItems([
         { id: 2, flight_id: 2, item_score: 0.8, min_score: 0.9 },
         { id: 3, flight_id: 3, item_score: 0.7, min_score: 0.7 },
         { id: 1, flight_id: 1, item_score: 0.9, min_score: 0.8 },
@@ -1135,71 +1245,32 @@ describe("DiscoveryStreamFeed", () => {
         { id: 3, flight_id: 3, item_score: 0.7, score: 0.7, min_score: 0.7 },
       ]);
 
-      assert.deepEqual(filtered.below_min_score, [
+      assert.deepEqual(filtered, [
         { id: 2, flight_id: 2, item_score: 0.8, min_score: 0.9, score: 0.8 },
       ]);
     });
+
     it("should add a score prop to spocs", async () => {
-      const { data: result } = await feed.transform([
+      const { data: result } = await feed.scoreItems([
         { flight_id: 1, item_score: 0.9, min_score: 0.1 },
       ]);
 
       assert.equal(result[0].score, 0.9);
     });
-    it("should filter out duplicate flights", async () => {
-      const { data: result, filtered } = await feed.transform([
-        { id: 1, flight_id: 2, item_score: 0.8, min_score: 0.1 },
-        { id: 2, flight_id: 3, item_score: 0.6, min_score: 0.1 },
-        { id: 3, flight_id: 1, item_score: 0.9, min_score: 0.1 },
-        { id: 4, flight_id: 3, item_score: 0.7, min_score: 0.1 },
-        { id: 5, flight_id: 1, item_score: 0.9, min_score: 0.1 },
+    it("should score items using item_score and min_score", async () => {
+      const { data: result, filtered } = await feed.scoreItems([
+        { item_score: 0.8, min_score: 0.1 },
+        { item_score: 0.5, min_score: 0.6 },
+        { item_score: 0.7, min_score: 0.1 },
+        { item_score: 0.9, min_score: 0.1 },
       ]);
-
       assert.deepEqual(result, [
-        { id: 3, flight_id: 1, item_score: 0.9, score: 0.9, min_score: 0.1 },
-        { id: 1, flight_id: 2, item_score: 0.8, score: 0.8, min_score: 0.1 },
-        { id: 4, flight_id: 3, item_score: 0.7, score: 0.7, min_score: 0.1 },
+        { item_score: 0.9, score: 0.9, min_score: 0.1 },
+        { item_score: 0.8, score: 0.8, min_score: 0.1 },
+        { item_score: 0.7, score: 0.7, min_score: 0.1 },
       ]);
-
-      assert.deepEqual(filtered.flight_duplicate, [
-        { id: 5, flight_id: 1, item_score: 0.9, min_score: 0.1, score: 0.9 },
-        { id: 2, flight_id: 3, item_score: 0.6, min_score: 0.1, score: 0.6 },
-      ]);
-    });
-    it("should filter out duplicate flight while using spocs_per_domain", async () => {
-      sandbox.stub(feed.store, "getState").returns({
-        DiscoveryStream: {
-          spocs: { spocs_per_domain: 2 },
-        },
-      });
-
-      const { data: result, filtered } = await feed.transform([
-        { id: 1, flight_id: 2, item_score: 0.8, min_score: 0.1 },
-        { id: 2, flight_id: 3, item_score: 0.6, min_score: 0.1 },
-        { id: 3, flight_id: 1, item_score: 0.6, min_score: 0.1 },
-        { id: 4, flight_id: 3, item_score: 0.7, min_score: 0.1 },
-        { id: 5, flight_id: 1, item_score: 0.9, min_score: 0.1 },
-        { id: 6, flight_id: 2, item_score: 0.6, min_score: 0.1 },
-        { id: 7, flight_id: 3, item_score: 0.7, min_score: 0.1 },
-        { id: 8, flight_id: 1, item_score: 0.8, min_score: 0.1 },
-        { id: 9, flight_id: 3, item_score: 0.7, min_score: 0.1 },
-        { id: 10, flight_id: 1, item_score: 0.8, min_score: 0.1 },
-      ]);
-
-      assert.deepEqual(result, [
-        { id: 5, flight_id: 1, item_score: 0.9, score: 0.9, min_score: 0.1 },
-        { id: 1, flight_id: 2, item_score: 0.8, score: 0.8, min_score: 0.1 },
-        { id: 8, flight_id: 1, item_score: 0.8, score: 0.8, min_score: 0.1 },
-        { id: 4, flight_id: 3, item_score: 0.7, score: 0.7, min_score: 0.1 },
-        { id: 7, flight_id: 3, item_score: 0.7, score: 0.7, min_score: 0.1 },
-        { id: 6, flight_id: 2, item_score: 0.6, score: 0.6, min_score: 0.1 },
-      ]);
-
-      assert.deepEqual(filtered.flight_duplicate, [
-        { id: 10, flight_id: 1, item_score: 0.8, min_score: 0.1, score: 0.8 },
-        { id: 9, flight_id: 3, item_score: 0.7, min_score: 0.1, score: 0.7 },
-        { id: 2, flight_id: 3, item_score: 0.6, min_score: 0.1, score: 0.6 },
-        { id: 3, flight_id: 1, item_score: 0.6, min_score: 0.1, score: 0.6 },
+      assert.deepEqual(filtered, [
+        { item_score: 0.5, min_score: 0.6, score: 0.5 },
       ]);
     });
   });
@@ -1521,20 +1592,6 @@ describe("DiscoveryStreamFeed", () => {
         "flight-2": [-1],
       });
     });
-    it("should use old spocs data strucutre", async () => {
-      const fakeSpocs = {
-        spocs: [
-          {
-            flight_id: "flight-2",
-          },
-        ],
-      };
-      sandbox.stub(feed, "cleanUpImpressionPref").returns();
-
-      feed.cleanUpFlightImpressionPref(fakeSpocs);
-
-      assert.calledOnce(feed.cleanUpImpressionPref);
-    });
   });
 
   describe("#recordTopRecImpressions", () => {
@@ -1683,7 +1740,6 @@ describe("DiscoveryStreamFeed", () => {
         DiscoveryStream: {
           spocs: {
             data,
-            spocs_per_domain: 2,
           },
         },
       });
@@ -1783,7 +1839,6 @@ describe("DiscoveryStreamFeed", () => {
           spocs: {
             data,
             placements: [{ name: "spocs" }, { name: "notSpocs" }],
-            spocs_per_domain: 1,
           },
         },
       });
@@ -1909,14 +1964,10 @@ describe("DiscoveryStreamFeed", () => {
       sandbox.stub(feed.cache, "set").returns(Promise.resolve());
       setPref(CONFIG_PREF_NAME, { enabled: true });
       sandbox.stub(feed, "loadLayout").returns(Promise.resolve());
-      sandbox.stub(feed, "reportCacheAge").resolves();
-      sandbox.spy(feed, "reportRequestTime");
 
       await feed.onAction({ type: at.INIT });
 
       assert.calledOnce(feed.loadLayout);
-      assert.calledOnce(feed.reportCacheAge);
-      assert.calledOnce(feed.reportRequestTime);
       assert.isTrue(feed.loaded);
     });
   });
@@ -2465,6 +2516,7 @@ describe("DiscoveryStreamFeed", () => {
           Prefs: {
             values: {
               "feeds.section.topstories": true,
+              "feeds.system.topstories": true,
             },
           },
         };
@@ -2630,6 +2682,12 @@ describe("DiscoveryStreamFeed", () => {
       sandbox.spy(feed.store, "dispatch");
       sandbox.stub(feed, "_sendSpocsFill").returns();
       const fakeDiscoveryStream = {
+        Prefs: {
+          values: {
+            "discoverystream.spocs.personalized": true,
+            "discoverystream.recs.personalized": false,
+          },
+        },
         DiscoveryStream: {
           spocs: {
             placements: [
@@ -2734,6 +2792,12 @@ describe("DiscoveryStreamFeed", () => {
   describe("#scoreContent", () => {
     it("should call scoreFeeds and scoreSpocs if loaded", async () => {
       const fakeDiscoveryStream = {
+        Prefs: {
+          values: {
+            "discoverystream.spocs.personalized": true,
+            "discoverystream.recs.personalized": true,
+          },
+        },
         DiscoveryStream: {
           feeds: { loaded: false },
           spocs: { loaded: false },
@@ -2764,79 +2828,6 @@ describe("DiscoveryStreamFeed", () => {
 
       assert.calledOnce(feed.scoreFeeds);
       assert.calledOnce(feed.scoreSpocs);
-    });
-  });
-
-  describe("#reportCacheAge", () => {
-    let cache;
-    const cacheAge = 30;
-    beforeEach(() => {
-      cache = {
-        layout: { lastUpdated: Date.now() - 10 * 1000 },
-        feeds: { "foo.com": { lastUpdated: Date.now() - cacheAge * 1000 } },
-        spocs: { lastUpdated: Date.now() - 20 * 1000 },
-      };
-      sandbox.stub(feed.cache, "get").resolves(cache);
-    });
-
-    it("should report the oldest lastUpdated date as the cache age", async () => {
-      sandbox.spy(feed.store, "dispatch");
-      feed.loaded = false;
-      await feed.reportCacheAge();
-
-      assert.calledOnce(feed.store.dispatch);
-
-      const [action] = feed.store.dispatch.firstCall.args;
-      assert.equal(action.type, at.TELEMETRY_PERFORMANCE_EVENT);
-      assert.equal(action.data.event, "DS_CACHE_AGE_IN_SEC");
-      assert.isAtLeast(action.data.value, cacheAge);
-      feed.loaded = true;
-    });
-  });
-
-  describe("#reportRequestTime", () => {
-    let cache;
-    const cacheAge = 30;
-    beforeEach(() => {
-      cache = {
-        layout: { lastUpdated: Date.now() - 10 * 1000 },
-        feeds: { "foo.com": { lastUpdated: Date.now() - cacheAge * 1000 } },
-        spocs: { lastUpdated: Date.now() - 20 * 1000 },
-      };
-      sandbox.stub(feed.cache, "get").resolves(cache);
-    });
-
-    it("should report all the request times", async () => {
-      sandbox.spy(feed.store, "dispatch");
-      feed.loaded = false;
-      feed.layoutRequestTime = 1000;
-      feed.spocsRequestTime = 2000;
-      feed.componentFeedRequestTime = 3000;
-      feed.totalRequestTime = 5000;
-      feed.reportRequestTime();
-
-      assert.equal(feed.store.dispatch.callCount, 4);
-
-      let [action] = feed.store.dispatch.getCall(0).args;
-      assert.equal(action.type, at.TELEMETRY_PERFORMANCE_EVENT);
-      assert.equal(action.data.event, "LAYOUT_REQUEST_TIME");
-      assert.equal(action.data.value, 1000);
-
-      [action] = feed.store.dispatch.getCall(1).args;
-      assert.equal(action.type, at.TELEMETRY_PERFORMANCE_EVENT);
-      assert.equal(action.data.event, "SPOCS_REQUEST_TIME");
-      assert.equal(action.data.value, 2000);
-
-      [action] = feed.store.dispatch.getCall(2).args;
-      assert.equal(action.type, at.TELEMETRY_PERFORMANCE_EVENT);
-      assert.equal(action.data.event, "COMPONENT_FEED_REQUEST_TIME");
-      assert.equal(action.data.value, 3000);
-
-      [action] = feed.store.dispatch.getCall(3).args;
-      assert.equal(action.type, at.TELEMETRY_PERFORMANCE_EVENT);
-      assert.equal(action.data.event, "DS_FEED_TOTAL_REQUEST_TIME");
-      assert.equal(action.data.value, 5000);
-      feed.loaded = true;
     });
   });
 
@@ -2916,17 +2907,6 @@ describe("DiscoveryStreamFeed", () => {
         { item_score: 0.5, min_score: 0.6, score: 0.5 },
       ]);
     });
-    it("should fire dispatchRelevanceScoreDuration if available", async () => {
-      feed.providerSwitcher.dispatchRelevanceScoreDuration = sandbox
-        .stub()
-        .returns();
-      feed._prefCache.config = {
-        personalized: true,
-      };
-      await feed.scoreItems([]);
-
-      assert.calledOnce(feed.providerSwitcher.dispatchRelevanceScoreDuration);
-    });
   });
   describe("#scoreItem", () => {
     it("should call calculateItemRelevanceScore with affinity provider", async () => {
@@ -2937,7 +2917,7 @@ describe("DiscoveryStreamFeed", () => {
       feed.providerSwitcher.calculateItemRelevanceScore = sandbox
         .stub()
         .returns();
-      await feed.scoreItem(item);
+      await feed.scoreItem(item, true);
       assert.calledOnce(feed.providerSwitcher.calculateItemRelevanceScore);
     });
     it("should use item_score score without affinity provider score", async () => {

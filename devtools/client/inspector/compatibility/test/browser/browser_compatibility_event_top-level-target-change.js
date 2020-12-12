@@ -12,7 +12,7 @@ const TEST_DATA_ISSUES = {
       border-block-color: lime;
     }
     div {
-      margin-inline-start: 5px;
+      font-variant-alternates: historical-forms;
     }
     </style>
     <body>
@@ -22,7 +22,7 @@ const TEST_DATA_ISSUES = {
   expectedIssuesOnSelected: [{ property: "border-block-color" }],
   expectedIssuesOnAll: [
     { property: "border-block-color" },
-    { property: "margin-inline-start" },
+    { property: "font-variant-alternates" },
   ],
 };
 
@@ -71,6 +71,6 @@ async function navigateTo(uri, tab, { store }) {
   const onSelectedNodeUpdated = waitForUpdateSelectedNodeAction(store);
   const onTopLevelTargetUpdated = waitForUpdateTopLevelTargetAction(store);
   const onLoaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser);
-  await BrowserTestUtils.loadURI(tab.linkedBrowser, uri);
+  BrowserTestUtils.loadURI(tab.linkedBrowser, uri);
   await Promise.all([onLoaded, onSelectedNodeUpdated, onTopLevelTargetUpdated]);
 }

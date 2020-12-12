@@ -20,14 +20,14 @@ CompositableForwarder* WebRenderCanvasRenderer::GetForwarder() {
   return mManager->WrBridge();
 }
 
-void WebRenderCanvasRenderer::Initialize(const CanvasInitializeData& aData) {
-  ShareableCanvasRenderer::Initialize(aData);
+WebRenderCanvasRendererAsync::~WebRenderCanvasRendererAsync() {
+  if (mPipelineId.isSome()) {
+    mManager->RemovePipelineIdForCompositable(mPipelineId.ref());
+    mPipelineId.reset();
+  }
 }
 
-WebRenderCanvasRendererAsync::~WebRenderCanvasRendererAsync() { Destroy(); }
-
-void WebRenderCanvasRendererAsync::Initialize(
-    const CanvasInitializeData& aData) {
+void WebRenderCanvasRendererAsync::Initialize(const CanvasRendererData& aData) {
   WebRenderCanvasRenderer::Initialize(aData);
 
   ClearCachedResources();
@@ -35,21 +35,12 @@ void WebRenderCanvasRendererAsync::Initialize(
 
 bool WebRenderCanvasRendererAsync::CreateCompositable() {
   if (!mCanvasClient) {
-    TextureFlags flags = TextureFlags::DEFAULT;
-    if (mOriginPos == gl::OriginPos::BottomLeft) {
-      flags |= TextureFlags::ORIGIN_BOTTOM_LEFT;
+    auto compositableFlags = TextureFlags::NO_FLAGS;
+    if (!mData.mIsAlphaPremult) {
+      // WR needs this flag marked on the compositable, not just the texture.
+      compositableFlags |= TextureFlags::NON_PREMULTIPLIED;
     }
-
-    if (!mIsAlphaPremultiplied) {
-      flags |= TextureFlags::NON_PREMULTIPLIED;
-    }
-
-    mCanvasClient = CanvasClient::CreateCanvasClient(GetCanvasClientType(),
-                                                     GetForwarder(), flags);
-    if (!mCanvasClient) {
-      return false;
-    }
-
+    mCanvasClient = new CanvasClient(GetForwarder(), compositableFlags);
     mCanvasClient->Connect();
   }
 
@@ -71,17 +62,10 @@ void WebRenderCanvasRendererAsync::ClearCachedResources() {
   }
 }
 
-void WebRenderCanvasRendererAsync::Destroy() {
-  if (mPipelineId.isSome()) {
-    mManager->RemovePipelineIdForCompositable(mPipelineId.ref());
-    mPipelineId.reset();
-  }
-}
-
 void WebRenderCanvasRendererAsync::
     UpdateCompositableClientForEmptyTransaction() {
   bool wasDirty = IsDirty();
-  UpdateCompositableClient(mManager->GetRenderRoot());
+  UpdateCompositableClient();
   if (wasDirty && mPipelineId.isSome()) {
     // Notify an update of async image pipeline during empty transaction.
     // During non empty transaction, WebRenderBridgeParent receives

@@ -6,6 +6,10 @@
 
 // Wrap in a block to prevent leaking to window scope.
 {
+  XPCOMUtils.defineLazyModuleGetters(this, {
+    SearchOneOffs: "resource:///modules/SearchOneOffs.jsm",
+  });
+
   /**
    * A richlistbox popup custom element for for a browser search autocomplete
    * widget.
@@ -173,8 +177,9 @@
 
       // Check for middle-click or modified clicks on the search bar
       if (popupForSearchBar) {
-        BrowserUsageTelemetry.recordSearchbarSelectedResultMethod(
+        BrowserSearchTelemetry.recordSearchSuggestionSelectionMethod(
           aEvent,
+          "searchbar",
           this.selectedIndex
         );
 

@@ -6,7 +6,8 @@ from __future__ import absolute_import, print_function
 
 import contextlib
 import os
-import urllib
+
+from six.moves.urllib.parse import quote
 
 from marionette_driver import By, errors, expected, Wait
 from marionette_driver.keys import Keys
@@ -14,39 +15,43 @@ from marionette_driver.marionette import Alert
 from marionette_harness import (
     MarionetteTestCase,
     run_if_manage_instance,
-    skip,
+    skip_if_framescript,
+    skip_unless_browser_pref,
     WindowManagerMixin,
 )
 
 here = os.path.abspath(os.path.dirname(__file__))
 
 
-BLACK_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' # noqa
-RED_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEX/TQBcNTh/AAAAAXRSTlPM0jRW/QAAAApJREFUeJxjYgAAAAYAAzY3fKgAAAAASUVORK5CYII=' # noqa
+BLACK_PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="  # noqa
+RED_PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAQMAAAAl21bKAAAAA1BMVEX/TQBcNTh/AAAAAXRSTlPM0jRW/QAAAApJREFUeJxjYgAAAAYAAzY3fKgAAAAASUVORK5CYII="  # noqa
 
 
 def inline(doc):
-    return "data:text/html;charset=utf-8,%s" % urllib.quote(doc)
+    return "data:text/html;charset=utf-8,%s" % quote(doc)
 
 
 def inline_image(data):
-    return 'data:image/png;base64,%s' % data
+    return "data:image/png;base64,%s" % data
 
 
 class BaseNavigationTestCase(WindowManagerMixin, MarionetteTestCase):
-
     def setUp(self):
         super(BaseNavigationTestCase, self).setUp()
 
-        file_path = os.path.join(here, 'data', 'test.html').replace("\\", "/")
+        file_path = os.path.join(here, "data", "test.html").replace("\\", "/")
 
         self.test_page_file_url = "file:///{}".format(file_path)
         self.test_page_frameset = self.marionette.absolute_url("frameset.html")
         self.test_page_insecure = self.fixtures.where_is("test.html", on="https")
         self.test_page_not_remote = "about:robots"
-        self.test_page_push_state = self.marionette.absolute_url("navigation_pushstate.html")
+        self.test_page_push_state = self.marionette.absolute_url(
+            "navigation_pushstate.html"
+        )
         self.test_page_remote = self.marionette.absolute_url("test.html")
-        self.test_page_slow_resource = self.marionette.absolute_url("slow_resource.html")
+        self.test_page_slow_resource = self.marionette.absolute_url(
+            "slow_resource.html"
+        )
 
         if self.marionette.session_capabilities["platformName"] == "mac":
             self.mod_key = Keys.META
@@ -58,11 +63,11 @@ class BaseNavigationTestCase(WindowManagerMixin, MarionetteTestCase):
         self.marionette.switch_to_window(self.new_tab)
         Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             lambda _: self.history_length == 1,
-            message="The newly opened tab doesn't have a browser history length of 1")
+            message="The newly opened tab doesn't have a browser history length of 1",
+        )
 
     def tearDown(self):
         self.marionette.timeout.reset()
-        self.marionette.switch_to_parent_frame()
 
         self.close_all_tabs()
 
@@ -76,7 +81,8 @@ class BaseNavigationTestCase(WindowManagerMixin, MarionetteTestCase):
     def is_remote_tab(self):
         with self.marionette.using_context("chrome"):
             # TODO: DO NOT USE MOST RECENT WINDOW BUT CURRENT ONE
-            return self.marionette.execute_script("""
+            return self.marionette.execute_script(
+                """
               Components.utils.import("resource://gre/modules/AppConstants.jsm");
 
               let win = null;
@@ -104,16 +110,17 @@ class BaseNavigationTestCase(WindowManagerMixin, MarionetteTestCase):
               }
 
               return tabBrowser.isRemoteBrowser;
-            """)
+            """
+            )
 
     @property
     def ready_state(self):
-        return self.marionette.execute_script("return window.document.readyState;",
-                                              sandbox=None)
+        return self.marionette.execute_script(
+            "return window.document.readyState;", sandbox=None
+        )
 
 
 class TestNavigate(BaseNavigationTestCase):
-
     def test_set_location_through_execute_script(self):
         # To avoid unexpected remoteness changes and a hang in any non-navigation
         # command (bug 1519354) when navigating via the location bar, already
@@ -122,21 +129,33 @@ class TestNavigate(BaseNavigationTestCase):
 
         self.marionette.execute_script(
             "window.location.href = arguments[0];",
-            script_args=(self.test_page_remote,), sandbox=None)
+            script_args=(self.test_page_remote,),
+            sandbox=None,
+        )
 
         Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             expected.element_present(*(By.ID, "testh1")),
-            message="Target element 'testh1' has not been found")
+            message="Target element 'testh1' has not been found",
+        )
 
         self.assertEqual(self.test_page_remote, self.marionette.get_url())
 
     def test_navigate_chrome_unsupported_error(self):
         with self.marionette.using_context("chrome"):
-            self.assertRaises(errors.UnsupportedOperationException,
-                              self.marionette.navigate, "about:blank")
-            self.assertRaises(errors.UnsupportedOperationException, self.marionette.go_back)
-            self.assertRaises(errors.UnsupportedOperationException, self.marionette.go_forward)
-            self.assertRaises(errors.UnsupportedOperationException, self.marionette.refresh)
+            self.assertRaises(
+                errors.UnsupportedOperationException,
+                self.marionette.navigate,
+                "about:blank",
+            )
+            self.assertRaises(
+                errors.UnsupportedOperationException, self.marionette.go_back
+            )
+            self.assertRaises(
+                errors.UnsupportedOperationException, self.marionette.go_forward
+            )
+            self.assertRaises(
+                errors.UnsupportedOperationException, self.marionette.refresh
+            )
 
     def test_get_current_url_returns_top_level_browsing_context_url(self):
         page_iframe = self.marionette.absolute_url("test_iframe.html")
@@ -157,8 +176,12 @@ class TestNavigate(BaseNavigationTestCase):
         self.marionette.navigate(self.test_page_frameset)
         frame = self.marionette.find_element(By.NAME, "third")
         self.marionette.switch_to_frame(frame)
-        self.assertRaises(errors.NoSuchElementException,
-                          self.marionette.find_element, By.NAME, "third")
+        self.assertRaises(
+            errors.NoSuchElementException,
+            self.marionette.find_element,
+            By.NAME,
+            "third",
+        )
 
         self.marionette.navigate(self.test_page_frameset)
         self.marionette.find_element(By.NAME, "third")
@@ -190,9 +213,6 @@ class TestNavigate(BaseNavigationTestCase):
         with self.assertRaises(errors.TimeoutException):
             self.marionette.navigate(self.marionette.absolute_url("slow"))
 
-        # Even with the page not finished loading the browser is remote
-        self.assertTrue(self.is_remote_tab)
-
     def test_navigate_to_same_image_document_twice(self):
         self.marionette.navigate(self.fixtures.where_is("black.png"))
         self.assertIn("black.png", self.marionette.title)
@@ -204,8 +224,9 @@ class TestNavigate(BaseNavigationTestCase):
         self.marionette.navigate(doc)
         self.marionette.execute_script("window.visited = true", sandbox=None)
         self.marionette.navigate("{}#foo".format(doc))
-        self.assertTrue(self.marionette.execute_script(
-            "return window.visited", sandbox=None))
+        self.assertTrue(
+            self.marionette.execute_script("return window.visited", sandbox=None)
+        )
 
     def test_navigate_hash_argument_identical(self):
         test_page = "{}#foo".format(inline("<p id=foo>"))
@@ -277,6 +298,13 @@ class TestNavigate(BaseNavigationTestCase):
 
         self.marionette.navigate("about:blank")
 
+    def test_about_newtab(self):
+        with self.marionette.using_prefs({"browser.newtabpage.enabled": True}):
+            self.marionette.navigate("about:newtab")
+
+            self.marionette.navigate(self.test_page_remote)
+            self.marionette.find_element(By.ID, "testDiv")
+
     @run_if_manage_instance("Only runnable if Marionette manages the instance")
     def test_focus_after_navigation(self):
         self.marionette.restart()
@@ -305,7 +333,8 @@ class TestNavigate(BaseNavigationTestCase):
 
         Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             lambda mn: mn.get_url() == "about:support",
-            message="'about:support' hasn't been loaded")
+            message="'about:support' hasn't been loaded",
+        )
         self.assertFalse(self.is_remote_tab)
 
     def test_type_to_remote_tab(self):
@@ -319,12 +348,12 @@ class TestNavigate(BaseNavigationTestCase):
 
         Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             lambda mn: mn.get_url() == self.test_page_remote,
-            message="'{}' hasn't been loaded".format(self.test_page_remote))
+            message="'{}' hasn't been loaded".format(self.test_page_remote),
+        )
         self.assertTrue(self.is_remote_tab)
 
 
 class TestBackForwardNavigation(BaseNavigationTestCase):
-
     def run_bfcache_test(self, test_pages):
         # Helper method to run simple back and forward testcases.
 
@@ -337,13 +366,17 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
                 else:
                     self.assertEqual(Alert(self.marionette).text, page["alert_text"])
 
-            self.assertEqual(page["url"], self.marionette.get_url())
+            self.assertEqual(self.marionette.get_url(), page["url"])
             self.assertEqual(self.history_length, expected_history_length)
 
             if "is_remote" in page:
-                self.assertEqual(page["is_remote"], self.is_remote_tab,
-                                 "'{}' doesn't match expected remoteness state: {}".format(
-                                     page["url"], page["is_remote"]))
+                self.assertEqual(
+                    page["is_remote"],
+                    self.is_remote_tab,
+                    "'{}' doesn't match expected remoteness state: {}".format(
+                        page["url"], page["is_remote"]
+                    ),
+                )
 
             if "callback" in page and callable(page["callback"]):
                 page["callback"]()
@@ -365,7 +398,6 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
                     self.marionette.go_back()
             else:
                 self.marionette.go_back()
-            self.assertEqual(page["url"], self.marionette.get_url())
 
             check_page_status(page, len(test_pages))
 
@@ -376,7 +408,6 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
                     self.marionette.go_forward()
             else:
                 self.marionette.go_forward()
-            self.assertEqual(page["url"], self.marionette.get_url())
 
             check_page_status(page, len(test_pages))
 
@@ -385,15 +416,22 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         self.marionette.go_back()
         self.marionette.go_forward()
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_dismissed_beforeunload_prompt(self):
-        url_beforeunload = inline("""
+        url_beforeunload = inline(
+            """
           <input type="text">
           <script>
             window.addEventListener("beforeunload", function (event) {
               event.preventDefault();
             });
           </script>
-        """)
+        """
+        )
 
         def modify_page():
             self.marionette.find_element(By.TAG_NAME, "input").send_keys("foo")
@@ -406,7 +444,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
 
         self.run_bfcache_test(test_pages)
 
-    @skip("Bug 1484927: Maybe causes crash in [@ mozilla::ShutdownXPCOM(nsIServiceManager*)]")
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_data_urls(self):
         test_pages = [
             {"url": inline("<p>foobar</p>")},
@@ -415,6 +457,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_same_document_hash_change(self):
         test_pages = [
             {"url": "{}#23".format(self.test_page_remote)},
@@ -423,6 +470,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_file_url(self):
         test_pages = [
             {"url": self.test_page_remote},
@@ -431,6 +483,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_frameset(self):
         test_pages = [
             {"url": self.marionette.absolute_url("frameset.html")},
@@ -439,6 +496,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_frameset_after_navigating_in_frame(self):
         test_element_locator = (By.ID, "email")
 
@@ -459,7 +521,8 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         # wait for the page load to be complete.
         Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             expected.element_present(*test_element_locator),
-            message="Target element 'email' has not been found")
+            message="Target element 'email' has not been found",
+        )
         self.assertEqual(self.history_length, 3)
 
         # Go back to the frame the click navigated away from
@@ -485,6 +548,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         self.marionette.find_element(*test_element_locator)
         self.assertEqual(self.marionette.get_url(), page)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_image_to_html_to_image(self):
         test_pages = [
             {"url": self.marionette.absolute_url("black.png")},
@@ -493,6 +561,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_image_to_image(self):
         test_pages = [
             {"url": self.marionette.absolute_url("black.png")},
@@ -503,6 +576,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_remoteness_change(self):
         test_pages = [
             {"url": "about:robots", "is_remote": False},
@@ -511,6 +589,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_non_remote_about_pages(self):
         test_pages = [
             {"url": "about:preferences", "is_remote": False},
@@ -519,6 +602,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_navigate_to_requested_about_page_after_error_page(self):
         test_pages = [
             {"url": "about:neterror"},
@@ -527,6 +615,11 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
         ]
         self.run_bfcache_test(test_pages)
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_timeout_error(self):
         urls = [
             self.marionette.absolute_url("slow?delay=3"),
@@ -551,7 +644,8 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
 
         delay = Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             expected.element_present(By.ID, "delay"),
-            message="Target element 'delay' has not been found after timeout in 'back'")
+            message="Target element 'delay' has not been found after timeout in 'back'",
+        )
         self.assertEqual(delay.text, "3")
 
         self.marionette.go_forward()
@@ -565,31 +659,42 @@ class TestBackForwardNavigation(BaseNavigationTestCase):
 
         delay = Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
             expected.element_present(By.ID, "delay"),
-            message="Target element 'delay' has not been found after timeout in 'forward'")
+            message="Target element 'delay' has not been found after timeout in 'forward'",
+        )
         self.assertEqual(delay.text, "4")
 
+    @skip_unless_browser_pref(
+        "Bug 1656208 - Always turn on session history in the parent for fission",
+        "fission.autostart",
+        lambda value: value is False,
+    )
     def test_certificate_error(self):
         test_pages = [
-            {"url": self.test_page_insecure,
-             "error": errors.InsecureCertificateException},
+            {
+                "url": self.test_page_insecure,
+                "error": errors.InsecureCertificateException,
+            },
             {"url": self.test_page_remote},
-            {"url": self.test_page_insecure,
-             "error": errors.InsecureCertificateException},
+            {
+                "url": self.test_page_insecure,
+                "error": errors.InsecureCertificateException,
+            },
         ]
         self.run_bfcache_test(test_pages)
 
 
 class TestRefresh(BaseNavigationTestCase):
-
     def test_basic(self):
         self.marionette.navigate(self.test_page_remote)
         self.assertEqual(self.test_page_remote, self.marionette.get_url())
 
-        self.marionette.execute_script("""
+        self.marionette.execute_script(
+            """
           let elem = window.document.createElement('div');
           elem.id = 'someDiv';
           window.document.body.appendChild(elem);
-        """)
+        """
+        )
         self.marionette.find_element(By.ID, "someDiv")
 
         self.marionette.refresh()
@@ -603,8 +708,12 @@ class TestRefresh(BaseNavigationTestCase):
 
         frame = self.marionette.find_element(By.NAME, "third")
         self.marionette.switch_to_frame(frame)
-        self.assertRaises(errors.NoSuchElementException,
-                          self.marionette.find_element, By.NAME, "third")
+        self.assertRaises(
+            errors.NoSuchElementException,
+            self.marionette.find_element,
+            By.NAME,
+            "third",
+        )
 
         self.marionette.refresh()
         self.marionette.find_element(By.NAME, "third")
@@ -617,14 +726,18 @@ class TestRefresh(BaseNavigationTestCase):
         self.assertEqual(self.test_page_file_url, self.marionette.get_url())
 
     def test_dismissed_beforeunload_prompt(self):
-        self.marionette.navigate(inline("""
+        self.marionette.navigate(
+            inline(
+                """
           <input type="text">
           <script>
             window.addEventListener("beforeunload", function (event) {
               event.preventDefault();
             });
           </script>
-        """))
+        """
+            )
+        )
         self.marionette.find_element(By.TAG_NAME, "input").send_keys("foo")
         self.marionette.refresh()
 
@@ -633,7 +746,7 @@ class TestRefresh(BaseNavigationTestCase):
             Alert(self.marionette).text
 
     def test_image(self):
-        image = self.marionette.absolute_url('black.png')
+        image = self.marionette.absolute_url("black.png")
 
         self.marionette.navigate(image)
         self.assertEqual(image, self.marionette.get_url())
@@ -675,13 +788,13 @@ class TestRefresh(BaseNavigationTestCase):
     def test_insecure_error(self):
         with self.assertRaises(errors.InsecureCertificateException):
             self.marionette.navigate(self.test_page_insecure)
-        self.assertEqual(self.test_page_insecure, self.marionette.get_url())
+        self.assertEqual(self.marionette.get_url(), self.test_page_insecure)
 
         with self.assertRaises(errors.InsecureCertificateException):
             self.marionette.refresh()
 
 
-class TestTLSNavigation(MarionetteTestCase):
+class TestTLSNavigation(BaseNavigationTestCase):
     insecure_tls = {"acceptInsecureCerts": True}
     secure_tls = {"acceptInsecureCerts": False}
 
@@ -696,6 +809,7 @@ class TestTLSNavigation(MarionetteTestCase):
     def tearDown(self):
         try:
             self.marionette.delete_session()
+            self.marionette.start_session()
         except:
             pass
 
@@ -706,8 +820,16 @@ class TestTLSNavigation(MarionetteTestCase):
         try:
             self.capabilities = self.marionette.start_session(self.secure_tls)
             self.assertFalse(self.capabilities["acceptInsecureCerts"])
+            # Always use a blank new tab for an empty history
+            self.new_tab = self.open_tab()
+            self.marionette.switch_to_window(self.new_tab)
+            Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
+                lambda _: self.history_length == 1,
+                message="The newly opened tab doesn't have a browser history length of 1",
+            )
             yield self.marionette
         finally:
+            self.close_all_tabs()
             self.marionette.delete_session()
 
     @contextlib.contextmanager
@@ -715,8 +837,16 @@ class TestTLSNavigation(MarionetteTestCase):
         try:
             self.capabilities = self.marionette.start_session(self.insecure_tls)
             self.assertTrue(self.capabilities["acceptInsecureCerts"])
+            # Always use a blank new tab for an empty history
+            self.new_tab = self.open_tab()
+            self.marionette.switch_to_window(self.new_tab)
+            Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
+                lambda _: self.history_length == 1,
+                message="The newly opened tab doesn't have a browser history length of 1",
+            )
             yield self.marionette
         finally:
+            self.close_all_tabs()
             self.marionette.delete_session()
 
     def test_navigate_by_command(self):
@@ -726,7 +856,8 @@ class TestTLSNavigation(MarionetteTestCase):
     def test_navigate_by_click(self):
         link_url = self.test_page_insecure
         self.marionette.navigate(
-            inline("<a href=%s>https is the future</a>" % link_url))
+            inline("<a href=%s>https is the future</a>" % link_url)
+        )
         self.marionette.find_element(By.TAG_NAME, "a").click()
         self.assertIn("https", self.marionette.get_url())
 
@@ -749,20 +880,23 @@ class TestTLSNavigation(MarionetteTestCase):
 
 
 class TestPageLoadStrategy(BaseNavigationTestCase):
-
     def tearDown(self):
         self.marionette.delete_session()
         self.marionette.start_session()
 
         super(TestPageLoadStrategy, self).tearDown()
 
+    @skip_if_framescript("Bug 1675173: Won't be fixed for framescript mode")
     def test_none(self):
         self.marionette.delete_session()
         self.marionette.start_session({"pageLoadStrategy": "none"})
 
-        # With a strategy of "none" there should be no wait for the page load, and the
-        # current load state is unknown. So only test that the command executes successfully.
         self.marionette.navigate(self.test_page_slow_resource)
+        Wait(self.marionette, timeout=self.marionette.timeout.page_load).until(
+            lambda _: self.marionette.get_url() == self.test_page_slow_resource,
+            message="Target page has not been loaded",
+        )
+        self.marionette.find_element(By.ID, "slow")
 
     def test_eager(self):
         self.marionette.delete_session()
@@ -788,7 +922,9 @@ class TestPageLoadStrategy(BaseNavigationTestCase):
         self.marionette.start_session({"pageLoadStrategy": "eager"})
 
         # Trigger a remoteness change which will reload the listener script
-        self.assertTrue(self.is_remote_tab, "Initial tab doesn't have remoteness flag set")
+        self.assertTrue(
+            self.is_remote_tab, "Initial tab doesn't have remoteness flag set"
+        )
         self.marionette.navigate("about:robots")
         self.assertFalse(self.is_remote_tab, "Tab has remoteness flag set")
         self.marionette.navigate(self.test_page_slow_resource)

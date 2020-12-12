@@ -9,15 +9,14 @@
 #include "SpeechRecognition.h"
 #include "nsProxyRelease.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 SpeechTrackListener::SpeechTrackListener(SpeechRecognition* aRecognition)
     : mRecognition(aRecognition),
       mRemovedPromise(
           mRemovedHolder.Ensure("SpeechTrackListener::mRemovedPromise")) {
   MOZ_ASSERT(NS_IsMainThread());
-  mRemovedPromise->Then(GetCurrentThreadSerialEventTarget(), __func__,
+  mRemovedPromise->Then(GetCurrentSerialEventTarget(), __func__,
                         [self = RefPtr<SpeechTrackListener>(this), this] {
                           mRecognition = nullptr;
                         });
@@ -88,5 +87,4 @@ void SpeechTrackListener::NotifyRemoved(MediaTrackGraph* aGraph) {
   mRemovedHolder.ResolveIfExists(true, __func__);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

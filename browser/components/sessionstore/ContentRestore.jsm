@@ -18,11 +18,6 @@ ChromeUtils.defineModuleGetter(
   "Utils",
   "resource://gre/modules/sessionstore/Utils.jsm"
 );
-ChromeUtils.defineModuleGetter(
-  this,
-  "E10SUtils",
-  "resource://gre/modules/E10SUtils.jsm"
-);
 /**
  * This module implements the content side of session restoration. The chrome
  * side is handled by SessionStore.jsm. The functions in this module are called
@@ -81,6 +76,11 @@ function ContentRestoreInternal(chromeGlobal) {
   // The tabData for the restore. Set in restoreHistory and removed in
   // restoreTabContent.
   this._tabData = null;
+
+  // To make the sessionRestore work with session history living in the parent process,
+  // we divided the restoreHistory() into two parts in bug 1507287.
+  // This is used for the second part to prevent tabData is removed case.
+  this._tabDataForFinishRestoreHistory = null;
 
   // Contains {entry, scrollPositions, formdata}, where entry is a
   // single entry from the tabData.entries array. Set in
@@ -153,6 +153,7 @@ ContentRestoreInternal.prototype = {
 
     this._shistoryInParent = shistoryInParent;
 
+    this._tabDataForFinishRestoreHistory = tabData;
     if (this._shistoryInParent) {
       callbacks.requestRestoreSHistory();
     } else {
@@ -172,25 +173,24 @@ ContentRestoreInternal.prototype = {
 
       webNavigation.sessionHistory.legacySHistory.addSHistoryListener(listener);
       this._historyListener = listener;
-
       this.finishRestoreHistory(callbacks);
     }
   },
 
   finishRestoreHistory(callbacks) {
+    let tabData = this._tabDataForFinishRestoreHistory;
+    this._tabDataForFinishRestoreHistory = null;
+
     // Make sure to reset the capabilities and attributes in case this tab gets
     // reused.
     SessionStoreUtils.restoreDocShellCapabilities(
       this.docShell,
-      this._tabData.disallow
+      tabData.disallow
     );
 
-    if (this._tabData.storage && this.docShell instanceof Ci.nsIDocShell) {
-      SessionStoreUtils.restoreSessionStorage(
-        this.docShell,
-        this._tabData.storage
-      );
-      delete this._tabData.storage;
+    if (tabData.storage && this.docShell instanceof Ci.nsIDocShell) {
+      SessionStoreUtils.restoreSessionStorage(this.docShell, tabData.storage);
+      delete tabData.storage;
     }
 
     // Add a progress listener to correctly handle browser.loadURI()
@@ -233,7 +233,6 @@ ContentRestoreInternal.prototype = {
     this._tabData = null;
 
     let webNavigation = this.docShell.QueryInterface(Ci.nsIWebNavigation);
-    let history = webNavigation.sessionHistory.legacySHistory;
 
     // Listen for the tab to finish loading.
     this.restoreTabContentStarted(finishCallback, removeListenerCallback);
@@ -250,56 +249,12 @@ ContentRestoreInternal.prototype = {
       if (loadArguments) {
         // If the load was started in another process, and the in-flight channel
         // was redirected into this process, resume that load within our process.
-        if (loadArguments.redirectLoadSwitchId) {
-          webNavigation.resumeRedirectedLoad(
-            loadArguments.redirectLoadSwitchId,
-            loadArguments.redirectHistoryIndex
-          );
-          return true;
-        }
-
-        // A load has been redirected to a new process so get history into the
-        // same state it was before the load started then trigger the load.
-        // Referrer information is now stored as a referrerInfo property. We
-        // should also cope with the old format of passing `referrer` and
-        // `referrerPolicy` separately.
-        let referrerInfo = loadArguments.referrerInfo;
-        if (referrerInfo) {
-          referrerInfo = E10SUtils.deserializeReferrerInfo(referrerInfo);
-        } else {
-          let referrer = loadArguments.referrer
-            ? Services.io.newURI(loadArguments.referrer)
-            : null;
-          let referrerPolicy =
-            "referrerPolicy" in loadArguments
-              ? loadArguments.referrerPolicy
-              : Ci.nsIReferrerInfo.EMPTY;
-          let ReferrerInfo = Components.Constructor(
-            "@mozilla.org/referrer-info;1",
-            "nsIReferrerInfo",
-            "init"
-          );
-          referrerInfo = new ReferrerInfo(referrerPolicy, true, referrer);
-        }
-        let postData = loadArguments.postData
-          ? E10SUtils.makeInputStream(loadArguments.postData)
-          : null;
-        let triggeringPrincipal = E10SUtils.deserializePrincipal(
-          loadArguments.triggeringPrincipal,
-          () => Services.scriptSecurityManager.createNullPrincipal({})
+        //
+        // NOTE: In this case `isRemotenessUpdate` must be true.
+        webNavigation.resumeRedirectedLoad(
+          loadArguments.redirectLoadSwitchId,
+          loadArguments.redirectHistoryIndex
         );
-        let csp = loadArguments.csp
-          ? E10SUtils.deserializeCSP(loadArguments.csp)
-          : null;
-
-        let loadURIOptions = {
-          triggeringPrincipal,
-          loadFlags: loadArguments.flags,
-          referrerInfo,
-          postData,
-          csp,
-        };
-        webNavigation.loadURI(loadArguments.uri, loadURIOptions);
       } else if (tabData.userTypedValue && tabData.userTypedClear) {
         // If the user typed a URL into the URL bar and hit enter right before
         // we crashed, we want to start loading that page again. A non-zero
@@ -325,6 +280,7 @@ ContentRestoreInternal.prototype = {
         if (this._shistoryInParent) {
           reloadSHistoryCallback();
         } else {
+          let history = webNavigation.sessionHistory.legacySHistory;
           history.reloadCurrentEntry();
         }
       } else {
@@ -353,11 +309,11 @@ ContentRestoreInternal.prototype = {
    */
   restoreTabContentStarted(finishCallback, removeListenerCallback) {
     // The reload listener is no longer needed.
-    if (!this._shistoryInParent) {
+    if (this._shistoryInParent) {
+      removeListenerCallback();
+    } else if (this._historyListener) {
       this._historyListener.uninstall();
       this._historyListener = null;
-    } else {
-      removeListenerCallback();
     }
 
     // Remove the old progress listener.
@@ -445,8 +401,8 @@ function HistoryListener(docShell, callback) {
 }
 HistoryListener.prototype = {
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsISHistoryListener,
-    Ci.nsISupportsWeakReference,
+    "nsISHistoryListener",
+    "nsISupportsWeakReference",
   ]),
 
   uninstall() {
@@ -505,8 +461,8 @@ function ProgressListener(docShell, callbacks) {
 
 ProgressListener.prototype = {
   QueryInterface: ChromeUtils.generateQI([
-    Ci.nsIWebProgressListener,
-    Ci.nsISupportsWeakReference,
+    "nsIWebProgressListener",
+    "nsISupportsWeakReference",
   ]),
 
   uninstall() {

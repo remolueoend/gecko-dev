@@ -18,13 +18,15 @@
 #include "mozilla/EventStates.h"
 #include "mozilla/TimeStamp.h"
 #include "nsCOMPtr.h"
+#include "nsIContentPolicy.h"
 #include "nsIImageLoadingContent.h"
 #include "nsIRequest.h"
-#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "mozilla/dom/Promise.h"
 #include "nsAttrValue.h"
+#include "Units.h"
 
+class nsINode;
 class nsIURI;
 class nsPresContext;
 class nsIContent;
@@ -32,6 +34,8 @@ class imgRequestProxy;
 
 namespace mozilla {
 class AsyncEventDispatcher;
+class ErrorResult;
+
 namespace dom {
 struct BindContext;
 class Document;
@@ -66,13 +70,12 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   // the Web IDL bindings.
 
   bool LoadingEnabled() const { return mLoadingEnabled; }
-  int16_t ImageBlockingStatus() const { return mImageBlockingStatus; }
   void AddObserver(imgINotificationObserver* aObserver);
   void RemoveObserver(imgINotificationObserver* aObserver);
   already_AddRefed<imgIRequest> GetRequest(int32_t aRequestType,
                                            mozilla::ErrorResult& aError);
   int32_t GetRequestType(imgIRequest* aRequest, mozilla::ErrorResult& aError);
-  already_AddRefed<nsIURI> GetCurrentURI(mozilla::ErrorResult& aError);
+  already_AddRefed<nsIURI> GetCurrentURI();
   already_AddRefed<nsIURI> GetCurrentRequestFinalURI();
   void ForceReload(bool aNotify, mozilla::ErrorResult& aError);
 
@@ -120,9 +123,9 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
 
   /**
    * ImageState is called by subclasses that are computing their content state.
-   * The return value will have the NS_EVENT_STATE_BROKEN,
-   * NS_EVENT_STATE_USERDISABLED, and NS_EVENT_STATE_SUPPRESSED bits set as
-   * needed.  Note that this state assumes that this node is "trying" to be an
+   * The return value will have the NS_EVENT_STATE_BROKEN bit set as needed.
+   *
+   * Note that this state assumes that this node is "trying" to be an
    * image (so for example complete lack of attempt to load an image will lead
    * to NS_EVENT_STATE_BROKEN being set).  Subclasses that are not "trying" to
    * be an image (eg an HTML <input> of type other than "image") should just
@@ -198,22 +201,19 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   void CancelImageRequests(bool aNotify);
 
   /**
-   * Derived classes of nsImageLoadingContent MUST call
-   * DestroyImageLoadingContent from their destructor, or earlier.  It
-   * does things that cannot be done in ~nsImageLoadingContent because
-   * they rely on being able to QueryInterface to other derived classes,
-   * which cannot happen once the derived class destructor has started
-   * calling the base class destructors.
+   * Derived classes of nsImageLoadingContent MUST call Destroy from their
+   * destructor, or earlier.  It does things that cannot be done in
+   * ~nsImageLoadingContent because they rely on being able to QueryInterface to
+   * other derived classes, which cannot happen once the derived class
+   * destructor has started calling the base class destructors.
    */
-  void DestroyImageLoadingContent();
+  void Destroy();
 
   /**
    * Returns the CORS mode that will be used for all future image loads. The
    * default implementation returns CORS_NONE unconditionally.
    */
   virtual mozilla::CORSMode GetCORSMode();
-
-  virtual mozilla::dom::ReferrerPolicy GetImageReferrerPolicy();
 
   // Subclasses are *required* to call BindToTree/UnbindFromTree.
   void BindToTree(mozilla::dom::BindContext&, nsINode& aParent);
@@ -235,6 +235,11 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
   // Hooks for subclasses to call to get the intrinsic width and height.
   uint32_t NaturalWidth();
   uint32_t NaturalHeight();
+  /**
+   * Get width and height of the current request, using given image request if
+   * attributes are unset.
+   */
+  MOZ_CAN_RUN_SCRIPT mozilla::CSSIntSize GetWidthHeightForImage();
 
   /**
    * Create a promise and queue a microtask which will ensure the current
@@ -375,8 +380,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   nsresult StringToURI(const nsAString& aSpec,
                        mozilla::dom::Document* aDocument, nsIURI** aURI);
-
-  void CreateStaticImageClone(nsImageLoadingContent* aDest) const;
 
   /**
    * Prepare and returns a reference to the "next request". If there's already
@@ -566,7 +569,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   uint32_t mRequestGeneration;
 
-  int16_t mImageBlockingStatus;
   bool mLoadingEnabled : 1;
 
   /**
@@ -580,8 +582,6 @@ class nsImageLoadingContent : public nsIImageLoadingContent {
    */
   bool mLoading : 1;
   bool mBroken : 1;
-  bool mUserDisabled : 1;
-  bool mSuppressed : 1;
 
  protected:
   /**

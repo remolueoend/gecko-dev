@@ -30,6 +30,7 @@ const isDebugBuild = Cc["@mozilla.org/xpcom/debug;1"].getService(Ci.nsIDebug2)
 // The test EV roots are only enabled in debug builds as a security measure.
 const gEVExpected = isDebugBuild;
 
+const CLIENT_AUTH_FILE_NAME = "ClientAuthRememberList.txt";
 const SSS_STATE_FILE_NAME = "SiteSecurityServiceState.txt";
 const PRELOAD_STATE_FILE_NAME = "SecurityPreloadState.txt";
 
@@ -78,6 +79,11 @@ const SSL_ERROR_BAD_CERT_DOMAIN = SSL_ERROR_BASE + 12;
 const SSL_ERROR_BAD_CERT_ALERT = SSL_ERROR_BASE + 17;
 const SSL_ERROR_WEAK_SERVER_CERT_KEY = SSL_ERROR_BASE + 132;
 const SSL_ERROR_DC_INVALID_KEY_USAGE = SSL_ERROR_BASE + 184;
+
+const SSL_ERROR_ECH_RETRY_WITH_ECH = SSL_ERROR_BASE + 188;
+const SSL_ERROR_ECH_RETRY_WITHOUT_ECH = SSL_ERROR_BASE + 189;
+const SSL_ERROR_ECH_FAILED = SSL_ERROR_BASE + 190;
+const SSL_ERROR_ECH_REQUIRED_ALERT = SSL_ERROR_BASE + 191;
 
 const MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE = MOZILLA_PKIX_ERROR_BASE + 0;
 const MOZILLA_PKIX_ERROR_CA_CERT_USED_AS_END_ENTITY =
@@ -470,6 +476,11 @@ function add_tls_server_setup(serverBinName, certsPath, addDefaultRoot = true) {
  *   The origin attributes that the socket transport will have. This parameter
  *   affects OCSP because OCSP cache is double-keyed by origin attributes' first
  *   party domain.
+ *
+ * @param {OriginAttributes} aEchConfig (optional)
+ *   A Base64-encoded ECHConfig. If non-empty, it will be configured to the client
+ *   socket resulting in an Encrypted Client Hello extension being sent. The client
+ *   keypair is ephermeral and generated within NSS.
  */
 function add_connection_test(
   aHost,
@@ -477,7 +488,8 @@ function add_connection_test(
   aBeforeConnect,
   aWithSecurityInfo,
   aAfterStreamOpen,
-  /* optional */ aOriginAttributes
+  /* optional */ aOriginAttributes,
+  /* optional */ aEchConfig
 ) {
   add_test(function() {
     if (aBeforeConnect) {
@@ -488,7 +500,8 @@ function add_connection_test(
       aExpectedResult,
       aWithSecurityInfo,
       aAfterStreamOpen,
-      aOriginAttributes
+      aOriginAttributes,
+      aEchConfig
     ).then(run_next_test);
   });
 }
@@ -498,7 +511,8 @@ async function asyncConnectTo(
   aExpectedResult,
   /* optional */ aWithSecurityInfo = undefined,
   /* optional */ aAfterStreamOpen = undefined,
-  /* optional */ aOriginAttributes = undefined
+  /* optional */ aOriginAttributes = undefined,
+  /* optional */ aEchConfig = undefined
 ) {
   const REMOTE_PORT = 8443;
 
@@ -510,6 +524,9 @@ async function asyncConnectTo(
       Ci.nsISocketTransportService
     );
     this.transport = sts.createTransport(["ssl"], host, REMOTE_PORT, null);
+    if (aEchConfig) {
+      this.transport.setEchConfig(atob(aEchConfig));
+    }
     // See bug 1129771 - attempting to connect to [::1] when the server is
     // listening on 127.0.0.1 causes frequent failures on OS X 10.10.
     this.transport.connectionFlags |= Ci.nsISocketTransport.DISABLE_IPV6;

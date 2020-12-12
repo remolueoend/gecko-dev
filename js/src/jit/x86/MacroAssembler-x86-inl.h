@@ -157,6 +157,15 @@ void MacroAssembler::xorPtr(Register src, Register dest) { xorl(src, dest); }
 void MacroAssembler::xorPtr(Imm32 imm, Register dest) { xorl(imm, dest); }
 
 // ===============================================================
+// Swap instructions
+
+void MacroAssembler::byteSwap64(Register64 reg) {
+  bswapl(reg.low);
+  bswapl(reg.high);
+  xchgl(reg.low, reg.high);
+}
+
+// ===============================================================
 // Arithmetic functions
 
 void MacroAssembler::addPtr(Register src, Register dest) { addl(src, dest); }
@@ -538,6 +547,27 @@ void MacroAssembler::rotateRight64(Imm32 count, Register64 src, Register64 dest,
 // Bit counting functions
 
 void MacroAssembler::clz64(Register64 src, Register dest) {
+  if (AssemblerX86Shared::HasLZCNT()) {
+    Label nonzero, zero;
+
+    testl(src.high, src.high);
+    j(Assembler::Zero, &zero);
+
+    lzcntl(src.high, dest);
+    jump(&nonzero);
+
+    bind(&zero);
+    lzcntl(src.low, dest);
+    addl(Imm32(32), dest);
+
+    bind(&nonzero);
+    return;
+  }
+
+  // Because |dest| may be equal to |src.low|, we rely on BSR not modifying its
+  // output when the input is zero. AMD ISA documents BSR not modifying the
+  // output and current Intel CPUs follow AMD.
+
   Label nonzero, zero;
 
   bsrl(src.high, dest);
@@ -555,6 +585,27 @@ void MacroAssembler::clz64(Register64 src, Register dest) {
 }
 
 void MacroAssembler::ctz64(Register64 src, Register dest) {
+  if (AssemblerX86Shared::HasBMI1()) {
+    Label nonzero, zero;
+
+    testl(src.low, src.low);
+    j(Assembler::Zero, &zero);
+
+    tzcntl(src.low, dest);
+    jump(&nonzero);
+
+    bind(&zero);
+    tzcntl(src.high, dest);
+    addl(Imm32(32), dest);
+
+    bind(&nonzero);
+    return;
+  }
+
+  // Because |dest| may be equal to |src.low|, we rely on BSF not modifying its
+  // output when the input is zero. AMD ISA documents BSF not modifying the
+  // output and current Intel CPUs follow AMD.
+
   Label done, nonzero;
 
   bsfl(src.low, dest);
@@ -977,6 +1028,35 @@ void MacroAssembler::spectreBoundsCheck32(Register index, const Address& length,
 }
 
 // ========================================================================
+// SIMD
+
+void MacroAssembler::anyTrueSimd128(FloatRegister src, Register dest) {
+  Label done;
+  movl(Imm32(1), dest);
+  vptest(src, src);  // SSE4.1
+  j(NonZero, &done);
+  movl(Imm32(0), dest);
+  bind(&done);
+}
+
+void MacroAssembler::extractLaneInt64x2(uint32_t lane, FloatRegister src,
+                                        Register64 dest) {
+  vpextrd(2 * lane, src, dest.low);
+  vpextrd(2 * lane + 1, src, dest.high);
+}
+
+void MacroAssembler::replaceLaneInt64x2(unsigned lane, Register64 rhs,
+                                        FloatRegister lhsDest) {
+  vpinsrd(2 * lane, rhs.low, lhsDest, lhsDest);
+  vpinsrd(2 * lane + 1, rhs.high, lhsDest, lhsDest);
+}
+
+void MacroAssembler::splatX2(Register64 src, FloatRegister dest) {
+  replaceLaneInt64x2(0, src, dest);
+  replaceLaneInt64x2(1, src, dest);
+}
+
+// ========================================================================
 // Truncate floating point.
 
 void MacroAssembler::truncateFloat32ToUInt64(Address src, Address dest,
@@ -1033,6 +1113,43 @@ void MacroAssembler::truncateDoubleToUInt64(Address src, Address dest,
   store32(temp, HighWord(dest));
 
   bind(&done);
+}
+
+template <typename T>
+void MacroAssemblerX86::fallibleUnboxPtrImpl(const T& src, Register dest,
+                                             JSValueType type, Label* fail) {
+  switch (type) {
+    case JSVAL_TYPE_OBJECT:
+      asMasm().branchTestObject(Assembler::NotEqual, src, fail);
+      break;
+    case JSVAL_TYPE_STRING:
+      asMasm().branchTestString(Assembler::NotEqual, src, fail);
+      break;
+    case JSVAL_TYPE_SYMBOL:
+      asMasm().branchTestSymbol(Assembler::NotEqual, src, fail);
+      break;
+    case JSVAL_TYPE_BIGINT:
+      asMasm().branchTestBigInt(Assembler::NotEqual, src, fail);
+      break;
+    default:
+      MOZ_CRASH("Unexpected type");
+  }
+  unboxNonDouble(src, dest, type);
+}
+
+void MacroAssembler::fallibleUnboxPtr(const ValueOperand& src, Register dest,
+                                      JSValueType type, Label* fail) {
+  fallibleUnboxPtrImpl(src, dest, type, fail);
+}
+
+void MacroAssembler::fallibleUnboxPtr(const Address& src, Register dest,
+                                      JSValueType type, Label* fail) {
+  fallibleUnboxPtrImpl(src, dest, type, fail);
+}
+
+void MacroAssembler::fallibleUnboxPtr(const BaseIndex& src, Register dest,
+                                      JSValueType type, Label* fail) {
+  fallibleUnboxPtrImpl(src, dest, type, fail);
 }
 
 //}}} check_macroassembler_style

@@ -3,13 +3,20 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 # Required Plugins:
-# AppAssocReg    http://nsis.sourceforge.net/Application_Association_Registration_plug-in
-# ApplicationID  http://nsis.sourceforge.net/ApplicationID_plug-in
-# CityHash       http://dxr.mozilla.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
-# nsJSON         http://nsis.sourceforge.net/NsJSON_plug-in
-# ShellLink      http://nsis.sourceforge.net/ShellLink_plug-in
-# UAC            http://nsis.sourceforge.net/UAC_plug-in
-# ServicesHelper Mozilla specific plugin that is located in /other-licenses/nsis
+# AppAssocReg
+#   http://nsis.sourceforge.net/Application_Association_Registration_plug-in
+# ApplicationID
+#   http://nsis.sourceforge.net/ApplicationID_plug-in
+# CityHash
+#   http://searchfox.org/mozilla-central/source/other-licenses/nsis/Contrib/CityHash
+# nsJSON
+#   http://nsis.sourceforge.net/NsJSON_plug-in
+# ShellLink
+#   http://nsis.sourceforge.net/ShellLink_plug-in
+# UAC
+#   http://nsis.sourceforge.net/UAC_plug-in
+# ServicesHelper
+#   Mozilla specific plugin that is located in /other-licenses/nsis
 
 ; Set verbosity to 3 (e.g. no script) to lessen the noise in the build logs
 !verbose 3
@@ -52,6 +59,7 @@ Var FinishPhaseStart
 Var FinishPhaseEnd
 Var InstallResult
 Var LaunchedNewApp
+Var PostSigningData
 
 ; By defining NO_STARTMENU_DIR an installer that doesn't provide an option for
 ; an application's Start Menu PROGRAMS directory and doesn't define the
@@ -98,6 +106,7 @@ VIAddVersionKey "OriginalFilename" "setup.exe"
 !insertmacro CheckForFilesInUse
 !insertmacro CleanUpdateDirectories
 !insertmacro CopyFilesFromDir
+!insertmacro CopyPostSigningData
 !insertmacro CreateRegKey
 !insertmacro GetFirstInstallPath
 !insertmacro GetLongPath
@@ -742,6 +751,23 @@ Section "-InstallEndCleanup"
   DetailPrint "$(STATUS_CLEANUP)"
   SetDetailsPrint none
 
+  ; Maybe copy the post-signing data?
+  StrCpy $PostSigningData ""
+  ${GetParameters} $0
+  ClearErrors
+  ; We don't get post-signing data from the MSI.
+  ${GetOptions} $0 "/LaunchedFromMSI" $1
+  ${If} ${Errors}
+    ; The stub will handle copying the data if it ran us.
+    ClearErrors
+    ${GetOptions} $0 "/LaunchedFromStub" $1
+    ${If} ${Errors}
+      ; We're being run standalone, copy the data.
+      ${CopyPostSigningData}
+      Pop $PostSigningData
+    ${EndIf}
+  ${EndIf}
+
   ${Unless} ${Silent}
     ClearErrors
     ${MUI_INSTALLOPTIONS_READ} $0 "summary.ini" "Field 4" "State"
@@ -1155,6 +1181,16 @@ Function SendPing
     ${EndIf}
     ${GetSecondsElapsed} $FinishPhaseStart $FinishPhaseEnd $1
     nsJSON::Set /tree ping "Data" "finish_time" /value "$1"
+  ${EndIf}
+
+  ; $PostSigningData should only be empty if we didn't try to copy the
+  ; postSigningData file at all. If we did try and the file was missing
+  ; or empty, this will be "0", and for consistency with the stub we will
+  ; still submit it.
+  ${If} $PostSigningData != ""
+    nsJSON::Quote /always $PostSigningData
+    Pop $0
+    nsJSON::Set /tree ping "Data" "attribution" /value $0
   ${EndIf}
 
   nsJSON::Set /tree ping "Data" "new_launched" /value "$LaunchedNewApp"

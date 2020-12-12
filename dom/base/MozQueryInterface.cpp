@@ -6,15 +6,16 @@
 
 #include "ChromeUtils.h"
 #include "MozQueryInterface.h"
+#include "xptinfo.h"
 
 #include <string.h>
 
 #include "jsapi.h"
 
+#include "mozilla/ErrorResult.h"
 #include "xpcpublic.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 constexpr size_t IID_SIZE = sizeof(nsIID);
 
@@ -89,5 +90,4 @@ bool MozQueryInterface::WrapObject(JSContext* aCx,
   return MozQueryInterface_Binding::Wrap(aCx, this, aGivenProto, aReflector);
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

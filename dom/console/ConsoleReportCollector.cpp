@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/ConsoleReportCollector.h"
+
+#include "mozilla/dom/Document.h"
 #include "mozilla/net/NeckoChannelParams.h"
 
 #include "ConsoleUtils.h"
@@ -29,9 +31,9 @@ void ConsoleReportCollector::AddConsoleReport(
   // any thread
   MutexAutoLock lock(mMutex);
 
-  mPendingReports.AppendElement(
-      PendingReport(aErrorFlags, aCategory, aPropertiesFile, aSourceFileURI,
-                    aLineNumber, aColumnNumber, aMessageName, aStringParams));
+  mPendingReports.EmplaceBack(aErrorFlags, aCategory, aPropertiesFile,
+                              aSourceFileURI, aLineNumber, aColumnNumber,
+                              aMessageName, aStringParams);
 }
 
 void ConsoleReportCollector::FlushReportsToConsole(uint64_t aInnerWindowID,
@@ -41,9 +43,9 @@ void ConsoleReportCollector::FlushReportsToConsole(uint64_t aInnerWindowID,
   {
     MutexAutoLock lock(mMutex);
     if (aAction == ReportAction::Forget) {
-      mPendingReports.SwapElements(reports);
+      reports = std::move(mPendingReports);
     } else {
-      reports = mPendingReports;
+      reports = mPendingReports.Clone();
     }
   }
 
@@ -79,7 +81,7 @@ void ConsoleReportCollector::FlushReportsToConsole(uint64_t aInnerWindowID,
 
     nsContentUtils::ReportToConsoleByWindowID(
         errorText, report.mErrorFlags, report.mCategory, aInnerWindowID, uri,
-        EmptyString(), report.mLineNumber, report.mColumnNumber);
+        u""_ns, report.mLineNumber, report.mColumnNumber);
   }
 }
 
@@ -90,9 +92,9 @@ void ConsoleReportCollector::FlushReportsToConsoleForServiceWorkerScope(
   {
     MutexAutoLock lock(mMutex);
     if (aAction == ReportAction::Forget) {
-      mPendingReports.SwapElements(reports);
+      reports = std::move(mPendingReports);
     } else {
-      reports = mPendingReports;
+      reports = mPendingReports.Clone();
     }
   }
 
@@ -153,15 +155,16 @@ void ConsoleReportCollector::FlushConsoleReports(
 
   {
     MutexAutoLock lock(mMutex);
-    mPendingReports.SwapElements(reports);
+    reports = std::move(mPendingReports);
   }
 
   for (uint32_t i = 0; i < reports.Length(); ++i) {
     PendingReport& report = reports[i];
-    aCollector->AddConsoleReport(report.mErrorFlags, report.mCategory,
-                                 report.mPropertiesFile, report.mSourceFileURI,
-                                 report.mLineNumber, report.mColumnNumber,
-                                 report.mMessageName, report.mStringParams);
+    aCollector->AddConsoleReport(
+        report.mErrorFlags, report.mCategory, report.mPropertiesFile,
+        report.mSourceFileURI, report.mLineNumber, report.mColumnNumber,
+        report.mMessageName,
+        static_cast<const nsTArray<nsString>&>(report.mStringParams));
   }
 }
 
@@ -173,7 +176,7 @@ void ConsoleReportCollector::StealConsoleReports(
 
   {
     MutexAutoLock lock(mMutex);
-    mPendingReports.SwapElements(reports);
+    reports = std::move(mPendingReports);
   }
 
   for (const PendingReport& report : reports) {

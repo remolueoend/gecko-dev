@@ -14,7 +14,7 @@ const href = window.location.href.replace("about:", "http://");
 const url = new window.URL(href);
 
 // `host` is the frame element loading the toolbox.
-let host = window.windowUtils.containerElement;
+let host = window.browsingContext.embedderElement;
 
 // If there's no containerElement (which happens when loading about:devtools-toolbox as
 // a top level document), use the current window.
@@ -121,7 +121,8 @@ async function initToolbox(url, host) {
 
       await client.connect();
       // Creates a target for a given browser iframe.
-      target = await client.mainRoot.getTab({ tab });
+      const tabDescriptor = await client.mainRoot.getTab({ tab });
+      target = await tabDescriptor.getTarget();
       // Instruct the Target to automatically close the client on destruction.
       target.shouldCloseClient = true;
     } else {

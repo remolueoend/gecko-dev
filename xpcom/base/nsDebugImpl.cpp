@@ -150,6 +150,15 @@ nsDebugImpl::RustPanic(const char* aMessage) {
   return NS_OK;
 }
 
+// From toolkit/library/rust/lib.rs
+extern "C" void debug_log(const char* target, const char* message);
+
+NS_IMETHODIMP
+nsDebugImpl::RustLog(const char* aTarget, const char* aMessage) {
+  debug_log(aTarget, aMessage);
+  return NS_OK;
+}
+
 NS_IMETHODIMP
 nsDebugImpl::GetIsDebugBuild(bool* aResult) {
 #ifdef DEBUG
@@ -271,7 +280,7 @@ static nsAssertBehavior GetAssertBehavior() {
 struct FixedBuffer final : public mozilla::PrintfTarget {
   FixedBuffer() : curlen(0) { buffer[0] = '\0'; }
 
-  char buffer[500];
+  char buffer[764];
   uint32_t curlen;
 
   bool append(const char* sp, size_t len) override;
@@ -326,11 +335,9 @@ NS_DebugBreak(uint32_t aSeverity, const char* aStr, const char* aExpr,
   if (aExpr) {
     nonPIDBuf.print("'%s', ", aExpr);
   }
-  if (aFile) {
-    nonPIDBuf.print("file %s, ", aFile);
-  }
-  if (aLine != -1) {
-    nonPIDBuf.print("line %d", aLine);
+  if (aFile || aLine != -1) {
+    nonPIDBuf.print("file %s:%d", aFile ? aFile : "<unknown>",
+                    aLine != -1 ? aLine : 0);
   }
 
   // Print "[PID]" or "[Desc PID]" at the beginning of the message.

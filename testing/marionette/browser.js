@@ -5,35 +5,27 @@
 "use strict";
 /* global frame */
 
+const EXPORTED_SYMBOLS = ["browser", "Context", "WindowState"];
+
 const { Services } = ChromeUtils.import("resource://gre/modules/Services.jsm");
 const { XPCOMUtils } = ChromeUtils.import(
   "resource://gre/modules/XPCOMUtils.jsm"
 );
 
-const { WebElementEventTarget } = ChromeUtils.import(
-  "chrome://marionette/content/dom.js"
-);
-const { element } = ChromeUtils.import(
-  "chrome://marionette/content/element.js"
-);
-const { NoSuchWindowError, UnsupportedOperationError } = ChromeUtils.import(
-  "chrome://marionette/content/error.js"
-);
-const { Log } = ChromeUtils.import("chrome://marionette/content/log.js");
-const {
-  MessageManagerDestroyedPromise,
-  waitForEvent,
-  waitForObserverTopic,
-} = ChromeUtils.import("chrome://marionette/content/sync.js");
+XPCOMUtils.defineLazyModuleGetters(this, {
+  element: "chrome://marionette/content/element.js",
+  error: "chrome://marionette/content/error.js",
+  Log: "chrome://marionette/content/log.js",
+  MessageManagerDestroyedPromise: "chrome://marionette/content/sync.js",
+  waitForEvent: "chrome://marionette/content/sync.js",
+  waitForObserverTopic: "chrome://marionette/content/sync.js",
+  WebElementEventTarget: "chrome://marionette/content/dom.js",
+});
 
-XPCOMUtils.defineLazyGetter(this, "logger", Log.get);
-
-this.EXPORTED_SYMBOLS = ["browser", "Context", "WindowState"];
+XPCOMUtils.defineLazyGetter(this, "logger", () => Log.get());
 
 /** @namespace */
 this.browser = {};
-
-const XUL_NS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
 /**
  * Variations of Marionette contexts.
@@ -85,6 +77,27 @@ class MobileTabBrowser {
   get selectedTab() {
     return this.window.tab;
   }
+
+  set selectedTab(tab) {
+    if (tab != this.selectedTab) {
+      throw new Error("GeckoView only supports a single tab");
+    }
+
+    // Synthesize a custom TabSelect event to indicate that a tab has been
+    // selected even when we don't change it.
+    const event = this.window.CustomEvent("TabSelect", {
+      bubbles: true,
+      cancelable: false,
+      detail: {
+        previousTab: this.selectedTab,
+      },
+    });
+    this.window.document.dispatchEvent(event);
+  }
+
+  get selectedBrowser() {
+    return this.selectedTab.linkedBrowser;
+  }
 }
 
 /**
@@ -114,14 +127,12 @@ browser.getBrowserForTab = function(tab) {
  *     Tab browser or null if it's not a browser window.
  */
 browser.getTabBrowser = function(window) {
-  // Firefox
-  if ("gBrowser" in window) {
-    return window.gBrowser;
-
-    // GeckoView
-  } else if ("browser" in window) {
+  // GeckoView
+  if (Services.androidBridge) {
     return new MobileTabBrowser(window);
-
+    // Firefox
+  } else if ("gBrowser" in window) {
+    return window.gBrowser;
     // Thunderbird
   } else if (window.document.getElementById("tabmail")) {
     return window.document.getElementById("tabmail");
@@ -151,8 +162,6 @@ browser.Context = class {
     // and MobileTabBrowser in GeckoView.
     this.tabBrowser = browser.getTabBrowser(this.window);
 
-    this.knownFrames = [];
-
     // Used to set curFrameId upon new session
     this.newSession = true;
 
@@ -166,14 +175,6 @@ browser.Context = class {
     // browser window, this.tab will still point to tab A, despite tab B
     // being the currently selected tab.
     this.tab = null;
-
-    // Commands which trigger a navigation can cause the frame script to be
-    // moved to a different process. To not loose the currently active
-    // command, or any other already pushed following command, store them as
-    // long as they haven't been fully processed. The commands get flushed
-    // after a new browser has been registered.
-    this.pendingCommands = [];
-    this._needsFlushPendingCommands = false;
 
     this.frameRegsPending = 0;
 
@@ -234,46 +235,6 @@ browser.Context = class {
   }
 
   /**
-   * Returns the current title of the content browser.
-   *
-   * @return {string}
-   *     Read-only property containing the current title.
-   *
-   * @throws {NoSuchWindowError}
-   *     If the current ChromeWindow does not have a content browser.
-   */
-  get currentTitle() {
-    // Bug 1363368 - contentBrowser could be null until we wait for its
-    // initialization been finished
-    if (this.contentBrowser) {
-      return this.contentBrowser.contentTitle;
-    }
-    throw new NoSuchWindowError(
-      "Current window does not have a content browser"
-    );
-  }
-
-  /**
-   * Returns the current URI of the content browser.
-   *
-   * @return {nsIURI}
-   *     Read-only property containing the currently loaded URL.
-   *
-   * @throws {NoSuchWindowError}
-   *     If the current ChromeWindow does not have a content browser.
-   */
-  get currentURI() {
-    // Bug 1363368 - contentBrowser could be null until we wait for its
-    // initialization been finished
-    if (this.contentBrowser) {
-      return this.contentBrowser.currentURI;
-    }
-    throw new NoSuchWindowError(
-      "Current window does not have a content browser"
-    );
-  }
-
-  /**
    * Gets the position and dimensions of the top-level browsing context.
    *
    * @return {Map.<string, number>}
@@ -300,10 +261,7 @@ browser.Context = class {
 
     // The modal is a direct sibling of the browser element.
     // See tabbrowser.xml's getTabModalPromptBox.
-    let modalElements = br.parentNode.getElementsByTagNameNS(
-      XUL_NS,
-      "tabmodalprompt"
-    );
+    let modalElements = br.parentNode.getElementsByTagName("tabmodalprompt");
 
     return br.tabModalPromptBox.getPrompt(modalElements[0]);
   }
@@ -314,15 +272,14 @@ browser.Context = class {
    * @return {Promise}
    *     A promise which is resolved when the current window has been closed.
    */
-  closeWindow() {
-    let destroyed = new MessageManagerDestroyedPromise(
-      this.window.messageManager
-    );
-    let unloaded = waitForEvent(this.window, "unload");
+  async closeWindow() {
+    const destroyed = waitForObserverTopic("xul-window-destroyed", {
+      checkFn: () => this.window && this.window.closed,
+    });
 
     this.window.close();
 
-    return Promise.all([destroyed, unloaded]);
+    return destroyed;
   }
 
   /**
@@ -354,13 +311,15 @@ browser.Context = class {
         // Open new browser window, and wait until it is fully loaded.
         // Also wait for the window to be focused and activated to prevent a
         // race condition when promptly focusing to the original window again.
-        let win = this.window.OpenBrowserWindow({ private: isPrivate });
+        const win = this.window.OpenBrowserWindow({ private: isPrivate });
 
-        let activated = waitForEvent(win, "activate");
-        let focused = waitForEvent(win, "focus", { capture: true });
-        let startup = waitForObserverTopic(
+        const activated = waitForEvent(win, "activate");
+        const focused = waitForEvent(win, "focus", { capture: true });
+        const startup = waitForObserverTopic(
           "browser-delayed-startup-finished",
-          subject => subject == win
+          {
+            checkFn: subject => subject == win,
+          }
         );
 
         win.focus();
@@ -375,7 +334,7 @@ browser.Context = class {
         return win;
 
       default:
-        throw new UnsupportedOperationError(
+        throw new error.UnsupportedOperationError(
           `openWindow() not supported in ${this.driver.appName}`
         );
     }
@@ -412,7 +371,7 @@ browser.Context = class {
         break;
 
       default:
-        throw new UnsupportedOperationError(
+        throw new error.UnsupportedOperationError(
           `closeTab() not supported in ${this.driver.appName}`
         );
     }
@@ -425,11 +384,13 @@ browser.Context = class {
    */
   async openTab(focus = false) {
     let tab = null;
-    let tabOpened = waitForEvent(this.window, "TabOpen");
 
     switch (this.driver.appName) {
       case "firefox":
+        const opened = waitForEvent(this.window, "TabOpen");
         this.window.BrowserOpenTab();
+        await opened;
+
         tab = this.tabBrowser.selectedTab;
 
         // The new tab is always selected by default. If focus is not wanted,
@@ -441,12 +402,10 @@ browser.Context = class {
         break;
 
       default:
-        throw new UnsupportedOperationError(
+        throw new error.UnsupportedOperationError(
           `openTab() not supported in ${this.driver.appName}`
         );
     }
-
-    await tabOpened;
 
     return tab;
   }
@@ -463,6 +422,9 @@ browser.Context = class {
    *      A boolean value which determins whether to focus
    *      the window. Defaults to true.
    *
+   * @return {Tab}
+   *     The selected tab.
+   *
    * @throws UnsupportedOperationError
    *     If tab handling for the current application isn't supported.
    */
@@ -475,7 +437,7 @@ browser.Context = class {
     }
 
     if (!this.tabBrowser) {
-      return;
+      return null;
     }
 
     if (typeof index == "undefined") {
@@ -485,24 +447,16 @@ browser.Context = class {
     }
 
     if (focus && this.tab != currentTab) {
-      let tabSelected = waitForEvent(this.window, "TabSelect");
-
-      switch (this.driver.appName) {
-        case "firefox":
-          this.tabBrowser.selectedTab = this.tab;
-          await tabSelected;
-          break;
-
-        default:
-          throw new UnsupportedOperationError(
-            `switchToTab() not supported in ${this.driver.appName}`
-          );
-      }
+      const tabSelected = waitForEvent(this.window, "TabSelect");
+      this.tabBrowser.selectedTab = this.tab;
+      await tabSelected;
     }
 
     // TODO(ato): Currently tied to curBrowser, but should be moved to
     // WebElement when introduced by https://bugzil.la/1400256.
     this.eventObserver = new WebElementEventTarget(this.messageManager);
+
+    return this.tab;
   }
 
   /**
@@ -510,74 +464,41 @@ browser.Context = class {
    * if it is not already assigned, and if a) we already have a session
    * or b) we're starting a new session and it is the right start frame.
    *
-   * @param {string} uid
-   *     Frame uid for use by Marionette.
    * @param {xul:browser} target
    *     The <xul:browser> that was the target of the originating message.
    */
-  register(uid, target) {
-    if (this.tabBrowser) {
-      // If we're setting up a new session on Firefox, we only process the
-      // registration for this frame if it belongs to the current tab.
-      if (!this.tab) {
-        this.switchToTab();
-      }
-
-      if (target === this.contentBrowser) {
-        this.updateIdForBrowser(this.contentBrowser, uid);
-        this._needsFlushPendingCommands = true;
-      }
-    }
-
-    // used to delete sessions
-    this.knownFrames.push(uid);
-  }
-
-  /**
-   * Flush any queued pending commands.
-   *
-   * Needs to be run after a process change for the frame script.
-   */
-  flushPendingCommands() {
-    if (!this._needsFlushPendingCommands) {
+  register(target) {
+    if (!this.tabBrowser) {
       return;
     }
 
-    this.pendingCommands.forEach(cb => cb());
-    this._needsFlushPendingCommands = false;
-  }
+    // If we're setting up a new session on Firefox, we only process the
+    // registration for this frame if it belongs to the current tab.
+    if (!this.tab) {
+      this.switchToTab();
+    }
 
-  /**
-   * This function intercepts commands interacting with content and queues
-   * or executes them as needed.
-   *
-   * No commands interacting with content are safe to process until
-   * the new listener script is loaded and registered itself.
-   * This occurs when a command whose effect is asynchronous (such
-   * as goBack) results in process change of the frame script and new
-   * commands are subsequently posted to the server.
-   */
-  executeWhenReady(cb) {
-    if (this._needsFlushPendingCommands) {
-      this.pendingCommands.push(cb);
-    } else {
-      cb();
+    if (target === this.contentBrowser) {
+      // Note that browsing contexts can be swapped during navigation in which
+      // case this id would no longer match the target. See Bug 1680479.
+      const uid = target.browsingContext.id;
+      this.updateIdForBrowser(this.contentBrowser, uid);
     }
   }
 };
 
 /**
- * The window storage is used to save outer window IDs mapped to weak
+ * The window storage is used to save browsing context ids mapped to weak
  * references of Window objects.
  *
  * Usage:
  *
  *     let wins = new browser.Windows();
- *     wins.set(browser.outerWindowID, window);
+ *     wins.set(browser.browsingContext.id, window);
  *
  *     ...
  *
- *     let win = wins.get(browser.outerWindowID);
+ *     let win = wins.get(browser.browsingContext.id);
  *
  */
 browser.Windows = class extends Map {
@@ -585,7 +506,7 @@ browser.Windows = class extends Map {
    * Save a weak reference to the Window object.
    *
    * @param {string} id
-   *     Outer window ID.
+   *     Browsing context id.
    * @param {Window} win
    *     Window object to save.
    *
@@ -602,7 +523,7 @@ browser.Windows = class extends Map {
    * Get the window object stored by provided |id|.
    *
    * @param {string} id
-   *     Outer window ID.
+   *     Browsing context id.
    *
    * @return {Window}
    *     Saved window object.

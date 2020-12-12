@@ -14,6 +14,7 @@
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/dom/ContentChild.h"  // for ContentChild
 #include "mozilla/dom/BrowserChild.h"  // for BrowserChild
+#include "mozilla/ipc/Endpoint.h"
 #include "VsyncSource.h"
 
 namespace mozilla {
@@ -173,9 +174,8 @@ CompositorManagerChild::CompositorManagerChild(CompositorManagerParent* aParent,
   MOZ_ASSERT(aParent);
 
   SetOtherProcessId(base::GetCurrentProcId());
-  MessageLoop* loop = CompositorThreadHolder::Loop();
   ipc::MessageChannel* channel = aParent->GetIPCChannel();
-  if (NS_WARN_IF(!Open(channel, loop, ipc::ChildSide))) {
+  if (NS_WARN_IF(!Open(channel, CompositorThread(), ipc::ChildSide))) {
     return;
   }
 

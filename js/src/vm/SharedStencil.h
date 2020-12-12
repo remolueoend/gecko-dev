@@ -7,18 +7,53 @@
 #ifndef vm_SharedStencil_h
 #define vm_SharedStencil_h
 
+#include "mozilla/Assertions.h"     // MOZ_ASSERT, MOZ_CRASH
+#include "mozilla/Atomics.h"        // mozilla::{Atomic, SequentiallyConsistent}
+#include "mozilla/Attributes.h"     // MOZ_MUST_USE
+#include "mozilla/HashFunctions.h"  // mozilla::HahNumber, mozilla::HashBytes
+#include "mozilla/HashTable.h"      // mozilla::HashSet
+#include "mozilla/MemoryReporting.h"  // mozilla::MallocSizeOf
+#include "mozilla/RefPtr.h"           // RefPtr
+#include "mozilla/Span.h"             // mozilla::Span
+
 #include <stddef.h>  // size_t
-#include <stdint.h>  // uint32_t
+#include <stdint.h>  // uint8_t, uint16_t, uint32_t
 
-#include "jstypes.h"
-#include "js/CompileOptions.h"
-#include "vm/TryNoteKind.h"  // TryNoteKind
+#include "frontend/SourceNotes.h"  // js::SrcNote
+#include "frontend/TypedIndex.h"   // js::frontend::TypedIndex
 
-/*
- * Data shared between the vm and stencil structures.
- */
+#include "js/AllocPolicy.h"      // js::SystemAllocPolicy
+#include "js/TypeDecls.h"        // JSContext,jsbytecode
+#include "js/UniquePtr.h"        // js::UniquePtr
+#include "util/TrailingArray.h"  // js::TrailingArray
+#include "vm/StencilEnums.h"  // js::{TryNoteKind,ImmutableScriptFlagsEnum,MutableScriptFlagsEnum}
+
+//
+// Data structures shared between Stencil and the VM.
+//
 
 namespace js {
+
+namespace frontend {
+class StencilXDR;
+}  // namespace frontend
+
+// Index into gcthings array.
+class GCThingIndexType;
+class GCThingIndex : public frontend::TypedIndex<GCThingIndexType> {
+  // Delegate constructors;
+  using Base = frontend::TypedIndex<GCThingIndexType>;
+  using Base::Base;
+
+ public:
+  static constexpr GCThingIndex outermostScopeIndex() {
+    return GCThingIndex(0);
+  }
+
+  static constexpr GCThingIndex invalid() { return GCThingIndex(UINT32_MAX); }
+
+  GCThingIndex next() const { return GCThingIndex(index + 1); }
+};
 
 /*
  * Exception handling record.
@@ -68,14 +103,14 @@ struct TryNote {
 //
 struct ScopeNote {
   // Sentinel index for no Scope.
-  static const uint32_t NoScopeIndex = UINT32_MAX;
+  static constexpr GCThingIndex NoScopeIndex = GCThingIndex::invalid();
 
   // Sentinel index for no ScopeNote.
   static const uint32_t NoScopeNoteIndex = UINT32_MAX;
 
   // Index of the js::Scope in the script's gcthings array, or NoScopeIndex if
   // there is no block scope in this range.
-  uint32_t index = 0;
+  GCThingIndex index;
 
   // Bytecode offset at which this scope starts relative to script->code().
   uint32_t start = 0;
@@ -83,15 +118,110 @@ struct ScopeNote {
   // Length of bytecode span this scope covers.
   uint32_t length = 0;
 
-  // Index of parent block scope in notes, or NoScopeNote.
+  // Index of parent block scope in notes, or NoScopeNoteIndex.
   uint32_t parent = 0;
 };
 
+// Range of characters in scriptSource which contains a script's source,
+// that is, the range used by the Parser to produce a script.
+//
+// For most functions the fields point to the following locations.
+//
+//   function * foo(a, b) { return a + b; }
+//   ^             ^                       ^
+//   |             |                       |
+//   |             sourceStart     sourceEnd
+//   |                                     |
+//   toStringStart               toStringEnd
+//
+// For the special case of class constructors, the spec requires us to use an
+// alternate definition of toStringStart / toStringEnd.
+//
+//   class C { constructor() { this.field = 42; } }
+//   ^                    ^                      ^ ^
+//   |                    |                      | |
+//   |                    sourceStart    sourceEnd |
+//   |                                             |
+//   toStringStart                       toStringEnd
+//
+// Implicit class constructors use the following definitions.
+//
+//   class C { someMethod() { } }
+//   ^                           ^
+//   |                           |
+//   sourceStart         sourceEnd
+//   |                           |
+//   toStringStart     toStringEnd
+//
+// Field initializer lambdas are internal details of the engine, but we still
+// provide a sensible definition of these values.
+//
+//   class C { static field = 1 }
+//   class C {        field = 1 }
+//   class C {        somefield }
+//                    ^        ^
+//                    |        |
+//          sourceStart        sourceEnd
+//
+// The non-static private class methods (including getters and setters) ALSO
+// create a hidden initializer lambda in addition to the method itself. These
+// lambdas are not exposed directly to script.
+//
+//   class C { #field() {       } }
+//   class C { get #field() {   } }
+//   class C { async #field() { } }
+//   class C { * #field() {     } }
+//             ^                 ^
+//             |                 |
+//             sourceStart       sourceEnd
+//
+// NOTE: These are counted in Code Units from the start of the script source.
+//
+// Also included in the SourceExtent is the line and column numbers of the
+// sourceStart position. Compilation options may specify the initial line and
+// column number.
+//
+// NOTE: Column number may saturate and must not be used as unique identifier.
+struct SourceExtent {
+  SourceExtent() = default;
+
+  SourceExtent(uint32_t sourceStart, uint32_t sourceEnd, uint32_t toStringStart,
+               uint32_t toStringEnd, uint32_t lineno, uint32_t column)
+      : sourceStart(sourceStart),
+        sourceEnd(sourceEnd),
+        toStringStart(toStringStart),
+        toStringEnd(toStringEnd),
+        lineno(lineno),
+        column(column) {}
+
+  static SourceExtent makeGlobalExtent(uint32_t len) {
+    return SourceExtent(0, len, 0, len, 1, 0);
+  }
+
+  static SourceExtent makeGlobalExtent(uint32_t len, uint32_t lineno,
+                                       uint32_t column) {
+    return SourceExtent(0, len, 0, len, lineno, column);
+  }
+
+  static SourceExtent makeClassExtent(uint32_t start, uint32_t end,
+                                      uint32_t lineno, uint32_t column) {
+    return SourceExtent(start, end, start, end, lineno, column);
+  }
+
+  uint32_t sourceStart = 0;
+  uint32_t sourceEnd = 0;
+  uint32_t toStringStart = 0;
+  uint32_t toStringEnd = 0;
+
+  // Line and column of |sourceStart_| position.
+  uint32_t lineno = 1;  // 1-indexed.
+  uint32_t column = 0;  // Count of Code Points
+};
+
+// These are wrapper types around the flag enums to provide a more appropriate
+// abstraction of the bitfields.
 template <typename EnumType>
 class ScriptFlagBase {
-  // To allow cross-checking offsetof assert.
-  friend class js::BaseScript;
-
  protected:
   // Stored as a uint32_t to make access more predictable from
   // JIT code.
@@ -122,295 +252,16 @@ class ScriptFlagBase {
   }
 };
 
-enum class ImmutableScriptFlagsEnum : uint32_t {
-  // Input Flags
-  //
-  // Flags that come from CompileOptions.
-  // ----
-
-  // No need for result value of last expression statement.
-  NoScriptRval = 1 << 0,
-
-  // See Parser::selfHostingMode.
-  SelfHosted = 1 << 1,
-
-  // TreatAsRunOnce roughly indicates that a script is expected to be run no
-  // more than once. This affects optimizations and heuristics.
-  //
-  // On top-level global/eval/module scripts, this is set when the embedding
-  // ensures this script will not be re-used. In this case, parser literals may
-  // be exposed directly instead of being cloned.
-  //
-  // For non-lazy functions, this is set when the function is almost-certain to
-  // be run once (and its parents transitively the same). In this case, the
-  // function may be marked as a singleton to improve typeset precision. Note
-  // that under edge cases with fun.caller the function may still run multiple
-  // times.
-  //
-  // For lazy functions, the situation is more complex. If enclosing script is
-  // not yet compiled, this flag is undefined and should not be used. As the
-  // enclosing script is compiled, this flag is updated to the same definition
-  // the eventual non-lazy function will use.
-  TreatAsRunOnce = 1 << 2,
-
-  // Code was forced into strict mode using CompileOptions.
-  ForceStrict = 1 << 3,
-  // ----
-
-  // Parser Flags
-  //
-  // Flags that come from the parser.
-  // ----
-
-  // Code is in strict mode.
-  Strict = 1 << 4,
-
-  // The (static) bindings of this script need to support dynamic name
-  // read/write access. Here, 'dynamic' means dynamic dictionary lookup on
-  // the scope chain for a dynamic set of keys. The primary examples are:
-  //  - direct eval
-  //  - function:
-  //  - with
-  // since both effectively allow any name to be accessed. Non-examples are:
-  //  - upvars of nested functions
-  //  - function statement
-  // since the set of assigned name is known dynamically.
-  //
-  // Note: access through the arguments object is not considered dynamic
-  // binding access since it does not go through the normal name lookup
-  // mechanism. This is debatable and could be changed (although care must be
-  // taken not to turn off the whole 'arguments' optimization). To answer the
-  // more general "is this argument aliased" question, script->needsArgsObj
-  // should be tested (see JSScript::argIsAliased).
-  BindingsAccessedDynamically = 1 << 5,
-
-  // This function does something that can extend the set of bindings in its
-  // call objects --- it does a direct eval in non-strict code, or includes a
-  // function statement (as opposed to a function definition).
-  //
-  // This flag is *not* inherited by enclosed or enclosing functions; it
-  // applies only to the function in whose flags it appears.
-  //
-  FunHasExtensibleScope = 1 << 6,
-
-  // True if a tagged template exists in the body => Bytecode contains
-  // JSOp::CallSiteObj
-  // (We don't relazify functions with template strings, due to observability)
-  HasCallSiteObj = 1 << 7,
-
-  // Script is parsed with a top-level goal of Module. This may be a top-level
-  // or an inner-function script.
-  HasModuleGoal = 1 << 8,
-
-  // Whether this function has a .this binding. If true, we need to emit
-  // JSOp::FunctionThis in the prologue to initialize it.
-  FunctionHasThisBinding = 1 << 9,
-
-  // Whether the arguments object for this script, if it needs one, should be
-  // mapped (alias formal parameters).
-  HasMappedArgsObj = 1 << 10,
-
-  // Script contains inner functions. Used to check if we can relazify the
-  // script.
-  HasInnerFunctions = 1 << 11,
-
-  NeedsHomeObject = 1 << 12,
-  IsDerivedClassConstructor = 1 << 13,
-
-  // 'this', 'arguments' and f.apply() are used. This is likely to be a
-  // wrapper.
-  IsLikelyConstructorWrapper = 1 << 14,
-
-  // Set if this function is a generator function or async generator.
-  IsGenerator = 1 << 15,
-
-  // Set if this function is an async function or async generator.
-  IsAsync = 1 << 16,
-
-  // Set if this function has a rest parameter.
-  HasRest = 1 << 17,
-
-  // Whether 'arguments' has a local binding.
-  //
-  // Technically, every function has a binding named 'arguments'. Internally,
-  // this binding is only added when 'arguments' is mentioned by the function
-  // body. This flag indicates whether 'arguments' has been bound either
-  // through implicit use:
-  //   function f() { return arguments }
-  // or explicit redeclaration:
-  //   function f() { var arguments; return arguments }
-  //
-  // Note 1: overwritten arguments (function() { arguments = 3 }) will cause
-  // this flag to be set but otherwise require no special handling:
-  // 'arguments' is just a local variable and uses of 'arguments' will just
-  // read the local's current slot which may have been assigned. The only
-  // special semantics is that the initial value of 'arguments' is the
-  // arguments object (not undefined, like normal locals).
-  //
-  // Note 2: if 'arguments' is bound as a formal parameter, there will be an
-  // 'arguments' in Bindings, but, as the "LOCAL" in the name indicates, this
-  // flag will not be set. This is because, as a formal, 'arguments' will
-  // have no special semantics: the initial value is unconditionally the
-  // actual argument (or undefined if nactual < nformal).
-  ArgumentsHasVarBinding = 1 << 18,
-
-  // Whether 'arguments' always must be the arguments object. If this is unset,
-  // but ArgumentsHasVarBinding is set then an analysis pass is performed at
-  // runtime to decide if we can optimize it away.
-  AlwaysNeedsArgsObj = 1 << 19,
-
-  // Whether the Parser declared 'arguments'.
-  ShouldDeclareArguments = 1 << 20,
-
-  // Script came from eval().
-  IsForEval = 1 << 21,
-
-  // Script is parsed with a top-level goal of Module. This may be a top-level
-  // or an inner-function script.
-  IsModule = 1 << 22,
-
-  // Script is for function.
-  IsFunction = 1 << 23,
-
-  // Whether this script contains a direct eval statement.
-  HasDirectEval = 1 << 24,
-
-  // An extra VarScope is used as the body scope instead of the normal
-  // FunctionScope. This is needed when parameter expressions are used AND the
-  // function has var bindings or a sloppy-direct-eval. For example,
-  //    `function(x = eval("")) { var y; }`
-  FunctionHasExtraBodyVarScope = 1 << 25,
-  // ----
-
-  // Bytecode Emitter Flags
-  //
-  // Flags that are initialized by the BCE.
-  // ----
-
-  // True if the script has a non-syntactic scope on its dynamic scope chain.
-  // That is, there are objects about which we know nothing between the
-  // outermost syntactic scope and the global.
-  HasNonSyntacticScope = 1 << 26,
-
-  // Whether this function needs a call object or named lambda environment.
-  NeedsFunctionEnvironmentObjects = 1 << 27,
-};
-
 class ImmutableScriptFlags : public ScriptFlagBase<ImmutableScriptFlagsEnum> {
-  // Immutable flags should not be modified after the JSScript that contains
-  // them has been initialized. These flags should likely be preserved when
-  // serializing (XDR) or copying (CopyScript) the script. This is only public
-  // for the JITs.
-  //
-  // Specific accessors for flag values are defined with
-  // IMMUTABLE_FLAG_* macros below.
  public:
   using ScriptFlagBase<ImmutableScriptFlagsEnum>::ScriptFlagBase;
 
-  void static_asserts() {
-    static_assert(sizeof(ImmutableScriptFlags) == sizeof(flags_),
-                  "No extra members allowed");
-    static_assert(offsetof(ImmutableScriptFlags, flags_) == 0,
-                  "Required for JIT flag access");
-  }
-
   void operator=(uint32_t flag) { flags_ = flag; }
-
-  static ImmutableScriptFlags fromCompileOptions(
-      const JS::ReadOnlyCompileOptions& options) {
-    ImmutableScriptFlags isf;
-    isf.setFlag(ImmutableScriptFlagsEnum::NoScriptRval, options.noScriptRval);
-    isf.setFlag(ImmutableScriptFlagsEnum::SelfHosted, options.selfHostingMode);
-    isf.setFlag(ImmutableScriptFlagsEnum::TreatAsRunOnce, options.isRunOnce);
-    isf.setFlag(ImmutableScriptFlagsEnum::ForceStrict,
-                options.forceStrictMode());
-    return isf;
-  };
-
-  static ImmutableScriptFlags fromCompileOptions(
-      const JS::TransitiveCompileOptions& options) {
-    ImmutableScriptFlags isf;
-    isf.setFlag(ImmutableScriptFlagsEnum::NoScriptRval,
-                /* noScriptRval (non-transitive compile option) = */ false);
-    isf.setFlag(ImmutableScriptFlagsEnum::SelfHosted, options.selfHostingMode);
-    isf.setFlag(ImmutableScriptFlagsEnum::TreatAsRunOnce,
-                /* isRunOnce (non-transitive compile option) = */ false);
-    isf.setFlag(ImmutableScriptFlagsEnum::ForceStrict,
-                options.forceStrictMode());
-    return isf;
-  };
-};
-
-enum class MutableScriptFlagsEnum : uint32_t {
-  // Number of times the |warmUpCount| was forcibly discarded. The counter is
-  // reset when a script is successfully jit-compiled.
-  WarmupResets_MASK = 0xFF,
-
-  // (1 << 8) is unused
-
-  // If treatAsRunOnce, whether script has executed.
-  HasRunOnce = 1 << 9,
-
-  // Script has been reused for a clone.
-  HasBeenCloned = 1 << 10,
-
-  // Script has an entry in Realm::scriptCountsMap.
-  HasScriptCounts = 1 << 12,
-
-  // Script has an entry in Realm::debugScriptMap.
-  HasDebugScript = 1 << 13,
-
-  // Script supports relazification where it releases bytecode and gcthings to
-  // save memory. This process is opt-in since various complexities may disallow
-  // this for some scripts.
-  // NOTE: Must check for isRelazifiable() before setting this flag.
-  AllowRelazify = 1 << 14,
-
-  // IonMonkey compilation hints.
-
-  // Script has had hoisted bounds checks fail.
-  FailedBoundsCheck = 1 << 15,
-
-  // Script has had hoisted shape guard fail.
-  FailedShapeGuard = 1 << 16,
-
-  HadFrequentBailouts = 1 << 17,
-  HadOverflowBailout = 1 << 18,
-
-  // Whether Baseline or Ion compilation has been disabled for this script.
-  // IonDisabled is equivalent to |jitScript->canIonCompile() == false| but
-  // JitScript can be discarded on GC and we don't want this to affect
-  // observable behavior (see ArgumentsGetterImpl comment).
-  BaselineDisabled = 1 << 19,
-  IonDisabled = 1 << 20,
-
-  // Explicitly marked as uninlineable.
-  Uninlineable = 1 << 21,
-
-  // Idempotent cache has triggered invalidation.
-  InvalidatedIdempotentCache = 1 << 22,
-
-  // Lexical check did fail and bail out.
-  FailedLexicalCheck = 1 << 23,
-
-  // See comments below.
-  NeedsArgsAnalysis = 1 << 24,
-  NeedsArgsObj = 1 << 25,
-
-  // Set if the script has opted into spew
-  SpewEnabled = 1 << 26,
 };
 
 class MutableScriptFlags : public ScriptFlagBase<MutableScriptFlagsEnum> {
  public:
   MutableScriptFlags() = default;
-
-  void static_asserts() {
-    static_assert(sizeof(MutableScriptFlags) == sizeof(flags_),
-                  "No extra members allowed");
-    static_assert(offsetof(MutableScriptFlags, flags_) == 0,
-                  "Required for JIT flag access");
-  }
 
   MutableScriptFlags& operator&=(const uint32_t rhs) {
     flags_ &= rhs;
@@ -473,15 +324,14 @@ class MutableScriptFlags : public ScriptFlagBase<MutableScriptFlagsEnum> {
 // In general, the length of each array is computed from subtracting the start
 // offset of the array from the start offset of the subsequent array. The
 // notable exception is that bytecode length is stored explicitly.
-class alignas(uint32_t) ImmutableScriptData final {
-  // Offsets are measured in bytes relative to 'this'.
-  using Offset = uint32_t;
-
+class alignas(uint32_t) ImmutableScriptData final : public TrailingArray {
+ private:
   Offset optArrayOffset_ = 0;
 
   // Length of bytecode
   uint32_t codeLength_ = 0;
 
+ public:
   // Offset of main entry point from code, after predef'ing prologue.
   uint32_t mainOffset = 0;
 
@@ -492,7 +342,7 @@ class alignas(uint32_t) ImmutableScriptData final {
   uint32_t nslots = 0;
 
   // Index into the gcthings array of the body scope.
-  uint32_t bodyScopeIndex = 0;
+  GCThingIndex bodyScopeIndex;
 
   // Number of IC entries to allocate in JitScript for Baseline ICs.
   uint32_t numICEntries = 0;
@@ -500,12 +350,11 @@ class alignas(uint32_t) ImmutableScriptData final {
   // ES6 function length.
   uint16_t funLength = 0;
 
-  // Number of type sets used in this script for dynamic type monitoring.
-  uint16_t numBytecodeTypeSets = 0;
-
   // NOTE: The raw bytes of this structure are used for hashing so use explicit
   // padding values as needed for predicatable results across compilers.
+  uint16_t padding = 0;
 
+ private:
   struct Flags {
     uint8_t resumeOffsetsEndIndex : 2;
     uint8_t scopeNotesEndIndex : 2;
@@ -515,16 +364,13 @@ class alignas(uint32_t) ImmutableScriptData final {
   static_assert(sizeof(Flags) == sizeof(uint8_t),
                 "Structure packing is broken");
 
-  friend class ::JSScript;
-
- private:
   // Offsets (in bytes) from 'this' to each component array. The delta between
   // each offset and the next offset is the size of each array and is defined
   // even if an array is empty.
-  size_t flagOffset() const { return offsetOfCode() - sizeof(Flags); }
-  size_t codeOffset() const { return offsetOfCode(); }
-  size_t noteOffset() const { return offsetOfCode() + codeLength_; }
-  size_t optionalOffsetsOffset() const {
+  Offset flagOffset() const { return offsetOfCode() - sizeof(Flags); }
+  Offset codeOffset() const { return offsetOfCode(); }
+  Offset noteOffset() const { return offsetOfCode() + codeLength_; }
+  Offset optionalOffsetsOffset() const {
     // Determine the location to beginning of optional-offsets array by looking
     // at index for try-notes.
     //
@@ -540,35 +386,19 @@ class alignas(uint32_t) ImmutableScriptData final {
 
     return optArrayOffset_ - (numOffsets * sizeof(Offset));
   }
-  size_t resumeOffsetsOffset() const { return optArrayOffset_; }
-  size_t scopeNotesOffset() const {
+  Offset resumeOffsetsOffset() const { return optArrayOffset_; }
+  Offset scopeNotesOffset() const {
     return getOptionalOffset(flags().resumeOffsetsEndIndex);
   }
-  size_t tryNotesOffset() const {
+  Offset tryNotesOffset() const {
     return getOptionalOffset(flags().scopeNotesEndIndex);
   }
-  size_t endOffset() const {
+  Offset endOffset() const {
     return getOptionalOffset(flags().tryNotesEndIndex);
   }
 
-  // Size to allocate
-  static size_t AllocationSize(uint32_t codeLength, uint32_t noteLength,
-                               uint32_t numResumeOffsets,
-                               uint32_t numScopeNotes, uint32_t numTryNotes);
-
-  // Translate an offset into a concrete pointer.
-  template <typename T>
-  T* offsetToPointer(size_t offset) {
-    uintptr_t base = reinterpret_cast<uintptr_t>(this);
-    return reinterpret_cast<T*>(base + offset);
-  }
-
-  template <typename T>
-  void initElements(size_t offset, size_t length);
-
-  void initOptionalArrays(size_t* cursor, Flags* flags,
-                          uint32_t numResumeOffsets, uint32_t numScopeNotes,
-                          uint32_t numTryNotes);
+  void initOptionalArrays(Offset* cursor, uint32_t numResumeOffsets,
+                          uint32_t numScopeNotes, uint32_t numTryNotes);
 
   // Initialize to GC-safe state
   ImmutableScriptData(uint32_t codeLength, uint32_t noteLength,
@@ -593,9 +423,9 @@ class alignas(uint32_t) ImmutableScriptData final {
  public:
   static js::UniquePtr<ImmutableScriptData> new_(
       JSContext* cx, uint32_t mainOffset, uint32_t nfixed, uint32_t nslots,
-      uint32_t bodyScopeIndex, uint32_t numICEntries,
-      uint32_t numBytecodeTypeSets, bool isFunction, uint16_t funLength,
-      mozilla::Span<const jsbytecode> code, mozilla::Span<const SrcNote> notes,
+      GCThingIndex bodyScopeIndex, uint32_t numICEntries, bool isFunction,
+      uint16_t funLength, mozilla::Span<const jsbytecode> code,
+      mozilla::Span<const SrcNote> notes,
       mozilla::Span<const uint32_t> resumeOffsets,
       mozilla::Span<const ScopeNote> scopeNotes,
       mozilla::Span<const TryNote> tryNotes);
@@ -624,41 +454,48 @@ class alignas(uint32_t) ImmutableScriptData final {
   // Span over all raw bytes in this struct and its trailing arrays.
   mozilla::Span<const uint8_t> immutableData() const {
     size_t allocSize = endOffset();
-    return mozilla::MakeSpan(reinterpret_cast<const uint8_t*>(this), allocSize);
+    return mozilla::Span{reinterpret_cast<const uint8_t*>(this), allocSize};
   }
 
+ private:
   Flags& flagsRef() { return *offsetToPointer<Flags>(flagOffset()); }
   const Flags& flags() const {
     return const_cast<ImmutableScriptData*>(this)->flagsRef();
   }
 
+ public:
   uint32_t codeLength() const { return codeLength_; }
   jsbytecode* code() { return offsetToPointer<jsbytecode>(codeOffset()); }
   mozilla::Span<jsbytecode> codeSpan() { return {code(), codeLength()}; }
 
-  uint32_t noteLength() const { return optionalOffsetsOffset() - noteOffset(); }
+  uint32_t noteLength() const {
+    return numElements<SrcNote>(noteOffset(), optionalOffsetsOffset());
+  }
   SrcNote* notes() { return offsetToPointer<SrcNote>(noteOffset()); }
   mozilla::Span<SrcNote> notesSpan() { return {notes(), noteLength()}; }
 
   mozilla::Span<uint32_t> resumeOffsets() {
-    return mozilla::MakeSpan(offsetToPointer<uint32_t>(resumeOffsetsOffset()),
-                             offsetToPointer<uint32_t>(scopeNotesOffset()));
+    return mozilla::Span{offsetToPointer<uint32_t>(resumeOffsetsOffset()),
+                         offsetToPointer<uint32_t>(scopeNotesOffset())};
   }
   mozilla::Span<ScopeNote> scopeNotes() {
-    return mozilla::MakeSpan(offsetToPointer<ScopeNote>(scopeNotesOffset()),
-                             offsetToPointer<ScopeNote>(tryNotesOffset()));
+    return mozilla::Span{offsetToPointer<ScopeNote>(scopeNotesOffset()),
+                         offsetToPointer<ScopeNote>(tryNotesOffset())};
   }
   mozilla::Span<TryNote> tryNotes() {
-    return mozilla::MakeSpan(offsetToPointer<TryNote>(tryNotesOffset()),
-                             offsetToPointer<TryNote>(endOffset()));
+    return mozilla::Span{offsetToPointer<TryNote>(tryNotesOffset()),
+                         offsetToPointer<TryNote>(endOffset())};
   }
 
+  // Expose offsets to the JITs.
   static constexpr size_t offsetOfCode() {
     return sizeof(ImmutableScriptData) + sizeof(Flags);
   }
   static constexpr size_t offsetOfResumeOffsetsOffset() {
     // Resume-offsets are the first optional array if they exist. Locate the
     // array with the 'optArrayOffset_' field.
+    static_assert(sizeof(Offset) == sizeof(uint32_t),
+                  "JIT expect Offset to be uint32_t");
     return offsetof(ImmutableScriptData, optArrayOffset_);
   }
   static constexpr size_t offsetOfNfixed() {
@@ -671,13 +508,120 @@ class alignas(uint32_t) ImmutableScriptData final {
     return offsetof(ImmutableScriptData, funLength);
   }
 
-  template <XDRMode mode>
-  static MOZ_MUST_USE XDRResult XDR(js::XDRState<mode>* xdr,
-                                    js::UniquePtr<ImmutableScriptData>& script);
-
   // ImmutableScriptData has trailing data so isn't copyable or movable.
   ImmutableScriptData(const ImmutableScriptData&) = delete;
   ImmutableScriptData& operator=(const ImmutableScriptData&) = delete;
+};
+
+// Wrapper type for ImmutableScriptData to allow sharing across a JSRuntime.
+//
+// Note: This is distinct from ImmutableScriptData because it contains a mutable
+//       ref-count while the ImmutableScriptData may live in read-only memory.
+//
+// Note: This is *not* directly inlined into the SharedImmutableScriptDataTable
+//       because scripts point directly to object and table resizing moves
+//       entries. This allows for fast finalization by decrementing the
+//       ref-count directly without doing a hash-table lookup.
+class SharedImmutableScriptData {
+  // This class is reference counted as follows: each pointer from a JSScript
+  // counts as one reference plus there may be one reference from the shared
+  // script data table.
+  mozilla::Atomic<uint32_t, mozilla::SequentiallyConsistent> refCount_ = {};
+
+  js::UniquePtr<ImmutableScriptData> isd_ = nullptr;
+
+  // End of fields.
+
+  friend class ::JSScript;
+  friend class js::frontend::StencilXDR;
+
+ public:
+  SharedImmutableScriptData() = default;
+
+  // Hash over the contents of SharedImmutableScriptData and its
+  // ImmutableScriptData.
+  struct Hasher;
+
+  uint32_t refCount() const { return refCount_; }
+  void AddRef() { refCount_++; }
+  void Release() {
+    MOZ_ASSERT(refCount_ != 0);
+    uint32_t remain = --refCount_;
+    if (remain == 0) {
+      isd_ = nullptr;
+      js_free(this);
+    }
+  }
+
+  static constexpr size_t offsetOfISD() {
+    return offsetof(SharedImmutableScriptData, isd_);
+  }
+
+ private:
+  static SharedImmutableScriptData* create(JSContext* cx);
+
+ public:
+  static SharedImmutableScriptData* createWith(
+      JSContext* cx, js::UniquePtr<ImmutableScriptData>&& isd);
+
+  size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) {
+    return mallocSizeOf(this) + mallocSizeOf(isd_.get());
+  }
+
+  // SharedImmutableScriptData has trailing data so isn't copyable or movable.
+  SharedImmutableScriptData(const SharedImmutableScriptData&) = delete;
+  SharedImmutableScriptData& operator=(const SharedImmutableScriptData&) =
+      delete;
+
+  static bool shareScriptData(JSContext* cx,
+                              RefPtr<SharedImmutableScriptData>& sisd);
+
+  size_t immutableDataLength() const { return isd_->immutableData().Length(); }
+  uint32_t nfixed() const { return isd_->nfixed; }
+};
+
+// Matches SharedImmutableScriptData objects that have the same atoms as well as
+// contain the same bytes in their ImmutableScriptData.
+struct SharedImmutableScriptData::Hasher {
+  using Lookup = RefPtr<SharedImmutableScriptData>;
+
+  static mozilla::HashNumber hash(const Lookup& l) {
+    mozilla::Span<const uint8_t> immutableData = l->isd_->immutableData();
+    return mozilla::HashBytes(immutableData.data(), immutableData.size());
+  }
+
+  static bool match(SharedImmutableScriptData* entry, const Lookup& lookup) {
+    return (entry->isd_->immutableData() == lookup->isd_->immutableData());
+  }
+};
+
+using SharedImmutableScriptDataTable =
+    mozilla::HashSet<SharedImmutableScriptData*,
+                     SharedImmutableScriptData::Hasher, SystemAllocPolicy>;
+
+struct MemberInitializers {
+  static constexpr uint32_t MaxInitializers = INT32_MAX;
+
+#ifdef DEBUG
+  bool valid = false;
+#endif
+
+  // This struct will eventually have a vector of constant values for optimizing
+  // field initializers.
+  uint32_t numMemberInitializers = 0;
+
+  explicit MemberInitializers(uint32_t numMemberInitializers)
+      :
+#ifdef DEBUG
+        valid(true),
+#endif
+        numMemberInitializers(numMemberInitializers) {
+  }
+
+  static MemberInitializers Invalid() { return MemberInitializers(); }
+
+ private:
+  MemberInitializers() = default;
 };
 
 }  // namespace js

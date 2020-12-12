@@ -1,6 +1,8 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
- * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+#filter dumbComments emptyLines substitution
+
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 // Non-static prefs that are specific to Firefox on Android belong in this file
 // (unless there is a compelling and documented reason for them to belong in
@@ -9,8 +11,6 @@
 // Please indent all prefs defined within #ifdef/#ifndef conditions. This
 // improves readability, particular for conditional blocks that exceed a single
 // screen.
-
-#filter substitution
 
 // For browser.js element
 //
@@ -51,13 +51,6 @@ pref("browser.tabs.useCache", false);
 
 pref("toolkit.zoomManager.zoomValues", ".2,.3,.5,.67,.8,.9,1,1.1,1.2,1.33,1.5,1.7,2,2.4,3,4");
 
-// Mobile will use faster, less durable mode.
-pref("toolkit.storage.synchronous", 0);
-
-// Android needs concurrent access to the same database from multiple processes,
-// thus we can't use exclusive locking on it.
-pref("storage.multiProcessAccess.enabled", true);
-
 // The default fallback zoom level to render pages at. Set to -1 to fit page; otherwise
 // the value is divided by 1000 and clamped to hard-coded min/max scale values.
 pref("browser.viewport.defaultZoom", -1);
@@ -79,9 +72,6 @@ pref("image.cache.size", 1048576); // bytes
 /* offline cache prefs */
 pref("browser.offline-apps.notify", true);
 pref("browser.cache.offline.capacity", 5120); // kilobytes
-
-// Automatically shrink-to-fit image documents.
-pref("browser.enable_automatic_image_resizing", true);
 
 /* disable some protocol warnings */
 pref("network.protocol-handler.warn-external.tel", false);
@@ -162,9 +152,6 @@ pref("browser.formfill.enable", true);
 /* spellcheck */
 pref("layout.spellcheckDefault", 0);
 
-/* new html5 forms */
-pref("dom.forms.datetime.others", true);
-
 /* extension manager and xpinstall */
 pref("xpinstall.whitelist.fileRequest", false);
 pref("xpinstall.whitelist.add", "https://addons.mozilla.org");
@@ -223,7 +210,6 @@ pref("privacy.popups.showBrowserMessage", true);
 
 /* disable opening windows with the dialog feature */
 pref("dom.disable_window_open_dialog_feature", true);
-pref("dom.disable_window_find", true);
 
 pref("keyword.enabled", true);
 pref("browser.fixup.domainwhitelist.localhost", true);
@@ -243,10 +229,6 @@ pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.prop
 // SSL error page behaviour
 pref("browser.ssl_override_behavior", 2);
 pref("browser.xul.error_pages.expert_bad_cert", false);
-
-// Market-specific search defaults
-pref("browser.search.geoSpecificDefaults", true);
-pref("browser.search.geoSpecificDefaults.url", "https://search.services.mozilla.com/1/%APP%/%VERSION%/%CHANNEL%/%LOCALE%/%REGION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%");
 
 // disable updating
 pref("browser.search.update", false);
@@ -294,9 +276,6 @@ pref("gfx.displayport.strategy_pb.threshold", -1); // velocity threshold in inch
 // don't allow JS to move and resize existing windows
 pref("dom.disable_window_move_resize", true);
 
-// prevent click image resizing for nsImageDocument
-pref("browser.enable_click_image_resizing", false);
-
 // open in tab preferences
 // 0=default window, 1=current window/tab, 2=new window, 3=new tab in most window
 pref("browser.link.open_external", 3);
@@ -331,7 +310,6 @@ pref("privacy.item.syncAccount", true);
 
 pref("javascript.options.mem.high_water_mark", 32);
 
-pref("dom.max_chrome_script_run_time", 0); // disable slow script dialog for chrome
 pref("dom.max_script_run_time", 20);
 
 // Absolute path to the devtools unix domain socket file used
@@ -340,21 +318,6 @@ pref("devtools.debugger.unix-domain-socket", "@ANDROID_PACKAGE_NAME@/firefox-deb
 
 pref("devtools.remote.usb.enabled", false);
 pref("devtools.remote.wifi.enabled", false);
-
-pref("ui.touch.radius.enabled", false);
-pref("ui.touch.radius.leftmm", 3);
-pref("ui.touch.radius.topmm", 5);
-pref("ui.touch.radius.rightmm", 3);
-pref("ui.touch.radius.bottommm", 2);
-pref("ui.touch.radius.visitedWeight", 120);
-
-pref("ui.mouse.radius.enabled", true);
-pref("ui.mouse.radius.leftmm", 3);
-pref("ui.mouse.radius.topmm", 5);
-pref("ui.mouse.radius.rightmm", 3);
-pref("ui.mouse.radius.bottommm", 2);
-pref("ui.mouse.radius.visitedWeight", 120);
-pref("ui.mouse.radius.reposition", true);
 
 // Maximum distance from the point where the user pressed where we still
 // look for text to select
@@ -412,14 +375,6 @@ pref("app.update.url.android", "https://aus5.mozilla.org/update/4/%PRODUCT%/%VER
   pref("app.update.channel", "@MOZ_UPDATE_CHANNEL@");
 #endif
 
-// replace newlines with spaces on paste into single-line text boxes
-pref("editor.singleLine.pasteNewlines", 2);
-
-// threshold where a tap becomes a drag, in 1/240" reference pixels
-// The names of the preferences are to be in sync with EventStateManager.cpp
-pref("ui.dragThresholdX", 25);
-pref("ui.dragThresholdY", 25);
-
 pref("layers.async-video.enabled", true);
 
 // APZ physics settings (fling acceleration, fling curving and axis lock) have
@@ -428,7 +383,6 @@ pref("apz.axis_lock.breakout_angle", "0.7853982");    // PI / 4 (45 degrees)
 pref("apz.axis_lock.mode", 1); // Use "strict" axis locking
 pref("apz.content_response_timeout", 600);
 pref("apz.drag.enabled", false);
-pref("apz.fling_accel_interval_ms", 750);
 pref("apz.fling_curve_function_x1", "0.59");
 pref("apz.fling_curve_function_y1", "0.46");
 pref("apz.fling_curve_function_x2", "0.05");
@@ -482,8 +436,6 @@ pref("media.video-queue.send-to-compositor-size", 1);
 
 pref("media.mediadrm-widevinecdm.visible", true);
 
-// Switch block autoplay logic to v2.
-pref("media.autoplay.enabled.user-gestures-needed", true);
 // Set Fennec to block autoplay by default.
 pref("media.autoplay.default", 1); // 0=Allowed, 1=Blocked
 
@@ -685,8 +637,6 @@ pref("layout.accessiblecaret.hapticfeedback", true);
 // a smarter phone-number selection for direct-dial ActionBar action.
 pref("layout.accessiblecaret.extend_selection_for_phone_number", true);
 
-pref("browser.tabs.showAudioPlayingIcon", true);
-
 pref("dom.serviceWorkers.enabled", true);
 
 // Allow service workers to open windows for a longer period after a notification
@@ -709,7 +659,6 @@ pref("extensions.systemAddon.update.enabled", true);
 
 // E10s stuff. We don't support 'file' or 'priveleged' process types.
 pref("browser.tabs.remote.separateFileUriProcess", false);
-pref("browser.tabs.remote.allowLinkedWebInFileUriProcess", true);
 pref("browser.tabs.remote.separatePrivilegedContentProcess", false);
 pref("browser.tabs.remote.enforceRemoteTypeRestrictions", false);
 

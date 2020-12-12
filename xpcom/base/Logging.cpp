@@ -23,9 +23,6 @@
 #include "nsDebugImpl.h"
 #include "NSPRLogModulesParser.h"
 #include "LogCommandLineHandler.h"
-#ifdef MOZ_GECKO_PROFILER
-#  include "ProfilerMarkerPayload.h"
-#endif
 
 #include "prenv.h"
 #ifdef XP_WIN
@@ -419,15 +416,33 @@ class LogModuleManager {
 
 #ifdef MOZ_GECKO_PROFILER
     if (mAddProfilerMarker && profiler_can_accept_markers()) {
-      if (aStart) {
-        PROFILER_ADD_MARKER_WITH_PAYLOAD(
-            "LogMessages", OTHER, LogMarkerPayload,
-            (aName, buffToWrite, *aStart, TimeStamp::Now()));
-      } else {
-        PROFILER_ADD_MARKER_WITH_PAYLOAD(
-            "LogMessages", OTHER, LogMarkerPayload,
-            (aName, buffToWrite, TimeStamp::Now()));
-      }
+      struct LogMarker {
+        static constexpr Span<const char> MarkerTypeName() {
+          return MakeStringSpan("Log");
+        }
+        static void StreamJSONMarkerData(
+            baseprofiler::SpliceableJSONWriter& aWriter,
+            const ProfilerString8View& aModule,
+            const ProfilerString8View& aText) {
+          aWriter.StringProperty("module", aModule);
+          aWriter.StringProperty("name", aText);
+        }
+        static MarkerSchema MarkerTypeDisplay() {
+          using MS = MarkerSchema;
+          MS schema{MS::Location::markerTable};
+          schema.SetTableLabel("({marker.data.module}) {marker.data.name}");
+          schema.AddKeyLabelFormat("module", "Module", MS::Format::string);
+          schema.AddKeyLabelFormat("name", "Name", MS::Format::string);
+          return schema;
+        }
+      };
+
+      profiler_add_marker(
+          "LogMessages", geckoprofiler::category::OTHER,
+          aStart ? MarkerTiming::IntervalUntilNowFrom(*aStart)
+                 : MarkerTiming::InstantNow(),
+          LogMarker{}, ProfilerString8View::WrapNullTerminatedString(aName),
+          ProfilerString8View::WrapNullTerminatedString(buffToWrite));
     }
 #endif
 
@@ -612,6 +627,22 @@ void LogModule::SetIsSync(bool aIsSync) {
   sLogModuleManager->SetIsSync(aIsSync);
 }
 
+// This function is defined in gecko_logger/src/lib.rs
+// We mirror the level in rust code so we don't get forwarded all of the
+// rust logging and have to create an LogModule for each rust component.
+extern "C" void set_rust_log_level(const char* name, uint8_t level);
+
+void LogModule::SetLevel(LogLevel level) {
+  mLevel = level;
+
+  // If the log module contains `::` it is likely a rust module, so we
+  // pass the level into the rust code so it will know to forward the logging
+  // to Gecko.
+  if (strstr(mName, "::")) {
+    set_rust_log_level(mName, static_cast<uint8_t>(level));
+  }
+}
+
 void LogModule::Init(int argc, char* argv[]) {
   // NB: This method is not threadsafe; it is expected to be called very early
   //     in startup prior to any other threads being run.
@@ -649,3 +680,19 @@ void LogModule::Printv(LogLevel aLevel, const TimeStamp* aStart,
 }
 
 }  // namespace mozilla
+
+extern "C" {
+
+// This function is called by external code (rust) to log to one of our
+// log modules.
+void ExternMozLog(const char* aModule, mozilla::LogLevel aLevel,
+                  const char* aMsg) {
+  MOZ_ASSERT(sLogModuleManager != nullptr);
+
+  LogModule* m = sLogModuleManager->CreateOrGetModule(aModule);
+  if (MOZ_LOG_TEST(m, aLevel)) {
+    mozilla::detail::log_print(m, aLevel, "%s", aMsg);
+  }
+}
+
+}  // extern "C"

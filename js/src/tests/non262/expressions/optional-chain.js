@@ -190,6 +190,26 @@ shouldThrowReferenceError('`${G}`?.r');
 // NOT an optional chain
 shouldBe(false?.4:5, 5);
 
+// Special case: binary operators that follow a binary expression
+shouldThrowReferenceError('(0 || 1 << x)?.$');
+shouldThrowReferenceError('(0 || 1 >> x)?.$');
+shouldThrowReferenceError('(0 || 1 >>> x)?.$');
+shouldThrowReferenceError('(0 || 1 + x)?.$');
+shouldThrowReferenceError('(0 || 1 - x)?.$');
+shouldThrowReferenceError('(0 || 1 % x)?.$');
+shouldThrowReferenceError('(0 || 1 / x)?.$');
+shouldThrowReferenceError('(0 || 1 == x)?.$');
+shouldThrowReferenceError('(0 || 1 != x)?.$');
+shouldThrowReferenceError('(0 || 1 !== x)?.$');
+shouldThrowReferenceError('(0 || 1 === x)?.$');
+shouldThrowReferenceError('(0 || 1 <= x)?.$');
+shouldThrowReferenceError('(0 || 1 >= x)?.$');
+shouldThrowReferenceError('(0 || 1 ** x)?.$');
+shouldThrowReferenceError('(0 || 1 | x)?.$');
+shouldThrowReferenceError('(0 || 1 & x)?.$');
+shouldThrowReferenceError('(0 || 1 instanceof x)?.$');
+shouldThrowReferenceError('(0 || "foo" in x)?.$');
+
 function testSideEffectCountFunction() {
   let count = 0;
   let a = {
@@ -232,6 +252,7 @@ shouldBe(({a : {b: undefined}}).a.b?.()?.()(), undefined);
 shouldBe(({a : {b: () => undefined}}).a.b?.()?.(), undefined);
 shouldThrowTypeError(() => delete ({a : {b: undefined}}).a?.b.b.c, '(intermediate value).a.b is undefined');
 shouldBe(delete ({a : {b: undefined}}).a?.["b"]?.["b"], true);
+shouldBe(delete undefined ?.x[y+1], true);
 shouldThrowTypeError(() => (({a : {b: () => undefined}}).a.b?.())(), 'undefined is not a function');
 shouldThrowTypeError(() => (delete[1]?.r[delete[1]?.r1]), "[...].r is undefined");
 shouldThrowTypeError(() => (delete[1]?.r[[1]?.r1]), "[...].r is undefined");

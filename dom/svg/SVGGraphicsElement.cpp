@@ -6,6 +6,9 @@
 
 #include "mozilla/dom/SVGGraphicsElement.h"
 
+#include "mozilla/dom/BindContext.h"
+#include "mozilla/dom/Document.h"
+
 namespace mozilla {
 namespace dom {
 
@@ -60,6 +63,19 @@ bool SVGGraphicsElement::IsFocusableInternal(int32_t* aTabIndex,
   bool isFocusable = false;
   IsSVGFocusable(&isFocusable, aTabIndex);
   return isFocusable;
+}
+
+nsresult SVGGraphicsElement::BindToTree(BindContext& aContext,
+                                        nsINode& aParent) {
+  nsresult rv = SVGGraphicsElementBase::BindToTree(aContext, aParent);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (IsFocusable() && HasAttr(nsGkAtoms::autofocus) &&
+      aContext.AllowsAutoFocus()) {
+    aContext.OwnerDoc().SetAutoFocusElement(this);
+  }
+
+  return NS_OK;
 }
 
 }  // namespace dom

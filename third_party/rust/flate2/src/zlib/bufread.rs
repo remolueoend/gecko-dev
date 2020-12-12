@@ -7,13 +7,13 @@ use futures::Poll;
 #[cfg(feature = "tokio")]
 use tokio_io::{AsyncRead, AsyncWrite};
 
-use zio;
-use {Compress, Decompress};
+use crate::zio;
+use crate::{Compress, Decompress};
 
 /// A ZLIB encoder, or compressor.
 ///
-/// This structure implements a [`BufRead`] interface and will read uncompressed
-/// data from an underlying stream and emit a stream of compressed data.
+/// This structure consumes a [`BufRead`] interface, reading uncompressed data
+/// from the underlying reader, and emitting compressed data.
 ///
 /// [`BufRead`]: https://doc.rust-lang.org/std/io/trait.BufRead.html
 ///
@@ -46,7 +46,7 @@ pub struct ZlibEncoder<R> {
 impl<R: BufRead> ZlibEncoder<R> {
     /// Creates a new encoder which will read uncompressed data from the given
     /// stream and emit the compressed stream.
-    pub fn new(r: R, level: ::Compression) -> ZlibEncoder<R> {
+    pub fn new(r: R, level: crate::Compression) -> ZlibEncoder<R> {
         ZlibEncoder {
             obj: r,
             data: Compress::new(level, true),
@@ -134,8 +134,8 @@ impl<R: AsyncWrite + BufRead> AsyncWrite for ZlibEncoder<R> {
 
 /// A ZLIB decoder, or decompressor.
 ///
-/// This structure implements a [`BufRead`] interface and takes a stream of
-/// compressed data as input, providing the decompressed data when read from.
+/// This structure consumes a [`BufRead`] interface, reading compressed data
+/// from the underlying reader, and emitting uncompressed data.
 ///
 /// [`BufRead`]: https://doc.rust-lang.org/std/io/trait.BufRead.html
 ///

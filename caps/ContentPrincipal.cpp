@@ -64,7 +64,7 @@ nsresult ContentPrincipal::Init(nsIURI* aURI,
   // or fall back to a null principal.  These are schemes which return
   // URI_INHERITS_SECURITY_CONTEXT from their protocol handler's
   // GetProtocolFlags function.
-  bool hasFlag;
+  bool hasFlag = false;
   Unused << hasFlag;  // silence possible compiler warnings.
   MOZ_DIAGNOSTIC_ASSERT(
       NS_SUCCEEDED(NS_URIChainHasFlags(
@@ -147,7 +147,7 @@ nsresult ContentPrincipal::GenerateOriginNoSuffixFromURI(
        // sources. We check for moz-safe-about:blank since origin is an
        // innermost URI.
        !StringBeginsWith(origin->GetSpecOrDefault(),
-                         NS_LITERAL_CSTRING("moz-safe-about:blank")))) {
+                         "moz-safe-about:blank"_ns))) {
     rv = origin->GetAsciiSpec(aOriginNoSuffix);
     NS_ENSURE_SUCCESS(rv, rv);
 
@@ -357,14 +357,17 @@ ContentPrincipal::SetDomain(nsIURI* aDomain) {
 
   // Set the changed-document-domain flag on compartments containing realms
   // using this principal.
-  auto cb = [](JSContext*, void*, JS::Handle<JS::Realm*> aRealm) {
+  auto cb = [](JSContext*, void*, JS::Realm* aRealm,
+               const JS::AutoRequireNoGC& nogc) {
     JS::Compartment* comp = JS::GetCompartmentForRealm(aRealm);
     xpc::SetCompartmentChangedDocumentDomain(comp);
   };
   JSPrincipals* principals =
       nsJSPrincipals::get(static_cast<nsIPrincipal*>(this));
-  AutoSafeJSContext cx;
-  JS::IterateRealmsWithPrincipals(cx, principals, nullptr, cb);
+
+  dom::AutoJSAPI jsapi;
+  jsapi.Init();
+  JS::IterateRealmsWithPrincipals(jsapi.cx(), principals, nullptr, cb);
 
   return NS_OK;
 }
@@ -437,7 +440,7 @@ ContentPrincipal::GetBaseDomain(nsACString& aBaseDomain) {
 }
 
 NS_IMETHODIMP
-ContentPrincipal::GetSiteOrigin(nsACString& aSiteOrigin) {
+ContentPrincipal::GetSiteOriginNoSuffix(nsACString& aSiteOrigin) {
   // Handle some special URIs first.
   nsAutoCString baseDomain;
   bool handled;
@@ -447,7 +450,7 @@ ContentPrincipal::GetSiteOrigin(nsACString& aSiteOrigin) {
   if (handled) {
     // This is a special URI ("file:", "about:", "view-source:", etc). Just
     // return the origin.
-    return GetOrigin(aSiteOrigin);
+    return GetOriginNoSuffix(aSiteOrigin);
   }
 
   // For everything else, we ask the TLD service. Note that, unlike in
@@ -478,7 +481,7 @@ ContentPrincipal::GetSiteOrigin(nsACString& aSiteOrigin) {
   // the port, so an extra `SetPort` call has to be made.
   nsCOMPtr<nsIURI> siteUri;
   NS_MutateURI mutator(mURI);
-  mutator.SetUserPass(EmptyCString()).SetPort(-1);
+  mutator.SetUserPass(""_ns).SetPort(-1);
   if (gotBaseDomain) {
     mutator.SetHost(baseDomain);
   }
@@ -488,15 +491,7 @@ ContentPrincipal::GetSiteOrigin(nsACString& aSiteOrigin) {
 
   rv = GenerateOriginNoSuffixFromURI(siteUri, aSiteOrigin);
   MOZ_ASSERT(NS_SUCCEEDED(rv), "failed to create siteOriginNoSuffix");
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsAutoCString suffix;
-  rv = GetOriginSuffix(suffix);
-  MOZ_ASSERT(NS_SUCCEEDED(rv), "failed to create suffix");
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  aSiteOrigin.Append(suffix);
-  return NS_OK;
+  return rv;
 }
 
 nsresult ContentPrincipal::GetSiteIdentifier(SiteIdentifier& aSite) {

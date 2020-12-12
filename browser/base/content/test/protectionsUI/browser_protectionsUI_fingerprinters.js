@@ -52,6 +52,8 @@ async function testIdentityState(hasException) {
     await loaded;
   }
 
+  await openProtectionsPanel();
+
   ok(
     !gProtectionsHandler._protectionsPopup.hasAttribute("detected"),
     "fingerprinters are not detected"
@@ -107,6 +109,7 @@ async function testCategoryItem() {
   });
   let [tab] = await Promise.all([promise, waitForContentBlockingEvent()]);
 
+  await openProtectionsPanel();
   let categoryItem = document.getElementById(
     "protections-popup-category-fingerprinters"
   );
@@ -134,6 +137,7 @@ async function testCategoryItem() {
     categoryItem.classList.contains("notFound"),
     "Category marked as not found"
   );
+  await closeProtectionsPanel();
 
   promise = waitForContentBlockingEvent();
 
@@ -143,6 +147,7 @@ async function testCategoryItem() {
 
   await promise;
 
+  await openProtectionsPanel();
   ok(
     !categoryItem.classList.contains("blocked"),
     "Category not marked as blocked"
@@ -166,6 +171,7 @@ async function testCategoryItem() {
     !categoryItem.classList.contains("notFound"),
     "Category not marked as not found"
   );
+  await closeProtectionsPanel();
 
   BrowserTestUtils.removeTab(tab);
 }

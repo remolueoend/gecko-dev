@@ -9,12 +9,12 @@
 #include "mozilla/MappedDeclarations.h"
 #include "nsAttrValueInlines.h"
 #include "nsMappedAttributes.h"
+#include "nsStyleConsts.h"
 #include "mozilla/dom/HTMLTableCaptionElementBinding.h"
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(TableCaption)
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 HTMLTableCaptionElement::~HTMLTableCaptionElement() = default;
 
@@ -72,5 +72,4 @@ nsMapRuleToAttributesFunc HTMLTableCaptionElement::GetAttributeMappingFunction()
   return &MapAttributesIntoRule;
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom

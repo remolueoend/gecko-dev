@@ -13,7 +13,6 @@
 
 #include "CounterStyleManager.h"
 #include "ImageLayers.h"
-#include "SVGImageContext.h"
 #include "TextDrawTarget.h"
 #include "UnitTransforms.h"
 #include "gfx2DGlue.h"
@@ -23,6 +22,7 @@
 #include "imgRequestProxy.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/PresShell.h"
+#include "mozilla/SVGImageContext.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/PathHelpers.h"
@@ -64,7 +64,7 @@ NS_IMPL_FRAMEARENA_HELPERS(nsBulletFrame)
 #ifdef DEBUG
 NS_QUERYFRAME_HEAD(nsBulletFrame)
   NS_QUERYFRAME_ENTRY(nsBulletFrame)
-NS_QUERYFRAME_TAIL_INHERITING(nsFrame)
+NS_QUERYFRAME_TAIL_INHERITING(nsIFrame)
 #endif
 
 nsBulletFrame::~nsBulletFrame() = default;
@@ -84,12 +84,12 @@ void nsBulletFrame::DestroyFrom(nsIFrame* aDestructRoot,
   }
 
   // Let base class do the rest
-  nsFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
+  nsIFrame::DestroyFrom(aDestructRoot, aPostDestroyData);
 }
 
 #ifdef DEBUG_FRAME_DUMP
 nsresult nsBulletFrame::GetFrameName(nsAString& aResult) const {
-  return MakeFrameName(NS_LITERAL_STRING("Bullet"), aResult);
+  return MakeFrameName(u"Bullet"_ns, aResult);
 }
 #endif
 
@@ -101,7 +101,7 @@ bool nsBulletFrame::IsSelfEmpty() {
 
 /* virtual */
 void nsBulletFrame::DidSetComputedStyle(ComputedStyle* aOldComputedStyle) {
-  nsFrame::DidSetComputedStyle(aOldComputedStyle);
+  nsIFrame::DidSetComputedStyle(aOldComputedStyle);
 
   imgRequestProxy* newRequest = StyleList()->GetListStyleImage();
 
@@ -430,13 +430,7 @@ ImgDrawResult BulletRenderer::CreateWebRenderCommandsForImage(
   MOZ_RELEASE_ASSERT(IsImageType());
   MOZ_RELEASE_ASSERT(mImage);
 
-  uint32_t flags = imgIContainer::FLAG_ASYNC_NOTIFY;
-  if (aDisplayListBuilder->IsPaintingToWindow()) {
-    flags |= imgIContainer::FLAG_HIGH_QUALITY_SCALING;
-  }
-  if (aDisplayListBuilder->ShouldSyncDecodeImages()) {
-    flags |= imgIContainer::FLAG_SYNC_DECODE;
-  }
+  uint32_t flags = aDisplayListBuilder->GetImageDecodeFlags();
 
   const int32_t appUnitsPerDevPixel =
       aItem->Frame()->PresContext()->AppUnitsPerDevPixel();
@@ -549,7 +543,7 @@ class nsDisplayBullet final : public nsPaintedDisplayItem {
   virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override {
     *aSnap = false;
-    return mFrame->GetVisualOverflowRectRelativeToSelf() + ToReferenceFrame();
+    return mFrame->InkOverflowRectRelativeToSelf() + ToReferenceFrame();
   }
 
   virtual bool CreateWebRenderCommands(
@@ -667,6 +661,8 @@ Maybe<BulletRenderer> nsBulletFrame::CreateBulletRenderer(
         nsCOMPtr<imgIContainer> imageCon;
         mImageRequest->GetImage(getter_AddRefs(imageCon));
         if (imageCon) {
+          imageCon = nsLayoutUtils::OrientImage(
+              imageCon, StyleVisibility()->mImageOrientation);
           nsRect dest(padding.left, padding.top,
                       mRect.width - (padding.left + padding.right),
                       mRect.height - (padding.top + padding.bottom));
@@ -965,7 +961,7 @@ void nsBulletFrame::Reflow(nsPresContext* aPresContext, ReflowOutput& aMetrics,
   // Add in the border and padding; split the top/bottom between the
   // ascent and descent to make things look nice
   WritingMode wm = aReflowInput.GetWritingMode();
-  const LogicalMargin& bp = aReflowInput.ComputedLogicalBorderPadding();
+  const auto bp = aReflowInput.ComputedLogicalBorderPadding(wm);
   mPadding.BStart(wm) += NSToCoordRound(bp.BStart(wm) * inflation);
   mPadding.IEnd(wm) += NSToCoordRound(bp.IEnd(wm) * inflation);
   mPadding.BEnd(wm) += NSToCoordRound(bp.BEnd(wm) * inflation);
@@ -1025,7 +1021,7 @@ static inline bool IsIgnoreable(const nsIFrame* aFrame, nscoord aISize) {
 void nsBulletFrame::AddInlineMinISize(gfxContext* aRenderingContext,
                                       nsIFrame::InlineMinISizeData* aData) {
   nscoord isize = nsLayoutUtils::IntrinsicForContainer(
-      aRenderingContext, this, nsLayoutUtils::MIN_ISIZE);
+      aRenderingContext, this, IntrinsicISizeType::MinISize);
   if (MOZ_LIKELY(!::IsIgnoreable(this, isize))) {
     aData->DefaultAddInlineMinISize(this, isize);
   }
@@ -1035,7 +1031,7 @@ void nsBulletFrame::AddInlineMinISize(gfxContext* aRenderingContext,
 void nsBulletFrame::AddInlinePrefISize(gfxContext* aRenderingContext,
                                        nsIFrame::InlinePrefISizeData* aData) {
   nscoord isize = nsLayoutUtils::IntrinsicForContainer(
-      aRenderingContext, this, nsLayoutUtils::PREF_ISIZE);
+      aRenderingContext, this, IntrinsicISizeType::PrefISize);
   if (MOZ_LIKELY(!::IsIgnoreable(this, isize))) {
     aData->DefaultAddInlinePrefISize(isize);
   }
@@ -1227,7 +1223,7 @@ nscoord nsBulletFrame::GetListStyleAscent() const {
 
 nscoord nsBulletFrame::GetLogicalBaseline(WritingMode aWritingMode) const {
   nscoord ascent = 0;
-  if (GetStateBits() & BULLET_FRAME_IMAGE_LOADING) {
+  if (HasAnyStateBits(BULLET_FRAME_IMAGE_LOADING)) {
     ascent = BSize(aWritingMode);
   } else {
     ascent = GetListStyleAscent();
@@ -1239,7 +1235,7 @@ bool nsBulletFrame::GetNaturalBaselineBOffset(WritingMode aWM,
                                               BaselineSharingGroup,
                                               nscoord* aBaseline) const {
   nscoord ascent = 0;
-  if (GetStateBits() & BULLET_FRAME_IMAGE_LOADING) {
+  if (HasAnyStateBits(BULLET_FRAME_IMAGE_LOADING)) {
     ascent = BSize(aWM);
   } else {
     ascent = GetListStyleAscent();

@@ -7,6 +7,7 @@
 #define GRAPHDRIVER_H_
 
 #include "nsAutoRef.h"
+#include "nsIThread.h"
 #include "AudioBufferUtils.h"
 #include "AudioMixer.h"
 #include "AudioSegment.h"
@@ -179,13 +180,14 @@ struct GraphInterface : public nsISupports {
    * This is the mixed audio output of this MediaTrackGraph. */
   virtual void NotifyOutputData(AudioDataValue* aBuffer, size_t aFrames,
                                 TrackRate aRate, uint32_t aChannels) = 0;
-  /* Called on the graph thread before the first Notify*Data after an
-   * AudioCallbackDriver starts. */
-  virtual void NotifyStarted() = 0;
+  /* Called on the graph thread after an AudioCallbackDriver with an input
+   * stream has stopped. */
+  virtual void NotifyInputStopped() = 0;
   /* Called on the graph thread when there is new input data for listeners. This
    * is the raw audio input for this MediaTrackGraph. */
   virtual void NotifyInputData(const AudioDataValue* aBuffer, size_t aFrames,
-                               TrackRate aRate, uint32_t aChannels) = 0;
+                               TrackRate aRate, uint32_t aChannels,
+                               uint32_t aAlreadyBuffered) = 0;
   /* Called every time there are changes to input/output audio devices like
    * plug/unplug etc. This can be called on any thread, and posts a message to
    * the main thread so that it can post a message to the graph thread. */
@@ -198,7 +200,7 @@ struct GraphInterface : public nsISupports {
 #ifdef DEBUG
   /* True if we're on aDriver's thread, or if we're on mGraphRunner's thread
    * and mGraphRunner is currently run by aDriver. */
-  virtual bool InDriverIteration(GraphDriver* aDriver) = 0;
+  virtual bool InDriverIteration(const GraphDriver* aDriver) const = 0;
 #endif
 };
 
@@ -297,10 +299,19 @@ class GraphDriver {
   void SetPreviousDriver(GraphDriver* aPreviousDriver);
 
   virtual AudioCallbackDriver* AsAudioCallbackDriver() { return nullptr; }
+  virtual const AudioCallbackDriver* AsAudioCallbackDriver() const {
+    return nullptr;
+  }
 
   virtual OfflineClockDriver* AsOfflineClockDriver() { return nullptr; }
+  virtual const OfflineClockDriver* AsOfflineClockDriver() const {
+    return nullptr;
+  }
 
   virtual SystemClockDriver* AsSystemClockDriver() { return nullptr; }
+  virtual const SystemClockDriver* AsSystemClockDriver() const {
+    return nullptr;
+  }
 
   /**
    * Set the state of the driver so it can start at the right point in time,
@@ -313,12 +324,12 @@ class GraphDriver {
 
 #ifdef DEBUG
   // True if the current thread is currently iterating the MTG.
-  bool InIteration();
+  bool InIteration() const;
 #endif
   // True if the current thread is the GraphDriver's thread.
-  virtual bool OnThread() = 0;
+  virtual bool OnThread() const = 0;
   // GraphDriver's thread has started and the thread is running.
-  virtual bool ThreadRunning() = 0;
+  virtual bool ThreadRunning() const = 0;
 
   double MediaTimeToSeconds(GraphTime aTime) const {
     NS_ASSERTION(aTime > -TRACK_TIME_MAX && aTime <= TRACK_TIME_MAX,
@@ -430,13 +441,13 @@ class ThreadedDriver : public GraphDriver {
   friend class MediaTrackGraphInitThreadRunnable;
   uint32_t IterationDuration() override { return MEDIA_GRAPH_TARGET_PERIOD_MS; }
 
-  nsIThread* Thread() { return mThread; }
+  nsIThread* Thread() const { return mThread; }
 
-  bool OnThread() override {
+  bool OnThread() const override {
     return !mThread || mThread->EventTarget()->IsOnCurrentThread();
   }
 
-  bool ThreadRunning() override { return mThreadRunning; }
+  bool ThreadRunning() const override { return mThreadRunning; }
 
  protected:
   /* Waits until it's time to process more data. */
@@ -473,6 +484,7 @@ class SystemClockDriver : public ThreadedDriver {
                     GraphDriver* aPreviousDriver, uint32_t aSampleRate);
   virtual ~SystemClockDriver();
   SystemClockDriver* AsSystemClockDriver() override { return this; }
+  const SystemClockDriver* AsSystemClockDriver() const override { return this; }
 
  protected:
   /* Return the TimeDuration to wait before the next rendering iteration. */
@@ -497,6 +509,9 @@ class OfflineClockDriver : public ThreadedDriver {
                      GraphTime aSlice);
   virtual ~OfflineClockDriver();
   OfflineClockDriver* AsOfflineClockDriver() override { return this; }
+  const OfflineClockDriver* AsOfflineClockDriver() const override {
+    return this;
+  }
 
   void RunThread() override;
 
@@ -606,6 +621,9 @@ class AudioCallbackDriver : public GraphDriver,
                      uint32_t aSampleRate) override;
 
   AudioCallbackDriver* AsAudioCallbackDriver() override { return this; }
+  const AudioCallbackDriver* AsAudioCallbackDriver() const override {
+    return this;
+  }
 
   uint32_t OutputChannelCount() { return mOutputChannelCount; }
 
@@ -618,23 +636,22 @@ class AudioCallbackDriver : public GraphDriver,
     return AudioInputType::Unknown;
   }
 
-  /* Enqueue a promise that is going to be resolved on the given main thread
-   * when a specific operation occurs on the cubeb stream. */
-  void EnqueueTrackAndPromiseForOperation(
-      MediaTrack* aTrack, dom::AudioContextOperation aOperation,
-      AbstractThread* aMainThread,
-      MozPromiseHolder<MediaTrackGraph::AudioContextOperationPromise>&&
-          aHolder);
+  std::thread::id ThreadId() const { return mAudioThreadIdInCb.load(); }
 
-  std::thread::id ThreadId() { return mAudioThreadId.load(); }
+  /* Called when the thread servicing the callback has changed. This can be
+   * fairly expensive */
+  void OnThreadIdChanged();
+  /* Called at the beginning of the audio callback to check if the thread id has
+   * changed. */
+  bool CheckThreadIdChanged();
 
-  bool OnThread() override {
-    return mAudioThreadId.load() == std::this_thread::get_id();
+  bool OnThread() const override {
+    return mAudioThreadIdInCb.load() == std::this_thread::get_id();
   }
 
   /* Returns true if this audio callback driver has successfully started and not
    * yet stopped. If the fallback driver is active, this returns false. */
-  bool ThreadRunning() override {
+  bool ThreadRunning() const override {
     return mAudioStreamState == AudioStreamState::Running;
   }
 
@@ -642,10 +659,11 @@ class AudioCallbackDriver : public GraphDriver,
    * mStarted for details. */
   bool IsStarted();
 
-  void CompleteAudioContextOperations(AsyncCubebOperation aOperation);
-
   // Returns the output latency for the current audio output stream.
   TimeDuration AudioOutputLatency();
+
+  /* Returns true if this driver is currently driven by the fallback driver. */
+  bool OnFallback() const;
 
  private:
   /**
@@ -734,14 +752,16 @@ class AudioCallbackDriver : public GraphDriver,
   /* Shared thread pool with up to one thread for off-main-thread
    * initialization and shutdown of the audio stream via AsyncCubebTask. */
   const RefPtr<SharedThreadPool> mInitShutdownThread;
-  DataMutex<AutoTArray<TrackAndPromiseForOperation, 1>> mPromisesForOperation;
   cubeb_device_pref mInputDevicePreference;
   /* The mixer that the graph mixes into during an iteration. Audio thread only.
    */
   AudioMixer mMixer;
-  /* Contains the id of the audio thread for as long as the callback
-   * is taking place, after that it is reseted to an invalid value. */
-  std::atomic<std::thread::id> mAudioThreadId;
+  /* Contains the id of the audio thread, from profiler_get_thread_id. */
+  std::atomic<int> mAudioThreadId;
+  /* This allows implementing AutoInCallback. This is equal to the current
+   * thread id when in an audio callback, and is an invalid thread id otherwise.
+   */
+  std::atomic<std::thread::id> mAudioThreadIdInCb;
   /* State of the audio stream, see inline comments. */
   enum class AudioStreamState {
     /* There is no AudioStream and no pending AsyncCubebTask to INIT one. */
@@ -764,13 +784,10 @@ class AudioCallbackDriver : public GraphDriver,
        may iterate the graph. */
     Stopped,
   };
-  Atomic<FallbackDriverState> mFallbackDriverState;
+  Atomic<FallbackDriverState> mFallbackDriverState{FallbackDriverState::None};
   /* SystemClockDriver used as fallback if this AudioCallbackDriver fails to
    * init or start. */
   DataMutex<RefPtr<FallbackWrapper>> mFallback;
-  /* Set to true in the first iteration after starting. Accessed in data
-   * callback while running, or in Start(). */
-  bool mRanFirstIteration = false;
   /* If using a fallback driver, this is the duration to wait after failing to
    * start it before attempting to start it again. */
   TimeDuration mNextReInitBackoffStep;
@@ -788,6 +805,7 @@ class AudioCallbackDriver : public GraphDriver,
   WavDumper mOutputStreamFile;
 
   virtual ~AudioCallbackDriver();
+  const bool mSandboxed = false;
 };
 
 class AsyncCubebTask : public Runnable {

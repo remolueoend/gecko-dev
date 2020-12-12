@@ -80,6 +80,8 @@ class TlsConnectTestBase : public ::testing::Test {
   void ConnectExpectAlert(std::shared_ptr<TlsAgent>& sender, uint8_t alert);
   void ConnectExpectFailOneSide(TlsAgent::Role failingSide);
   void ConnectWithCipherSuite(uint16_t cipher_suite);
+  void CheckEarlyDataLimit(const std::shared_ptr<TlsAgent>& agent,
+                           size_t expected_size);
   // Check that the keys used in the handshake match expectations.
   void CheckKeys(SSLKEAType kea_type, SSLNamedGroup kea_group,
                  SSLAuthType auth_type, SSLSignatureScheme sig_scheme) const;
@@ -120,6 +122,9 @@ class TlsConnectTestBase : public ::testing::Test {
   void EnableSrtp();
   void CheckSrtp() const;
   void SendReceive(size_t total = 50);
+  void AddPsk(const ScopedPK11SymKey& psk, std::string label, SSLHashType hash,
+              uint16_t zeroRttSuite = TLS_NULL_WITH_NULL_NULL);
+  void RemovePsk(std::string label);
   void SetupForZeroRtt();
   void SetupForResume();
   void ZeroRttSendReceive(
@@ -140,6 +145,19 @@ class TlsConnectTestBase : public ::testing::Test {
 
   void SaveAlgorithmPolicy();
   void RestoreAlgorithmPolicy();
+
+  static void MakeEcKeyParams(SECItem* params, SSLNamedGroup group);
+  static void GenerateEchConfig(HpkeKemId kem_id,
+                                const std::vector<uint32_t>& cipher_suites,
+                                const std::string& public_name,
+                                uint16_t max_name_len, DataBuffer& record,
+                                ScopedSECKEYPublicKey& pubKey,
+                                ScopedSECKEYPrivateKey& privKey);
+  void SetupEch(std::shared_ptr<TlsAgent>& client,
+                std::shared_ptr<TlsAgent>& server,
+                HpkeKemId kem_id = HpkeDhKemX25519Sha256,
+                bool expect_ech = true, bool set_client_config = true,
+                bool set_server_config = true);
 
  protected:
   SSLProtocolVariant variant_;

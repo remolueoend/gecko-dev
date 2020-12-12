@@ -9,7 +9,7 @@ import { findBestMatchExpression } from "../utils/ast";
 import { getGrip, getFront } from "../utils/evaluation-result";
 import { getExpressionFromCoords } from "../utils/editor/get-expression";
 import { isOriginal } from "../utils/source";
-import { isTesting } from "devtools-environment";
+import { isNodeTest } from "../utils/environment";
 
 import {
   getPreview,
@@ -20,6 +20,7 @@ import {
   getSymbols,
   getCurrentThread,
   getPreviewCount,
+  getSelectedException,
 } from "../selectors";
 
 import { getMappedExpression } from "./expressions";
@@ -149,7 +150,7 @@ export function setPreview(
     // The first time a popup is rendered, the mouse should be hovered
     // on the token. If it happens to be hovered on whitespace, it should
     // not render anything
-    if (!target.matches(":hover") && !isTesting()) {
+    if (!target.matches(":hover") && !isNodeTest()) {
       return;
     }
 
@@ -188,5 +189,43 @@ export function clearPreview(cx: Context) {
         cx,
       }: Action)
     );
+  };
+}
+
+export function setExceptionPreview(
+  cx: Context,
+  target: HTMLElement,
+  tokenPos: Object,
+  codeMirror: any
+) {
+  return async ({ dispatch, getState }: ThunkArgs) => {
+    const cursorPos = target.getBoundingClientRect();
+
+    const match = findExpressionMatch(getState(), codeMirror, tokenPos);
+    if (!match) {
+      return;
+    }
+
+    const tokenColumnStart = match.location.start.column + 1;
+    const exception = getSelectedException(
+      getState(),
+      tokenPos.line,
+      tokenColumnStart
+    );
+    if (!exception) {
+      return;
+    }
+
+    dispatch({
+      type: "SET_PREVIEW",
+      cx,
+      value: {
+        exception,
+        location: match.location,
+        tokenPos,
+        cursorPos,
+        target,
+      },
+    });
   };
 }

@@ -8,9 +8,9 @@
 
 #include "js/SavedFrameAPI.h"
 #include "mozilla/dom/WorkerPrivate.h"
+#include "nsJSPrincipals.h"
 
-namespace mozilla {
-namespace dom {
+namespace mozilla::dom {
 
 SerializedStackHolder::SerializedStackHolder()
     : mHolder(StructuredCloneHolder::CloningSupported,
@@ -89,7 +89,7 @@ JSObject* SerializedStackHolder::ReadStack(JSContext* aCx) {
 
 UniquePtr<SerializedStackHolder> GetCurrentStackForNetMonitor(JSContext* aCx) {
   MOZ_ASSERT_IF(!NS_IsMainThread(),
-                GetCurrentThreadWorkerPrivate()->IsWatchedByDevtools());
+                GetCurrentThreadWorkerPrivate()->IsWatchedByDevTools());
 
   UniquePtr<SerializedStackHolder> stack = MakeUnique<SerializedStackHolder>();
   stack->SerializeCurrentStack(aCx);
@@ -150,5 +150,4 @@ void NotifyNetworkMonitorAlternateStack(nsISupports* aChannel,
                               PromiseFlatString(aStackJSON).get());
 }
 
-}  // namespace dom
-}  // namespace mozilla
+}  // namespace mozilla::dom
